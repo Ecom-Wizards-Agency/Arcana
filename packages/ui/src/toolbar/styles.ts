@@ -159,10 +159,16 @@ export const groupingList: CSSProperties = {
   padding: 0,
 };
 
+// Borders on the bar and its chips are longhands, not the `border` shorthand:
+// the active variants below override only `borderColor` / `borderStyle`, and
+// React flags a shorthand and a longhand toggling on the same element as a
+// styling bug on rerender.
 export const groupingLevel: CSSProperties = {
   alignItems: 'center',
   background: tokens.color.surfaceAlt,
-  border: `1px solid ${tokens.color.borderStrong}`,
+  borderColor: tokens.color.borderStrong,
+  borderStyle: 'solid',
+  borderWidth: 1,
   borderRadius: tokens.radius.sm,
   display: 'inline-flex',
   gap: tokens.space(0.5),
@@ -277,7 +283,9 @@ export const chipLabelButton: CSSProperties = {
 
 export const groupBar: CSSProperties = {
   alignItems: 'center',
-  border: `1px dashed ${tokens.color.borderStrong}`,
+  borderColor: tokens.color.borderStrong,
+  borderStyle: 'dashed',
+  borderWidth: 1,
   borderRadius: tokens.radius.md,
   display: 'flex',
   flexWrap: 'wrap',

@@ -8,9 +8,15 @@
  * that column, rendered through the same `GridCell` as the totals row itself.
  *
  * Every header is a drag source. The column id travels in the `DataTransfer`
- * under `COLUMN_DRAG_TYPE` (`grouping.ts`), which is what lets a component
- * with no shared parent -- the group bar -- accept the drop; the local
- * `dragging` state only serves header-to-header reorder within this row.
+ * under `COLUMN_DRAG_TYPE` (`grouping.ts`), and under `DIMENSION_DRAG_TYPE`
+ * too when the column is a dimension, which is what lets a component with no
+ * shared parent -- the group bar -- decide during `dragover` whether it will
+ * take the drop; the local `dragging` state only serves header-to-header
+ * reorder within this row.
+ *
+ * Headers are in the tab order. Enter and Space sort exactly as a click does,
+ * with Shift adding a key, so `aria-sort` is reachable by the people it is
+ * announced to. Keys on the pin button or the resize handle stay theirs.
  */
 import { useCallback, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -20,7 +26,7 @@ import type { GroupedRow } from '../aggregate.js';
 import type { GridColumn } from '../columns.js';
 import { formatValue } from '../format.js';
 import type { FormatContext } from '../format.js';
-import { COLUMN_DRAG_TYPE, writeDragPayload } from '../grouping.js';
+import { COLUMN_DRAG_TYPE, DIMENSION_DRAG_TYPE, writeDragPayload } from '../grouping.js';
 import type { GridModel } from '../pipeline.js';
 import type { GridRow } from '../rows.js';
 import { resolveField } from '../rows.js';
@@ -75,6 +81,18 @@ export function GridHeader({
     [onSortChange, sort],
   );
 
+  const handleHeaderKeyDown = useCallback(
+    (columnId: string, event: React.KeyboardEvent<HTMLDivElement>) => {
+      // Only the header itself sorts; a key on its pin button or resize
+      // handle bubbles through here and belongs to that control.
+      if (event.target !== event.currentTarget) return;
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      onSortChange(toggleSort(sort, columnId, event.shiftKey));
+    },
+    [onSortChange, sort],
+  );
+
   return (
     <div style={headerRow} role="row">
       {leafColumns.map((column) => {
@@ -88,12 +106,17 @@ export function GridHeader({
             aria-label={definition?.header ?? column.id}
             aria-sort={rule === undefined ? 'none' : rule.direction === 'asc' ? 'ascending' : 'descending'}
             title={definition?.description}
+            tabIndex={0}
             onClick={(event) => handleHeaderClick(column.id, event)}
+            onKeyDown={(event) => handleHeaderKeyDown(column.id, event)}
             onMouseEnter={() => setHovered(column.id)}
             onMouseLeave={() => setHovered((current) => (current === column.id ? null : current))}
             draggable
             onDragStart={(event) => {
               writeDragPayload(event.dataTransfer, COLUMN_DRAG_TYPE, column.id);
+              if (definition?.kind === 'dimension') {
+                writeDragPayload(event.dataTransfer, DIMENSION_DRAG_TYPE, column.id);
+              }
               setDragging(column.id);
             }}
             onDragEnd={() => setDragging(null)}

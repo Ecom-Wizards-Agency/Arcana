@@ -14,7 +14,17 @@
  * target decides whether to accept from `types` alone and reads the id on drop.
  */
 
+/** Any column header being dragged; carries the column id. */
 export const COLUMN_DRAG_TYPE = 'application/x-wizard-ads-column';
+/**
+ * A dimension header being dragged; carries the same id. Written alongside
+ * `COLUMN_DRAG_TYPE` only when the column can be grouped on, so the group bar
+ * can refuse a metric during `dragover` -- when the browser hides the payload
+ * and `types` is the only thing a drop target may inspect -- instead of lighting
+ * up and then ignoring the drop.
+ */
+export const DIMENSION_DRAG_TYPE = 'application/x-wizard-ads-dimension';
+/** A chip already in the group bar being reordered. */
 export const GROUP_LEVEL_DRAG_TYPE = 'application/x-wizard-ads-group-level';
 
 /** The subset of `DataTransfer` these helpers touch, so tests can hand in a literal. */

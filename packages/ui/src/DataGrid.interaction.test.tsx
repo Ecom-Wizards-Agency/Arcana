@@ -14,7 +14,7 @@ import { DataGrid } from './DataGrid.js';
 import type { DataGridProps } from './DataGrid.js';
 import { columnsFor } from './columns.js';
 import { syntheticSearchTermRows } from './fixtures.js';
-import { COLUMN_DRAG_TYPE } from './grouping.js';
+import { COLUMN_DRAG_TYPE, DIMENSION_DRAG_TYPE } from './grouping.js';
 import { buildGridModel } from './pipeline.js';
 import { rowHeightFor } from './density.js';
 
@@ -262,13 +262,45 @@ describe('DataGrid density and viewport fill', () => {
 });
 
 describe('DataGrid header affordances', () => {
-  it('hands the column id to the drag so a group bar can accept it', () => {
+  it('hands the column id to the drag, and marks it as a dimension only when it is one', () => {
     renderGrid(20);
     const header = screen.getByRole('columnheader', { name: 'Match' });
     expect(header.getAttribute('draggable')).toBe('true');
     const setData = vi.fn();
     fireEvent.dragStart(header, { dataTransfer: { setData, types: [] } });
     expect(setData).toHaveBeenCalledWith(COLUMN_DRAG_TYPE, 'match_type');
+    expect(setData).toHaveBeenCalledWith(DIMENSION_DRAG_TYPE, 'match_type');
+
+    // A metric is a column but not something to group on: the group bar must
+    // be able to tell during dragover, when the id itself is hidden from it.
+    const metricSetData = vi.fn();
+    fireEvent.dragStart(screen.getByRole('columnheader', { name: 'Spend' }), {
+      dataTransfer: { setData: metricSetData, types: [] },
+    });
+    expect(metricSetData).toHaveBeenCalledWith(COLUMN_DRAG_TYPE, 'spend');
+    expect(metricSetData).not.toHaveBeenCalledWith(DIMENSION_DRAG_TYPE, expect.anything());
+  });
+
+  it('sorts from the keyboard: Enter and Space on a focused header, Shift adds a key', () => {
+    const onSortChange = vi.fn();
+    renderGrid(20, { onSortChange, onPinChange: () => {} });
+    const acos = screen.getByRole('columnheader', { name: 'ACOS' });
+    expect(acos.getAttribute('tabindex')).toBe('0');
+    acos.focus();
+    expect(document.activeElement).toBe(acos);
+
+    fireEvent.keyDown(acos, { key: 'Enter' });
+    expect(onSortChange).toHaveBeenLastCalledWith([{ columnId: 'acos', direction: 'desc' }]);
+    fireEvent.keyDown(acos, { key: ' ', shiftKey: true });
+    expect(onSortChange).toHaveBeenLastCalledWith([
+      { columnId: 'spend', direction: 'desc' },
+      { columnId: 'acos', direction: 'desc' },
+    ]);
+    expect(onSortChange).toHaveBeenCalledTimes(2);
+
+    // The pin button lives inside the header; its Enter is a click on it, not a sort.
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Pin ACOS' }), { key: 'Enter' });
+    expect(onSortChange).toHaveBeenCalledTimes(2);
   });
 
   it('shows a sort hint on hover for an unsorted header and the direction when sorted', () => {

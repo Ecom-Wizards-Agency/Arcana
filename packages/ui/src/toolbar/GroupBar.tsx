@@ -15,12 +15,18 @@
  * per-chip move up / move down / remove buttons. Nothing here is reachable by
  * mouse only. Emits the whole ordered list on every change; the pipeline
  * recomputes ratios from summed bases at each level.
+ *
+ * Acceptance is decided from the `DataTransfer` types alone, because that is
+ * all a browser exposes during `dragover`: a header advertises
+ * `DIMENSION_DRAG_TYPE` only when it can be grouped on, so a metric dragged
+ * over the bar never lights it up. The id is still checked against this bar's
+ * own dimensions on drop, in case the drag came from a grid of another entity.
  */
 import { useState } from 'react';
 import type { DragEvent, ReactNode } from 'react';
 import type { GridColumn } from '../columns.js';
 import {
-  COLUMN_DRAG_TYPE,
+  DIMENSION_DRAG_TYPE,
   GROUP_LEVEL_DRAG_TYPE,
   hasDragPayload,
   insertGroupLevel,
@@ -60,8 +66,8 @@ export function GroupBar({ dimensions, groupBy, onChange }: GroupBarProps): Reac
     if (hasDragPayload(transfer, GROUP_LEVEL_DRAG_TYPE)) {
       return readDragPayload(transfer, GROUP_LEVEL_DRAG_TYPE);
     }
-    if (hasDragPayload(transfer, COLUMN_DRAG_TYPE)) {
-      const id = readDragPayload(transfer, COLUMN_DRAG_TYPE);
+    if (hasDragPayload(transfer, DIMENSION_DRAG_TYPE)) {
+      const id = readDragPayload(transfer, DIMENSION_DRAG_TYPE);
       return id !== null && isDimension(id) ? id : null;
     }
     return null;
@@ -69,7 +75,7 @@ export function GroupBar({ dimensions, groupBy, onChange }: GroupBarProps): Reac
 
   const accepts = (event: DragEvent): boolean =>
     hasDragPayload(event.dataTransfer, GROUP_LEVEL_DRAG_TYPE) ||
-    hasDragPayload(event.dataTransfer, COLUMN_DRAG_TYPE);
+    hasDragPayload(event.dataTransfer, DIMENSION_DRAG_TYPE);
 
   const dropOn = (event: DragEvent, beforeId: string | null): void => {
     event.preventDefault();

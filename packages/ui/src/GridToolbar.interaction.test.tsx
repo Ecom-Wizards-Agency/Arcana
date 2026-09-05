@@ -12,15 +12,15 @@ import type { GridToolbarProps } from './GridToolbar.js';
 import { columnsFor, defaultVisibleColumns } from './columns.js';
 import type { FilterSet } from './filter.js';
 import { syntheticSearchTermRows } from './fixtures.js';
-import { COLUMN_DRAG_TYPE, GROUP_LEVEL_DRAG_TYPE } from './grouping.js';
+import { COLUMN_DRAG_TYPE, DIMENSION_DRAG_TYPE, GROUP_LEVEL_DRAG_TYPE } from './grouping.js';
 import { buildGridModel } from './pipeline.js';
 import type { SavedView } from './views.js';
 
 const available = columnsFor('search_terms');
 const model = buildGridModel(syntheticSearchTermRows(20, { seed: 2 }));
 
-function transfer(type: string, id: string) {
-  const data = new Map<string, string>([[type, id]]);
+function transfer(entries: Record<string, string>) {
+  const data = new Map<string, string>(Object.entries(entries));
   return {
     types: [...data.keys()],
     getData: (format: string) => data.get(format) ?? '',
@@ -29,6 +29,20 @@ function transfer(type: string, id: string) {
     },
     dropEffect: 'none',
   };
+}
+
+/** What `GridHeader` writes for a dimension header: the column type and the dimension type. */
+function dimensionDrag(id: string) {
+  return transfer({ [COLUMN_DRAG_TYPE]: id, [DIMENSION_DRAG_TYPE]: id });
+}
+
+/** What `GridHeader` writes for a metric header: the column type only. */
+function metricDrag(id: string) {
+  return transfer({ [COLUMN_DRAG_TYPE]: id });
+}
+
+function chipDrag(id: string) {
+  return transfer({ [GROUP_LEVEL_DRAG_TYPE]: id });
 }
 
 function renderToolbar(overrides: Partial<GridToolbarProps> = {}) {
@@ -60,26 +74,70 @@ describe('group bar', () => {
     const bar = screen.getByTestId('grid-group-bar');
     expect(bar.textContent).toContain('Drag a column header here');
 
-    fireEvent.dragOver(bar, { dataTransfer: transfer(COLUMN_DRAG_TYPE, 'campaign_name') });
+    const dimension = dimensionDrag('campaign_name');
+    fireEvent.dragOver(bar, { dataTransfer: dimension });
     expect(bar.getAttribute('data-drop-active')).toBe('true');
-    fireEvent.drop(bar, { dataTransfer: transfer(COLUMN_DRAG_TYPE, 'campaign_name') });
+    expect(dimension.dropEffect).toBe('move');
+    fireEvent.drop(bar, { dataTransfer: dimensionDrag('campaign_name') });
     expect(onGroupByChange).toHaveBeenCalledWith(['campaign_name']);
     expect(bar.getAttribute('data-drop-active')).toBe('false');
 
-    fireEvent.drop(bar, { dataTransfer: transfer(COLUMN_DRAG_TYPE, 'spend') });
+    // A metric is refused before release, not after: the bar must not light
+    // up during dragover, since the browser hides the id until the drop.
+    const metric = metricDrag('spend');
+    fireEvent.dragOver(bar, { dataTransfer: metric });
+    expect(bar.getAttribute('data-drop-active')).toBe('false');
+    expect(metric.dropEffect).toBe('none');
+    fireEvent.drop(bar, { dataTransfer: metricDrag('spend') });
     expect(onGroupByChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a dimension of another entity even when it is marked as one', () => {
+    const { onGroupByChange } = renderToolbar();
+    const bar = screen.getByTestId('grid-group-bar');
+    fireEvent.drop(bar, { dataTransfer: dimensionDrag('portfolio_name') });
+    expect(onGroupByChange).not.toHaveBeenCalled();
   });
 
   it('nests a second header at the end, or before the chip it is dropped on', () => {
     const { onGroupByChange } = renderToolbar({ groupBy: ['search_term', 'match_type'] });
     const bar = screen.getByTestId('grid-group-bar');
-    fireEvent.drop(bar, { dataTransfer: transfer(COLUMN_DRAG_TYPE, 'targeting') });
+    fireEvent.drop(bar, { dataTransfer: dimensionDrag('targeting') });
     expect(onGroupByChange).toHaveBeenLastCalledWith(['search_term', 'match_type', 'targeting']);
 
     const chips = screen.getByRole('list', { name: 'Ordered grouping levels' });
     const matchChip = within(chips).getAllByRole('listitem')[1] as HTMLElement;
-    fireEvent.drop(matchChip, { dataTransfer: transfer(COLUMN_DRAG_TYPE, 'targeting') });
+    fireEvent.dragOver(matchChip, { dataTransfer: dimensionDrag('targeting') });
+    fireEvent.drop(matchChip, { dataTransfer: dimensionDrag('targeting') });
     expect(onGroupByChange).toHaveBeenLastCalledWith(['search_term', 'targeting', 'match_type']);
+
+    const metricOverChip = metricDrag('spend');
+    fireEvent.dragOver(matchChip, { dataTransfer: metricOverChip });
+    expect(metricOverChip.dropEffect).toBe('none');
+  });
+
+  it('toggles the drop highlight on the bar and a chip without a React style warning', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      renderToolbar({ groupBy: ['search_term'] });
+      const bar = screen.getByTestId('grid-group-bar');
+      const chip = within(screen.getByRole('list', { name: 'Ordered grouping levels' })).getByRole('listitem');
+
+      fireEvent.dragOver(bar, { dataTransfer: dimensionDrag('campaign_name') });
+      expect(bar.getAttribute('data-drop-active')).toBe('true');
+      fireEvent.dragLeave(bar, { relatedTarget: document.body });
+      expect(bar.getAttribute('data-drop-active')).toBe('false');
+
+      fireEvent.dragOver(chip, { dataTransfer: dimensionDrag('campaign_name') });
+      fireEvent.dragLeave(chip, { relatedTarget: document.body });
+
+      const styleWarnings = errors.mock.calls.filter((call) =>
+        call.some((argument) => typeof argument === 'string' && argument.includes('style property')),
+      );
+      expect(styleWarnings).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
   });
 
   it('reorders chips by dragging one onto another and keeps the keyboard path', () => {
@@ -94,7 +152,7 @@ describe('group bar', () => {
     fireEvent.dragStart(chips[2] as HTMLElement, { dataTransfer: { setData, types: [] } });
     expect(setData).toHaveBeenCalledWith(GROUP_LEVEL_DRAG_TYPE, 'match_type');
 
-    fireEvent.drop(chips[0] as HTMLElement, { dataTransfer: transfer(GROUP_LEVEL_DRAG_TYPE, 'match_type') });
+    fireEvent.drop(chips[0] as HTMLElement, { dataTransfer: chipDrag('match_type') });
     expect(onGroupByChange).toHaveBeenLastCalledWith(['match_type', 'search_term', 'targeting']);
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove grouping level Match' }));
