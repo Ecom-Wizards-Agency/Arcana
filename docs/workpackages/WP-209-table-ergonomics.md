@@ -97,3 +97,36 @@ On 2026-09-05, the unchanged UI passed 163 functional tests and nine of ten perf
 isolation, against its 125 ms local budget. Record the comparable environment and resolve the
 baseline before claiming the conversion preserves performance; do not weaken the assertion
 merely to get a green result. Full evidence is in `REPLAN-2026-09-05-AUDIT.md`.
+
+## Close-out
+
+### Performance baseline
+
+Slice 1 (behavior-preserving split of `DataGrid.tsx` and `GridToolbar.tsx`) measured
+`packages/ui/src/pipeline.perf.test.ts` before and after the change with the package's own
+invocation, `vitest run src/pipeline.perf.test.ts --maxWorkers=1`, three runs each, nothing else
+running. The suite exercises only the pure pipeline (`pipeline.ts`, `filter-options.ts`,
+`fixtures.ts`); it never imports the components that were split, so no delta was expected and
+none beyond run-to-run noise appeared.
+
+Environment: AMD Ryzen AI 9 HX 470 (24 threads), 57 GiB RAM, Linux 7.0, Node 26.8.1, pnpm 11.21,
+Vitest 4.1.10, `CI` unset (local budgets). One-minute load average was 0.5 to 0.9 during the
+"before" runs and 1.6 during the "after" runs; the machine was otherwise idle.
+
+| Run | Line 158 best-of-5 (budget 125 ms) | Other nine assertions |
+|---|---|---|
+| before 1 | 149.2 ms | pass |
+| before 2 | 156.0 ms | pass |
+| before 3 | 148.4 ms | pass |
+| after 1 | 151.3 ms | pass |
+| after 2 | 154.6 ms | pass |
+| after 3 | 147.6 ms | pass |
+
+The line 158 failure ("extracts a high-cardinality option set and applies a large exact
+selection") is pre-existing at the same magnitude before and after, and matches the handoff
+audit's 149.4 ms and 144.6 ms. The threshold was not changed. Resolving that baseline remains
+open for the slice that touches `filter-options.ts` or the pipeline; this slice did not touch
+either file.
+
+Functional `packages/ui` suite: 163 of 163 before and after, with `DataGrid.test.tsx` and
+`GridToolbar.test.tsx` unmodified.
