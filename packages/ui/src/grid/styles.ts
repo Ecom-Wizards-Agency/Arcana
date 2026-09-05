@@ -77,7 +77,17 @@ const headerCell: CSSProperties = {
   textTransform: 'uppercase',
 };
 
-export const headerLabel: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis' };
+/**
+ * `minWidth: 0` and `maxWidth: 100%` let the label shrink inside its flex
+ * column; without them a right-aligned header wider than its column is clipped
+ * from the left ("MPRESSIONS") instead of ending in an ellipsis.
+ */
+export const headerLabel: CSSProperties = {
+  maxWidth: '100%',
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+};
 
 const headerStack: CSSProperties = {
   display: 'flex',
