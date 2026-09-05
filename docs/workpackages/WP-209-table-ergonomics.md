@@ -197,3 +197,56 @@ Open from this slice: the group bar and viewport are wired on `/grid` only; opti
 recommendations and n-grams adopt them in slices 3 and 4. Selection is exposed through props
 and the footer count but has no bulk action bar yet (WP-214 handoff, item 12). The
 remaining-table inventory is due in slice 5's close-out.
+
+#### Slice 2 review fixes
+
+The slice 2 review accepted the work with one medium finding inside the owned files, one
+medium finding outside them, and four low findings. Fixed here, each with a test that was run
+with the fix reverted (fails) and applied (passes):
+
+- **Tab stop after a native scroll** (`grid/GridBody.tsx`). The roving tab stop lived only on
+  the active row, so once a wheel or scrollbar scroll had virtualised that row out of the DOM
+  the grid had no row in the tab order at all. When the active index is not among the rendered
+  rows, the first rendered row now carries the stop; focusing it makes it the active row through
+  the existing `onActivate`, so Tab always re-enters the grid on a real row and the arrows work
+  from there. Test: `DataGrid.interaction.test.tsx` "keeps one tab stop in the grid after a
+  native scroll" (5,000 rows, `scrollTop` 90,000, exactly one `tabindex=0` row); reverted, it
+  fails with `expected [] to have a length of 1 but got +0`.
+- **Metric over the group bar** (`grouping.ts`, `grid/GridHeader.tsx`, `toolbar/GroupBar.tsx`).
+  Browsers hide the drag payload during `dragover`, so the bar decided from the MIME type alone
+  and lit up for every header, refusing a metric only on drop. Headers now also write
+  `DIMENSION_DRAG_TYPE` when the column is a dimension, and the bar accepts on that type (or a
+  chip's `GROUP_LEVEL_DRAG_TYPE`), so a metric never lights it up and `dropEffect` stays `none`.
+  The id is still checked against the bar's own dimensions on drop. Tests: "refuses a metric"
+  now asserts the `dragover` feedback (reverted: `expected 'true' to be 'false'`); "marks it as a
+  dimension only when it is one" checks what the header writes for `Match` and `Spend`; the
+  e2e drag in `grid.spec.ts:163` passed against real Chromium on the new type (5 of 5).
+- **Keyboard sort on headers** (`grid/GridHeader.tsx`). Headers carried `aria-sort` but were not
+  focusable. They are now in the tab order; Enter and Space sort exactly as a click does, Shift
+  adds a key, and a key on the pin button or resize handle inside the header stays with that
+  control. Test: "sorts from the keyboard" (reverted: `expected null to be '0'`, the missing
+  `tabindex`).
+- **Border longhands** (`toolbar/styles.ts`). `groupBar` and `groupingLevel` used the `border`
+  shorthand while their active variants set `borderColor` / `borderStyle`, which React reports
+  as a styling bug on every highlight toggle (the review counted four in the e2e dev-server log).
+  Both now use `borderWidth` / `borderStyle` / `borderColor`. Test: "toggles the drop highlight
+  ... without a React style warning" spies `console.error` (reverted: three warnings captured);
+  the fixed tree's e2e run logged zero.
+
+Evidence on the fixed tree: `packages/ui` 202 of 202 functional tests (`vitest run --exclude
+src/pipeline.perf.test.ts`), `apps/web` `vitest run app/grid src/e2e-suite-registry.test.ts`
+19 of 19, e2e `auth` 5 of 5, `pnpm typecheck` 22 of 22, `pnpm lint`, `pnpm hygiene` and
+`git diff --check` clean. Performance, same invocation as above with the machine otherwise
+idle (load average 1.3 to 1.8): line 158 best-of-5 at 155.0 / 155.7 / 144.6 ms against the
+125 ms local budget, other nine assertions passing each run. The magnitude is unchanged from
+slice 1 and the handoff audit; this slice still touches neither `pipeline.ts` nor
+`filter-options.ts`, and the threshold was not changed.
+
+**Required edit outside this package's owned files** (reported, not made): the browser-suite
+ownership registry `apps/web/src/e2e-suite-registry.ts` declares `expectedTests: 4` for the
+`auth` suite (`dashboard.spec.ts` + `grid.spec.ts`), but slice 2 added a fourth test to
+`grid.spec.ts`, so the suite now runs 5 (`grep -c '^test('` gives 4 + 1; the runner reports
+"5 passed"). The registry and its test only compare against constants, so nothing fails, but
+the contract now understates the suite. The owner of `apps/web/src/e2e-suite-registry*.ts`
+should set `auth` to `expectedTests: 5` and move the registry test's `EXPECTED_REGISTRY` entry
+and its conserved total from 75 to 76, as `01f557c` did for the sidebar spec.
