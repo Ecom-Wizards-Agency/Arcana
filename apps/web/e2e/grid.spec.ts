@@ -176,25 +176,25 @@ test('grid sorts on a header click, groups by dragging headers into the group ba
   await expect(page.getByTestId('grid-scroller')).not.toHaveCSS('height', '620px');
 
   // Click-to-sort: first click descending, second ascending, shift-click nests a second key.
-  const clicks = page.getByRole('columnheader', { name: 'Clicks' });
+  const clicks = page.getByRole('columnheader', { name: 'Clicks', exact: true });
   await clicks.click();
   await expect(clicks).toHaveAttribute('aria-sort', 'descending');
   await clicks.click();
   await expect(clicks).toHaveAttribute('aria-sort', 'ascending');
-  await page.getByRole('columnheader', { name: 'Spend' }).click({ modifiers: ['Shift'] });
+  await page.getByRole('columnheader', { name: 'Spend', exact: true }).click({ modifiers: ['Shift'] });
   await expect(clicks).toHaveAttribute('aria-sort', 'ascending');
-  await expect(page.getByRole('columnheader', { name: 'Spend' })).toHaveAttribute('aria-sort', 'descending');
+  await expect(page.getByRole('columnheader', { name: 'Spend', exact: true })).toHaveAttribute('aria-sort', 'descending');
 
   // Drag a header into the group bar, then drag a second header to nest it.
   const bar = page.getByTestId('grid-group-bar');
   await expect(bar).toContainText('Drag a column header here');
-  await page.getByRole('columnheader', { name: 'State' }).dragTo(bar);
+  await page.getByRole('columnheader', { name: 'State', exact: true }).dragTo(bar);
   const levels = page.getByRole('list', { name: 'Ordered grouping levels' });
   await expect(levels.getByRole('listitem')).toHaveCount(1);
   await expect(levels.getByRole('listitem').first()).toContainText('State');
   await expect(page.getByRole('treegrid', { name: 'Results grouped by campaign_state' })).toBeVisible();
 
-  await page.getByRole('columnheader', { name: 'Ad type' }).dragTo(bar);
+  await page.getByRole('columnheader', { name: 'Ad type', exact: true }).dragTo(bar);
   await expect(levels.getByRole('listitem')).toHaveCount(2);
   await expect(levels.getByRole('listitem').nth(1)).toContainText('Ad type');
   const tree = page.getByRole('treegrid', { name: 'Results grouped by campaign_state, ad_product' });
