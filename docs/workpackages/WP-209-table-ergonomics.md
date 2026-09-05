@@ -130,3 +130,70 @@ either file.
 
 Functional `packages/ui` suite: 163 of 163 before and after, with `DataGrid.test.tsx` and
 `GridToolbar.test.tsx` unmodified.
+
+### Slice 2: Data Grid capabilities
+
+Delivered in `packages/ui/src/**` and wired on `/grid` (`apps/web/app/grid/**`):
+
+- **Group bar** (`toolbar/GroupBar.tsx`, `grouping.ts`): every header is a drag source carrying
+  its column id in the `DataTransfer` under a private MIME type; dropping a dimension on the bar
+  appends a level, dropping it on a chip nests before that chip, chips drag onto each other to
+  reorder, and each chip has remove and move up/down buttons. The `Add grouping level` select
+  remains the keyboard path. A metric dropped on the bar is refused. Ratios keep coming from the
+  pipeline's summed bases; the bar only edits the ordered list.
+- **Layout** (`grid/GridViewport.tsx`, `grid/styles.ts`, `apps/web/app/grid/page.tsx`): the
+  page is full width instead of a `96rem` centred column; the grid is a CSS flex fill inside a
+  viewport-measured column (no fixed `620px`), with a fullscreen toggle (Escape exits when the
+  grid did not claim the key) and a `compact / normal / comfortable` density whose row heights
+  live in `density.ts`. Density persists in the saved layout beside widths; a layout written
+  before density existed restores at `normal`, and an unknown density value is rejected.
+- **Toolbar** (`toolbar/EntitySearch.tsx`, `entity-search.ts`, `FilterBuilder.tsx`,
+  `ColumnPicker.tsx`, `column-groups.ts`, `SavedViews.tsx`): the entity search box compiles to a
+  `LIKE` filter on the level's pinned dimension and reads it back, so it is a chip, saves with the
+  view and round-trips; clicking a chip prefills the builder and `Update` replaces it in place;
+  `Delete view` targets the view just applied and calls `ViewStore.remove`; the column picker is
+  grouped (attributes, selected-period metrics, comparison, Δ, Δ%) with one search box.
+- **`RPC category` reads `Campaign role`**, id `rpc_category` unchanged, so saved views and
+  filters keep working.
+- **Keyboard** (`DataGrid.tsx`, `grid/GridBody.tsx`): rows are a roving tab stop; Arrow, Home,
+  End, PageUp and PageDown move it (scrolling the virtual window), Enter is `onRowClick`, Space
+  toggles selection through `selectedRowIds` / `onSelectionChange`, Escape clears it, Left/Right
+  collapse and expand a group. Keys on a control inside the grid (pin button, group toggle) are
+  left to that control. Headers carry `aria-sort`; the sort glyph shows on hover when unsorted
+  and with direction and multi-sort rank when sorted. Click and shift-click sort were already
+  present and are covered by the new e2e.
+
+Evidence:
+
+- `packages/ui`: 198 of 198 functional tests (`vitest run --exclude src/pipeline.perf.test.ts`),
+  35 of them new across `DataGrid.interaction.test.tsx`, `GridToolbar.interaction.test.tsx`,
+  `grouping.test.ts`, `density.test.ts`, `toolbar/entity-search.test.ts`,
+  `toolbar/column-groups.test.ts`, plus additions to `columns.test.ts` and `views.test.ts`. The
+  keyboard-target test was run with its fix stashed (fails: Enter on `Pin Spend` was
+  default-prevented) and with it (passes).
+- `apps/web`: `vitest run app/grid` 15 of 15, including the density-persistence and
+  grouped-header case in `grid-client.test.ts`.
+- e2e `auth` suite (`pnpm --filter @wizard-ads/web test:e2e:auth`, disposable local Postgres 17):
+  5 of 5, including the new `grid sorts on a header click, groups by dragging headers into the
+  group bar, and persists density`, which asserts full width against `main`, no `620px` scroller,
+  click and shift-click `aria-sort`, a real Chromium HTML5 drag of `State` then `Ad type` into
+  the bar producing a two-level treegrid, and density surviving a reload. Its first run failed
+  on a strict-mode locator (`Clicks` also matched `Clicks Δ%`); the locators are now exact.
+- `pnpm typecheck`, `pnpm lint`, `pnpm hygiene`, `git diff --check` clean.
+
+Performance, same invocation and environment as slice 1 (`vitest run src/pipeline.perf.test.ts
+--maxWorkers=1`, three runs, load average 2.2 falling to 1.3 as the e2e server exited):
+
+| Run | Line 158 best-of-5 (budget 125 ms) | Other nine assertions |
+|---|---|---|
+| slice 2, run 1 | 148.9 ms | pass |
+| slice 2, run 2 | 160.9 ms | pass |
+| slice 2, run 3 | 147.6 ms | pass |
+
+Line 158 remains the pre-existing failure at the slice 1 magnitude (147.6 to 156.0 ms). This
+slice touched neither `pipeline.ts` nor `filter-options.ts`; the threshold was not changed.
+
+Open from this slice: the group bar and viewport are wired on `/grid` only; optimizer,
+recommendations and n-grams adopt them in slices 3 and 4. Selection is exposed through props
+and the footer count but has no bulk action bar yet (WP-214 handoff, item 12). The
+remaining-table inventory is due in slice 5's close-out.
