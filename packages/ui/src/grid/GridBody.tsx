@@ -7,10 +7,14 @@
  * accessible label; the empty state distinguishes "nothing matched the filter"
  * from "the period produced nothing".
  *
- * Keyboard focus is a roving tab stop: exactly one row (the active one) is in
- * the tab order and the rest are reachable with the arrow keys the grid
- * handles above this component. The body only reports which row took focus
- * and paints the ring; it never decides where focus goes.
+ * Keyboard focus is a roving tab stop: exactly one row is in the tab order and
+ * the rest are reachable with the arrow keys the grid handles above this
+ * component. That row is the active one while the virtualizer still renders
+ * it; once a mouse or native scroll has moved the window past it, the first
+ * rendered row takes the stop instead, so Tab can always re-enter the grid.
+ * Focusing that stand-in makes it the active row through `onActivate`, the
+ * same way a click would. The body only reports which row took focus and
+ * paints the ring; it never decides where focus goes.
  */
 import type { ReactNode } from 'react';
 import { flexRender } from '@tanstack/react-table';
@@ -70,6 +74,10 @@ export function GridBody({
     return <div style={emptyState}>{model.total === 0 ? noDataMessage : emptyMessage}</div>;
   }
 
+  const tabStopIndex = items.some((item) => item.index === activeIndex)
+    ? activeIndex
+    : items[0]?.index;
+
   return (
     <div style={{ paddingTop, paddingBottom }}>
       {items.map((item) => {
@@ -85,7 +93,7 @@ export function GridBody({
             key={row.id}
             role="row"
             aria-selected={isSelected}
-            tabIndex={isActive ? 0 : -1}
+            tabIndex={item.index === tabStopIndex ? 0 : -1}
             data-row-index={item.index}
             {...(groupedRow !== null && !groupedRow.isLeafGroup
               ? { 'aria-expanded': !collapsedGroupIds.has(groupedRow.id) }

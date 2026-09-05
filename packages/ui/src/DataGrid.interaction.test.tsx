@@ -9,7 +9,7 @@
  * the production component.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { DataGrid } from './DataGrid.js';
 import type { DataGridProps } from './DataGrid.js';
 import { columnsFor } from './columns.js';
@@ -125,6 +125,37 @@ describe('DataGrid keyboard navigation', () => {
     await waitFor(() => {
       expect(activeRow()?.getAttribute('data-row-index')).toBe('0');
     });
+    expect(document.activeElement).toBe(activeRow());
+  });
+
+  it('keeps one tab stop in the grid after a native scroll moves the active row out of the DOM', async () => {
+    renderGrid(5_000);
+    expect(activeRow()?.getAttribute('data-row-index')).toBe('0');
+
+    // A wheel or scrollbar drag, not a key: the active row (index 0) leaves
+    // the virtual window and nothing has asked the grid to move the tab stop.
+    const scroller = screen.getByTestId('grid-scroller');
+    scroller.scrollTop = 90_000;
+    fireEvent.scroll(scroller);
+    await waitFor(() => {
+      expect(gridRows().some((row) => row.getAttribute('data-row-index') === '0')).toBe(false);
+    });
+
+    const stops = gridRows().filter((row) => row.getAttribute('tabindex') === '0');
+    expect(stops).toHaveLength(1);
+    const stop = stops[0] as HTMLElement;
+    expect(stop.getAttribute('data-row-index')).not.toBe('0');
+    expect(stop.getAttribute('data-row-index')).toBe(gridRows()[0]?.getAttribute('data-row-index'));
+
+    // Tabbing onto the stand-in makes it the active row, and the arrows work
+    // from there. (`act`: a browser flushes the focus handler's state update
+    // before the next key event; jsdom outside `act` does not.)
+    act(() => stop.focus());
+    expect(document.activeElement).toBe(stop);
+    expect(activeRow()).toBe(stop);
+    fireEvent.keyDown(stop, { key: 'ArrowDown' });
+    const next = Number(stop.getAttribute('data-row-index')) + 1;
+    expect(activeRow()?.getAttribute('data-row-index')).toBe(String(next));
     expect(document.activeElement).toBe(activeRow());
   });
 
