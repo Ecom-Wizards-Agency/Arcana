@@ -300,8 +300,11 @@ export function DataGrid({
     (event: KeyboardEvent<HTMLDivElement>) => {
       if (rows.length === 0) return;
       const target = event.target as HTMLElement;
-      // Keys typed into a control inside a cell (a future inline editor) are its own.
-      if (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA') return;
+      // Only a row is a grid key target. A key pressed on anything else inside
+      // the scroller -- a header's pin button, a group toggle, a future inline
+      // editor -- belongs to that control; Enter on "Pin Spend" must pin, not
+      // open the active row.
+      if (target.getAttribute('role') !== 'row') return;
       const current = rows[clampedActive];
       switch (event.key) {
         case 'ArrowDown':

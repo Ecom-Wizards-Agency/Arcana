@@ -141,7 +141,7 @@ export function GridBody({
   );
 }
 
-export function groupRowLabel(
+function groupRowLabel(
   row: GroupedRow,
   columns: readonly GridColumn[],
   context: FormatContext,

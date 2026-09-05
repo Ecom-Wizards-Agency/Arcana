@@ -178,7 +178,7 @@ export function GridHeader({
  * from the widest rendered string rather than from the data, because that is
  * what the operator can see.
  */
-export function autoFitWidth(
+function autoFitWidth(
   column: GridColumn | undefined,
   model: GridModel,
   context: FormatContext,

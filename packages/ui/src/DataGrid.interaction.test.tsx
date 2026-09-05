@@ -155,6 +155,30 @@ describe('DataGrid keyboard navigation', () => {
     expect(onSelectionChange).toHaveBeenLastCalledWith([]);
   });
 
+  it('leaves Enter and Space to a control inside the grid instead of treating them as row keys', () => {
+    const onRowClick = vi.fn();
+    const onSelectionChange = vi.fn();
+    const onPinChange = vi.fn();
+    renderGrid(50, { onRowClick, onSelectionChange, onPinChange });
+    // A header button: Enter must reach the button as a click, not open the active row.
+    const pin = screen.getByRole('button', { name: 'Pin Spend' });
+    pin.focus();
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    pin.dispatchEvent(enter);
+    expect(enter.defaultPrevented).toBe(false);
+    expect(onRowClick).not.toHaveBeenCalled();
+    // Likewise Space on the same button must not toggle the row's selection.
+    const space = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+    pin.dispatchEvent(space);
+    expect(space.defaultPrevented).toBe(false);
+    expect(onSelectionChange).not.toHaveBeenCalled();
+    // The row itself still answers.
+    const first = gridRows()[0] as HTMLElement;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'Enter' });
+    expect(onRowClick).toHaveBeenCalledTimes(1);
+  });
+
   it('expands and collapses a group row with the horizontal arrows', () => {
     const rows = syntheticSearchTermRows(120, { seed: 51, campaigns: 1 });
     const model = buildGridModel(rows, { groupBy: ['campaign_name', 'match_type'] });
