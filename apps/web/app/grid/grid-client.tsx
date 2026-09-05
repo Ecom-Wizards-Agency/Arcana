@@ -19,8 +19,10 @@ import { useRouter } from 'next/navigation';
 import type { ReactNode } from 'react';
 import {
   DataGrid,
+  DEFAULT_DENSITY,
   BASE_METRICS,
   GridToolbar,
+  GridViewport,
   LocalViewStore,
   STATE_COLUMN,
   buildGridModelSafely,
@@ -28,6 +30,7 @@ import {
   defaultVisibleColumns,
   formatInteger,
   newViewId,
+  rowHeightFor,
   toCsv,
 } from '@wizard-ads/ui';
 import type {
@@ -35,6 +38,7 @@ import type {
   FilterSet,
   FreshnessAssessment,
   GridColumn,
+  GridDensity,
   GridRow,
   SavedView,
   SortRule,
@@ -354,6 +358,8 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     store: ViewStore | null;
   } | null>(null);
   const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
+  const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
+  const [fullscreen, setFullscreen] = useState(false);
   const [browserStore] = useState(() =>
     typeof window === 'undefined' ? null : new LocalViewStore(window.localStorage),
   );
@@ -371,6 +377,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       setView(defaultView(props.entity, props.campaignId));
       setSaved([]);
       setSelectedTargetId(null);
+      setSelectedRowIds([]);
       setRestoredScope({ key: scopeKey, store });
       return;
     }
@@ -396,6 +403,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
         setSaved([]);
       }
       setSelectedTargetId(null);
+      setSelectedRowIds([]);
       // This is deliberately later than hydration alone. An interaction that
       // lands after React attaches but before the saved layout resolves can be
       // overwritten by the restoration above just as surely as a pre-hydration
@@ -433,24 +441,29 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   /**
    * Visible columns, in the operator's order.
    *
-   * When a group-by is active only the group key and the metrics can be shown:
-   * every other dimension was legitimately dropped by the aggregation, and
-   * rendering an empty column with a header is worse than not rendering it.
+   * When a group-by is active the grouping dimensions lead and are pinned, in
+   * hierarchy order, so the tree reads left to right; every other visible
+   * column follows in the operator's order. The non-grouped dimensions render
+   * blank on group rows (the aggregation legitimately dropped them), exactly
+   * as AdLabs' grouped grid does -- and their headers stay on screen, which is
+   * what makes "drop another header to nest" possible at all.
    */
   const visibleColumns = useMemo<GridColumn[]>(() => {
     const byId = new Map(available.map((column) => [column.id, column]));
     const wanted = model.grouped
-      ? [...model.groupBy, ...view.columns.filter((id) => byId.get(id)?.kind === 'metric')]
+      ? [...model.groupBy, ...view.columns.filter((id) => !model.groupBy.includes(id))]
       : view.columns;
     return wanted
       .map((id) => byId.get(id))
       .filter((column): column is GridColumn => column !== undefined)
       .map((column) => {
         const width = view.widths[column.id];
-        const pinned = view.pinned.includes(column.id);
+        const pinned = view.pinned.includes(column.id) || model.groupBy.includes(column.id);
         return { ...column, ...(width === undefined ? {} : { width }), pinned };
       });
   }, [available, model.groupBy, model.grouped, view.columns, view.pinned, view.widths]);
+
+  const density: GridDensity = view.density ?? DEFAULT_DENSITY;
 
   const handleExport = useCallback(() => {
     if (!viewReady) return;
@@ -471,6 +484,14 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       void store.save(toSave).then(() => store.list(props.entity)).then(setSaved);
     },
     [model.groupBy, props.entity, store, view, viewReady],
+  );
+
+  const handleRemoveView = useCallback(
+    (removed: SavedView) => {
+      if (!viewReady || store === null) return;
+      void store.remove(removed.id).then(() => store.list(props.entity)).then(setSaved);
+    },
+    [props.entity, store, viewReady],
   );
 
   const handleReorder = useCallback(
@@ -505,11 +526,12 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     // WP-06 ships without an inline palette (inputs, selects, toolbar buttons).
     // The grid's own cells need nothing here: `packages/ui` writes
     // `var(--wa-*, <literal>)` and reads the tokens directly.
+    <GridViewport fullscreen={fullscreen} onExitFullscreen={() => setFullscreen(false)}>
     <div
       data-testid="grid-data-ready"
       data-ready={viewReady ? 'true' : 'false'}
       aria-busy={!viewReady}
-      style={{ display: 'flex', flexDirection: 'column', gap: tokens.space(3) }}
+      style={{ display: 'flex', flex: '1 1 auto', flexDirection: 'column', gap: tokens.space(3), minHeight: 0 }}
     >
       <div data-testid="grid-toolbar-readiness" aria-busy={!viewReady}>
         {viewReady ? (
@@ -537,6 +559,11 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
             views={saved}
             onApplyView={(applied) => setView(withValidGrouping(applied, available))}
             onSaveView={handleSaveView}
+            onRemoveView={handleRemoveView}
+            density={density}
+            onDensityChange={(next) => update({ density: next })}
+            fullscreen={fullscreen}
+            onFullscreenChange={setFullscreen}
           />
         ) : (
           <p role="status" data-testid="grid-layout-restoring" className="wa-hint">
@@ -588,7 +615,10 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
             })
           }
           onReorder={handleReorder}
-          rowHeight={props.entity === 'targets' ? 42 : 30}
+          density={density}
+          rowHeight={rowHeightFor(density, props.entity === 'targets' ? 2 : 1)}
+          selectedRowIds={selectedRowIds}
+          onSelectionChange={setSelectedRowIds}
           {...(props.entity === 'targets'
             ? {
                 onRowClick: (row: GridRow) => {
@@ -610,6 +640,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
         />
       )}
     </div>
+    </GridViewport>
   );
 }
 

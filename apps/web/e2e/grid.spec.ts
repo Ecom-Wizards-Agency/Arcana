@@ -159,3 +159,65 @@ test('grid selects every categorical value, filters exact rows, and restores the
     'does not equal',
   ]);
 });
+
+test('grid sorts on a header click, groups by dragging headers into the group bar, and persists density', async ({ page }) => {
+  await signIn(page, 'admin');
+  await page.goto('/grid?entity=campaigns');
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+
+  // The workspace is full width and the grid fills its viewport container
+  // rather than a fixed box.
+  const viewport = page.getByTestId('grid-viewport');
+  const viewportBox = await viewport.boundingBox();
+  const contentBox = await page.locator('main').boundingBox();
+  expect(viewportBox).not.toBeNull();
+  expect(contentBox).not.toBeNull();
+  expect(viewportBox!.width).toBeGreaterThanOrEqual(contentBox!.width - 2);
+  await expect(page.getByTestId('grid-scroller')).not.toHaveCSS('height', '620px');
+
+  // Click-to-sort: first click descending, second ascending, shift-click nests a second key.
+  const clicks = page.getByRole('columnheader', { name: 'Clicks' });
+  await clicks.click();
+  await expect(clicks).toHaveAttribute('aria-sort', 'descending');
+  await clicks.click();
+  await expect(clicks).toHaveAttribute('aria-sort', 'ascending');
+  await page.getByRole('columnheader', { name: 'Spend' }).click({ modifiers: ['Shift'] });
+  await expect(clicks).toHaveAttribute('aria-sort', 'ascending');
+  await expect(page.getByRole('columnheader', { name: 'Spend' })).toHaveAttribute('aria-sort', 'descending');
+
+  // Drag a header into the group bar, then drag a second header to nest it.
+  const bar = page.getByTestId('grid-group-bar');
+  await expect(bar).toContainText('Drag a column header here');
+  await page.getByRole('columnheader', { name: 'State' }).dragTo(bar);
+  const levels = page.getByRole('list', { name: 'Ordered grouping levels' });
+  await expect(levels.getByRole('listitem')).toHaveCount(1);
+  await expect(levels.getByRole('listitem').first()).toContainText('State');
+  await expect(page.getByRole('treegrid', { name: 'Results grouped by campaign_state' })).toBeVisible();
+
+  await page.getByRole('columnheader', { name: 'Ad type' }).dragTo(bar);
+  await expect(levels.getByRole('listitem')).toHaveCount(2);
+  await expect(levels.getByRole('listitem').nth(1)).toContainText('Ad type');
+  const tree = page.getByRole('treegrid', { name: 'Results grouped by campaign_state, ad_product' });
+  await expect(tree).toBeVisible();
+  await expect(tree.locator('[role="row"][aria-level="1"]').first()).toBeVisible();
+  await expect(tree.locator('[role="row"][aria-level="2"]').first()).toBeVisible();
+  await expect(page.getByRole('button', { name: /Export CSV \(1 deepest group\)/ })).toBeVisible();
+
+  // Density persists with the layout, so it survives a reload.
+  await page.getByLabel('Row density').selectOption('compact');
+  await expect(page.getByTestId('grid-shell')).toHaveAttribute('data-density', 'compact');
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const raw = window.localStorage.getItem('wizard-ads:layout:v1');
+        if (raw === null) return null;
+        const parsed = JSON.parse(raw) as { campaigns?: { density?: unknown; groupBy?: unknown } };
+        return parsed.campaigns ?? null;
+      }),
+    )
+    .toMatchObject({ density: 'compact', groupBy: ['campaign_state', 'ad_product'] });
+  await page.reload();
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await expect(page.getByTestId('grid-shell')).toHaveAttribute('data-density', 'compact');
+  await expect(page.getByLabel('Row density')).toHaveValue('compact');
+});

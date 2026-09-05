@@ -184,14 +184,19 @@ async function GridCrosscheck({
   return model === null ? null : <CrosscheckChip chip={model.chip} />;
 }
 
+/**
+ * Full width, not a centred column. The operator compared this page against
+ * AdLabs and the narrow reading column was the first thing named: a grid with
+ * twenty visible columns wants every pixel the frame gives it.
+ */
 const main: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   fontFamily: tokens.font.sans,
   gap: tokens.space(4),
-  margin: '0 auto',
-  maxWidth: '96rem',
-  padding: '2rem 1.5rem',
+  minWidth: 0,
+  padding: '1.5rem 0 2rem',
+  width: '100%',
 };
 
 const heading: CSSProperties = { fontSize: tokens.font.size.xl, margin: '0 0 0.25rem' };

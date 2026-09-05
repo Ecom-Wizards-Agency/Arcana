@@ -2,10 +2,15 @@
 
 /**
  * The sticky header row and the gestures it owns: click and shift-click to
- * sort, drag a header onto another to reorder, the pin toggle, and the resize
- * handle with double-click auto-fit. The aggregate beneath a sorted metric
- * header is the totals row's cell for that column, rendered through the same
- * `GridCell` as the totals row itself.
+ * sort, drag a header onto another to reorder or onto the toolbar's group bar
+ * to group, the pin toggle, and the resize handle with double-click auto-fit.
+ * The aggregate beneath a sorted metric header is the totals row's cell for
+ * that column, rendered through the same `GridCell` as the totals row itself.
+ *
+ * Every header is a drag source. The column id travels in the `DataTransfer`
+ * under `COLUMN_DRAG_TYPE` (`grouping.ts`), which is what lets a component
+ * with no shared parent -- the group bar -- accept the drop; the local
+ * `dragging` state only serves header-to-header reorder within this row.
  */
 import { useCallback, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -15,6 +20,7 @@ import type { GroupedRow } from '../aggregate.js';
 import type { GridColumn } from '../columns.js';
 import { formatValue } from '../format.js';
 import type { FormatContext } from '../format.js';
+import { COLUMN_DRAG_TYPE, writeDragPayload } from '../grouping.js';
 import type { GridModel } from '../pipeline.js';
 import type { GridRow } from '../rows.js';
 import { resolveField } from '../rows.js';
@@ -30,6 +36,7 @@ import {
   headerStackStyle,
   pinButtonStyle,
   resizeHandle,
+  sortHint,
   sortMark,
 } from './styles.js';
 
@@ -59,6 +66,7 @@ export function GridHeader({
   environment,
 }: GridHeaderProps): ReactNode {
   const [dragging, setDragging] = useState<string | null>(null);
+  const [hovered, setHovered] = useState<string | null>(null);
 
   const handleHeaderClick = useCallback(
     (columnId: string, event: React.MouseEvent) => {
@@ -81,9 +89,17 @@ export function GridHeader({
             aria-sort={rule === undefined ? 'none' : rule.direction === 'asc' ? 'ascending' : 'descending'}
             title={definition?.description}
             onClick={(event) => handleHeaderClick(column.id, event)}
-            draggable={onReorder !== undefined}
-            onDragStart={() => setDragging(column.id)}
-            onDragOver={(event) => event.preventDefault()}
+            onMouseEnter={() => setHovered(column.id)}
+            onMouseLeave={() => setHovered((current) => (current === column.id ? null : current))}
+            draggable
+            onDragStart={(event) => {
+              writeDragPayload(event.dataTransfer, COLUMN_DRAG_TYPE, column.id);
+              setDragging(column.id);
+            }}
+            onDragEnd={() => setDragging(null)}
+            onDragOver={(event) => {
+              if (onReorder !== undefined) event.preventDefault();
+            }}
             onDrop={() => {
               if (dragging !== null && dragging !== column.id) onReorder?.(dragging, column.id);
               setDragging(null);
@@ -105,10 +121,18 @@ export function GridHeader({
                 </span>
               )}
             </span>
-            {rule === undefined ? null : (
+            {rule === undefined ? (
+              hovered === column.id ? (
+                // The affordance that says "this sorts": shown on hover only,
+                // so a resting header row stays a row of names.
+                <span aria-hidden data-testid={`sort-hint-${column.id}`} style={sortHint}>
+                  ↕
+                </span>
+              ) : null
+            ) : (
               // aria-sort already tells a screen reader the direction;
               // the glyph would only make the header's name read "Spend▼".
-              <span aria-hidden style={sortMark}>
+              <span aria-hidden data-testid={`sort-direction-${column.id}`} style={sortMark}>
                 {rule.direction === 'asc' ? '▲' : '▼'}
                 {sort.length > 1 ? sort.indexOf(rule) + 1 : ''}
               </span>

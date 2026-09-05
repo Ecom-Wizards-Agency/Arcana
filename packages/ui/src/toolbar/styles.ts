@@ -258,3 +258,86 @@ export const pickerItem: CSSProperties = {
   fontSize: tokens.font.size.xs,
   gap: tokens.space(1),
 };
+
+export const searchBox: CSSProperties = {
+  ...control,
+  minWidth: '14rem',
+};
+
+/** A chip's label doubles as the button that reopens the builder on it. */
+export const chipLabelButton: CSSProperties = {
+  background: 'none',
+  border: 'none',
+  color: 'inherit',
+  cursor: 'pointer',
+  font: 'inherit',
+  padding: 0,
+  textAlign: 'left',
+};
+
+export const groupBar: CSSProperties = {
+  alignItems: 'center',
+  border: `1px dashed ${tokens.color.borderStrong}`,
+  borderRadius: tokens.radius.md,
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: tokens.space(2),
+  minHeight: '2.5rem',
+  padding: `${tokens.space(1)} ${tokens.space(2)}`,
+  transition: 'background 120ms ease, border-color 120ms ease',
+};
+
+export const groupBarActive: CSSProperties = {
+  ...groupBar,
+  background: tokens.color.indigoSoft,
+  borderColor: tokens.color.indigo,
+  borderStyle: 'solid',
+};
+
+export const groupHint: CSSProperties = {
+  color: tokens.color.textMuted,
+  fontSize: tokens.font.size.xs,
+};
+
+export const groupChip: CSSProperties = {
+  ...groupingLevel,
+  cursor: 'grab',
+};
+
+export const groupChipDropTarget: CSSProperties = {
+  ...groupChip,
+  borderColor: tokens.color.indigo,
+  boxShadow: `inset 3px 0 0 ${tokens.color.indigo}`,
+};
+
+export const pickerPanel: CSSProperties = {
+  border: `1px solid ${tokens.color.border}`,
+  borderRadius: tokens.radius.md,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: tokens.space(2),
+  padding: tokens.space(3),
+};
+
+export const pickerSearch: CSSProperties = { ...control, width: '18rem', maxWidth: '100%' };
+
+export const pickerGroups: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: tokens.space(3),
+  maxHeight: '18rem',
+  overflow: 'auto',
+};
+
+export const pickerGroupTitle: CSSProperties = {
+  ...groupingLabel,
+  margin: `0 0 ${tokens.space(1)}`,
+};
+
+export const pickerGroupActions: CSSProperties = {
+  display: 'inline-flex',
+  gap: tokens.space(2),
+  marginLeft: tokens.space(2),
+  textTransform: 'none',
+  letterSpacing: 0,
+};

@@ -23,6 +23,8 @@
  */
 import { ENTITY_LEVELS } from './columns.js';
 import type { EntityLevel } from './columns.js';
+import { isGridDensity } from './density.js';
+import type { GridDensity } from './density.js';
 import type { FilterSet } from './filter.js';
 import type { SortRule } from './sort.js';
 
@@ -41,6 +43,11 @@ export interface SavedView {
   pinned: readonly string[];
   /** Per-column width overrides, keyed by column id. */
   widths: Readonly<Record<string, number>>;
+  /**
+   * Row density. Absent on layouts written before it existed, which render at
+   * the normal density they were designed against.
+   */
+  density?: GridDensity;
   filter: FilterSet;
   sort: readonly SortRule[];
   /** Unique dimension ids in outermost-to-innermost hierarchy order. */
@@ -145,6 +152,7 @@ function isSavedView(value: unknown): value is SavedView {
     isStringArray(value['pinned']) &&
     isRecord(widths) &&
     Object.values(widths).every((width) => typeof width === 'number' && Number.isFinite(width)) &&
+    (value['density'] === undefined || isGridDensity(value['density'])) &&
     isFilterSet(value['filter']) &&
     Array.isArray(sort) &&
     sort.every((rule) =>

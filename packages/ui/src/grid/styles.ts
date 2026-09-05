@@ -9,6 +9,7 @@
  */
 import type { CSSProperties } from 'react';
 import type { GridColumn } from '../columns.js';
+import type { GridDensity } from '../density.js';
 import { tokens } from '../theme.js';
 
 /**
@@ -23,12 +24,31 @@ export const HEADER_HEIGHT = 44;
 export const shell: CSSProperties = {
   border: `1px solid ${tokens.color.border}`,
   borderRadius: tokens.radius.md,
+  display: 'flex',
+  flexDirection: 'column',
   fontFamily: tokens.font.sans,
   fontSize: tokens.font.size.base,
   overflow: 'hidden',
 };
 
+/**
+ * With no height given the shell fills whatever flex column the host puts it
+ * in (`GridViewport` is the one shipped here). `minHeight: 0` is what lets a
+ * flex child shrink below its content so the scroller, not the page, scrolls.
+ */
+export const shellFill: CSSProperties = {
+  ...shell,
+  flex: '1 1 auto',
+  minHeight: 0,
+};
+
 export const scroller: CSSProperties = { overflow: 'auto', position: 'relative' };
+
+export const scrollerFill: CSSProperties = {
+  ...scroller,
+  flex: '1 1 auto',
+  minHeight: 0,
+};
 
 export const headerRow: CSSProperties = {
   background: tokens.color.surfaceAlt,
@@ -77,6 +97,9 @@ export const headerAggregate: CSSProperties = {
 
 export const sortMark: CSSProperties = { color: tokens.color.accent, fontSize: '0.625rem' };
 
+/** The hover affordance on an unsorted header: same slot as the sort mark, muted. */
+export const sortHint: CSSProperties = { color: tokens.color.textFaint, fontSize: '0.625rem' };
+
 const pinButton: CSSProperties = {
   background: 'none',
   border: 'none',
@@ -117,6 +140,13 @@ const bodyCell: CSSProperties = {
   padding: `${tokens.space(1)} ${tokens.space(2)}`,
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
+};
+
+/** Cell padding per density; the row height itself comes from `density.ts`. */
+const CELL_PADDING: Record<GridDensity, string> = {
+  compact: `${tokens.space(0.5)} ${tokens.space(1.5)}`,
+  normal: `${tokens.space(1)} ${tokens.space(2)}`,
+  comfortable: `${tokens.space(1.5)} ${tokens.space(2.5)}`,
 };
 
 export const twoLineCell: CSSProperties = {
@@ -193,6 +223,8 @@ export const footer: CSSProperties = {
 
 export const footerNote: CSSProperties = { color: tokens.color.textMuted };
 
+export const footerSelection: CSSProperties = { color: tokens.color.indigo, fontWeight: 600 };
+
 /** A pinned column sticks to the left of the scroller above whatever scrolls under it. */
 export interface Pinned {
   left: number;
@@ -244,9 +276,11 @@ export function bodyCellStyle(
   width: number,
   definition: GridColumn | undefined,
   pinned: Pinned | null,
+  density: GridDensity = 'normal',
 ): CSSProperties {
   return {
     ...bodyCell,
+    padding: CELL_PADDING[density],
     width,
     textAlign: definition?.align ?? 'left',
     ...sticky(pinned, 1, 'inherit'),
@@ -258,6 +292,8 @@ export interface BodyRowState {
   index: number;
   clickable: boolean;
   selected: boolean;
+  /** The row holding keyboard focus, drawn with a ring so the roving tab stop is visible. */
+  focused: boolean;
   /** `null` when the row is a source row; otherwise its hierarchy depth and leafness. */
   group: { depth: number; isLeaf: boolean } | null;
 }
@@ -271,6 +307,8 @@ export function bodyRowStyle(state: BodyRowState): CSSProperties {
     ...bodyRow,
     height: state.height,
     cursor: state.clickable ? 'pointer' : 'default',
+    outline: state.focused ? `2px solid ${tokens.color.indigo}` : 'none',
+    outlineOffset: -2,
     background: state.selected
       ? tokens.color.indigoSoft
       : state.group !== null && !state.group.isLeaf

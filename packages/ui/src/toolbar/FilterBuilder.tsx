@@ -12,9 +12,11 @@
  *
  * Draft state lives here and nowhere else. The builder emits a complete
  * `Filter` on Add; the toolbar folds it into the `FilterSet` a saved view
- * stores and a deep link restores.
+ * stores and a deep link restores. Clicking a chip hands its filter back in as
+ * a `prefill`, the button reads Update, and the toolbar replaces the chip
+ * rather than appending a second one.
  */
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { GridColumn } from '../columns.js';
 import { filterKindForColumn } from '../columns.js';
@@ -32,6 +34,7 @@ import {
   button,
   chip,
   chipClose,
+  chipLabelButton,
   control,
   controlWidth,
   linkButton,
@@ -50,15 +53,30 @@ import {
 
 const MAX_RENDERED_OPTIONS = 200;
 
+/** A filter handed back to the builder for editing, with a token so the same filter can be reopened. */
+export interface FilterPrefill {
+  filter: Filter;
+  token: number;
+}
+
 export interface FilterBuilderProps {
   /** Every column available at this level, for the key list and operator sets. */
   available: readonly GridColumn[];
   /** Complete authorized rows, before filters, used only to derive categorical choices. */
   optionRows: readonly GridRow[];
   onAdd: (filter: Filter) => void;
+  /** Present while a chip is being edited: the draft loads from it and Add reads Update. */
+  prefill?: FilterPrefill | null | undefined;
+  onCancelEdit?: (() => void) | undefined;
 }
 
-export function FilterBuilder({ available, optionRows, onAdd }: FilterBuilderProps): ReactNode {
+export function FilterBuilder({
+  available,
+  optionRows,
+  onAdd,
+  prefill = null,
+  onCancelEdit,
+}: FilterBuilderProps): ReactNode {
   const [draftKey, setDraftKey] = useState('');
   const [draftOperator, setDraftOperator] = useState<FilterOperator>('LIKE');
   const [draftValue, setDraftValue] = useState('');
@@ -81,14 +99,44 @@ export function FilterBuilder({ available, optionRows, onAdd }: FilterBuilderPro
     [categoricalOptions, optionSearch],
   );
 
-  const addFilter = (): void => {
-    const values = draftKind === 'categorical' ? draftValues : [draftValue.trim()].filter(Boolean);
-    if (draftKey === '' || values.length === 0) return;
-    onAdd({ key: draftKey, conditions: [{ operator: draftOperator, values }] });
+  const resetDraft = (): void => {
     setDraftValue('');
     setDraftValues([]);
     setOptionSearch('');
     setValuePickerOpen(false);
+  };
+
+  // Load the draft from a chip. Only the first condition is editable here;
+  // the builder never produced a multi-condition filter and does not pretend to.
+  useEffect(() => {
+    if (prefill === null) return;
+    const { filter } = prefill;
+    const column = available.find((candidate) => columnIdToFilterKey(candidate.id) === filter.key);
+    const condition = filter.conditions[0];
+    const kind = column === undefined ? 'text' : filterKindForColumn(column);
+    const allowed = operatorsFor(column);
+    const operator = condition?.operator ?? '=';
+    setDraftKey(filter.key);
+    setDraftOperator(allowed.includes(operator) ? operator : (allowed[0] as FilterOperator));
+    setDraftValue(kind === 'categorical' ? '' : condition?.values[0] ?? '');
+    setDraftValues(kind === 'categorical' ? [...(condition?.values ?? [])] : []);
+    setOptionSearch('');
+    setValuePickerOpen(false);
+  }, [available, prefill]);
+
+  const addFilter = (): void => {
+    const values = draftKind === 'categorical' ? draftValues : [draftValue.trim()].filter(Boolean);
+    if (draftKey === '' || values.length === 0) return;
+    onAdd({ key: draftKey, conditions: [{ operator: draftOperator, values }] });
+    if (prefill !== null) setDraftKey('');
+    resetDraft();
+  };
+
+  const cancelEdit = (): void => {
+    setDraftKey('');
+    setDraftOperator('LIKE');
+    resetDraft();
+    onCancelEdit?.();
   };
 
   const operators = operatorsFor(draftColumn);
@@ -99,11 +147,10 @@ export function FilterBuilder({ available, optionRows, onAdd }: FilterBuilderPro
     const column = available.find((candidate) => columnIdToFilterKey(candidate.id) === key);
     const next = operatorsFor(column);
     if (!next.includes(draftOperator)) setDraftOperator(next[0] as FilterOperator);
-    setDraftValue('');
-    setDraftValues([]);
-    setOptionSearch('');
-    setValuePickerOpen(false);
+    resetDraft();
   };
+
+  const editing = prefill !== null;
 
   return (
     <div style={row} data-toolbar-row="filters">
@@ -235,9 +282,13 @@ export function FilterBuilder({ available, optionRows, onAdd }: FilterBuilderPro
         disabled={draftKey === '' || (draftKind === 'categorical' ? draftValues.length === 0 : draftValue.trim() === '')}
         style={button}
       >
-        Add
+        {editing ? 'Update' : 'Add'}
       </button>
-
+      {editing ? (
+        <button type="button" onClick={cancelEdit} style={linkButton}>
+          Cancel
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -246,16 +297,35 @@ export interface FilterChipsProps {
   filters: readonly Filter[];
   available: readonly GridColumn[];
   onChange: (filters: readonly Filter[]) => void;
+  /** Called with the chip's index when its label is clicked; omit and chips are read-only. */
+  onEdit?: ((index: number) => void) | undefined;
 }
 
-/** The applied filters as removable chips. Renders nothing when there are none. */
-export function FilterChips({ filters, available, onChange }: FilterChipsProps): ReactNode {
+/**
+ * The applied filters as removable chips. Renders nothing when there are none.
+ * A chip whose key the builder can express is a button that reopens it; the
+ * meta keys (tags, deltas) it cannot express stay plain text.
+ */
+export function FilterChips({ filters, available, onChange, onEdit }: FilterChipsProps): ReactNode {
   if (filters.length === 0) return null;
+  const editable = (filter: Filter): boolean =>
+    onEdit !== undefined && available.some((column) => columnIdToFilterKey(column.id) === filter.key);
   return (
     <div style={row}>
       {filters.map((filter, index) => (
         <span key={`${filter.key}-${index}`} style={chip}>
-          {describeFilter(filter, available)}
+          {editable(filter) ? (
+            <button
+              type="button"
+              aria-label={`Edit filter ${filter.key}`}
+              onClick={() => onEdit?.(index)}
+              style={chipLabelButton}
+            >
+              {describeFilter(filter, available)}
+            </button>
+          ) : (
+            describeFilter(filter, available)
+          )}
           <button
             type="button"
             aria-label={`Remove filter ${filter.key}`}

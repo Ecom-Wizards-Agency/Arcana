@@ -169,3 +169,21 @@ describe('newViewId', () => {
     expect(ids.size).toBe(500);
   });
 });
+
+describe('density in the saved layout', () => {
+  it('persists a density beside the widths and rejects an unknown one', async () => {
+    const storage = new FakeStorage();
+    const store = new LocalViewStore(storage);
+    await store.rememberLayout(view({ density: 'compact' }));
+    expect((await store.lastLayout('campaigns'))?.density).toBe('compact');
+
+    // A layout written before density existed carries none and still restores.
+    const legacy = view();
+    delete (legacy as { density?: unknown }).density;
+    await store.rememberLayout(legacy);
+    expect(await store.lastLayout('campaigns')).toEqual(legacy);
+
+    storage.put('wizard-ads:layout:v1', { campaigns: { ...view(), density: 'dense' } });
+    expect(await store.lastLayout('campaigns')).toBeNull();
+  });
+});

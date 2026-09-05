@@ -32,10 +32,17 @@ export * from './format.js';
 export * from './csv.js';
 export * from './views.js';
 export * from './virtual.js';
+export * from './density.js';
+export * from './grouping.js';
 export * from './theme.js';
+export { entitySearchColumn, readEntitySearch, writeEntitySearch } from './toolbar/entity-search.js';
+export { groupColumns, searchColumns } from './toolbar/column-groups.js';
+export type { ColumnGroup } from './toolbar/column-groups.js';
 
 export { DataGrid } from './DataGrid.js';
 export type { DataGridProps } from './DataGrid.js';
+export { GridViewport } from './grid/GridViewport.js';
+export type { GridViewportProps } from './grid/GridViewport.js';
 export { GridToolbar, describeFilter } from './GridToolbar.js';
 export type { GridToolbarProps } from './GridToolbar.js';
 

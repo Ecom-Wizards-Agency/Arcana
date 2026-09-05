@@ -210,10 +210,13 @@ const DIMENSIONS: Record<EntityLevel, GridColumn[]> = {
       width: 128,
       description: 'Current bid minus the latest Amazon suggested-bid median.',
     }),
-    dimension('rpc_category', 'RPC category', {
+    // The id stays `rpc_category` (the recon's name, and what saved views and
+    // filters already carry); the operator reads it as the campaign's role.
+    dimension('rpc_category', 'Campaign role', {
       width: 120,
       filterKind: 'categorical',
-      description: 'Campaign-name classification. A filter, not an optimizer run.',
+      description:
+        'The role the campaign name declares (rank, discovery, profit). A filter, not an optimizer run.',
     }),
     dimension('ad_group_name', 'Ad group', { width: 220, filterKind: 'categorical' }),
     dimension('campaign_name', 'Campaign', { width: 280, filterKind: 'categorical' }),

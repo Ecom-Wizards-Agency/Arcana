@@ -331,3 +331,56 @@ describe('grid saved-view grouping', () => {
     ]);
   });
 });
+
+describe('grid density and grouped headers', () => {
+  it('persists the density beside the widths and keeps dimension headers on screen while grouped', async () => {
+    stubGridFetch();
+    const store = new DeferredViewStore();
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    mounted.push(root);
+
+    act(() => root.render(createElement(GridWorkspace, workspaceProps('campaigns', store))));
+    await flushGridLoad();
+    await act(async () => {
+      store.restore(
+        'campaigns',
+        scopedView('campaigns', {
+          columns: ['campaign_name', 'campaign_state', 'ad_product', 'clicks', 'spend'],
+          filter: { groups: [] },
+          sort: [],
+          groupBy: ['campaign_state'],
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    // Grouped by state: the group column leads and is pinned, and the other
+    // dimension headers (the drag sources for nesting) are still rendered.
+    const headers = [...host.querySelectorAll<HTMLElement>('[role="columnheader"]')].map(
+      (header) => header.getAttribute('aria-label'),
+    );
+    expect(headers).toEqual(['State', 'Campaign', 'Ad type', 'Clicks', 'Spend']);
+    expect(host.querySelector('[data-testid="grid-shell"]')?.getAttribute('data-density')).toBe('normal');
+    expect(host.querySelector('[data-testid="grid-scroller"]')?.getAttribute('style')).not.toContain('620px');
+
+    const density = host.querySelector<HTMLSelectElement>('select[aria-label="Row density"]');
+    expect(density).not.toBeNull();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+      setter?.call(density, 'compact');
+      density?.dispatchEvent(new Event('change', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(host.querySelector('[data-testid="grid-shell"]')?.getAttribute('data-density')).toBe('compact');
+    expect(store.remembered.at(-1)?.density).toBe('compact');
+    expect(store.remembered.at(-1)?.columns).toEqual([
+      'campaign_name',
+      'campaign_state',
+      'ad_product',
+      'clicks',
+      'spend',
+    ]);
+  });
+});

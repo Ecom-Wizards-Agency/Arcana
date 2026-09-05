@@ -14,38 +14,57 @@
  *   `pipeline.ts`            decides which rows exist and in what order
  *   `@tanstack/react-table`  holds the column model, sizing and pinning state
  *   `@tanstack/react-virtual`decides which of those rows reach the DOM
- *   this file                owns collapse state, the table and the virtualizer
+ *   this file                owns collapse state, keyboard focus, the table and the virtualizer
  *   `grid/GridHeader.tsx`    renders headers and owns sort/drag/resize/pin gestures
  *   `grid/GridTotals.tsx`    renders the sticky totals row
  *   `grid/GridBody.tsx`      renders the virtualised rows and the empty state
  *   `grid/GridCell.tsx`      formats one cell, the same way in every row
+ *   `grid/GridViewport.tsx`  the flex column that lets the grid fill the viewport
  *
  * Note what TanStack Table is deliberately *not* doing: filtering, sorting or
  * grouping. Its grouped row model averages what it aggregates, which is exactly
  * the failure `metrics.ts` exists to prevent, so the row model here is `core`
  * only and the rows arrive already shaped.
+ *
+ * ## Keyboard
+ *
+ * Rows are a roving tab stop: one row is in the tab order, the arrow keys move
+ * it, Home and End jump, Enter is the row click, Space toggles selection,
+ * Escape clears it, and Left/Right collapse and expand a group. Selection is
+ * the caller's state (`selectedRowIds` / `onSelectionChange`) so a bulk action
+ * bar and this grid can never disagree about what is selected.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
 import { createColumnHelper, getCoreRowModel, useReactTable } from '@tanstack/react-table';
 import type { ColumnDef } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { GridColumn } from './columns.js';
 import { isGroupedRow } from './aggregate.js';
 import type { GroupedRow } from './aggregate.js';
+import { DEFAULT_DENSITY, rowHeightFor } from './density.js';
+import type { GridDensity } from './density.js';
 import { formatInteger } from './format.js';
 import type { FormatContext } from './format.js';
 import type { GridModel } from './pipeline.js';
 import type { GridRow } from './rows.js';
 import { resolveField } from './rows.js';
 import type { SortRule } from './sort.js';
-import { DEFAULT_OVERSCAN, DEFAULT_ROW_HEIGHT } from './virtual.js';
+import { DEFAULT_OVERSCAN } from './virtual.js';
 import { GridBody } from './grid/GridBody.js';
 import { GridCell } from './grid/GridCell.js';
 import type { GridCellEnvironment } from './grid/GridCell.js';
 import { GridHeader } from './grid/GridHeader.js';
 import { GridTotals } from './grid/GridTotals.js';
-import { footer, footerNote, scroller, shell } from './grid/styles.js';
+import {
+  footer,
+  footerNote,
+  footerSelection,
+  scroller,
+  scrollerFill,
+  shell,
+  shellFill,
+} from './grid/styles.js';
 
 export interface DataGridProps {
   model: GridModel;
@@ -60,10 +79,17 @@ export interface DataGridProps {
   onPinChange?: (columnId: string, pinned: boolean) => void;
   onReorder?: (columnId: string, beforeColumnId: string | null) => void;
   onRowClick?: (row: GridRow) => void;
-  /** Selected row ids are presentation state; selection interaction stays with the caller. */
+  /** Selected row ids are the caller's state; the grid paints them and asks to change them. */
   selectedRowIds?: readonly string[];
-  /** Viewport height in pixels. The grid scrolls inside it; the page does not. */
-  height?: number;
+  /** Omit and Space does nothing: a grid without a selection consumer has no selection. */
+  onSelectionChange?: (rowIds: string[]) => void;
+  /**
+   * Viewport height in pixels. Omit it and the grid fills the flex column it
+   * sits in (see `GridViewport`), which is how a workspace fills the screen.
+   */
+  height?: number | undefined;
+  /** Row density. Decides the row height unless `rowHeight` overrides it. */
+  density?: GridDensity;
   rowHeight?: number;
   /** Test seam: react-virtual measures a real element, jsdom has none. */
   initialRect?: { width: number; height: number };
@@ -88,13 +114,16 @@ export function DataGrid({
   onReorder,
   onRowClick,
   selectedRowIds = [],
-  height = 620,
-  rowHeight = DEFAULT_ROW_HEIGHT,
+  onSelectionChange,
+  height,
+  density = DEFAULT_DENSITY,
+  rowHeight,
   initialRect,
   emptyMessage = 'No rows match this filter.',
   noDataMessage = 'Nothing was reported at this level for this period. Amazon omits zero-impression rows, so this is either a period with no activity or a report that has not loaded — the freshness banner says which.',
 }: DataGridProps): ReactNode {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const resolvedRowHeight = rowHeight ?? rowHeightFor(density);
   const groupingKey = model.groupBy.join('\u0000');
   const [collapseState, setCollapseState] = useState<{
     groupingKey: string;
@@ -137,17 +166,25 @@ export function DataGrid({
     });
   }, [collapsibleGroupIds, groupingKey]);
 
-  const toggleGroup = useCallback((groupId: string) => {
+  const setGroupCollapsed = useCallback((groupId: string, collapsed: boolean | 'toggle') => {
     setCollapseState((current) => {
       const ids = current.groupingKey === groupingKey
         ? current.ids
         : EMPTY_COLLAPSED_GROUPS;
+      const has = ids.has(groupId);
+      const want = collapsed === 'toggle' ? !has : collapsed;
+      if (want === has) return current.groupingKey === groupingKey ? current : { groupingKey, ids };
       const next = new Set(ids);
-      if (next.has(groupId)) next.delete(groupId);
-      else next.add(groupId);
+      if (want) next.add(groupId);
+      else next.delete(groupId);
       return { groupingKey, ids: next };
     });
   }, [groupingKey]);
+
+  const toggleGroup = useCallback(
+    (groupId: string) => setGroupCollapsed(groupId, 'toggle'),
+    [setGroupCollapsed],
+  );
 
   const visibleRows = useMemo(() => {
     if (!model.grouped || collapsedGroupIds.size === 0) return model.rows;
@@ -204,7 +241,7 @@ export function DataGrid({
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => rowHeight,
+    estimateSize: () => resolvedRowHeight,
     overscan: DEFAULT_OVERSCAN,
     ...(initialRect === undefined ? {} : { initialRect }),
   });
@@ -220,28 +257,146 @@ export function DataGrid({
    * Sorting by spend descending and staying at row 12,000 shows you an
    * arbitrary slice of the answer you just asked for. The scroll offset is only
    * meaningful relative to an ordering, so when the ordering changes the offset
-   * stops meaning anything.
+   * stops meaning anything -- and so does the row that held the tab stop.
    */
   const orderKey = `${sort.map((rule) => `${rule.columnId}:${rule.direction}`).join(',')}|${model.matched}|${model.groupBy.join(',')}`;
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [focusWithin, setFocusWithin] = useState(false);
+  const pendingFocus = useRef<number | null>(null);
   useEffect(() => {
     const element = scrollRef.current;
     if (element !== null) element.scrollTop = 0;
+    setActiveIndex(0);
   }, [orderKey]);
+
+  // A collapse can remove the active row from the visible set; clamp rather
+  // than leaving the tab stop on a row that no longer exists.
+  const clampedActive = rows.length === 0 ? 0 : Math.min(activeIndex, rows.length - 1);
+
+  const moveActive = useCallback(
+    (index: number) => {
+      if (rows.length === 0) return;
+      const next = Math.max(0, Math.min(rows.length - 1, index));
+      setActiveIndex(next);
+      pendingFocus.current = next;
+      virtualizer.scrollToIndex(next, { align: 'auto' });
+    },
+    [rows.length, virtualizer],
+  );
+
+  // Focus follows the tab stop once the virtualizer has put the row in the
+  // DOM, which may be a render or two after the key press for a distant row.
+  useEffect(() => {
+    const target = pendingFocus.current;
+    const element = scrollRef.current;
+    if (target === null || element === null) return;
+    const row = element.querySelector<HTMLElement>(`[data-row-index="${target}"]`);
+    if (row === null) return;
+    pendingFocus.current = null;
+    row.focus({ preventScroll: true });
+  });
+
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      if (rows.length === 0) return;
+      const target = event.target as HTMLElement;
+      // Keys typed into a control inside a cell (a future inline editor) are its own.
+      if (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA') return;
+      const current = rows[clampedActive];
+      switch (event.key) {
+        case 'ArrowDown':
+          event.preventDefault();
+          moveActive(clampedActive + 1);
+          return;
+        case 'ArrowUp':
+          event.preventDefault();
+          moveActive(clampedActive - 1);
+          return;
+        case 'PageDown':
+          event.preventDefault();
+          moveActive(clampedActive + pageSize(scrollRef.current, resolvedRowHeight));
+          return;
+        case 'PageUp':
+          event.preventDefault();
+          moveActive(clampedActive - pageSize(scrollRef.current, resolvedRowHeight));
+          return;
+        case 'Home':
+          event.preventDefault();
+          moveActive(0);
+          return;
+        case 'End':
+          event.preventDefault();
+          moveActive(rows.length - 1);
+          return;
+        case 'Enter':
+          if (current !== undefined && onRowClick !== undefined) {
+            event.preventDefault();
+            onRowClick(current.original);
+          }
+          return;
+        case ' ':
+          if (current !== undefined && onSelectionChange !== undefined) {
+            event.preventDefault();
+            onSelectionChange(
+              selected.has(current.id)
+                ? selectedRowIds.filter((id) => id !== current.id)
+                : [...selectedRowIds, current.id],
+            );
+          }
+          return;
+        case 'Escape':
+          if (onSelectionChange !== undefined && selectedRowIds.length > 0) {
+            event.preventDefault();
+            onSelectionChange([]);
+          }
+          return;
+        case 'ArrowRight':
+        case 'ArrowLeft': {
+          if (current === undefined) return;
+          const original = current.original;
+          if (!isGroupedRow(original) || original.isLeafGroup) return;
+          event.preventDefault();
+          setGroupCollapsed(original.id, event.key === 'ArrowLeft');
+          return;
+        }
+        default:
+          return;
+      }
+    },
+    [
+      clampedActive,
+      moveActive,
+      onRowClick,
+      onSelectionChange,
+      resolvedRowHeight,
+      rows,
+      selected,
+      selectedRowIds,
+      setGroupCollapsed,
+    ],
+  );
 
   const leafColumns = table.getVisibleLeafColumns();
   const totalWidth = leafColumns.reduce((sum, column) => sum + column.getSize(), 0);
   const totalsRow = model.totalsRow;
+  const fill = height === undefined;
 
   return (
-    <div style={shell}>
+    <div style={fill ? shellFill : shell} data-testid="grid-shell" data-density={density}>
       <div
         ref={scrollRef}
         className="wa-grid-scroller"
-        style={{ ...scroller, height }}
+        style={fill ? scrollerFill : { ...scroller, height }}
         data-testid="grid-scroller"
         role={model.grouped ? 'treegrid' : 'grid'}
         aria-label={model.grouped ? `Results grouped by ${model.groupBy.join(', ')}` : 'Results'}
         aria-rowcount={model.shown + (totalsRow === null ? 1 : 2)}
+        aria-multiselectable={onSelectionChange === undefined ? undefined : true}
+        onKeyDown={handleKeyDown}
+        onFocus={() => setFocusWithin(true)}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusWithin(false);
+        }}
       >
         <div style={{ width: totalWidth, minWidth: '100%' }}>
           <GridHeader
@@ -276,8 +431,12 @@ export function DataGrid({
             columns={columns}
             model={model}
             context={formatContext}
+            density={density}
             selected={selected}
             collapsedGroupIds={collapsedGroupIds}
+            activeIndex={clampedActive}
+            focusWithin={focusWithin}
+            onActivate={setActiveIndex}
             onRowClick={onRowClick}
             emptyMessage={emptyMessage}
             noDataMessage={noDataMessage}
@@ -290,6 +449,12 @@ export function DataGrid({
           {model.grouped
             ? `${visibleRows.length === model.shown ? formatInteger(model.shown, locale) : `${formatInteger(visibleRows.length, locale)} visible of ${formatInteger(model.shown, locale)}`} hierarchy rows · ${formatInteger(model.exported, locale)} deepest groups · ${formatInteger(model.matched, locale)} matched source rows of ${formatInteger(model.total, locale)}`
             : `${formatInteger(model.shown, locale)} of ${formatInteger(model.total, locale)} rows`}
+          {selected.size === 0 ? null : (
+            <>
+              {' · '}
+              <span style={footerSelection}>{formatInteger(selected.size, locale)} selected</span>
+            </>
+          )}
         </span>
         {model.grouped ? (
           <span style={footerNote}>
@@ -299,4 +464,10 @@ export function DataGrid({
       </div>
     </div>
   );
+}
+
+/** Rows per PageUp/PageDown: one viewport, less one row of overlap. */
+function pageSize(element: HTMLElement | null, rowHeight: number): number {
+  if (element === null) return 10;
+  return Math.max(1, Math.floor(element.clientHeight / Math.max(1, rowHeight)) - 1);
 }
