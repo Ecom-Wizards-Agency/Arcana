@@ -1,6 +1,33 @@
 set local lock_timeout = '5s';
 select pg_advisory_xact_lock(pg_catalog.hashtextextended('wizard-ads:schema-ddl:v1', 0));
 
+-- Managed migration principals can administer this role without inheriting its
+-- function ownership. Borrow only our own grantor edge for this transaction and
+-- verify the original authority is restored before the migration can complete.
+create temporary table one_time_rpc_ownership_before on commit drop as
+select current_user::text as operator_name,
+       coalesce((select jsonb_agg(to_jsonb(m) order by m.roleid, m.member, m.grantor)
+         from pg_catalog.pg_auth_members m
+        where m.roleid = 'openspell_recommendation_executor'::regrole
+           or m.member = 'openspell_recommendation_executor'::regrole), '[]'::jsonb) as memberships,
+       (select jsonb_agg(jsonb_build_object('oid', n.oid, 'acl', n.nspacl) order by n.oid)
+          from pg_catalog.pg_namespace n where n.nspname in ('public', 'app')) as schema_acls;
+
+create function pg_temp.one_time_rpc_ownership_preflight()
+returns void language plpgsql set search_path = pg_catalog, pg_temp as $ownership_preflight$
+begin
+  if exists (select 1 from pg_catalog.pg_auth_members m
+    where m.roleid = 'openspell_recommendation_executor'::regrole
+      and m.member = current_user::regrole and m.grantor = current_user::regrole) then
+    raise exception 'one-time migration refuses an existing self-granted ownership edge';
+  end if;
+end;
+$ownership_preflight$;
+select pg_temp.one_time_rpc_ownership_preflight();
+drop function pg_temp.one_time_rpc_ownership_preflight();
+grant openspell_recommendation_executor to current_user
+  with inherit true, set true granted by current_user;
+
 -- Explicit one-time RPC previews. Additive to the recommendation custody baseline.
 -- Historical/scheduled v1 rows remain unchanged. No producer is enabled here.
 
@@ -932,3 +959,25 @@ begin
   return query select v_inputs, v_group_safety;
 end;
 $$;
+
+revoke openspell_recommendation_executor from current_user granted by current_user;
+
+create function pg_temp.one_time_rpc_ownership_postflight()
+returns void language plpgsql set search_path = pg_catalog, pg_temp as $ownership_postflight$
+declare v_before record; v_memberships jsonb; v_schema_acls jsonb;
+begin
+  select * into strict v_before from pg_temp.one_time_rpc_ownership_before;
+  select coalesce(jsonb_agg(to_jsonb(m) order by m.roleid, m.member, m.grantor), '[]'::jsonb)
+    into v_memberships from pg_catalog.pg_auth_members m
+   where m.roleid = 'openspell_recommendation_executor'::regrole
+      or m.member = 'openspell_recommendation_executor'::regrole;
+  select jsonb_agg(jsonb_build_object('oid', n.oid, 'acl', n.nspacl) order by n.oid)
+    into v_schema_acls from pg_catalog.pg_namespace n where n.nspname in ('public', 'app');
+  if current_user <> v_before.operator_name or v_memberships is distinct from v_before.memberships
+     or v_schema_acls is distinct from v_before.schema_acls then
+    raise exception 'one-time migration ownership authority was not restored';
+  end if;
+end;
+$ownership_postflight$;
+select pg_temp.one_time_rpc_ownership_postflight();
+drop function pg_temp.one_time_rpc_ownership_postflight();
