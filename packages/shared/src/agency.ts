@@ -119,3 +119,11 @@ export const BootstrapRevokeCommand = z.object({
   expectedGeneration: z.number().int().min(1).max(2_147_483_647),
 }).strict();
 export type BootstrapRevokeCommand = z.infer<typeof BootstrapRevokeCommand>;
+
+/** Operator delivery reads the saved recipient only for the current open token. */
+export const BootstrapDeliveryContext = z.object({
+  requestId: Uuid,
+  generation: z.number().int().positive(),
+  ownerEmail: z.email(),
+}).strict();
+export type BootstrapDeliveryContext = z.infer<typeof BootstrapDeliveryContext>;
