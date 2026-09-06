@@ -80,9 +80,19 @@ test('create from a guided grid selection, run it, end it, and read the comparis
   await expect(page.getByTestId('scope-products-option-B0TEST0001')).toBeChecked();
   await expect(page.getByTestId('scope-targets')).toHaveValue('kw-1');
 
-  await expect(page.locator('link[rel~="icon"]')).toHaveAttribute(
+  // WP-211 ships a complete icon set, so `rel="icon"` is no longer a single element.
+  // Assert each member by its own type rather than loosening the check.
+  await expect(page.locator('link[rel~="icon"][type="image/svg+xml"]')).toHaveAttribute(
     'href',
     /\/brand\/wizards-ai-icon\.svg/,
+  );
+  await expect(page.locator('link[rel~="icon"][type="image/png"]')).toHaveAttribute(
+    'href',
+    /\/icon\.png/,
+  );
+  await expect(page.locator('link[rel~="icon"][type="image/x-icon"]')).toHaveAttribute(
+    'href',
+    /\/favicon\.ico/,
   );
 
   await page.getByTestId('experiment-name').fill(NAME);
