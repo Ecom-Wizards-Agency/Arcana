@@ -29,6 +29,7 @@
   --wa-raised: #1C232D;
   --wa-slate: #2A323D;
   --wa-cloud: #F5F6F8;
+  --wa-mistline: #E4E7EC;
   --wa-mist: #9AA5B4;
   --wa-steel: #5B6573;
   --wa-ink: #11151C;
@@ -59,8 +60,8 @@
   --wa-text-faint: var(--wa-steel);
   --wa-text-invert: var(--wa-cloud);
 
-  /* Lines and focus. */
-  --wa-border: color-mix(in srgb, var(--wa-ink) 15%, var(--wa-white));
+  /* Lines and focus. Mistline is the brand hairline; strong is for control edges. */
+  --wa-border: var(--wa-mistline);
   --wa-border-strong: color-mix(in srgb, var(--wa-ink) 24%, var(--wa-white));
   --wa-ring: var(--wa-indigo);
   --wa-focus-contrast: transparent;

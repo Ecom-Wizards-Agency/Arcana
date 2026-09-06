@@ -9,6 +9,7 @@ const BRAND_TOKENS = {
   '--wa-raised': '#1C232D',
   '--wa-slate': '#2A323D',
   '--wa-cloud': '#F5F6F8',
+  '--wa-mistline': '#E4E7EC',
   '--wa-mist': '#9AA5B4',
   '--wa-steel': '#5B6573',
   '--wa-ink': '#11151C',
@@ -47,6 +48,11 @@ describe('WP-47B brand contract', () => {
     expect(contrast(BRAND_TOKENS['--wa-steel'], BRAND_TOKENS['--wa-cloud'])).toBeGreaterThanOrEqual(4.5);
     expect(contrast(BRAND_TOKENS['--wa-cloud'], BRAND_TOKENS['--wa-obsidian'])).toBeGreaterThanOrEqual(4.5);
     expect(contrast(BRAND_TOKENS['--wa-mist'], BRAND_TOKENS['--wa-carbon'])).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('draws light hairlines with Mistline rather than a mixed grey', () => {
+    expect(css).toContain('--wa-border: var(--wa-mistline)');
+    expect(css).not.toContain('--wa-border: color-mix(in srgb, var(--wa-ink) 15%, var(--wa-white))');
   });
 
   it('keeps chart marks at 3:1 in light and dark, outlining dark indigo', () => {
