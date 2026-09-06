@@ -42,3 +42,15 @@ export const ORG_CAPABILITY_ROLES = {
 /** Team invitations cannot establish or transfer agency ownership. */
 export const TeamInvitationRole = OrgRole.exclude(['owner']);
 export type TeamInvitationRole = z.infer<typeof TeamInvitationRole>;
+
+/** Server-to-database issuance; the raw invitation token is never stored. */
+export const TeamInvitationIssue = z.object({
+  email: z.email().max(320).trim().toLowerCase(),
+  role: TeamInvitationRole,
+  tokenHash: z.string().regex(/^[a-f0-9]{64}$/),
+  tokenPrefix: z.string().regex(/^[A-Za-z0-9_-]{12}$/),
+}).strict();
+export type TeamInvitationIssue = z.infer<typeof TeamInvitationIssue>;
+
+export const MemberRoleChange = z.object({ userId: Uuid, role: OrgRole }).strict();
+export type MemberRoleChange = z.infer<typeof MemberRoleChange>;

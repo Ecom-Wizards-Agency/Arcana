@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AuthenticatedIdentity, OrgActor, OrgRole, OrgCapability,
-  ORG_CAPABILITY_ROLES, TeamInvitationRole,
+  ORG_CAPABILITY_ROLES, TeamInvitationRole, TeamInvitationIssue,
 } from './agency.js';
 
 const userId = '11111111-1111-4111-8111-111111111111';
@@ -22,6 +22,10 @@ describe('agency authority contracts', () => {
     expect(TeamInvitationRole.options).toEqual(['admin', 'analyst', 'viewer']);
     expect(OrgRole.safeParse('superuser').success).toBe(false);
     expect(TeamInvitationRole.safeParse('owner').success).toBe(false);
+    const issue = { email: 'owner@example.test', role: 'analyst', tokenHash: 'a'.repeat(64), tokenPrefix: 'b'.repeat(12) };
+    expect(TeamInvitationIssue.safeParse(issue).success).toBe(true);
+    expect(TeamInvitationIssue.safeParse({ ...issue, role: 'owner' }).success).toBe(false);
+    expect(TeamInvitationIssue.safeParse({ ...issue, invitedBy: userId }).success).toBe(false);
   });
 
   it('preserves the existing role policy without adding platform provisioning authority', () => {
