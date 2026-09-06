@@ -193,7 +193,7 @@ describe.skipIf(!available)('authenticated SP write admission', () => {
           attempts += 1;
           try { return await Reflect.apply(target.begin, target, args); }
           catch (error) {
-            if (attempts === 1) throw new Error('synthetic lost refusal response');
+            if (attempts === 1) throw new Error('synthetic lost refusal response', { cause: error });
             throw error;
           }
         };
