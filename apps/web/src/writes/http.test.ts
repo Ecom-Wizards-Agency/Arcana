@@ -3,8 +3,9 @@ import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import { exportAcceptedRecommendations } from '@wizard-ads/db';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
 import { executeSyntheticKeywordWrite } from '@wizard-ads/db/testing/sp-write';
-import { SpWriteAdmission, SpWriteOperationDetail, SpWritePreview } from '@wizard-ads/shared/sp-write-application';
-import { POST as preview } from '../../app/api/sp-writes/preview/route.js';
+import { SpWriteAdmission, SpWriteOperationDetail, SpWritePreview, SpWriteRecordedPreview } from '@wizard-ads/shared/sp-write-application';
+import { POST as preview, GET as recordedPreview } from '../../app/api/sp-writes/preview/route.js';
+import { loadSpWriteApproval } from './approval-loader.js';
 import { POST as approve } from '../../app/api/sp-writes/approve/route.js';
 import { POST as inverse } from '../../app/api/sp-writes/inverse-preview/route.js';
 import { GET as status } from '../../app/api/sp-writes/status/route.js';
@@ -119,6 +120,33 @@ describe.skipIf(!available)('SP write HTTP application', () => {
              (select count(*)::int from public.sp_write_outbox where plan_id = ${frozen.plan.id}) as wakes
     `;
     expect(counts).toEqual({ receipts: 0, wakes: 0 });
+  });
+
+  it('reloads an existing preview through GET and the server loader without recording or approving work', async () => {
+    const frozen = SpWritePreview.parse(await (await preview(post(await source()))).json());
+    const request = { profileId, planId: frozen.plan.id };
+    const url = `${ORIGIN}/api/sp-writes/preview?${new URLSearchParams(request)}`;
+    const before = await database.sql`select
+      (select count(*) from public.sp_write_plans) as plans,
+      (select count(*) from public.sp_write_authorization_receipts) as receipts,
+      (select count(*) from public.sp_write_outbox) as wakes`;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const loaded = await loadSpWriteApproval(new Headers(headers()), request);
+      expect(loaded.preview).toEqual(frozen);
+      const response = await recordedPreview(new Request(url, { headers: headers() }));
+      expect(response.status).toBe(200);
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      const read = SpWriteRecordedPreview.parse(await response.json());
+      expect(read.preview).toEqual(frozen);
+      expect(read.admission).toBeNull();
+    }
+    expect(await database.sql`select
+      (select count(*) from public.sp_write_plans) as plans,
+      (select count(*) from public.sp_write_authorization_receipts) as receipts,
+      (select count(*) from public.sp_write_outbox) as wakes`).toEqual(before);
+    expect((await recordedPreview(new Request(url, { headers: headers(ANALYST) }))).status).toBe(403);
+    expect((await recordedPreview(new Request(url, { headers: headers(OTHER, otherOrgId) }))).status).toBe(404);
+    expect((await recordedPreview(new Request(`${url}&planId=${frozen.plan.id}`, { headers: headers() }))).status).toBe(400);
   });
 
   it('uses HTTP preview, exact confirmation, replay, status and linked inverse without an MCP process', async () => {
