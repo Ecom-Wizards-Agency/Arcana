@@ -16,9 +16,9 @@
  * Entry goes through `gate()`, the same guard the dashboard and grid use, and
  * every read below is scoped by the org the gate resolved.
  */
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { redirect } from 'next/navigation';
-import { assessFreshness } from '@wizard-ads/ui';
+import { assessFreshness, tokens } from '@wizard-ads/ui';
 import { gate } from '../../src/auth/guard';
 import { can } from '../../src/auth/roles';
 import { canonicalProfilePath } from '../../src/data/active-profile';
@@ -27,7 +27,6 @@ import { EmptyState, PageHeader } from '../../src/ui/primitives';
 import { FreshnessBar } from '../../src/ui/dashboard';
 import { OperatorContext } from '../../src/ui/operator-context';
 import { Cockpit } from '../../src/ui/cockpit';
-import { page } from '../../src/ui/tokens';
 import { toProposalView } from '../../src/recommendations/view';
 import { reasonCoverage } from '../../src/recommendations/view';
 import {
@@ -293,3 +292,18 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
 function formatRunStatus(status: string): string {
   return status.replaceAll('_', ' ').replace(/^./, (letter) => letter.toUpperCase());
 }
+
+/**
+ * Full width, not the shared 84rem reading column.
+ *
+ * The campaign table is the surface the operator compared against AdLabs, and
+ * a centred column was the first thing named: fifteen columns and a group bar
+ * want every pixel the frame gives them. Same declaration as `/grid`.
+ */
+const page: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: tokens.space(4),
+  minWidth: 0,
+  width: '100%',
+};

@@ -45,6 +45,9 @@ export { GridViewport } from './grid/GridViewport.js';
 export type { GridViewportProps } from './grid/GridViewport.js';
 export { GridToolbar, describeFilter } from './GridToolbar.js';
 export type { GridToolbarProps } from './GridToolbar.js';
+/** The group bar on its own, for a workspace that has no `GridToolbar`. */
+export { GroupBar } from './toolbar/GroupBar.js';
+export type { GroupBarProps } from './toolbar/GroupBar.js';
 
 export * from './dashboard/freshness.js';
 export { FreshnessBanner } from './dashboard/FreshnessBanner.js';
