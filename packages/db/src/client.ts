@@ -20,6 +20,11 @@ export type Sql = postgres.Sql;
 /** Query-only surface shared by a root connection and an open transaction. */
 export type QuerySql = postgres.Sql | postgres.TransactionSql;
 
+/** Database operations that can run inside an authenticated transaction. */
+export interface QueryHandle {
+  sql: QuerySql;
+}
+
 export interface DbHandle {
   /** Typed query builder. */
   db: Database;

@@ -115,14 +115,12 @@ export async function startHttpServer(options: StartOptions): Promise<RunningSer
     }
 
     const body = await readBody(req);
-    const orgSlug = await readOrgSlug(handle, key.orgId);
 
     const server = createMcpServer({
       handle,
       config,
-      scope: { orgId: key.orgId, profileIds: key.profileIds },
+      actor: key.actor,
       keyId: key.id,
-      orgSlug,
     });
 
     const transport = new StreamableHTTPServerTransport({
@@ -172,11 +170,6 @@ function bearerToken(req: IncomingMessage): string {
   const value = Array.isArray(header) ? header[0] : header;
   if (!value || !/^Bearer /i.test(value)) throw new AuthError(401, 'missing bearer token');
   return value.slice('Bearer '.length).trim();
-}
-
-async function readOrgSlug(handle: DbHandle, orgId: string): Promise<string> {
-  const rows = await handle.sql<{ slug: string }[]>`select slug from public.orgs where id = ${orgId}`;
-  return rows[0]?.slug ?? 'unknown-org';
 }
 
 async function readBody(req: IncomingMessage): Promise<unknown> {

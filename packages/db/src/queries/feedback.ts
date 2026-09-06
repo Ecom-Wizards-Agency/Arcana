@@ -14,11 +14,11 @@
  * is the truth; these predicates are what turn "nothing happened" into an error
  * the route can turn into a 403.
  */
-import type { DbHandle } from '../client.js';
+import type { QueryHandle } from '../client.js';
 import type { JsonValue } from './goto.js';
 import { toDate } from './pg-time.js';
 
-export type FeedbackQueryHandle = Pick<DbHandle, 'sql'>;
+export type FeedbackQueryHandle = QueryHandle;
 
 export const FEEDBACK_TYPES = ['bug', 'feature'] as const;
 export type FeedbackType = (typeof FEEDBACK_TYPES)[number];
