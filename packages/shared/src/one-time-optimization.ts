@@ -73,3 +73,8 @@ export const OneTimeRpcSnapshot = z.strictObject({
   message: 'Use completed reporting days before today in the advertising profile timezone.',
 });
 export type OneTimeRpcSnapshot = z.infer<typeof OneTimeRpcSnapshot>;
+
+export const ONE_TIME_RPC_BID_FIELDS = [
+  'targetAcos', 'bidFloor', 'bidCeiling', 'bidIncreaseCap', 'bidDecreaseCap',
+] as const;
+export type OneTimeRpcBidSettings = Pick<OneTimeRpcConfiguration, typeof ONE_TIME_RPC_BID_FIELDS[number]>;
