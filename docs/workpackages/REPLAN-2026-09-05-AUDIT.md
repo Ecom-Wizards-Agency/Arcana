@@ -22,6 +22,8 @@ find root project settings; explicit `--cwd` corrected it. `build-input.json`, `
 no candidate, promotion, cron change, migration, worker replacement or Amazon write occurred.
 Browser connection now succeeds, but the selected website browser currently shows sign-in.
 Authenticated candidate/visual verification and post-promotion cron evidence remain pending.
+`runtime-settings.json` independently confirms Pro/Fluid supports 300 seconds and the existing
+five-minute cron and deployment protection remain intact. No settings update was required.
 
 **Campaign review web consumer:** the pure server projector and six format rendering sources
 follow shared commit `abe8530`. Seventeen tests verify exact SP manual/automatic, SB video
@@ -41,7 +43,12 @@ suites failed at the platform shim's `pg_authid` lock against default local Supa
 the harness drops its randomly named databases after setup failure. No production credentials
 were present. The corrected explicit Vitest command selected only the intended pure suite and
 passed all 17 tests. The failed full run is retained as `web-tests-first.log`; it is not counted
-as broad verification. Future database tests use the dedicated PostgreSQL port 55439 explicitly.
+as broad verification. The full suite was then rerun with the dedicated PostgreSQL port 55439
+and `WIZARD_ADS_TEST_REQUIRE_DATABASE=1`: **142 files / 753 tests passed**, with no skips.
+All 22 workspace typechecks and unmodified clean-checkout lint also pass for `127c394`.
+Evidence: `web-tests-required-db.log`, `consumer-workspace-typecheck.log` and
+`consumer-clean-lint.log` in the same private campaign-review directory. CI `34035368302`
+is running at this checkpoint and is not yet claimed green.
 
 **Campaign review shared prerequisite:** three independent candidates were compared in
 `_local/campaign-approval-design/`. The selected design is a pure projection of an already

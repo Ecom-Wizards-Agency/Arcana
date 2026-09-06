@@ -29,6 +29,9 @@ admission, stale checks and selected-asset processing/version failures. They do 
 SB format or partial campaign execution yet. No executable HTTP/confirmation contract is
 invented by the interrupted-read display sequence. Persistence, actual read authorization,
 approval/status routes, browser confirmation and live checks remain required delivery work.
+The full consumer checkpoint `127c394` also passes 753 web tests with required disposable
+PostgreSQL, all 22 workspace typechecks and unmodified clean-checkout lint. This does not
+establish persisted campaign reads: the next slice must add actual storage and authorization.
 
 ## Latest observation implementation, 2026-09-06
 

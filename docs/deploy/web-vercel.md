@@ -98,5 +98,7 @@ successful clean local Vercel build. Its function runtime is Node 24 and cron du
 seconds. The public configuration was resolved through the existing Supabase CLI session; no
 production database credential entered the local build. Private evidence is in
 `_local/wp213-web-candidate/`. The old production deployment was checked Ready for rollback.
+Read-only project inspection also confirms Pro with Fluid compute, which supports the artifact's
+300-second duration under [Vercel's duration limits](https://vercel.com/docs/functions/configuring-functions/duration).
 Web-only authorization has been requested. Candidate upload, authenticated verifier/visual
 checks, promotion and post-promotion cron evidence are pending. This is not a deployed release.

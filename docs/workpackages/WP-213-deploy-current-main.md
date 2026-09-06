@@ -13,6 +13,8 @@ The operator cannot use the loopback preview below. A clean `wp-213-web-release`
 main `9672d93` now has a successful production-target prebuilt artifact. Main CI `34015967395`
 passed; output checks verify the pinned brand SVG, Node 24 function runtime and 300-second
 cron duration. Only public Supabase browser settings entered the local build. The existing
+Pro/Fluid project supports that duration; the read-only settings check preserves the enabled
+five-minute cron and deployment protection. The existing
 production deployment is Ready as the exact rollback anchor. Private preparation evidence is
 in `_local/wp213-web-candidate/`; [the runbook](../deploy/web-vercel.md) records the procedure.
 Web-only candidate/promotion authorization has been requested. Nothing has been uploaded or
