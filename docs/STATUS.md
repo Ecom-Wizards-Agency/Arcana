@@ -185,6 +185,20 @@ implementation brief in `docs/workpackages/`.
 
 ## Dated live and deployed evidence
 
+- On 2026-09-06 the WP-207 five-file hosted migration window was executed under the operator's
+  scoped authorization. The ledger moved from 41 to 46 versions, terminal `20260901060000`, with
+  the observed ledger digest equal to the pinned 46-file value and an 11-second apply. Preflight
+  was frozen with the integration worker stopped, both producer `pg_cron` jobs paused and the
+  Vercel cron paused; zero running claims, zero blocking locks, zero idle-in-transaction sessions,
+  zero orphan recommendation rows and the migration principal holding `CREATEROLE`. Postflight
+  proved both authorities still `legacy`, both new roles present with no unsafe attributes, the
+  queue claim column, 31 write-ledger tables, both new foreign keys validated and zero running
+  claims; the two cron jobs and the worker were restored to their recorded state. Two preflight
+  checks were waived as grant-only differences with a category-by-category comparison against a
+  clean 41-file build. Postflight surfaced missing revokes on eight `SECURITY DEFINER`
+  recommendation functions in `20260901060000`, recorded for the write-path owner. No deployment,
+  credential change, lane activation or Amazon call occurred.
+
 - On 2026-09-04 PR #131 merged WP-200 official-release policy and synthetic runtime proof at
   `9d932f5`; PR #132 then
   merged the trusted-runner cold-start correction at `f06efea`. Corrected exact-head run
