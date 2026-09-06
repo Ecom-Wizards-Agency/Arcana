@@ -43,6 +43,14 @@ export const dynamic = 'force-dynamic';
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
+/**
+ * The safety valve `listRecommendations` applies by default, stated here so the
+ * number the queue quotes and the number the query enforces are the same one.
+ * The query returns no completeness metadata, so the workspace compares what
+ * arrived against the run's own per-status counts and says when it is short.
+ */
+const RECOMMENDATION_QUEUE_LOAD_CAP = 20_000;
+
 function one(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
@@ -92,7 +100,11 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
     const records =
       run === null || run.status !== 'succeeded'
         ? []
-        : await listRecommendations(database, { orgId: actor.orgId, runId: run.id });
+        : await listRecommendations(database, {
+            orgId: actor.orgId,
+            runId: run.id,
+            limit: RECOMMENDATION_QUEUE_LOAD_CAP,
+          });
     const proposals = records.map((record) =>
       toProposalView(record, { strategySnapshot: run?.strategySnapshot ?? null }),
     );
@@ -195,6 +207,7 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
               runId={run.id}
               profileId={profile.id}
               client={profile.label}
+              currencyCode={profile.currencyCode}
               counts={run.counts}
               role={role}
               hasStrategySnapshot={run.strategySnapshot !== null}
@@ -228,14 +241,21 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
   }
 }
 
+/**
+ * Full width, not a centred reading column.
+ *
+ * The queue is a twelve-column grid with a group bar; the same decision the
+ * grid and the optimizer took, for the same reason the operator named when
+ * comparing this application against AdLabs. The application frame
+ * (`.wa-content`) already supplies the horizontal padding.
+ */
 const main: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   fontFamily: 'var(--wa-font)',
   gap: '1.5rem',
-  margin: '0 auto',
-  maxWidth: '96rem',
-  padding: '2rem 1.5rem',
+  minWidth: 0,
+  width: '100%',
 };
 
 const heading: CSSProperties = { fontSize: '1.5rem', margin: 0 };
