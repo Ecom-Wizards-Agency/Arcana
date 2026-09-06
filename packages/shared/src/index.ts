@@ -9,6 +9,7 @@
  *    the repository authority in AGENTS.md.
  */
 export * from './primitives.js';
+export * from './agency.js';
 export * from './entities.js';
 export * from './facts.js';
 export * from './recommendations.js';
