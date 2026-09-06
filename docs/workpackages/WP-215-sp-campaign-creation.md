@@ -45,7 +45,7 @@ live behavior. These corrections precede executor implementation:
   four predicates. Observe them after creating the parent ad group; any bid/state override is
   a separately approved mutation against the observed IDs. Initial creation uses the frozen
   ad-group default bid. Reject an unsupported override rather than dropping it from the plan.
-- Classic product collection and Brand Gallery are distinct SB formats missing from the current
+- Classic product collection and Brand Gallery are distinct SB formats added in the v2
   schema. Brand Gallery requires the documented reserve-share-of-voice capability; its booking
   and spend commitment need an exact approved recipe. An enum does not establish eligibility.
 - SD creatives bind to an ad group, with explicit image/video properties and versioned assets.
@@ -81,6 +81,19 @@ SD ad-group-bound image/video properties. All resource references, counts, depen
 and receipt checks remain shared. Profile eligibility and verified provider recipes stay
 separate prerequisites; this contract slice does not claim working campaign execution.
 
+The v2 slice is committed at `fa83ba5`: 181 shared tests, all 22 workspace typechecks and
+focused lint pass. Tests preserve fixed v1 hash goldens, reject mixed versions and incomplete
+historical dispatch inputs, require observed dependencies, and prevent redispatch after an
+uncertain create. No historical plan is rewritten or given new authority by parsing it.
+
+The next SP request compiler owns `packages/ads-api/src/sp-creation-codec.ts` and its test.
+It compiles one selected SP create node into one provider request and a candidate write-ahead
+intent using the shared plan/authority/evidence verification boundary. Parent IDs come only
+from checked requirements or observed successful creates. Whole-request and per-node digests
+cover the exact wire values. Unsupported recipes fail before any I/O. This initial compiler
+has no persistence, credentials, transport or runtime export; the later adapter must use one
+HTTP attempt per durably reserved intent rather than hide several requests behind a client call.
+
 ## Objective
 
 Let the operator take a plan from the Campaign Builder, preview it as an immutable dependency
@@ -91,6 +104,7 @@ the preview says so and a pause proposal is a separate reviewed action.
 
 ## Owned files
 
+- `packages/ads-api/src/sp-creation-codec.ts` and test (new; deterministic request compilation);
 - `packages/ads-api/src/sp-creation-adapter.ts` and test (new; maps plan nodes onto the
   existing `createSpCampaigns`, `createSpAdGroups`, `createSpProductAds`, `createSpKeywords`,
   `createSpTargets`, `createSpNegativeKeywords`, `createSpNegativeTargets` clients at
@@ -157,3 +171,7 @@ covered operations may run autonomously. Creation has no inverse-delete authoriz
    allowlisted profile with counts reconciled and the entities visible after resync.
 2. A deliberately failing node leaves a recorded partial state with dependants unreleased.
 3. `pnpm check`, `pnpm hygiene` and both CI jobs pass.
+4. Subsequent SB/SD slices prove exact resource counts, selected asset/version, paused creation,
+   observation and a separate approved launch for each supported format on an eligible profile.
+   Unsupported objective/destination combinations remain explicit gaps. Library selection and
+   own-video upload pass their actual browser workflows and scoped live checks.

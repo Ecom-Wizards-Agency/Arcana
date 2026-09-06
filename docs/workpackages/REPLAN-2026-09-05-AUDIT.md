@@ -4,6 +4,17 @@
 
 ### Latest preparation checkpoint
 
+**Authorized cron pause, 2026-09-06 04:34:48 UTC:** the operator asked Codex to pause
+Vercel cron for Claude's migration window, targeting 30 minutes and at most 60 minutes.
+The authenticated Vercel CLI read the linked project's identity and enabled state, patched
+only cron enablement to false, then independently read back a non-null `disabledAt` and
+identical schedule definitions. Target restoration is 05:04 UTC, with the 60-minute boundary
+at 05:34 UTC (12:04 and 12:34 Bangkok). No automatic restart was scheduled because WP-207
+requires postflight and worker restoration first. Private before/after evidence is in
+`_local/vercel-cron-window-2026-09-06-{before,paused}.json`. Claude owns the migration;
+Codex did not run it or change the unresolved database login. No sudo was needed.
+Earlier statements that no hosted settings changed describe checkpoints before this pause.
+
 PR #142 and #143 merged to main at `0897f20`; `19db83d` incorporates them into this source
 branch. The replan conflict was reconciled by keeping Claude's status board and the detailed
 server handoff, updating their ordering to the accepted marketer-release plan. Claude's client
@@ -19,14 +30,17 @@ non-UI package tasks, including **618 DB, 552 worker, 66 MCP and 686 web tests**
 suite passes 163 ordinary tests and nine performance cases; the high-cardinality option-set
 case fails at **151.44 ms against 125 ms**. No Claude-owned test or threshold was changed.
 Hygiene passes with all nine private denylist terms, and all four analytical skill declarations
-pass. This is not a full `pnpm check` pass. CI for pushed `d3330f8` is running; its Playwright job
-has passed, while the package/check job is still pending at this checkpoint.
+pass. This is not a full local `pnpm check` pass. Both jobs in
+[CI run 34010928039](https://github.com/Ecom-Wizards-Agency/openspell/actions/runs/34010928039)
+have now passed for pushed `d3330f8`. Later local commits require their own CI run.
 
 Asset Library contracts (`d3330f8`, six shared tests) precede the isolated provider client
 (`d3540b5`). Search, exact-version reads, upload-location preparation and single-attempt
 registration are implemented without runtime wiring. Failed/uncertain registration is preserved;
 temporary transport URLs stay out of durable outcomes. The client tests and package typecheck
-pass. Web/MCP provider subpaths are now explicitly prohibited, including the new asset client
+pass. A fresh package run passes **405 tests**: the earlier 352 plus 52 Asset Library cases
+and one additional automatically enumerated purity check for the new source file. Web/MCP
+provider subpaths are now explicitly prohibited, including the new asset client
 inside OAuth callbacks; the five boundary tests pass. Binary upload, private Storage, durable
 upload recovery, picker screens and live eligibility remain pending.
 
@@ -46,10 +60,13 @@ therefore proves the current repository's 46-to-56 upgrade, not the exact fetche
 Obtain the actual history, verify every fixed pin and rehearse it before requesting the second
 hosted apply. Never fill the missing file with current source or change the policy to make it pass.
 
-Campaign v2 contracts are being implemented in the shared file and its test. They preserve
-historical v1 fingerprints, explicitly version v2 nodes, add the missing SB/SD settings/media
-shapes and separate complete dispatch inputs from historical readability. They are not yet a
-tested/committed checkpoint, an executor or a ready campaign-creation release.
+Campaign v2 contracts are committed at `fa83ba5`. All **181 shared tests** and all **22 workspace
+typechecks** pass with this slice. Fixed v1 hash goldens remain unchanged, mixed-version plans
+are refused, and new v1 SB/SD dispatch is refused while historical observation remains readable.
+V2 records all six SB formats, explicit campaign settings, and SD ad-group-bound image/video
+properties with checked asset versions. Tests enforce observed-parent dependencies and refuse a
+second create after an uncertain result. This is a contract checkpoint; current profile
+eligibility, provider recipes, persistence and execution remain separate pending work.
 
 ### Committed source checkpoint
 
