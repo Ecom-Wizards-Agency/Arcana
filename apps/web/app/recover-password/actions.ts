@@ -3,6 +3,7 @@
 import { authorizeSecurityChange } from '../../src/auth/security-authorization';
 import { supabaseConfigured, supabaseServerClient } from '../../src/auth/supabase';
 import { passwordChangeError } from '../settings/account/password-policy';
+import { safeNextPath } from '../../src/auth/next-path';
 
 export type CompleteRecoveryResult =
   | { status: 'idle' }
@@ -16,7 +17,8 @@ export async function completePasswordRecovery(
   _previous: CompleteRecoveryResult,
   formData: FormData,
 ): Promise<CompleteRecoveryResult> {
-  const authorization = await authorizeSecurityChange('/recover-password');
+  const next = safeNextPath(String(formData.get('next') ?? ''), '/dashboard');
+  const authorization = await authorizeSecurityChange(`/recover-password?${new URLSearchParams({ next }).toString()}`);
   if (authorization.status !== 'ok') {
     return authorization.status === 'challenge'
       ? {

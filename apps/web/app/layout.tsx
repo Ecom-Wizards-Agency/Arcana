@@ -132,6 +132,11 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             className={user === null ? 'wa-content wa-content--public' : 'wa-content'}
             id="wa-main"
           >
+            {process.env['WIZARD_ADS_REVIEW_LIVE_DATA'] === '1' ? (
+              <p role="status" data-testid="review-live-data" style={{ margin: '1rem 1.5rem 0', fontWeight: 600 }}>
+                Review · live data
+              </p>
+            ) : null}
             {children}
           </div>
           {/*

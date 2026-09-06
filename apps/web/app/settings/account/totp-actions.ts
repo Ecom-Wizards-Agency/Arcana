@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache';
 import {
   beginTotpEnrollment,
   cancelTotpEnrollment,
-  removeTotpFactor,
+  removeTotpFactors,
   verifyTotpEnrollment,
 } from '../../../src/auth/totp';
 import type { TotpEnrollmentResult, TotpOperationResult } from '../../../src/auth/totp';
@@ -36,7 +36,8 @@ export async function removeTotp(
   _previous: TotpOperationResult | { status: 'idle' },
   formData: FormData,
 ): Promise<TotpOperationResult | { status: 'idle' }> {
-  const result = await removeTotpFactor(String(formData.get('factorId') ?? ''));
-  if (result.status === 'ok') revalidatePath('/settings/account');
+  const result = await removeTotpFactors(formData.getAll('factorId').map(String));
+  // Partial or uncertain outcomes also need a fresh factor inventory.
+  revalidatePath('/settings/account');
   return result;
 }

@@ -165,32 +165,74 @@ export async function cancelTotpEnrollment(factorId: string): Promise<TotpOperat
 }
 
 export async function removeTotpFactor(factorId: string): Promise<TotpOperationResult> {
-  if (!totpAvailable()) {
-    return { status: 'error', message: 'Authenticator verification is not enabled.' };
+  return removeTotpFactors([factorId]);
+}
+
+/** Remove only the authenticated user's explicitly selected, observed factors. */
+export async function removeTotpFactors(factorIds: readonly string[]): Promise<TotpOperationResult> {
+  // Turning off new enrollment must never prevent an existing user removing a factor.
+  if (!supabaseConfigured()) {
+    return { status: 'error', message: 'Authenticator verification is not configured.' };
   }
   const authorization = await authorizeSecurityChange('/settings/account');
   if (authorization.status !== 'ok') return authorizationResult(authorization);
-  if (!UUID.test(factorId)) return { status: 'error', message: 'That authenticator is not valid.' };
+  if (
+    factorIds.length === 0 ||
+    factorIds.some((id) => !UUID.test(id)) ||
+    new Set(factorIds).size !== factorIds.length
+  ) {
+    return { status: 'error', message: 'Select valid, distinct authenticators to remove.' };
+  }
 
   const supabase = await supabaseServerClient();
-  const { data: listed, error: listError } = await supabase.auth.mfa.listFactors();
-  const factor = listed?.totp.find((candidate) => candidate.id === factorId);
-  if (listError || !factor) {
-    return { status: 'error', message: 'That authenticator is no longer available.' };
+  const before = await supabase.auth.mfa.listFactors().catch(() => null);
+  if (!before?.data || before.error) {
+    return { status: 'error', message: 'Authenticators could not be loaded. Try again.' };
   }
-  const { error } = await supabase.auth.mfa.unenroll({ factorId: factor.id });
-  if (error) return { status: 'error', message: 'The authenticator could not be removed.' };
-  const { data: refreshed, error: refreshError } = await supabase.auth.refreshSession();
-  if (refreshError || !refreshed.session) {
-    // Clear the cookie-backed local session so a stale AAL2 token cannot keep
-    // authorizing requests after its factor has disappeared.
-    await supabase.auth.signOut({ scope: 'local' });
+  const owned = new Set(before.data.totp.map((factor) => factor.id));
+  if (owned.size !== before.data.totp.length || factorIds.some((id) => !owned.has(id))) {
+    return { status: 'error', message: 'A selected authenticator is no longer available. Reload Account settings.' };
+  }
+
+  for (const factorId of factorIds) {
+    const result = await supabase.auth.mfa.unenroll({ factorId }).catch(() => null);
+    // A failed response may conceal a completed removal. Observe before another attempt.
+    if (result === null || result.error) break;
+  }
+
+  const refreshed = await supabase.auth.refreshSession().catch(() => null);
+  if (!refreshed?.data.session || refreshed.error) {
+    await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined);
     return {
       status: 'error',
-      message: 'Authenticator removed. Sign in again before continuing.',
+      message: 'Authenticator settings may have changed. Sign in again to verify them.',
     };
   }
-  return { status: 'ok', message: 'Authenticator removed.' };
+
+  const after = await supabase.auth.mfa.listFactors().catch(() => null);
+  if (!after?.data || after.error) {
+    return {
+      status: 'error',
+      message: 'Authenticator removal could not be verified. Reload Account settings before trying again.',
+    };
+  }
+  const remaining = new Set(after.data.totp.map((factor) => factor.id));
+  if (remaining.size !== after.data.totp.length) {
+    return { status: 'error', message: 'Authenticator removal could not be reconciled. Reload Account settings.' };
+  }
+  const removed = factorIds.filter((id) => !remaining.has(id)).length;
+  if (removed !== factorIds.length) {
+    return {
+      status: 'error',
+      message: `Removed ${removed} of ${factorIds.length} selected authenticators. ${remaining.size} remain; authenticator 2FA is still on.`,
+    };
+  }
+  return {
+    status: 'ok',
+    message: remaining.size === 0
+      ? 'Authenticator 2FA is off.'
+      : `Removed ${removed} ${removed === 1 ? 'authenticator' : 'authenticators'}. ${remaining.size} remain; authenticator 2FA is still on.`,
+  };
 }
 
 function totpAvailable(): boolean {

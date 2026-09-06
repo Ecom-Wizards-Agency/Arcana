@@ -8,12 +8,13 @@ import type { RecoveryActionResult } from './actions';
 
 const IDLE: RecoveryActionResult = { status: 'idle' };
 
-export function RecoveryForm(): ReactNode {
+export function RecoveryForm({ next }: { next: string }): ReactNode {
   const [result, action, pending] = useActionState(sendRecoveryLink, IDLE);
 
   return (
     <>
       <form action={action} style={{ display: 'grid', gap: '0.75rem' }}>
+        <input type="hidden" name="next" value={next} />
         <Field label="Work email" htmlFor="recovery-email">
           <Input
             id="recovery-email"

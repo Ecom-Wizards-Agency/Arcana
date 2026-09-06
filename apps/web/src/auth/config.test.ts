@@ -2,13 +2,24 @@ import { describe, expect, it } from 'vitest';
 import { authFeatureConfig } from './config';
 
 describe('auth rollout config', () => {
-  it('defaults every new capability off', () => {
+  it('defaults to password login and recovery with optional providers and factors off', () => {
     expect(authFeatureConfig({})).toEqual({
-      passwordLogin: false,
-      passwordRecovery: false,
+      passwordLogin: true,
+      passwordRecovery: true,
       googleLogin: false,
       totpPolicy: 'off',
       passkeyPolicy: 'off',
+    });
+  });
+
+  it('retains explicit independent password and recovery rollback controls', () => {
+    expect(authFeatureConfig({ WIZARD_ADS_PASSWORD_LOGIN: '0' })).toMatchObject({
+      passwordLogin: false,
+      passwordRecovery: true,
+    });
+    expect(authFeatureConfig({ WIZARD_ADS_PASSWORD_RECOVERY: '0' })).toMatchObject({
+      passwordLogin: true,
+      passwordRecovery: false,
     });
   });
 

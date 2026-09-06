@@ -33,10 +33,10 @@ export function createPasskeyAdapter(client: SupabaseClient): BrowserPasskeys {
       try {
         const { data, error } = await client.auth.signInWithPasskey();
         return error || !data.session || !data.user
-          ? providerError('The passkey was not accepted. Use an email sign-in link instead.')
+          ? providerError('The passkey was not accepted. Sign in with your password instead.')
           : { status: 'ok', message: 'Passkey accepted.' };
       } catch {
-        return providerError('Passkey sign-in is unavailable. Use an email sign-in link instead.');
+        return providerError('Passkey sign-in is unavailable. Sign in with your password instead.');
       }
     },
 

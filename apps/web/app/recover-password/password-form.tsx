@@ -5,14 +5,16 @@ import type { ReactNode } from 'react';
 import { Banner, Button, Field, Input, LinkButton } from '../../src/ui/primitives';
 import { completePasswordRecovery } from './actions';
 import type { CompleteRecoveryResult } from './actions';
+import { authContinuePath } from '../../src/auth/continuation';
 
 const IDLE: CompleteRecoveryResult = { status: 'idle' };
 
-export function RecoveryPasswordForm(): ReactNode {
+export function RecoveryPasswordForm({ next }: { next: string }): ReactNode {
   const [result, action, pending] = useActionState(completePasswordRecovery, IDLE);
   return (
     <>
       <form action={action} style={{ display: 'grid', gap: '0.75rem' }}>
+        <input type="hidden" name="next" value={next} />
         <Field label="New password" htmlFor="recovery-password" hint="Use at least 10 characters.">
           <Input id="recovery-password" name="password" type="password" autoComplete="new-password" minLength={10} required disabled={pending} />
         </Field>
@@ -27,7 +29,7 @@ export function RecoveryPasswordForm(): ReactNode {
         </Banner>
       )}
       {result.status === 'challenge' ? <LinkButton href={result.href}>Verify authenticator</LinkButton> : null}
-      {result.status === 'ok' ? <LinkButton href="/auth/continue?next=%2Fdashboard">Continue</LinkButton> : null}
+      {result.status === 'ok' ? <LinkButton href={authContinuePath(next)}>Continue</LinkButton> : null}
     </>
   );
 }

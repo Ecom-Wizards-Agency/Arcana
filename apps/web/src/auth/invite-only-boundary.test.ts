@@ -15,7 +15,7 @@ async function sourceFiles(directory: string): Promise<string[]> {
 }
 
 describe('invite-only identity boundary', () => {
-  it('keeps account creation in invitation acceptance and disables OTP signup', async () => {
+  it('keeps account creation in invitation acceptance with no passwordless signup path', async () => {
     const webRoot = process.cwd();
     const files = [
       ...(await sourceFiles(resolve(webRoot, 'app'))),
@@ -30,7 +30,8 @@ describe('invite-only identity boundary', () => {
     ).toEqual([join('app', 'invite', '[token]', 'actions.ts')]);
 
     const login = sources.find(({ path }) => path === join('app', 'login', 'actions.ts'))?.source;
-    expect(login).toContain('shouldCreateUser: false');
+    expect(login).toContain('auth.signInWithPassword');
+    expect(sources.some(({ source }) => source.includes('.signInWithOtp('))).toBe(false);
     expect(sources.some(({ source }) => source.includes('.signUp('))).toBe(false);
 
     const localProviderConfig = await readFile(resolve(webRoot, '../../supabase/config.toml'), 'utf8');

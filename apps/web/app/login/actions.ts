@@ -30,27 +30,6 @@ export async function signInWithPassword(formData: FormData): Promise<void> {
   redirect(authContinuePath(next));
 }
 
-export async function sendMagicLink(formData: FormData): Promise<void> {
-  const email = String(formData.get('email') ?? '').trim();
-  const next = formNext(formData);
-  if (!email) redirect(loginLocation(next, 'enter an email address'));
-  if (!supabaseConfigured()) redirect(loginLocation(next, 'Supabase Auth is not configured'));
-
-  try {
-    const supabase = await supabaseServerClient();
-    await supabase.auth.signInWithOtp({
-      email,
-      options: {
-        shouldCreateUser: false,
-        emailRedirectTo: await callbackUrl(next),
-      },
-    });
-  } catch {
-    // Provider outcomes are deliberately collapsed into the same receipt.
-  }
-  redirect(loginLocation(next, null, true));
-}
-
 export async function signInWithGoogle(formData: FormData): Promise<void> {
   const next = formNext(formData);
   if (!authFeatureConfig().googleLogin) {
@@ -72,10 +51,9 @@ function formNext(formData: FormData): string {
   return safeNextPath(typeof value === 'string' ? value : null, '/dashboard');
 }
 
-function loginLocation(next: string, error: string | null, sent = false): string {
+function loginLocation(next: string, error: string | null): string {
   const query = new URLSearchParams({ next });
   if (error !== null) query.set('error', error);
-  if (sent) query.set('sent', '1');
   return `/login?${query.toString()}`;
 }
 
