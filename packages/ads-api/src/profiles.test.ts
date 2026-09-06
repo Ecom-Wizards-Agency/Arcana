@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { AdsApiClient } from './client.js';
-import { listProfilesAcrossRegions, parseProfiles } from './profiles.js';
+import { listProfilesAcrossRegions, listProfilesCounted, parseProfiles, parseProfilesCounted } from './profiles.js';
 import { createMockServer, lwaRoute } from './__fixtures__/server.js';
 import { PROFILES_EU, PROFILES_NA } from './__fixtures__/payloads.js';
 
@@ -46,6 +46,35 @@ describe('parseProfiles', () => {
 
   it('refuses a body that is not an array rather than returning nothing', () => {
     expect(() => parseProfiles({ profiles: [] }, 'NA')).toThrow(/JSON array/);
+  });
+
+  it('counts every malformed and rounded identifier without exposing raw input', () => {
+    const result = parseProfilesCounted([null, {}, { profileId: Number.MAX_SAFE_INTEGER + 1 },
+      { profileId: '9007199254740993' }], 'EU');
+    expect(result.received).toBe(4);
+    expect(result.profiles.map((p) => p.profileId)).toEqual(['9007199254740993']);
+    expect(result.rejected).toEqual([
+      { index: 0, reason: 'invalid_row' }, { index: 1, reason: 'invalid_profile_id' },
+      { index: 2, reason: 'unsafe_profile_id' },
+    ]);
+  });
+
+  it('refuses every copy of a duplicate instead of choosing an arbitrary account row', () => {
+    const result = parseProfilesCounted([{ profileId: 1 }, { profileId: '1' },
+      { profileId: '2' }, { profileId: 1 }], 'NA');
+    expect(result.received).toBe(4);
+    expect(result.profiles.map((p) => p.profileId)).toEqual(['2']);
+    expect(result.rejected).toEqual([0, 1, 3].map((index) => ({ index, reason: 'duplicate_profile_id' })));
+  });
+
+  it('keeps parser counts through the actual discovery HTTP boundary', async () => {
+    const server = createMockServer([lwaRoute(),
+      { method: 'GET', match: '/v2/profiles', responses: [{ status: 200, json: PROFILES_NA }] },
+    ]);
+    const result = await listProfilesCounted(CREDENTIALS, 'NA', { fetch: server.fetch });
+    expect(result).toMatchObject({ received: 3, rejected: [{ index: 2, reason: 'invalid_profile_id' }] });
+    expect(result.profiles).toHaveLength(2);
+    expect(server.requestsFor('/v2/profiles')).toHaveLength(1);
   });
 });
 

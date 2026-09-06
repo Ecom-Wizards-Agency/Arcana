@@ -13,7 +13,7 @@ import {
   exchangeAuthorizationCode,
   refreshAccessToken,
 } from './auth.js';
-import { AdsAuthError } from './errors.js';
+import { AdsAuthError, AdsAuthorizationCodeError } from './errors.js';
 import { createMockServer } from './__fixtures__/server.js';
 
 const CREDENTIALS = {
@@ -104,7 +104,7 @@ describe('code exchange', () => {
     expect(form.get('redirect_uri')).toBe('https://example.test/amazon/callback');
   });
 
-  it('reports Amazon error bodies instead of a bare status', async () => {
+  it('reports a fixed refusal without retaining Amazon response text', async () => {
     const server = createMockServer([
       {
         method: 'POST',
@@ -126,8 +126,11 @@ describe('code exchange', () => {
     ).catch((cause: unknown) => cause);
 
     expect(error).toBeInstanceOf(AdsAuthError);
-    expect((error as AdsAuthError).message).toContain('invalid_grant');
-    expect((error as AdsAuthError).message).toContain('authorization code is invalid');
+    expect(error).toBeInstanceOf(AdsAuthorizationCodeError);
+    expect((error as AdsAuthorizationCodeError).reason).toBe('exchange_refused');
+    expect((error as AdsAuthError).message).not.toContain('invalid_grant');
+    expect((error as AdsAuthError).message).not.toContain('authorization code is invalid');
+    expect((error as AdsAuthError).body).toBe('');
   });
 
   it('fails loudly when the grant came back without a refresh token', async () => {
@@ -169,6 +172,45 @@ describe('code exchange', () => {
     expect((error as AdsAuthError).message).toContain('unexpected');
     expect((error as AdsAuthError).message).not.toContain('not-a-real-value');
     expect((error as AdsAuthError).body).toBe('');
+  });
+
+  it.each([429, 403, 500, 503])('attempts a single-use code exactly once after HTTP %i', async (status) => {
+    const marker = 'synthetic-private-echo';
+    const server = createMockServer([{ method: 'POST', match: '/auth/o2/token', responses: [
+      { status, json: { message: marker } },
+      { status: 200, json: { access_token: 'fake-access', refresh_token: 'fake-refresh' } },
+    ] }]);
+    const error = await exchangeAuthorizationCode({ clientId, clientSecret, code: marker,
+      redirectUri: 'https://example.test/amazon/callback' }, {
+      fetch: server.fetch, sleep: async () => undefined, retry: { maxAttempts: 9 },
+    }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(AdsAuthorizationCodeError);
+    expect(server.requests).toHaveLength(1);
+    expect(JSON.stringify(error)).not.toContain(marker);
+    expect((error as Error).message).not.toContain(marker);
+  });
+
+  it('does not retry a lost successful exchange response or expose its cause', async () => {
+    let attempts = 0;
+    const marker = 'synthetic-consumed-code';
+    const error = await exchangeAuthorizationCode({ clientId, clientSecret, code: marker,
+      redirectUri: 'https://example.test/amazon/callback' }, {
+      fetch: async () => { attempts += 1; throw new Error(marker); },
+      retry: { maxAttempts: 8 }, sleep: async () => undefined,
+    }).catch((cause: unknown) => cause);
+    expect(attempts).toBe(1);
+    expect(error).toMatchObject({ reason: 'exchange_uncertain', body: '', attempts: 1 });
+    expect((error as AdsAuthError).detail).toBeUndefined();
+    expect(JSON.stringify(error)).not.toContain(marker);
+  });
+
+  it('leaves idempotent refresh retry behavior available', async () => {
+    const server = createMockServer([{ method: 'POST', match: '/auth/o2/token', responses: [
+      { status: 503, json: {} }, { status: 200, json: { access_token: 'fake-refreshed' } },
+    ] }]);
+    expect(await refreshAccessToken(CREDENTIALS, { fetch: server.fetch, sleep: async () => undefined }))
+      .toMatchObject({ accessToken: 'fake-refreshed' });
+    expect(server.requests).toHaveLength(2);
   });
 });
 

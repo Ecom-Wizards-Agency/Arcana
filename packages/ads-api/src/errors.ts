@@ -9,6 +9,8 @@
  * start, so the distinction is in the type.
  */
 
+import type { AmazonConnectionReason } from '@wizard-ads/shared';
+
 /** Base class. Everything thrown by this package is an instance of it. */
 export class AdsApiError extends Error {
   override readonly name: string = 'AdsApiError';
@@ -44,7 +46,21 @@ export class AdsApiHttpError extends AdsApiError {
 
 /** LWA refused the grant. The refresh token is dead or the app lost its scope. */
 export class AdsAuthError extends AdsApiHttpError {
-  override readonly name = 'AdsAuthError';
+  override readonly name: string = 'AdsAuthError';
+}
+
+/** Single-use consent cannot be retried after either outcome. No raw cause. */
+export class AdsAuthorizationCodeError extends AdsAuthError {
+  override readonly name = 'AdsAuthorizationCodeError';
+
+  constructor(
+    readonly reason: Extract<AmazonConnectionReason, 'exchange_refused' | 'exchange_uncertain'>,
+    status: number,
+  ) {
+    super(reason === 'exchange_refused'
+      ? 'Amazon refused the authorization code; connect again'
+      : 'The authorization exchange could not be confirmed; connect again', status, '', 1);
+  }
 }
 
 /**
