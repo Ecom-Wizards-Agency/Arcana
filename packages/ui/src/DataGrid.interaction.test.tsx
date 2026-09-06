@@ -355,6 +355,43 @@ describe('DataGrid header affordances', () => {
     expect(totalCells[1]?.textContent).toBe('Total · 6 rows');
   });
 
+  it('lets a cell override speak for one row and leaves every other row to the formatter', () => {
+    const rows = syntheticSearchTermRows(6, { seed: 20260906 });
+    const absentId = rows[0]?.id ?? '';
+    const model = buildGridModel(rows, { sort: [{ columnId: 'spend', direction: 'desc' }] });
+    render(
+      <DataGrid
+        model={model}
+        columns={visible}
+        currencyCode="USD"
+        sort={[{ columnId: 'spend', direction: 'desc' }]}
+        onSortChange={vi.fn()}
+        height={VIEWPORT.height}
+        initialRect={VIEWPORT}
+        renderCell={{
+          // The host marks one row's figure absent — the period reported
+          // nothing for it — and says nothing about the other five.
+          spend: (row) => (row.id === absentId ? <span data-testid="absent-spend">—</span> : undefined),
+        }}
+      />,
+    );
+
+    const spendIndex = visible.findIndex((column) => column.id === 'spend');
+    const bodyRows = screen.getAllByTestId('grid-row');
+    expect(bodyRows).toHaveLength(6);
+    const marked = screen.getByTestId('absent-spend').closest('[data-testid="grid-row"]');
+    expect(marked).not.toBeNull();
+    expect(within(marked as HTMLElement).getAllByRole('cell')[spendIndex]?.textContent).toBe('—');
+
+    // Every other row keeps the grid's own money formatting rather than the
+    // empty cell an `undefined` override used to leave behind.
+    const others = bodyRows.filter((row) => row !== marked);
+    expect(others).toHaveLength(5);
+    for (const row of others) {
+      expect(within(row).getAllByRole('cell')[spendIndex]?.textContent).toMatch(/^\$[\d,]+\.\d\d$/);
+    }
+  });
+
   it('shows a sort hint on hover for an unsorted header and the direction when sorted', () => {
     renderGrid(20);
     const acos = screen.getByRole('columnheader', { name: 'ACOS' });

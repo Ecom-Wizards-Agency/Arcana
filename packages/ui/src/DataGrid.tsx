@@ -42,7 +42,10 @@
  * source rows only: a group row keeps the group-header cell, and the totals row
  * keeps the formatter, so an override can never make a cell and its total
  * disagree. A column that exists only to hold one is `kind: 'control'`, which
- * is also what takes its header out of the sort contract.
+ * is also what takes its header out of the sort contract. An override that
+ * returns `undefined` for a row defers to the grid's own cell, so a host can
+ * speak for the one row whose figure is absent and leave the rest formatted
+ * here instead of reimplementing money, ratios and the empty marker.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
@@ -106,8 +109,14 @@ export interface DataGridProps {
   /**
    * Cell content by column id, for source rows only. Use it for controls the
    * grid cannot know about; leave a value column to the formatter.
+   *
+   * Return `undefined` for a row the override has nothing to say about and the
+   * grid draws its own cell, so a host can mark one row's figure absent — an
+   * entity the period reported nothing for is not an entity that measured zero
+   * — without reimplementing the formatter or the ratio rule. `null` still
+   * means "draw nothing here".
    */
-  renderCell?: Readonly<Record<string, (row: GridRow) => ReactNode>>;
+  renderCell?: Readonly<Record<string, (row: GridRow) => ReactNode | undefined>>;
   /** Header content by column id. Pairs with `renderCell` for control columns. */
   renderHeader?: Readonly<Record<string, () => ReactNode>>;
   /** Shown when a filter matched nothing. Not the same as having no rows at all. */
@@ -240,7 +249,12 @@ export function DataGrid({
             // A group row is an aggregate of many source rows; a checkbox or a
             // link on one would have to pick a member arbitrarily, so the
             // override is offered source rows only.
-            if (override !== undefined && !isGroupedRow(row)) return override(row);
+            if (override !== undefined && !isGroupedRow(row)) {
+              // `undefined` is "not mine, draw yours": an override that speaks
+              // for some rows only never has to reimplement the formatter.
+              const rendered = override(row);
+              if (rendered !== undefined) return rendered;
+            }
             return <GridCell row={row} column={column} {...environment} />;
           },
         });
