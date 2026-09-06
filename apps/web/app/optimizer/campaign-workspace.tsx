@@ -854,12 +854,19 @@ export function CampaignWorkspace({
       ) : null}
 
       <div aria-busy={batchActive} className="wa-optimizer-campaigns__grid">
+      {/*
+        * The measured fill always resolves to the floor on this page: the table
+        * sits below the tile row and the trend chart, so the viewport is already
+        * spent by the time the grid starts. The floor is therefore a real
+        * decision rather than a safety net, and fullscreen is the gesture that
+        * gives the table the whole screen.
+        */}
       <GridViewport
         fullscreen={fullscreen}
         onExitFullscreen={() => setFullscreen(false)}
-        minHeight={360}
+        minHeight={560}
       >
-        <div className="wa-row" style={{ alignItems: 'flex-start', gap: '0.5rem' }}>
+        <div style={{ alignItems: 'center', display: 'flex', gap: '0.5rem' }}>
           <div style={{ flex: '1 1 auto', minWidth: 0 }}>
             <GroupBar dimensions={dimensions} groupBy={model.groupBy} onChange={setGroupBy} />
           </div>
@@ -867,6 +874,7 @@ export function CampaignWorkspace({
             aria-label="Row density"
             className="wa-select wa-select--sm"
             onChange={(event) => setDensity(event.target.value as GridDensity)}
+            style={{ flex: '0 0 auto', width: 'auto' }}
             value={density}
           >
             {GRID_DENSITIES.map((value) => (
@@ -877,6 +885,7 @@ export function CampaignWorkspace({
             aria-pressed={fullscreen}
             className="wa-btn wa-btn--ghost wa-btn--sm"
             onClick={() => setFullscreen((current) => !current)}
+            style={{ flex: '0 0 auto', whiteSpace: 'nowrap' }}
             type="button"
           >
             {fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
