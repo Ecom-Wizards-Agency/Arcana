@@ -11,6 +11,12 @@ import {
 export const CampaignCreationApprovalRequest = z.object({ profileId: Uuid, planId: Uuid }).strict();
 export type CampaignCreationApprovalRequest = z.infer<typeof CampaignCreationApprovalRequest>;
 
+/** Stable failures for recorded previews; no raw database/provider diagnostics cross the boundary. */
+export const CampaignCreationPreviewErrorCode = z.enum([
+  'invalid_request', 'not_found', 'authorization_refused', 'identity_conflict', 'unavailable',
+]);
+export type CampaignCreationPreviewErrorCode = z.infer<typeof CampaignCreationPreviewErrorCode>;
+
 /** Server-derived expected ownership; this is not request JSON or proof of membership. */
 export const CampaignCreationApprovalScope = CampaignCreationApprovalRequest.extend({ orgId: Uuid }).strict();
 export type CampaignCreationApprovalScope = z.infer<typeof CampaignCreationApprovalScope>;

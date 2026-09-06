@@ -4,6 +4,16 @@
 
 ### Latest preparation checkpoint
 
+**Persisted campaign preview design:** three independent candidates under
+`_local/campaign-preview-store-design/` compared a narrow immutable plan store, a rich frozen
+approval envelope and existing export/write-store reuse. The selected design preserves the
+current view and adds actual recording/owned reads, with SQL storage/tenant guarantees and
+shared semantic verification. It does not invent guardrail/provenance evidence or a current
+marketplace ID absent from profile storage. New migration scope is separate from both fixed
+windows. An additive shared error-code enum lands before its DB/HTTP consumers; implementation
+and local database proofs remain pending at this checkpoint. Exact ownership and limits are
+in `docs/design/WP-215-PERSISTED-PREVIEW.md`.
+
 **Website release preparation:** clean `wp-213-web-release` at main `9672d93` built successfully.
 Main CI `34015967395` and source CI `34031318586` at `a398827` both passed. The private
 `PREPARATION.json` under `_local/wp213-web-candidate/` records 941 deploy paths resolving to 181 distinct

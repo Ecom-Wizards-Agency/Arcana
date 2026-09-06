@@ -35,6 +35,14 @@ establish persisted campaign reads: the next slice must add actual storage and a
 
 ## Latest observation implementation, 2026-09-06
 
+The next source slice is the [persisted preview design](../design/WP-215-PERSISTED-PREVIEW.md):
+an immutable canonical record and authenticated read-only GET using the existing view. Exact
+scope, current membership and storage integrity are enforced; unavailable eligibility/assets/
+admission are not fabricated. Its shared failure contract lands before the DB consumer.
+The new campaign migration `20260906060000_campaign_creation_previews.sql` is reserved for a
+separate reviewed window; it is not added to the five-file or ten-file bundles. Persistence,
+loader and route implementation/tests are pending at this design checkpoint.
+
 The [SP observation design](../design/WP-215-SP-OBSERVATION.md) compares three independent
 approaches and retains the existing adapter with one implemented observation method. Shared
 execution evidence now preserves observation history per node, derives latest counts, and
