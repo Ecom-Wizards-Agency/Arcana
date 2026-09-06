@@ -37,6 +37,7 @@
   --wa-signal: #FD4807;
   --wa-indigo: #3322E0;
   --wa-good: #22C55E;
+  --wa-warn: #F59E0B;
   --wa-bad: #EF4444;
   --wa-series-3: #868A96;
 
@@ -83,9 +84,9 @@
   --wa-good-text: color-mix(in srgb, var(--wa-good) 60%, var(--wa-ink));
   --wa-good-bg: color-mix(in srgb, var(--wa-good) 11%, var(--wa-surface));
   --wa-good-border: color-mix(in srgb, var(--wa-good) 42%, var(--wa-surface));
-  --wa-warn-text: var(--wa-accent-text);
-  --wa-warn-bg: color-mix(in srgb, var(--wa-accent) 10%, var(--wa-surface));
-  --wa-warn-border: color-mix(in srgb, var(--wa-accent) 38%, var(--wa-surface));
+  --wa-warn-text: color-mix(in srgb, var(--wa-warn) 55%, var(--wa-ink));
+  --wa-warn-bg: color-mix(in srgb, var(--wa-warn) 12%, var(--wa-surface));
+  --wa-warn-border: color-mix(in srgb, var(--wa-warn) 42%, var(--wa-surface));
   --wa-bad-text: color-mix(in srgb, var(--wa-bad) 80%, var(--wa-ink));
   --wa-bad-bg: color-mix(in srgb, var(--wa-bad) 10%, var(--wa-surface));
   --wa-bad-border: color-mix(in srgb, var(--wa-bad) 38%, var(--wa-surface));
@@ -171,9 +172,9 @@
     --wa-good-text: var(--wa-good);
     --wa-good-bg: color-mix(in srgb, var(--wa-good) 12%, var(--wa-surface));
     --wa-good-border: color-mix(in srgb, var(--wa-good) 42%, var(--wa-surface));
-    --wa-warn-text: var(--wa-accent);
-    --wa-warn-bg: color-mix(in srgb, var(--wa-accent) 10%, var(--wa-surface));
-    --wa-warn-border: color-mix(in srgb, var(--wa-accent) 38%, var(--wa-surface));
+    --wa-warn-text: var(--wa-warn);
+    --wa-warn-bg: color-mix(in srgb, var(--wa-warn) 12%, var(--wa-surface));
+    --wa-warn-border: color-mix(in srgb, var(--wa-warn) 42%, var(--wa-surface));
     --wa-bad-text: var(--wa-bad);
     --wa-bad-bg: color-mix(in srgb, var(--wa-bad) 11%, var(--wa-surface));
     --wa-bad-border: color-mix(in srgb, var(--wa-bad) 40%, var(--wa-surface));
@@ -236,9 +237,9 @@
   --wa-good-text: var(--wa-good);
   --wa-good-bg: color-mix(in srgb, var(--wa-good) 12%, var(--wa-surface));
   --wa-good-border: color-mix(in srgb, var(--wa-good) 42%, var(--wa-surface));
-  --wa-warn-text: var(--wa-accent);
-  --wa-warn-bg: color-mix(in srgb, var(--wa-accent) 10%, var(--wa-surface));
-  --wa-warn-border: color-mix(in srgb, var(--wa-accent) 38%, var(--wa-surface));
+  --wa-warn-text: var(--wa-warn);
+  --wa-warn-bg: color-mix(in srgb, var(--wa-warn) 12%, var(--wa-surface));
+  --wa-warn-border: color-mix(in srgb, var(--wa-warn) 42%, var(--wa-surface));
   --wa-bad-text: var(--wa-bad);
   --wa-bad-bg: color-mix(in srgb, var(--wa-bad) 11%, var(--wa-surface));
   --wa-bad-border: color-mix(in srgb, var(--wa-bad) 40%, var(--wa-surface));
@@ -3771,7 +3772,7 @@ button {
 }
 
 .wa-kpi-mini--warn {
-  border-left: 3px solid var(--wa-accent);
+  border-left: 3px solid var(--wa-warn-text);
 }
 
 .wa-opt-groups-layout {
