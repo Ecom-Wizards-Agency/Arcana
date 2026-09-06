@@ -185,7 +185,14 @@ async function listLegacyTimeline(
   const beforeId = filter.before?.id ?? null;
 
   const rows = await handle.sql<TimelineRow[]>`
-    with native_roots as (${nativeTimelineRoots(handle.sql, filter)}), timeline as (
+    with native_roots as (${nativeTimelineRoots(handle.sql, filter)}), native_roots_in_window as (
+      -- A native entry can replace an older export or later mirror event only
+      -- inside this date window. Do not use the page cursor here: otherwise a
+      -- duplicate would reappear on a later page after its native entry was seen.
+      select * from native_roots n
+      where (${from}::timestamptz is null or n.approved_at >= ${from}::timestamptz)
+        and (${to}::timestamptz is null or n.approved_at <= ${to}::timestamptz)
+    ), timeline as (
       select
         'change:' || ec.id::text                      as id,
         ec.source::text                               as source,
@@ -219,7 +226,7 @@ async function listLegacyTimeline(
           where m.org_id = ec.org_id and m.profile_id = ec.profile_id and m.entity_change_id = ec.id
             and m.change_attribution = 'observation'))
         and not exists(select 1 from public.sp_write_mirror_observations m
-          join native_roots n on n.org_id = m.org_id and n.profile_id = m.profile_id
+          join native_roots_in_window n on n.org_id = m.org_id and n.profile_id = m.profile_id
             and n.execution_id = m.execution_id and n.plan_id = m.plan_id
           join public.sp_write_plan_actions a on a.org_id = n.org_id and a.profile_id = n.profile_id
             and a.plan_id = n.plan_id and a.action_id = m.action_id
@@ -255,7 +262,7 @@ async function listLegacyTimeline(
         and ab.org_id = ${filter.orgId}
         and ab.profile_id = ${filter.profileId}
         and ab.source_kind = 'legacy_export'
-        and not exists(select 1 from native_roots n join public.sp_write_plan_actions a
+        and not exists(select 1 from native_roots_in_window n join public.sp_write_plan_actions a
           on a.org_id = n.org_id and a.profile_id = n.profile_id and a.plan_id = n.plan_id
           where n.direction = 'forward' and a.route_key = 'sp.v3.keywords.update'
             and a.artifact -> 'changes' ? 'bid' and a.artifact -> 'sources' @> jsonb_build_array(
