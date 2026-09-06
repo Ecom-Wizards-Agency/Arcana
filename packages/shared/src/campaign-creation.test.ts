@@ -1262,6 +1262,13 @@ describe('versioned campaign creation inputs', () => {
     };
     expect(() => verifyCampaignCreationProviderCallArtifacts(plan, authorization, job, waitingForParent,
       intent, '2026-08-30T00:03:00.000Z', sha256)).toThrow(/dependency that is not satisfied/);
+    const parentObservation = current.observations.find((value) => value.nodeId === AD_NODE_ID)!;
+    const waitingWithHistory = { ...waitingForParent,
+      observations: [...current.observations, { ...parentObservation, observation: 'pending',
+        providerEntityId: null, deliveryStatus: 'unknown', observedAt: '2026-08-30T00:02:59.000Z' }],
+    };
+    expect(() => verifyCampaignCreationProviderCallArtifacts(plan, authorization, job, waitingWithHistory,
+      intent, '2026-08-30T00:03:00.000Z', sha256)).toThrow(/dependency that is not satisfied/);
 
     const uncertain = CampaignCreationExecutionEvidence.parse({
       ...completed,
@@ -2129,6 +2136,171 @@ describe('campaign creation plan', () => {
 });
 
 describe('campaign creation approval and evidence', () => {
+  it('retains historical child admission when its parent is observed again after expiry', () => {
+    const plan = fingerprintedSpPlan();
+    const evidence = CampaignCreationExecutionEvidence.parse(completedSpExecutionEvidence(plan));
+    const { authorization, job } = authorityFor(plan);
+    const original = evidence.observations.find((value) => value.nodeId === CAMPAIGN_NODE_ID)!;
+    const refreshed = { ...original, observedAt: '2026-08-31T00:00:00.000Z' };
+    const verified = verifyCampaignCreationObservationArtifacts(plan, authorization,
+      { ...job, type: 'campaign_creation.observe' }, evidence, refreshed, refreshed.observedAt, sha256);
+    const after = CampaignCreationExecutionEvidence.parse({ ...evidence,
+      observations: [...evidence.observations, verified.observation] });
+    expect(after.observations).toHaveLength(5);
+    expect(after.snapshot.accounting.observed).toBe(4);
+    expect(after.providerCallIntents).toEqual(evidence.providerCallIntents);
+    expect(CampaignCreationExecutionEvidence.safeParse({ ...after,
+      observations: after.observations.filter((value) => value !== after.observations[0]),
+    }).success).toBe(false);
+  });
+
+  it.each(['pending', 'not_found', 'conflict'] as const)(
+    'counts the latest parent %s without invalidating already admitted children', (observation) => {
+      const evidence = CampaignCreationExecutionEvidence.parse(completedSpExecutionEvidence());
+      const original = evidence.observations.find((value) => value.nodeId === CAMPAIGN_NODE_ID)!;
+      const accounting = { ...evidence.snapshot.accounting, observed: 3,
+        pendingObservation: observation === 'pending' ? 1 : 0,
+        observationNotFound: observation === 'not_found' ? 1 : 0,
+        observationConflict: observation === 'conflict' ? 1 : 0 };
+      const after = CampaignCreationExecutionEvidence.parse({ ...evidence,
+        observations: [...evidence.observations, { ...original, observation,
+          deliveryStatus: 'unknown', observedAt: '2026-08-30T00:04:00.000Z' }],
+        snapshot: { status: deriveCampaignCreationExecutionStatus(accounting), accounting } });
+      expect(after.snapshot.accounting).toEqual(accounting);
+      expect(after.providerResults).toEqual(evidence.providerResults);
+      // A conflict known before child reservation cannot be bypassed by the earlier success.
+      if (observation === 'conflict') {
+        expect(CampaignCreationExecutionEvidence.safeParse({ ...after,
+          observations: [...evidence.observations, { ...after.observations.at(-1),
+            observedAt: '2026-08-30T00:02:03.400Z' }],
+        }).success).toBe(false);
+      }
+    },
+  );
+
+  it('retains intent-only observation history when a late provider result becomes conclusive', () => {
+    const evidence = CampaignCreationExecutionEvidence.parse(completedSpExecutionEvidence());
+    const target = evidence.observations.find((value) => value.nodeId === TARGET_NODE_ID)!;
+    const earlier = { ...target, basis: 'intent_reconciliation', observation: 'pending',
+      providerEntityId: null, deliveryStatus: 'unknown', observedAt: '2026-08-30T00:02:08.500Z' };
+    const otherObservations = evidence.observations.filter((value) => value.nodeId !== TARGET_NODE_ID);
+    const awaiting = { ...evidence.snapshot.accounting, observed: 3, pendingObservation: 1 };
+    const delayed = CampaignCreationExecutionEvidence.parse({ ...evidence,
+      observations: [...otherObservations, earlier],
+      snapshot: { status: deriveCampaignCreationExecutionStatus(awaiting), accounting: awaiting } });
+    expect(delayed.snapshot.status).toBe('awaiting_observation');
+    expect(CampaignCreationExecutionEvidence.parse({ ...evidence,
+      observations: [...otherObservations, earlier, target],
+    }).snapshot.status).toBe('succeeded');
+    const rejectedCounts = { ...evidence.snapshot.accounting, succeeded: 3, failed: 1, observed: 3 };
+    const rejected = CampaignCreationExecutionEvidence.parse({ ...evidence,
+      observations: [...otherObservations, earlier],
+      providerResults: evidence.providerResults.map((result) => result.nodeId === TARGET_NODE_ID
+        ? { ...result, outcome: 'authoritative_rejected', providerEntityId: null, providerCode: 'ENTITY_NOT_FOUND' }
+        : result),
+      snapshot: { status: deriveCampaignCreationExecutionStatus(rejectedCounts), accounting: rejectedCounts } });
+    expect(rejected.snapshot.accounting.pendingObservation).toBe(0);
+    expect(rejected.observations).toHaveLength(4);
+  });
+
+  it.each(['pending', 'not_found', 'conflict'] as const)(
+    'rejects an unrelated non-null identity on a %s observation', (observation) => {
+      const plan = fingerprintedSpPlan();
+      const evidence = CampaignCreationExecutionEvidence.parse(completedSpExecutionEvidence(plan));
+      const { authorization, job } = authorityFor(plan);
+      const original = evidence.observations.find((value) => value.nodeId === TARGET_NODE_ID)!;
+      const proposed = { ...original, observation, deliveryStatus: 'unknown',
+        observedAt: '2026-08-30T00:04:00.000Z', providerEntityId: 'UNRELATED-RESOURCE' };
+      expect(() => verifyCampaignCreationObservationArtifacts(plan, authorization,
+        { ...job, type: 'campaign_creation.observe' }, evidence, proposed, proposed.observedAt, sha256)).toThrow();
+      expect(() => verifyCampaignCreationObservationArtifacts(plan, authorization,
+        { ...job, type: 'campaign_creation.observe' }, evidence,
+        { ...proposed, providerEntityId: null }, proposed.observedAt, sha256)).not.toThrow();
+      const accounting = { ...evidence.snapshot.accounting, observed: 3,
+        pendingObservation: observation === 'pending' ? 1 : 0,
+        observationNotFound: observation === 'not_found' ? 1 : 0,
+        observationConflict: observation === 'conflict' ? 1 : 0 };
+      expect(CampaignCreationExecutionEvidence.safeParse({ ...evidence,
+        observations: [...evidence.observations, proposed],
+        snapshot: { status: deriveCampaignCreationExecutionStatus(accounting), accounting },
+      }).success).toBe(false);
+    },
+  );
+
+  it('requires new observation proposals to advance the latest event, while identical replay stays idempotent', () => {
+    const plan = fingerprintedSpPlan();
+    const evidence = CampaignCreationExecutionEvidence.parse(completedSpExecutionEvidence(plan));
+    const { authorization, job } = authorityFor(plan);
+    const original = evidence.observations.find((value) => value.nodeId === TARGET_NODE_ID)!;
+    const latest = { ...original, observedAt: '2026-08-30T00:04:00.000Z' };
+    const current = CampaignCreationExecutionEvidence.parse({ ...evidence,
+      observations: [...evidence.observations, latest] });
+    const observeJob = { ...job, type: 'campaign_creation.observe' };
+    for (const observedAt of ['2026-08-30T00:03:59.000Z', latest.observedAt]) {
+      const changed = { ...latest, observedAt, observation: 'pending', deliveryStatus: 'unknown' };
+      expect(() => verifyCampaignCreationObservationArtifacts(plan, authorization, observeJob,
+        current, changed, '2026-08-30T00:05:00.000Z', sha256)).toThrow(/does not advance/);
+      expect(CampaignCreationExecutionEvidence.safeParse({ ...current,
+        observations: [...current.observations, { ...latest, observedAt }],
+      }).success).toBe(false);
+    }
+    expect(verifyCampaignCreationObservationArtifacts(plan, authorization, observeJob,
+      current, latest, '2026-08-30T00:05:00.000Z', sha256).observation).toEqual(latest);
+    expect(CampaignCreationExecutionEvidence.safeParse({ ...current,
+      observations: [...current.observations, latest] }).success).toBe(false);
+  });
+
+  it('records unknown moderation separately from configuration and delivery', () => {
+    const evidence = CampaignCreationExecutionEvidence.parse(completedSpExecutionEvidence());
+    expect(CampaignCreationResourceObservation.parse({ ...evidence.observations[0],
+      amazonModerationStatus: 'unknown', deliveryStatus: 'unknown' }).amazonModerationStatus).toBe('unknown');
+  });
+
+  it.each(['blocked', 'refused'] as const)('preserves a terminal %s disposition when its parent changes again', (terminal) => {
+    const completed = CampaignCreationExecutionEvidence.parse(completedSpExecutionEvidence());
+    const first = completed.observations.find((value) => value.nodeId === CAMPAIGN_NODE_ID)!;
+    const conflict = { ...first, observation: 'conflict', observedAt: '2026-08-30T00:03:00.000Z' };
+    const counts = { ...completed.snapshot.accounting, attempted: 1, succeeded: 1,
+      observed: terminal === 'blocked' ? 0 : 1, observationConflict: terminal === 'blocked' ? 1 : 0,
+      refusedAtExecution: terminal === 'refused' ? 1 : 0, blockedByDependency: terminal === 'blocked' ? 3 : 2 };
+    const initial = CampaignCreationExecutionEvidence.parse({ ...completed,
+      providerCallIntents: completed.providerCallIntents.slice(0, 1),
+      providerResults: completed.providerResults.slice(0, 2),
+      observations: terminal === 'blocked' ? [first, conflict] : [first],
+      nonProviderDispositions: completed.plan.nodes.filter((node) => node.effect === 'irreversible_create'
+        && node.nodeId !== CAMPAIGN_NODE_ID).map((node) => ({
+        planId: completed.plan.id, nodeId: node.nodeId, executionId: completed.executionId,
+        nodeFingerprint: node.fingerprint, sanitizedReason: 'Execution stopped.',
+        outcome: terminal === 'refused' && node.nodeId === AD_GROUP_NODE_ID
+          ? 'refused_at_execution' : 'blocked_by_dependency',
+      })),
+      snapshot: { status: deriveCampaignCreationExecutionStatus(counts), accounting: counts } });
+    const next = terminal === 'blocked'
+      ? { ...first, observedAt: '2026-08-30T00:04:00.000Z' } : conflict;
+    const nextCounts = { ...counts, observed: terminal === 'blocked' ? 1 : 0,
+      observationConflict: terminal === 'blocked' ? 0 : 1 };
+    const after = CampaignCreationExecutionEvidence.parse({ ...initial,
+      observations: [...initial.observations, next],
+      snapshot: { status: deriveCampaignCreationExecutionStatus(nextCounts), accounting: nextCounts } });
+    expect(after.nonProviderDispositions).toEqual(initial.nonProviderDispositions);
+    expect(after.snapshot.accounting.pendingDispatch).toBe(0);
+    expect(after.snapshot.accounting.refusedAtExecution).toBe(counts.refusedAtExecution);
+  });
+
+  it('refuses a delayed observation that would rewrite existing dependency admission', () => {
+    const plan = fingerprintedSpPlan();
+    const evidence = CampaignCreationExecutionEvidence.parse(completedSpExecutionEvidence(plan));
+    const { authorization, job } = authorityFor(plan);
+    const original = evidence.observations.find((value) => value.nodeId === CAMPAIGN_NODE_ID)!;
+    for (const observation of ['pending', 'not_found', 'conflict']) {
+      const delayed = { ...original, observation, deliveryStatus: 'unknown',
+        observedAt: '2026-08-30T00:02:03.400Z' };
+      expect(() => verifyCampaignCreationObservationArtifacts(plan, authorization,
+        { ...job, type: 'campaign_creation.observe' }, evidence, delayed,
+        '2026-08-30T00:04:00.000Z', sha256)).toThrow(/admitted dependency/);
+    }
+  });
+
   it('binds approval to the exact tenant, plan, product, counts, expiry, and no-rollback facts', () => {
     const plan = spPlan();
     expect(ApproveCampaignCreationPlan.parse({

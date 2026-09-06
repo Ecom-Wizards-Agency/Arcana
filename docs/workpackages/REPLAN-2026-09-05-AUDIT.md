@@ -4,6 +4,30 @@
 
 ### Latest preparation checkpoint
 
+**Creation observation history repaired in source:** three independent candidate designs exposed
+a shared contract bug: a later parent observation invalidated a child admitted under an earlier
+valid observation. Per-node history now advances strictly and latest-only accounting preserves
+existing single-observation fixtures. Historical intent checks use the last dependency state
+at reservation, not any earlier success. Non-null IDs are bound in every observation state,
+and unknown moderation is representable. Old intent-only observations survive a late provider
+result; rejected creates no longer count that old history as pending observation.
+
+Nine regressions failed before repair. Independent review then reproduced three additional
+failures: a parent's recovery erased the justification for a terminal dependency block; later
+conflict demanded rewriting a terminal refusal; and a delayed contradictory read could pass
+proposal verification while invalidating already admitted history. Those are corrected with
+terminal reason preservation and stale-read refusal. The future store must still enforce
+append-only records, immutable terminal dispositions and claim/evidence-version checks in one
+transaction. This source verifier cannot establish commit visibility or actual read provenance.
+
+All **199 shared tests** and **22 workspace typechecks** pass. The initial typecheck rejected
+`includes` on a union containing empty dependency tuples; the existing predicate style fixed it.
+Private evidence under `_local/sp-creation-observation-design/`: `shared-regressions-before.log`,
+`review-regressions-before.log`, `shared-history-tests-final.log`, `workspace-typecheck-final.log`,
+and the three candidate designs. S1's fresh provider-source fetch matches its existing digest.
+The inert observation consumer, read-specific audit evidence, durable ledger and live verification
+remain pending. No production action or frontend client edit occurred.
+
 **Synthetic frontend preview prepared:** main `9672d93` has a separate clean worktree on
 `wp-213-marketer-preview`. Existing E2E setup runs only against the dedicated loopback
 PostgreSQL test container on port 55439, with mock Amazon hosts and an allowlisted synthetic

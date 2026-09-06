@@ -9,6 +9,22 @@ creation, Amazon Asset Library selection and uploading the operator's own video.
 SP-only release boundary is superseded. SP remains the first vertical implementation;
 SB/SD and asset preparation are required follow-up slices in this package's release.
 
+## Latest observation prerequisite, 2026-09-06
+
+The [SP observation design](../design/WP-215-SP-OBSERVATION.md) compares three independent
+approaches and retains the existing adapter with one planned observation method. Shared
+execution evidence now preserves observation history per node, derives latest counts, and
+checks historical child admission against the dependency state at reservation. Later parent
+refreshes/conflicts do not invalidate already admitted children or rewrite terminal refusals
+and blocks. Late results retain prior intent-only read history. Non-null observation IDs must
+match the exact succeeded resource; moderation can explicitly remain unknown.
+
+Nine initial regressions and three review regressions failed before their corrections. All
+199 shared tests and 22 workspace typechecks pass. Delayed reads which would rewrite existing
+admission are refused; durable claim/version checks and read-attempt diagnostics remain future
+store responsibilities. No campaign observation client, executor, schema migration, frontend
+screen or live workflow is activated by this prerequisite. Those remain required delivery work.
+
 ## Required delivery slices
 
 1. Verify the per-profile format, objective, targeting and destination capability matrix from
