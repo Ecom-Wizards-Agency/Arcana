@@ -34,6 +34,13 @@ custom review environment was later configured without cron/Amazon credentials, 
 email sign-in failed and the operator chose main-site verification. Cookie extraction was
 not used. The exact original deployment remains available for rollback.
 
+Retain the protected review environment and its two Supabase callbacks for the next session's
+sign-in diagnosis and frontend review decision. It shares production database/auth configuration;
+excluding cron/Amazon credentials does not make database writes impossible. Do not use it for
+synthetic fixtures or mutation tests. Before deploying there again, assess continued need and
+retire its deployments, environment references and exact callbacks if that purpose has ended.
+The operator reviews the public website now.
+
 ## Objective
 
 End the deployment drift: production web at the current main revision through a verified
@@ -98,22 +105,23 @@ activation deliverable in WP-214, not an in-place update hidden inside this web 
    recorded compatible artifact and exclusive job set, prove one complete preview lifecycle.
    Only then record that the optimizer edit and job-creation freeze is lifted.
 
-## Local operator preview, 2026-09-06
+## Historical local implementer preview, 2026-09-06
 
-A separate `wp-213-marketer-preview` worktree at main `9672d93` now runs the existing E2E
+A separate `wp-213-marketer-preview` worktree at main `9672d93` was prepared with the existing E2E
 development setup with mock Amazon hosts, synthetic users and disposable local PostgreSQL
 on port 55439. Welcome: `http://127.0.0.1:3986`; app: `http://127.0.0.1:3987`. Both bind
 127.0.0.1. Private launcher and evidence are under `_local/frontend-preview/` in Codex's
 source checkout. The launcher PID is recorded there; SIGTERM runs the existing cleanup for
 its Next server, mock and owned `wizard_ads_e2e` database. Do not run another E2E suite against
-that same database name while the preview is in use.
+that same database name while the preview is in use. The operator cannot access this local
+helper and now reviews the published website; it is not their next review step.
 
 There are 31 synthetic campaigns, 1,200 added daily SP/SB/SD facts and 41 aggregate dates
 including the original fixture day. Optimizer, dashboard, grid, recommendations and Time
-Machine pass authenticated HTTP checks. Visual/interaction verification remains pending due
+Machine passed authenticated HTTP checks. Local visual/interaction verification was not completed due
 to a browser-control timeout. This uncommitted local helper is not deployable authentication
-code, a Vercel release candidate, or evidence of live Amazon execution. Production deployment
-and the remaining approval/creation/upload client work retain their acceptance checks above.
+code, a Vercel release candidate, or evidence of live Amazon execution. The frontend publication
+is recorded above; full operational verification and approval/creation/upload client work remain.
 
 ## Authorization
 

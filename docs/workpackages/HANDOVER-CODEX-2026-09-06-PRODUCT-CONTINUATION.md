@@ -57,6 +57,15 @@ recorded privately. Production settings retained their values, types and product
 Two exact Supabase auth callback patterns were appended for that review alias; existing entries
 and the site URL were preserved. Preview email still did not complete the operator's sign-in.
 
+**Retention decision:** keep this protected environment and its two callback entries for the
+next session to reproduce the failed review sign-in and assess future frontend review. No
+automatic branch deployment is configured. Its shared production database means this is not
+an isolated test target, and absent Amazon/cron credentials do not prevent application database
+writes. Do not run synthetic fixtures or mutation tests against it. Before another review
+deployment, decide whether this configuration is still needed; if not, retire the review
+deployments, their environment references and only their two callback entries. The operator's
+current review uses the public website and does not depend on this environment.
+
 The operator then explicitly said to publish main and check the public website. That instruction
 superseded pre-publication authenticated preview checks for this release. No further release
 approval is pending. Promotion first created a separate Ready/STAGED production build with

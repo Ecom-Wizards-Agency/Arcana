@@ -66,6 +66,16 @@ No secret value was downloaded or exported to a file. The custom environment has
 matcher, and its sign-in origin was updated to its provider-assigned stable alias without
 changing production's origin.
 
+**Handover retention decision:** retain this protected environment and its two later-added
+Supabase callback entries for the next session's failed-sign-in diagnosis and frontend review
+decision. It shares production database/auth configuration; excluded cron/Amazon credentials
+do not enforce read-only application database access. Synthetic fixtures and mutation tests
+must stay on disposable targets. Before another review deployment, decide whether the review
+purpose remains; otherwise retire the deployments, environment references and only those two
+callbacks. This records continued configuration explicitly, not cleanup already performed.
+The operator reviews the live public website; local demo sections are historical implementer
+notes. Counted job outcomes and full browser coverage remain open after the bounded smoke check.
+
 The final configured candidate is Ready and passes the existing public revision/brand verifier.
 Project reads preserve enabled cron on the exact original, and public health remains `44da7ac`.
 Evidence: `review-environment-create.json`, `review-environment-scope.json`,
