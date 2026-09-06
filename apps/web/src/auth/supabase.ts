@@ -1,11 +1,10 @@
 /**
  * The Supabase Auth client, server side.
  *
- * Auth only. wizard-ads reads its data over a direct Postgres connection
+ * Auth only. OpenSpell reads its data over a direct Postgres connection
  * (`@wizard-ads/db`), the same way `/crosscheck` already does, so this client
- * exists to do exactly three things: send a magic link, start the Google
- * redirect, and turn the resulting cookie into a user id. Nothing here queries
- * a table.
+ * handles password sign-in, invitations/recovery, optional providers and account
+ * security, and verifies the session identity. Nothing here queries a table.
  *
  * `@supabase/ssr` wants cookie get/set closures because the auth cookie is
  * rotated on refresh. In a React Server Component the cookie store is

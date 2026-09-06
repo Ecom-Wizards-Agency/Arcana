@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('./config', () => ({
   authFeatureConfig: () => ({ passwordRecovery: true }),
 }));
-vi.mock('./origin', () => ({ authOrigin: () => Promise.resolve('https://app.example.test') }));
+vi.mock('./origin', () => ({ authOrigin: () => 'https://app.example.test' }));
 vi.mock('./supabase', () => ({
   supabaseConfigured: () => true,
   supabaseServerClient: () => Promise.resolve({
@@ -27,7 +27,18 @@ describe('password recovery request', () => {
     mocks.reset.mockResolvedValue(providerResult);
     await expect(requestPasswordRecovery('member@example.test')).resolves.toEqual({ status: 'sent' });
     expect(mocks.reset).toHaveBeenCalledWith('member@example.test', {
-      redirectTo: 'https://app.example.test/auth/recovery/callback',
+      redirectTo: 'https://app.example.test/auth/recovery/callback?next=%2Fdashboard',
+    });
+  });
+
+  it.each([
+    ['/invite/synthetic-invitation', '%2Finvite%2Fsynthetic-invitation'],
+    ['https://other.example.test', '%2Fdashboard'],
+    ['//other.example.test', '%2Fdashboard'],
+  ])('preserves only a safe continuation: %s', async (next, encoded) => {
+    await requestPasswordRecovery('member@example.test', next);
+    expect(mocks.reset).toHaveBeenCalledExactlyOnceWith('member@example.test', {
+      redirectTo: `https://app.example.test/auth/recovery/callback?next=${encoded}`,
     });
   });
 });

@@ -7,9 +7,8 @@
  *
  * ## The end-to-end seam
  *
- * The Playwright suite has to sign in, and Supabase Auth is a hosted service:
- * a magic link means an inbox, and a Google redirect means Google. So there is
- * one seam, and it is deliberately hard to leave open by accident:
+ * Operator browser suites use synthetic identities without a hosted Auth account.
+ * The seam is deliberately hard to leave open by accident:
  *
  *  - it is off unless `WIZARD_ADS_E2E_AUTH=1` is set **on the server**;
  *  - it throws on startup if that flag is set with `NODE_ENV=production`;
@@ -107,10 +106,17 @@ async function readCurrentSessionSecurity(): Promise<SessionSecurity> {
   }
 
   const current = normalizeAssurance(assurance.currentLevel, null);
-  const next = normalizeAssurance(assurance.nextLevel, current);
-  if (current === null || next === null) {
+  // The SDK's nextLevel reads cached session.user.factors. A factor enrolled in
+  // another session can be missing there. Use the server-validated user inventory
+  // above so a stale cookie cannot bypass the enrolled-factor challenge.
+  const factors = userData.user.factors === undefined ? [] : userData.user.factors;
+  if (
+    current === null || !Array.isArray(factors) ||
+    factors.some((factor) => !factor || (factor.status !== 'verified' && factor.status !== 'unverified'))
+  ) {
     return { state: 'unavailable', reason: 'unknown-assurance' };
   }
+  const next = factors.some((factor) => factor.status === 'verified') ? 'aal2' : current;
   return {
     state: 'authenticated',
     user: { id: userData.user.id, email: userData.user.email ?? null },

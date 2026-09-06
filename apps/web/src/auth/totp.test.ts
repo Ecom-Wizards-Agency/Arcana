@@ -11,10 +11,11 @@ const mocks = vi.hoisted(() => ({
   challengeAndVerify: vi.fn(),
   refreshSession: vi.fn(),
   signOut: vi.fn(),
+  config: vi.fn(),
 }));
 
 vi.mock('./config', () => ({
-  authFeatureConfig: () => ({ totpPolicy: 'enrollment-only' }),
+  authFeatureConfig: mocks.config,
 }));
 vi.mock('./security-authorization', () => ({
   authorizeSecurityChange: mocks.authorize,
@@ -35,11 +36,17 @@ vi.mock('./supabase', () => ({
   }),
 }));
 
-import { beginTotpEnrollment, removeTotpFactor, verifyTotpChallenge } from './totp';
+import { beginTotpEnrollment, removeTotpFactor, removeTotpFactors, verifyTotpChallenge } from './totp';
+
+function listed(ids: readonly string[]) {
+  const factors = ids.map((id) => ({ id, factor_type: 'totp', status: 'verified' }));
+  return { data: { all: factors, totp: factors }, error: null };
+}
 
 describe('TOTP operations', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
+    mocks.config.mockReturnValue({ totpPolicy: 'enrollment-only' });
     mocks.authorize.mockResolvedValue({
       status: 'ok',
       user: { id: 'user-1', email: 'member@example.test' },
@@ -119,7 +126,7 @@ describe('TOTP operations', () => {
 
     await expect(removeTotpFactor(FACTOR_ID)).resolves.toEqual({
       status: 'error',
-      message: 'Authenticator removed. Sign in again before continuing.',
+      message: 'Authenticator settings may have changed. Sign in again to verify them.',
     });
     expect(mocks.signOut).toHaveBeenCalledWith({ scope: 'local' });
   });
@@ -139,5 +146,70 @@ describe('TOTP operations', () => {
 
     await expect(removeTotpFactor(FACTOR_ID)).resolves.toMatchObject({ status: 'error' });
     expect(mocks.signOut).toHaveBeenCalledWith({ scope: 'local' });
+  });
+
+  it('allows verified removal while enrollment is off and observes the factor absent', async () => {
+    mocks.config.mockReturnValue({ totpPolicy: 'off' });
+    mocks.listFactors.mockResolvedValueOnce(listed([FACTOR_ID])).mockResolvedValueOnce(listed([]));
+    await expect(removeTotpFactor(FACTOR_ID)).resolves.toEqual({
+      status: 'ok', message: 'Authenticator 2FA is off.',
+    });
+    expect(mocks.unenroll).toHaveBeenCalledExactlyOnceWith({ factorId: FACTOR_ID });
+    expect(mocks.refreshSession).toHaveBeenCalledTimes(1);
+    expect(mocks.listFactors).toHaveBeenCalledTimes(2);
+    await expect(beginTotpEnrollment()).resolves.toMatchObject({ status: 'error' });
+    expect(mocks.enroll).not.toHaveBeenCalled();
+  });
+
+  it('checks ownership of the entire selection before removing any factor', async () => {
+    mocks.listFactors.mockResolvedValue(listed([FACTOR_ID]));
+    await expect(removeTotpFactors([FACTOR_ID, STALE_ID])).resolves.toMatchObject({ status: 'error' });
+    expect(mocks.unenroll).not.toHaveBeenCalled();
+  });
+
+  it('does not modify another owned factor when removing only the selected factor', async () => {
+    mocks.listFactors.mockResolvedValueOnce(listed([FACTOR_ID, STALE_ID])).mockResolvedValueOnce(listed([STALE_ID]));
+    await expect(removeTotpFactor(FACTOR_ID)).resolves.toEqual({
+      status: 'ok', message: 'Removed 1 authenticator. 1 remain; authenticator 2FA is still on.',
+    });
+    expect(mocks.unenroll).toHaveBeenCalledExactlyOnceWith({ factorId: FACTOR_ID });
+  });
+
+  it('reports partial removal and never claims 2FA is off while a selected factor remains', async () => {
+    mocks.listFactors.mockResolvedValueOnce(listed([FACTOR_ID, STALE_ID])).mockResolvedValueOnce(listed([STALE_ID]));
+    mocks.unenroll.mockResolvedValueOnce({ error: null }).mockResolvedValueOnce({ error: new Error('refused') });
+    await expect(removeTotpFactors([FACTOR_ID, STALE_ID])).resolves.toEqual({
+      status: 'error', message: 'Removed 1 of 2 selected authenticators. 1 remain; authenticator 2FA is still on.',
+    });
+    expect(mocks.unenroll).toHaveBeenCalledTimes(2);
+  });
+
+  it('observes an uncertain removal instead of retrying or advancing the selection', async () => {
+    mocks.listFactors.mockResolvedValueOnce(listed([FACTOR_ID, STALE_ID])).mockResolvedValueOnce(listed([STALE_ID]));
+    mocks.unenroll.mockRejectedValueOnce(new Error('response lost'));
+    await expect(removeTotpFactors([FACTOR_ID, STALE_ID])).resolves.toMatchObject({
+      status: 'error', message: 'Removed 1 of 2 selected authenticators. 1 remain; authenticator 2FA is still on.',
+    });
+    expect(mocks.unenroll).toHaveBeenCalledExactlyOnceWith({ factorId: FACTOR_ID });
+  });
+
+  it('refuses to equate a successful provider response with observed removal', async () => {
+    mocks.listFactors.mockResolvedValue(listed([FACTOR_ID]));
+    await expect(removeTotpFactor(FACTOR_ID)).resolves.toMatchObject({
+      status: 'error', message: 'Removed 0 of 1 selected authenticators. 1 remain; authenticator 2FA is still on.',
+    });
+  });
+
+  it('reports uncertainty when post-removal inventory cannot be read', async () => {
+    mocks.listFactors.mockResolvedValueOnce(listed([FACTOR_ID])).mockRejectedValueOnce(new Error('offline'));
+    await expect(removeTotpFactor(FACTOR_ID)).resolves.toEqual({
+      status: 'error', message: 'Authenticator removal could not be verified. Reload Account settings before trying again.',
+    });
+  });
+
+  it.each([{ ids: [] }, { ids: [FACTOR_ID, FACTOR_ID] }, { ids: ['not-an-id'] }])('rejects an invalid selection before provider access: $ids', async ({ ids }) => {
+    await expect(removeTotpFactors(ids)).resolves.toMatchObject({ status: 'error' });
+    expect(mocks.listFactors).not.toHaveBeenCalled();
+    expect(mocks.unenroll).not.toHaveBeenCalled();
   });
 });

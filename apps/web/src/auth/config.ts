@@ -19,22 +19,27 @@ export interface AuthFeatureConfig {
   passkeyPolicy: PasskeyPolicy;
 }
 
-/** Parse auth rollout controls once at the server boundary. Missing means off. */
+/** Password is the normal login. Additional factors/providers are opt-in. */
 export function authFeatureConfig(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): AuthFeatureConfig {
   return {
-    passwordLogin: binaryFlag(env, 'WIZARD_ADS_PASSWORD_LOGIN'),
-    passwordRecovery: binaryFlag(env, 'WIZARD_ADS_PASSWORD_RECOVERY'),
+    passwordLogin: binaryFlag(env, 'WIZARD_ADS_PASSWORD_LOGIN', true),
+    passwordRecovery: binaryFlag(env, 'WIZARD_ADS_PASSWORD_RECOVERY', true),
     googleLogin: binaryFlag(env, 'WIZARD_ADS_GOOGLE_LOGIN'),
     totpPolicy: enumFlag(env, 'WIZARD_ADS_TOTP_POLICY', TOTP_POLICIES, 'off'),
     passkeyPolicy: enumFlag(env, 'WIZARD_ADS_PASSKEYS', PASSKEY_POLICIES, 'off'),
   };
 }
 
-function binaryFlag(env: Readonly<Record<string, string | undefined>>, name: string): boolean {
+function binaryFlag(
+  env: Readonly<Record<string, string | undefined>>,
+  name: string,
+  fallback = false,
+): boolean {
   const value = env[name];
-  if (value === undefined || value === '' || value === '0') return false;
+  if (value === undefined || value === '') return fallback;
+  if (value === '0') return false;
   if (value === '1') return true;
   throw new Error(`${name} must be 0 or 1`);
 }

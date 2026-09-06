@@ -9,5 +9,5 @@ export async function sendRecoveryLink(
   _previous: RecoveryActionResult,
   formData: FormData,
 ): Promise<RecoveryActionResult> {
-  return requestPasswordRecovery(String(formData.get('email') ?? ''));
+  return requestPasswordRecovery(String(formData.get('email') ?? ''), String(formData.get('next') ?? ''));
 }

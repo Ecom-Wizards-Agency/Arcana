@@ -2,7 +2,7 @@
  * `GET /auth/callback` — where Supabase Auth returns.
  *
  * Not to be confused with `/api/amazon/oauth/callback`: this one finishes a
- * *user* sign-in (magic link or Google) and never touches Amazon. The PKCE code
+ * *user* authentication continuation and never touches Amazon. The PKCE code
  * is exchanged server-side, which is what puts the session in an HttpOnly
  * cookie instead of the URL fragment.
  *

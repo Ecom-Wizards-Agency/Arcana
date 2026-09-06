@@ -31,7 +31,9 @@ test('an anonymous visitor is sent to the login page', async ({ page }) => {
   await signOut(page);
   await page.goto('/settings/connections');
   await expect(page).toHaveURL(/\/login$/);
-  await expect(page.getByText('There is no public signup')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'OpenSpell', exact: true })).toBeVisible();
+  await expect(page.getByText('Sign in to your workspace.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: /sign up/i })).toHaveCount(0);
 });
 
 test('an admin connects Amazon and sees the profiles per region', async ({ page }) => {

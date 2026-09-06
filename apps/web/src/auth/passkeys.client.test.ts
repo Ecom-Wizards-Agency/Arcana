@@ -79,7 +79,7 @@ describe('browser passkey adapter', () => {
     }));
     await expect(adapter.signIn()).resolves.toEqual({
       status: 'error',
-      message: 'Passkey sign-in is unavailable. Use an email sign-in link instead.',
+      message: 'Passkey sign-in is unavailable. Sign in with your password instead.',
     });
   });
 });

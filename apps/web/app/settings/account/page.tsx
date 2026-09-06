@@ -30,7 +30,7 @@ export default async function AccountPage({
   }
   if (!entry.context.active) return null;
   const config = authFeatureConfig();
-  const totp = config.totpPolicy === 'off' ? null : await loadTotpOverview();
+  const totp = await loadTotpOverview();
   const next = safeNextPath((await searchParams).next, '/settings/account');
 
   return (
@@ -41,7 +41,7 @@ export default async function AccountPage({
           subtitle="Add a password to your existing account or replace the one you use now."
         />
         <PasswordForm />
-        {totp === null ? null : <TotpManager overview={totp} next={next} />}
+        <TotpManager overview={totp} next={next} allowEnrollment={config.totpPolicy !== 'off'} />
         {config.passkeyPolicy === 'off' ? null : (
           <PasskeyManager policy={config.passkeyPolicy} />
         )}

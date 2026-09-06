@@ -18,7 +18,7 @@ export function PasswordForm(): ReactNode {
   return (
     <Card
       title="Password"
-      subtitle="Use this alongside magic-link or Google sign-in."
+      subtitle="Set or change the password you use to sign in."
     >
       <form
         ref={formRef}

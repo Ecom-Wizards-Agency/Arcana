@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   config: vi.fn(),
   signInWithPassword: vi.fn(),
-  signInWithOtp: vi.fn(),
   signInWithOAuth: vi.fn(),
 }));
 
@@ -19,13 +18,12 @@ vi.mock('../../src/auth/supabase', () => ({
   supabaseServerClient: () => Promise.resolve({
     auth: {
       signInWithPassword: mocks.signInWithPassword,
-      signInWithOtp: mocks.signInWithOtp,
       signInWithOAuth: mocks.signInWithOAuth,
     },
   }),
 }));
 
-import { sendMagicLink, signInWithGoogle, signInWithPassword } from './actions';
+import { signInWithGoogle, signInWithPassword } from './actions';
 
 async function redirectLocation(operation: Promise<void>): Promise<string> {
   try {
@@ -75,23 +73,34 @@ describe('login actions', () => {
     expect(mocks.signInWithOAuth).not.toHaveBeenCalled();
   });
 
-  it('returns the same magic-link receipt for accepted and refused addresses', async () => {
-    for (const result of [
-      { data: {}, error: null },
-      { data: {}, error: new Error('provider refusal') },
-    ]) {
-      mocks.signInWithOtp.mockResolvedValueOnce(result);
-      const location = await redirectLocation(sendMagicLink(credentials()));
-      expect(location).toBe('/login?next=%2Fdashboard&sent=1');
+  it('continues successful password sign-in through the shared MFA boundary', async () => {
+    mocks.config.mockReturnValue({ passwordLogin: true });
+    mocks.signInWithPassword.mockResolvedValue({ data: {}, error: null });
+    const form = credentials();
+    form.set('next', '/settings/account');
+    await expect(redirectLocation(signInWithPassword(form))).resolves.toBe(
+      '/auth/continue?next=%2Fsettings%2Faccount',
+    );
+    expect(mocks.signInWithPassword).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reveal whether an account exists when password sign-in is refused', async () => {
+    mocks.config.mockReturnValue({ passwordLogin: true });
+    for (const code of ['invalid_credentials', 'user_not_found']) {
+      mocks.signInWithPassword.mockResolvedValue({ data: {}, error: { code } });
+      await expect(redirectLocation(signInWithPassword(credentials()))).resolves.toBe(
+        '/login?next=%2Fdashboard&error=email+or+password+was+not+accepted',
+      );
     }
-    expect(mocks.signInWithOtp).toHaveBeenCalledTimes(2);
-    expect(mocks.signInWithOtp).toHaveBeenLastCalledWith({
-      email: 'member@example.test',
-      options: {
-        shouldCreateUser: false,
-        emailRedirectTo:
-          'https://app.example.test/auth/callback?next=%2Fdashboard',
-      },
-    });
+  });
+
+  it('refuses an external return destination after successful login', async () => {
+    mocks.config.mockReturnValue({ passwordLogin: true });
+    mocks.signInWithPassword.mockResolvedValue({ data: {}, error: null });
+    const form = credentials();
+    form.set('next', 'https://other.example.test');
+    await expect(redirectLocation(signInWithPassword(form))).resolves.toBe(
+      '/auth/continue?next=%2Fdashboard',
+    );
   });
 });
