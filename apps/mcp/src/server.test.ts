@@ -9,11 +9,12 @@
  * mechanised here is the part that can regress silently.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
-import { main as seedDevData, ORG_SLUG } from '../../../supabase/seed/dev-seed.js';
+import { main as seedDevData, ORG_SLUG, DEV_USER_ID } from '../../../supabase/seed/dev-seed.js';
 import { readAuditEntries } from './audit.js';
 import { DEFAULT_MAX_DOWNLOAD_BYTES, DEFAULT_MAX_ROWS } from './config.js';
 import type { McpConfig } from './config.js';
@@ -118,12 +119,14 @@ describe.skipIf(!available)('the MCP server', () => {
 
     const keyA = await issueApiKey(database, {
       orgId: orgAId,
+      createdBy: DEV_USER_ID,
       label: 'suite key A',
       profileIds: orgAProfileIds,
       expiresAt: futureExpiry(),
     });
     const keyB = await issueApiKey(database, {
       orgId: orgBId,
+      createdBy: OTHER_ORG_USER,
       label: 'suite key B',
       profileIds: [orgBProfile],
       expiresAt: futureExpiry(),
@@ -582,6 +585,7 @@ describe.skipIf(!available)('the MCP server', () => {
   it('honours a per-key profile allowlist', async () => {
     const scoped = await issueApiKey(database, {
       orgId: orgAId,
+      createdBy: DEV_USER_ID,
       label: 'one profile only',
       profileIds: [profileB],
       expiresAt: futureExpiry(),
@@ -668,9 +672,24 @@ describe.skipIf(!available)('the MCP server', () => {
   // Authentication
   // -------------------------------------------------------------------------
 
+  it('rejects the next stateless HTTP request after the issuing membership is removed', async () => {
+    const userId = randomUUID();
+    await database.sql`select public.auth_user_stub(${userId})`;
+    await database.sql`insert into public.org_members(org_id,user_id,role) values (${orgAId},${userId},'admin')`;
+    const issued = await issueApiKey(database, {
+      orgId: orgAId, createdBy: userId, label: 'membership lifecycle',
+      profileIds: [profileA], expiresAt: futureExpiry(),
+    });
+    expect(await status(server, issued.token)).toBe(200);
+    await database.sql`delete from public.org_members where org_id=${orgAId} and user_id=${userId}`;
+    expect(await status(server, issued.token)).toBe(401);
+    await expect(connect(server, issued.token)).rejects.toThrow();
+  });
+
   it('issues only bounded, explicitly profile-scoped keys for profiles owned by the org', async () => {
     const valid = await issueApiKey(database, {
       orgId: orgAId,
+      createdBy: DEV_USER_ID,
       label: '  bounded key  ',
       profileIds: [profileA, profileB],
       expiresAt: futureExpiry(MAX_API_KEY_LIFETIME_DAYS),
@@ -688,6 +707,7 @@ describe.skipIf(!available)('the MCP server', () => {
 
     const missingProfiles = {
       orgId: orgAId,
+      createdBy: DEV_USER_ID,
       label: 'missing profiles',
       expiresAt: futureExpiry(),
     } as IssueApiKeyInput;
@@ -697,6 +717,7 @@ describe.skipIf(!available)('the MCP server', () => {
     await expect(
       issueApiKey(database, {
         orgId: orgAId,
+        createdBy: DEV_USER_ID,
         label: 'duplicate profiles',
         profileIds: [profileA, profileA],
         expiresAt: futureExpiry(),
@@ -705,6 +726,7 @@ describe.skipIf(!available)('the MCP server', () => {
     await expect(
       issueApiKey(database, {
         orgId: orgAId,
+        createdBy: DEV_USER_ID,
         label: 'invalid profile',
         profileIds: ['not-a-uuid'],
         expiresAt: futureExpiry(),
@@ -713,6 +735,7 @@ describe.skipIf(!available)('the MCP server', () => {
     await expect(
       issueApiKey(database, {
         orgId: orgAId,
+        createdBy: DEV_USER_ID,
         label: 'foreign profile',
         profileIds: [orgBProfile],
         expiresAt: futureExpiry(),
@@ -721,6 +744,7 @@ describe.skipIf(!available)('the MCP server', () => {
     await expect(
       issueApiKey(database, {
         orgId: orgAId,
+        createdBy: DEV_USER_ID,
         label: 'past expiry',
         profileIds: [profileA],
         expiresAt: new Date(Date.now() - 1_000),
@@ -729,6 +753,7 @@ describe.skipIf(!available)('the MCP server', () => {
     await expect(
       issueApiKey(database, {
         orgId: orgAId,
+        createdBy: DEV_USER_ID,
         label: 'too long',
         profileIds: [profileA],
         expiresAt: futureExpiry(MAX_API_KEY_LIFETIME_DAYS + 1),
@@ -739,6 +764,7 @@ describe.skipIf(!available)('the MCP server', () => {
   it('rejects a missing, malformed, revoked or expired key with 401', async () => {
     const doomed = await issueApiKey(database, {
       orgId: orgAId,
+      createdBy: DEV_USER_ID,
       label: 'to be revoked',
       profileIds: [profileA],
       expiresAt: futureExpiry(),
@@ -752,6 +778,7 @@ describe.skipIf(!available)('the MCP server', () => {
 
     const expired = await issueApiKey(database, {
       orgId: orgAId,
+      createdBy: DEV_USER_ID,
       label: 'already expired',
       profileIds: [profileA],
       expiresAt: futureExpiry(),
@@ -761,6 +788,7 @@ describe.skipIf(!available)('the MCP server', () => {
 
     const wrongScope = await issueApiKey(database, {
       orgId: orgAId,
+      createdBy: DEV_USER_ID,
       label: 'legacy write scope',
       profileIds: [profileA],
       expiresAt: futureExpiry(),
@@ -780,6 +808,7 @@ describe.skipIf(!available)('the MCP server', () => {
       ['null profiles', 'empty profiles', 'null expiry', 'overlong expiry'].map((label) =>
         issueApiKey(database, {
           orgId: orgAId,
+          createdBy: DEV_USER_ID,
           label,
           profileIds: [profileA],
           expiresAt: futureExpiry(),
