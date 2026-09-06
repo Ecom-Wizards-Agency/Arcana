@@ -47,7 +47,7 @@ describe('/auth/continue', () => {
       next: 'aal2',
     });
     await expect(AuthContinuePage({ searchParams: Promise.resolve({ next: '/dashboard' }) })).rejects.toThrow(
-      'REDIRECT:/auth/mfa/challenge?next=%2Fdashboard');
+      `REDIRECT:/auth/mfa/challenge?${new URLSearchParams({ next: '/dashboard' })}`);
   });
 
   it('rejects an external continuation target', async () => {
@@ -58,6 +58,6 @@ describe('/auth/continue', () => {
   it('preserves the invitation when primary authentication is missing', async () => {
     mocks.currentUser.mockResolvedValue(null);
     await expect(AuthContinuePage({ searchParams: Promise.resolve({ next: '/agency-invite/synthetic' }) })).rejects.toThrow(
-      'REDIRECT:/login?next=%2Fagency-invite%2Fsynthetic');
+      `REDIRECT:/login?${new URLSearchParams({ next: '/agency-invite/synthetic' })}`);
   });
 });
