@@ -10,6 +10,7 @@
  */
 export * from './primitives.js';
 export * from './agency.js';
+export * from './amazon-connections.js';
 export * from './entities.js';
 export * from './facts.js';
 export * from './recommendations.js';
