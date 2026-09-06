@@ -18,6 +18,7 @@ export * from './jobs.js';
 export * from './creative.js';
 export * from './query-intelligence.js';
 export * from './optimization.js';
+export * from './one-time-optimization.js';
 export * from './reporting.js';
 export * from './unified-reporting.js';
 export * from './dayparting.js';
