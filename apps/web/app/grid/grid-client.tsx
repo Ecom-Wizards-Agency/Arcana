@@ -409,12 +409,16 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     key: string;
     store: ViewStore | null;
   } | null>(initialRestore.restored ? { key: initialRestore.scopeKey, store } : null);
-  // Which scope, if any, a synchronous read has already answered for. The
-  // asynchronous restoration must not overwrite it, because by the time it
-  // lands the operator may have moved a column.
-  const syncRestoredScope = useRef<string | null>(
-    initialRestore.restored ? initialRestore.scopeKey : null,
-  );
+  // The scope and store the last synchronous read answered for, and whether it
+  // produced a layout. The asynchronous restoration must not overwrite a
+  // successful one, because by the time it lands the operator may have moved a
+  // column — but the whole record is stale the moment either half changes, so
+  // it records the scope it was taken in rather than only its successes.
+  const syncRestore = useRef<{ key: string; store: ViewStore | null; restored: boolean }>({
+    key: initialRestore.scopeKey,
+    store,
+    restored: initialRestore.restored,
+  });
   const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
   const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
   const [fullscreen, setFullscreen] = useState(false);
@@ -443,20 +447,27 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     }
     let cancelled = false;
 
-    // A client-side entity switch remounts nothing, so the synchronous read
-    // happens here as well as in the state initializer above — the operator
-    // who moves from campaigns to targets should not wait either.
-    if (syncRestoredScope.current !== scopeKey) {
+    // A client-side entity switch or a campaign deep link remounts nothing, so
+    // the synchronous read happens here as well as in the state initializer
+    // above — the operator who moves from campaigns to targets should not wait
+    // either. Every scope change is read again, including a return to a scope
+    // restored earlier: a remembered success from before the deep link says
+    // nothing about the view now on screen, which is the deep link's.
+    let restoredSynchronously =
+      syncRestore.current.restored
+      && syncRestore.current.key === scopeKey
+      && syncRestore.current.store === store;
+    if (syncRestore.current.key !== scopeKey || syncRestore.current.store !== store) {
       const cached = cachedLayoutFor(store, props.entity, props.campaignId, available);
+      syncRestore.current = { key: scopeKey, store, restored: cached !== null };
+      restoredSynchronously = cached !== null;
       if (cached !== null) {
-        syncRestoredScope.current = scopeKey;
         setView(cached);
         setSelectedTargetId(null);
         setSelectedRowIds([]);
         setRestoredScope({ key: scopeKey, store });
       }
     }
-    const restoredSynchronously = syncRestoredScope.current === scopeKey;
 
     void (async () => {
       try {

@@ -494,6 +494,57 @@ describe('grid first paint', () => {
     expect(host.querySelector('[role="treegrid"]')).not.toBeNull();
   });
 
+  it('re-reads the cache when a campaign deep link is dropped, and keeps no filter from it', async () => {
+    stubGridFetch();
+    const store = new CachedViewStore({
+      campaigns: scopedView('campaigns', {
+        columns: ['campaign_name', 'campaign_state', 'clicks', 'spend'],
+        filter: { groups: [] },
+        sort: [{ columnId: 'clicks', direction: 'asc' }],
+        groupBy: [],
+      }),
+    });
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    mounted.push(root);
+    const clicksSort = (): string | null | undefined =>
+      host
+        .querySelector('[role="columnheader"][aria-label="Clicks"]')
+        ?.getAttribute('aria-sort');
+
+    act(() => root.render(createElement(GridWorkspace, workspaceProps('campaigns', store))));
+    await flushGridLoad();
+    expect(clicksSort()).toBe('ascending');
+
+    // A campaign deep link does not change the row request, so nothing is
+    // remounted: this scope has no cached layout and opens on the scoped
+    // default, filter chip and all.
+    act(() =>
+      root.render(
+        createElement(GridWorkspace, { ...workspaceProps('campaigns', store), campaignId: 'c-1' }),
+      ),
+    );
+    await flushGridLoad();
+    await act(async () => {
+      store.answerLate(null);
+      await Promise.resolve();
+    });
+    expect(store.asked).toEqual(['campaigns']);
+    expect(host.querySelector('[aria-label="Remove filter CAMPAIGN_ID"]')).not.toBeNull();
+
+    // Dropping the deep link returns to a scope that was restored once
+    // already. It must be read again, or the grid stays on the campaign's
+    // view — and silently on its CAMPAIGN_ID filter.
+    act(() => root.render(createElement(GridWorkspace, workspaceProps('campaigns', store))));
+    await flushGridLoad();
+    expect(host.querySelector('[aria-label="Remove filter CAMPAIGN_ID"]')).toBeNull();
+    expect(clicksSort()).toBe('ascending');
+    expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('true');
+    // Restored synchronously again, so nothing was asked for a second time.
+    expect(store.asked).toEqual(['campaigns']);
+  });
+
   it('writes the first layout change at once and collapses the rest of a burst into one write', async () => {
     stubGridFetch();
     const store = new CachedViewStore({
