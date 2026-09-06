@@ -124,7 +124,17 @@ export default tseslint.config(
           '@wizard-ads/db/worker',
           'decrypted integration credentials are worker-only; the web app may only store or revoke them.',
         ],
-      ]),
+      ], true),
+    },
+  },
+  {
+    // The existing OAuth exception covers code exchange/profile discovery only.
+    files: ['apps/web/app/api/amazon/oauth/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': forbid([
+        ['@wizard-ads/ads-api/asset-library', 'asset preparation belongs to the worker, not the OAuth callback.'],
+        ['@wizard-ads/ads-api/sp-write-adapter', 'Amazon mutations belong to the worker, not the OAuth callback.'],
+      ], true),
     },
   },
   {

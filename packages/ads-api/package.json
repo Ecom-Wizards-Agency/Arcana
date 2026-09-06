@@ -7,7 +7,8 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./sp-write-adapter": "./src/sp-write-adapter.ts"
+    "./sp-write-adapter": "./src/sp-write-adapter.ts",
+    "./asset-library": "./src/asset-library.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

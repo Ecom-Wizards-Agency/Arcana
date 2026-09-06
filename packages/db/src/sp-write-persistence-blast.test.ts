@@ -82,12 +82,18 @@ async function sourceFiles(directory: string): Promise<string[]> {
 }
 
 describe('SP write persistence facade blast radius', () => {
-  it('enforces MCP provider import restrictions for root and subpath clients', async () => {
+  it('enforces web and MCP provider import restrictions for root and subpath clients', async () => {
     const eslint = new ESLint({ cwd: REPO_ROOT });
-    for (const specifier of ['@wizard-ads/ads-api', '@wizard-ads/ads-api/sp-write-adapter',
-      '@wizard-ads/sp-api', '@wizard-ads/sp-api/client', '@wizard-ads/db/worker']) {
+    for (const filePath of ['apps/mcp/src/synthetic-provider-import.ts', 'apps/web/src/synthetic-provider-import.ts']) {
+      for (const specifier of ['@wizard-ads/ads-api', '@wizard-ads/ads-api/sp-write-adapter',
+        '@wizard-ads/ads-api/asset-library', '@wizard-ads/sp-api', '@wizard-ads/sp-api/client', '@wizard-ads/db/worker']) {
+        const [result] = await eslint.lintText(`import * as provider from '${specifier}'; void provider;`, { filePath });
+        expect(result?.messages.some((message) => message.ruleId === 'no-restricted-imports'), `${filePath}: ${specifier}`).toBe(true);
+      }
+    }
+    for (const specifier of ['@wizard-ads/ads-api/asset-library', '@wizard-ads/ads-api/sp-write-adapter']) {
       const [result] = await eslint.lintText(`import * as provider from '${specifier}'; void provider;`, {
-        filePath: 'apps/mcp/src/synthetic-provider-import.ts',
+        filePath: 'apps/web/app/api/amazon/oauth/synthetic-provider-import.ts',
       });
       expect(result?.messages.some((message) => message.ruleId === 'no-restricted-imports'), specifier).toBe(true);
     }
