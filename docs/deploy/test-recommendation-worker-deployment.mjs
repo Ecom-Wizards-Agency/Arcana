@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import process from 'node:process';
@@ -25,6 +25,10 @@ const deploy = dirname(fileURLToPath(import.meta.url));
 const root = resolve(deploy, '../..');
 const revisionA = 'a'.repeat(40);
 const revisionB = 'b'.repeat(40);
+const forbiddenProviderKeys = [
+  'AMAZON_LWA_CLIENT_ID', 'AMAZON_LWA_CLIENT_SECRET', 'LWA_CLIENT_ID', 'LWA_CLIENT_SECRET',
+  'SP_API_LWA_CLIENT_ID', 'SP_API_LWA_CLIENT_SECRET', 'ADS_CLIENT_ID', 'ADS_CLIENT_SECRET',
+];
 const claimProtocolKey = `WORKER_CLAIM${'_PROTOCOL'}`;
 const deploymentRoleKey = `WORKER_DEPLOYMENT${'_ROLE'}`;
 const oldLegacy = { protocol: 'legacy', admission: 'legacy', epoch: 0, authorizedRevision: null };
@@ -195,11 +199,13 @@ try {
     releaseRoot: fixture, credentialDirectory: credentials, environment,
   });
   assert.equal(runtime.claimArmed, false);
-  await assert.rejects(resolveRecommendationWorkerRuntime({
-    releaseRoot: fixture,
-    credentialDirectory: credentials,
-    environment: { ...environment, ADS_CLIENT_ID: 'refused' },
-  }));
+  for (const key of forbiddenProviderKeys) {
+    await assert.rejects(resolveRecommendationWorkerRuntime({
+      releaseRoot: fixture,
+      credentialDirectory: credentials,
+      environment: { ...environment, [key]: 'refused' },
+    }), /received a provider setting/u);
+  }
 } finally {
   await rm(fixture, { recursive: true, force: true });
 }
@@ -211,11 +217,14 @@ const shellFiles = [
   'rollback-recommendation-worker-evo-systemd.sh',
   'verify-recommendation-worker-evo-systemd.sh',
   'recommendation-worker-evo-systemd-lib.sh',
+  'build-recommendation-worker-artifact.sh',
 ];
 for (const file of shellFiles) execFileSync('bash', ['-n', join(deploy, file)]);
 const installer = await readFile(join(deploy, shellFiles[0]), 'utf8');
 assert.doesNotMatch(installer, /switch_recommendation_worker_link|systemctl\s+(?:start|stop|enable|disable|daemon-reload)/u);
 assert.match(installer, /current, unit definitions, enablement, and service state were not changed/u);
+assert.match(installer, /bash "\$script_dir\/build-recommendation-worker-artifact\.sh"/u);
+assert.doesNotMatch(installer, /--bundle|private_locator_pattern/u);
 const library = await readFile(join(deploy, shellFiles[5]), 'utf8');
 assert.match(library, /invoke_recommendation_authority_broker_once/u);
 assert.match(library, /reconcile_recommendation_transition/u);
@@ -268,7 +277,57 @@ assert(graph.has('apps/worker/src/recommendation-cadence.ts'));
 assert(graph.has('apps/worker/src/profile-calendar.ts'));
 assert(!graph.has('apps/worker/src/schedules.ts'));
 
-process.stdout.write(`recommendation worker deployment proofs passed (${graph.size} source inputs)\n`);
+// Run the same complete unprivileged build used by installation. This catches
+// artifact-content failures that a successful bundle/import graph cannot see.
+const stageFixture = await mkdtemp(join(tmpdir(), 'openspell-recommendation-stage.'));
+let artifactRefusals = 0;
+try {
+  const artifact = join(stageFixture, 'release');
+  const builder = join(deploy, 'build-recommendation-worker-artifact.sh');
+  assert.doesNotMatch(await readFile(builder, 'utf8'), /\b(?:sudo|systemctl|systemd-creds)\b|acquire_recommendation_worker_deployment_lock/u);
+  execFileSync('bash', ['-c', 'umask 000; exec bash "$@"', 'artifact-build',
+    builder, '--revision', revisionA, '--output', artifact], {
+    cwd: root, stdio: 'pipe',
+  });
+  const entries = await readdir(artifact, { recursive: true, withFileTypes: true });
+  assert.equal(entries.filter((entry) => entry.isFile()).length, 13);
+  assert.equal(entries.filter((entry) => entry.isDirectory()).length + 1, 3);
+  assert.equal(entries.filter((entry) => entry.isSymbolicLink()).length, 0);
+  assert.equal(await readFile(join(artifact, 'ARTIFACT_COUNTS'), 'utf8'),
+    'directories=3\nfiles=13\nsymlinks=0\n');
+  execFileSync('sha256sum', ['--check', 'ARTIFACT_SHA256'], { cwd: artifact, stdio: 'pipe' });
+  const inputs = (await readFile(join(artifact, 'RUNTIME_INPUTS'), 'utf8')).trimEnd().split('\n');
+  assert.equal(new Set(inputs).size, inputs.length);
+  for (const path of ['docs/deploy/build-recommendation-worker-artifact.sh',
+    'docs/deploy/install-recommendation-worker-evo-systemd.sh']) assert(inputs.includes(path));
+
+  const verifyContent = () => spawnSync('bash', ['-c',
+    'source "$1"; verify_recommendation_worker_artifact_content "$2" "$3"',
+    'artifact-content', builder, artifact, root,
+  ], { encoding: 'utf8' });
+  assert.equal(verifyContent().status, 0);
+  const runtimeFile = join(artifact, 'bin/openspell-recommendation-worker-runtime.mjs');
+  const original = await readFile(runtimeFile, 'utf8');
+  // Invoke the actual broad content gate, independently of checksums, so every
+  // forbidden runtime setting is refused even if someone recomputes a manifest.
+  const contaminants = forbiddenProviderKeys.map((key) => `${key}=synthetic-refused`)
+    .concat(`${root}/unexpected-checkout-reference`, ['op:', '/', '/synthetic/refused'].join(''));
+  for (const contaminant of contaminants) {
+    await writeFile(runtimeFile, `${original}\n// ${contaminant}\n`);
+    const refused = verifyContent();
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /artifact contains a checkout, credential locator, or provider setting/u);
+    artifactRefusals += 1;
+  }
+  await writeFile(runtimeFile, original);
+  assert.equal(verifyContent().status, 0);
+  execFileSync('sha256sum', ['--check', 'ARTIFACT_SHA256'], { cwd: artifact, stdio: 'pipe' });
+} finally {
+  await rm(stageFixture, { recursive: true, force: true });
+}
+assert.equal(artifactRefusals, 10);
+process.stdout.write(`recommendation worker deployment proofs passed (${graph.size} source inputs; `
+  + `13 artifact files; ${forbiddenProviderKeys.length} runtime provider refusals; ${artifactRefusals} artifact refusals)\n`);
 
 async function bundledSourceGraph(entry) {
   const directory = await mkdtemp(join(tmpdir(), 'openspell-recommendation-graph.'));
