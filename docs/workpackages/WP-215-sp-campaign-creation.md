@@ -93,6 +93,30 @@ from checked requirements or observed successful creates. Whole-request and per-
 cover the exact wire values. Unsupported recipes fail before any I/O. This initial compiler
 has no persistence, credentials, transport or runtime export; the later adapter must use one
 HTTP attempt per durably reserved intent rather than hide several requests behind a client call.
+The same slice extracts the existing provider money rules, without changing their values or
+behavior, into internal `packages/ads-api/src/sp-money.ts`; `sp-write-codec.ts` imports those
+helpers. Creation and editing then use the same marketplace, precision and range checks.
+Non-null portfolios remain unavailable until a scoped portfolio requirement is implemented.
+
+`75c0512` closes a scope omission before compiler implementation: v2 freezes Amazon profile ID,
+connection, region, marketplace, currency and account type into the plan hash. New dispatch
+rejects every v1 plan because v1 lacks that binding; historical reading and observation remain
+supported. All 186 shared tests pass, including scope tampering against the original receipt.
+SP dispatch also rejects unsupported campaign-level negative targeting and refuses to guess
+seller SKU versus vendor ASIN. Real admission/execution must still verify the currently owned
+profile and connection against the frozen scope.
+
+The compiler is committed at `dd64e2c` after the money extraction at `e3750df`:
+`prepareSpCreationCall({ plan, currentEvidence, nodeId }, hasher)` returns one immutable POST
+body, endpoint/media type, frozen provider scope, request digest and one exact position.
+Forty focused tests and all 447 Ads API tests pass, including every SP create endpoint,
+large string IDs, missing/failed/unobserved parents, existing/uncertain intents, scope changes,
+money precision/range and the exact 1,000-predicate boundary. All 186 shared tests and 22
+workspace typechecks pass. This is preparation only; it neither records nor executes an intent.
+The future adapter must preserve authoritative rejections versus uncertain responses, use a
+lossless ID parser and exact count assertions, and quarantine uncertain creates. Matching names
+or an absent observation never authorize another create. Provider-created automatic clauses
+are separate observed resources, not explicit POST-create nodes in these counts.
 
 ## Objective
 
@@ -105,6 +129,7 @@ the preview says so and a pause proposal is a separate reviewed action.
 ## Owned files
 
 - `packages/ads-api/src/sp-creation-codec.ts` and test (new; deterministic request compilation);
+- `packages/ads-api/src/sp-money.ts` and the import-only extraction in `sp-write-codec.ts`;
 - `packages/ads-api/src/sp-creation-adapter.ts` and test (new; maps plan nodes onto the
   existing `createSpCampaigns`, `createSpAdGroups`, `createSpProductAds`, `createSpKeywords`,
   `createSpTargets`, `createSpNegativeKeywords`, `createSpNegativeTargets` clients at

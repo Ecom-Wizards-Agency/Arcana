@@ -8,8 +8,8 @@
 Vercel cron for Claude's migration window, targeting 30 minutes and at most 60 minutes.
 The authenticated Vercel CLI read the linked project's identity and enabled state, patched
 only cron enablement to false, then independently read back a non-null `disabledAt` and
-identical schedule definitions. Target restoration is 05:04 UTC, with the 60-minute boundary
-at 05:34 UTC (12:04 and 12:34 Bangkok). No automatic restart was scheduled because WP-207
+identical schedule definitions. The operator later extended the target by 20 minutes: restoration is now 05:24 UTC, with the
+60-minute boundary at 05:34 UTC (12:24 and 12:34 Bangkok). No automatic restart was scheduled because WP-207
 requires postflight and worker restoration first. Private before/after evidence is in
 `_local/vercel-cron-window-2026-09-06-{before,paused}.json`. Claude owns the migration;
 Codex did not run it or change the unresolved database login. No sudo was needed.
@@ -67,6 +67,33 @@ V2 records all six SB formats, explicit campaign settings, and SD ad-group-bound
 properties with checked asset versions. Tests enforce observed-parent dependencies and refuse a
 second create after an uncertain result. This is a contract checkpoint; current profile
 eligibility, provider recipes, persistence and execution remain separate pending work.
+
+The provider-boundary review found one further omission: the plan did not freeze the resolved
+Amazon profile/connection or seller/vendor account type. `75c0512` adds required v2 provider
+scope and hashes it into the plan, while preserving fixed v1 digests. All **186 shared tests**
+pass. Every new v1 provider call is now refused; historical observation remains supported.
+The tests show that changing any scope field invalidates the original fingerprint/receipt.
+SP dispatch refuses unsupported negative-target predicates, manual campaign-level negative
+expression targets, agency product ads and seller product ads without a checked SKU. The
+independent review also clarified that synthetic completed-evidence fixtures test contract
+consistency, not actual provider dispatch; the helper now states that limit explicitly.
+
+SP request compilation is committed at `dd64e2c`, after money-helper extraction `e3750df`.
+All **40 compiler tests, 447 Ads API package tests, 186 shared tests and 22 workspace
+typechecks** pass. Existing money rules and helper bodies are unchanged after the import/type
+extraction; the old adapter/codec's 81 tests also pass. The compiler prepares one node and one
+request, binds its ordered position, provider scope and exact body into digests, and refuses
+missing observed parents or an existing intent/result. It explicitly refuses unverified
+portfolio/rule-based recipes and never rounds money. Independent review found no concrete
+defect in this bounded slice. It has no transport, runtime export or persistence; it is not
+a campaign executor or a frontend release milestone.
+
+CI for pushed `72e77d7` failed one boundary test after 617 other DB tests passed. The failure
+was an explicit provider import-ban string in `eslint.config.js` matching the runtime
+activation scanner. A local run reproduced the exact failure. `d210fbf` replaces the two
+named OAuth bans with a ban on every provider subpath, including future/nested subpaths;
+the unchanged activation scan and all five import-boundary tests now pass. No scanner
+exception or runtime permission was added. The next pushed head needs its own complete CI.
 
 ### Committed source checkpoint
 
