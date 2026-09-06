@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const css = readFileSync(new URL('./theme.css', import.meta.url), 'utf8');
+const tokensSource = readFileSync(new URL('./tokens.ts', import.meta.url), 'utf8');
 
 const BRAND_TOKENS = {
   '--wa-obsidian': '#0F1318',
@@ -95,6 +96,19 @@ describe('WP-47B brand contract', () => {
     expect(css).toContain('--wa-warn-text: color-mix(in srgb, var(--wa-warn) 55%, var(--wa-ink))');
     expect(contrast(lightWarnText, BRAND_TOKENS['--wa-cloud'])).toBeGreaterThanOrEqual(4.5);
     expect(contrast(BRAND_TOKENS['--wa-warn'], BRAND_TOKENS['--wa-carbon'])).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('runs one type scale across the class primitives and the inline styles', () => {
+    expect(css.match(/--wa-fw-title: 640;/g)).toHaveLength(1);
+    expect(css.match(/--wa-fw-section: 620;/g)).toHaveLength(1);
+
+    // No weight is restated: the classes and `tokens.ts` both read the token.
+    expect(css).toContain('.wa-page-title {\n  font-size: var(--wa-fs-xl);\n  font-weight: var(--wa-fw-title);');
+    expect(css).toContain('.wa-section-title {\n  font-size: var(--wa-fs-md);\n  font-weight: var(--wa-fw-section);');
+    expect(tokensSource).toContain("title: 'var(--wa-fw-title)'");
+    expect(tokensSource).toContain("section: 'var(--wa-fw-section)'");
+    expect(tokensSource).toMatch(/export const heading: CSSProperties = \{[^}]*fontWeight: weight\.title,/);
+    expect(tokensSource).toMatch(/export const subheading: CSSProperties = \{[^}]*fontWeight: weight\.section,/);
   });
 
   it('keeps chart marks at 3:1 in light and dark, outlining dark indigo', () => {

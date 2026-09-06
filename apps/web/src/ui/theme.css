@@ -127,6 +127,15 @@
   --wa-fs-xl: 1.5rem;
   --wa-fs-2xl: 1.75rem;
 
+  /*
+   * Type weights. One scale: the class primitives below and the inline styles
+   * in `tokens.ts` both resolve here, so a title cannot be 640 in one screen
+   * and 700 in the next depending on which surface the screen was written
+   * against. Layout margins stay with the consumer; only the scale is shared.
+   */
+  --wa-fw-title: 640;
+  --wa-fw-section: 620;
+
   /* Frame */
   --wa-sidebar-w: 15rem;
   --wa-topbar-h: 3.5rem;
@@ -1574,7 +1583,7 @@ button {
 
 .wa-page-title {
   font-size: var(--wa-fs-xl);
-  font-weight: 640;
+  font-weight: var(--wa-fw-title);
   letter-spacing: -0.02em;
   margin: 0;
 }
@@ -1587,7 +1596,7 @@ button {
 
 .wa-section-title {
   font-size: var(--wa-fs-md);
-  font-weight: 620;
+  font-weight: var(--wa-fw-section);
   margin: 1.75rem 0 0.625rem;
 }
 

@@ -53,6 +53,12 @@ export const font = {
   },
 } as const;
 
+/** Type weights, owned by `theme.css` so one scale serves classes and inline styles. */
+export const weight = {
+  title: 'var(--wa-fw-title)',
+  section: 'var(--wa-fw-section)',
+} as const;
+
 export const radius = {
   sm: 'var(--wa-radius-sm)',
   md: 'var(--wa-radius)',
@@ -82,16 +88,27 @@ export const page: CSSProperties = {
   width: '100%',
 };
 
+/**
+ * The page title, as an inline style.
+ *
+ * Size, weight and tracking are the same scale `.wa-page-title` paints, read
+ * from the same custom properties rather than restated here — this used to
+ * carry its own 700 while the class said 640, so a screen's title weight
+ * depended on which of the two surfaces it happened to be written against.
+ * Only the margin differs, and deliberately: `.wa-page-title` sits inside a
+ * page head that owns its spacing, and these headings do not.
+ */
 export const heading: CSSProperties = {
   fontSize: font.size.xl,
-  fontWeight: 700,
+  fontWeight: weight.title,
   letterSpacing: '-0.02em',
   margin: '0 0 0.375rem',
 };
 
+/** The section title. Identical to `.wa-section-title`, margin and weight included. */
 export const subheading: CSSProperties = {
   fontSize: font.size.md,
-  fontWeight: 620,
+  fontWeight: weight.section,
   margin: '1.75rem 0 0.625rem',
 };
 
