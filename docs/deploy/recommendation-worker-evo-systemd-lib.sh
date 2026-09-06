@@ -113,14 +113,11 @@ verify_recommendation_worker_credential() {
 }
 
 verify_recommendation_authority_broker() {
-  local metadata
+  local release="$1" revision="$2"
   [[ "$recommendation_worker_authority_broker" == /usr/local/libexec/openspell-recommendation-authority ]] \
     || return 1
-  recommendation_worker_run_privileged test -f "$recommendation_worker_authority_broker" \
-    && ! recommendation_worker_run_privileged test -L "$recommendation_worker_authority_broker" \
-    && metadata="$(recommendation_worker_run_privileged stat -c '%a:%U:%G' \
-      "$recommendation_worker_authority_broker")" \
-    && [[ "$metadata" == 700:root:root || "$metadata" == 755:root:root ]]
+  verify_recommendation_worker_release "$release" "$revision" \
+    && recommendation_worker_authority_helper "$release" --verify-broker
 }
 
 recommendation_worker_authority_helper() {
@@ -132,7 +129,7 @@ recommendation_worker_authority_helper() {
 read_recommendation_authority() {
   local release="$1"
   local revision="$2"
-  recommendation_worker_run_privileged systemd-creds decrypt \
+  recommendation_worker_run_privileged /usr/bin/timeout --signal=KILL 5s /usr/bin/systemd-creds decrypt \
     "$recommendation_worker_database_credential" - \
     | recommendation_worker_authority_helper "$release" --read "$revision"
 }
@@ -140,7 +137,7 @@ read_recommendation_authority() {
 read_recommendation_cutover_evidence() {
   local release="$1"
   local revision="$2"
-  recommendation_worker_run_privileged systemd-creds decrypt \
+  recommendation_worker_run_privileged /usr/bin/timeout --signal=KILL 5s /usr/bin/systemd-creds decrypt \
     "$recommendation_worker_database_credential" - \
     | recommendation_worker_authority_helper "$release" --evidence "$revision"
 }
