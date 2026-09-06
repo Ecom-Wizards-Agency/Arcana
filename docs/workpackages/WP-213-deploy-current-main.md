@@ -7,28 +7,32 @@ Depends on: WP-207 postflight at 46 ledger versions; WP-216 merged; WP-208 merge
 `docs/HANDOVER.md` and `docs/STATUS.md` are edited here only after WP-207 has finished with
 them.
 
-## Readiness check, 2026-09-06
+## Deployment checkpoint, 2026-09-06
 
-The operator cannot use the loopback preview below. A clean `wp-213-web-release` checkout at
-main `9672d93` now has a successful production-target prebuilt artifact. Main CI `34015967395`
-passed; output checks verify the pinned brand SVG, Node 24 function runtime and 300-second
-cron duration. Only public Supabase browser settings entered the local build. The existing
-Pro/Fluid project supports that duration; the read-only settings check preserves the enabled
-five-minute cron and deployment protection. The existing
-production deployment is Ready as the exact rollback anchor. Private preparation evidence is
-in `_local/wp213-web-candidate/`; [the runbook](../deploy/web-vercel.md) records the procedure.
-Web-only candidate/promotion authorization has been requested. Nothing has been uploaded or
-promoted. Browser control now works, but its OpenSpell session needs operator sign-in.
-The existing verifier's cookie-extraction path cannot be used under current browser rules;
-a permitted authenticated verification path remains part of the deployment gate.
+Main `9672d93` is live on the main website as of 15:49 UTC. It includes Claude's sidebar,
+brand and table work and passed CI `34015967395`. After preview email failed, the operator
+explicitly requested publication and authenticated verification on the main website. This
+supersedes this release's pre-publication authenticated-preview requirement; it does not
+count pending checks as passed. PR #141 was not merged or deployed.
 
-Live web remains at `44da7ac`, independently confirmed through public health and Vercel's
-latest production deployment. Main `9672d93` includes the sidebar, brand and table improvements,
-but there is no up-to-date hosted preview. The next frontend review needs a tested candidate;
-merged UI source is not an available operator release. Keep the release scope explicit:
-a main-only candidate uses the completed WP-207 schema and WP-216 legacy fallback, whereas
-PR #141's write source additionally depends on the separately reviewed ten-migration window.
-Do not put the write branch on the hosted database before its schema prerequisites.
+Promotion from the custom review environment first created a separate Ready/STAGED production
+build with the required production key names. The existing public verifier passed that exact
+build's full Vercel main revision and official brand SVG before a second promotion assigned
+it. Independent reads now prove main-site identity and matching cron target. Cron resumed
+at 15:49:47 UTC after 208.619 seconds paused. Bounded signed-in smoke checks cover dashboard,
+optimizer, campaign grid, empty Recommendations, Time Machine and inactive Creative sync,
+plus optimizer light/dark and fullscreen. One unique cron request returned 200. Full browser
+coverage and counted cron outcomes remain pending. Private evidence is in
+`_local/wp213-web-candidate/`. The complete marketer release and optimizer freeze are not
+closed by this frontend deployment.
+
+The earlier attempt exposed a runbook defect: production-target `--skip-domain` staging
+reassigned cron. Recovery briefly promoted an unverified old-code clone before restoring the
+exact original; its pause lasted 703.669 seconds. The audit retains that incident and all
+failed checks. The corrected runbook separates dependent operational gates. A protected
+custom review environment was later configured without cron/Amazon credentials, but its
+email sign-in failed and the operator chose main-site verification. Cookie extraction was
+not used. The exact original deployment remains available for rollback.
 
 ## Objective
 

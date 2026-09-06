@@ -2,7 +2,134 @@
 
 ## Implementation resumed, 2026-09-06
 
-### Latest preparation checkpoint
+### Latest deployment checkpoint
+
+**Authorized web attempt and recovery, 15:03–15:29 UTC:** the operator explicitly authorized
+the prepared main-only candidate, publication and rollback. Main CI `34015967395` and source
+CI `34037799902` at `bd23d7f` pass. Recounting all 941 artifact paths found no content changes.
+The previously recorded manifest SHA hashes compact canonical JSON without a trailing newline;
+the physical file SHA is `d57ae4d304a503efcf3c0a0cc1cc5d959a843ed964b7a52f4adb5b7f2cba51fe`.
+An initial assertion confused these representations; it was corrected before upload.
+
+`vercel deploy --prebuilt --prod --skip-domain` produced a Ready main candidate but moved the
+default alias and cron target while leaving the custom domain at `44da7ac`. This invalidates
+the earlier runbook's staging assumption. Candidate health reported `unknown`; deployment
+`--env OPENSPELL_WEB_REVISION` was not sufficient evidence of the runtime variable. Cron was
+paused at 15:11:03.112 UTC. Vercel logs show one candidate `/api/cron/sync` request at
+15:10:13.215 UTC returned 200. Its response body and per-job results were not retained, so
+this is invocation evidence only, not a counted successful sync cycle.
+
+Rollback and promotion of the original were initially refused because it was still the
+current production deployment. Restoring its default alias did not restore cron. An old-code
+staging redeployment also left cron unchanged. The implementer then promoted that clone as a
+recovery bridge before evaluating its `unknown` health result: a concrete verification failure.
+The next rollback raced promotion completion and was refused. After independently observing
+the completed promotion, rollback to the exact original succeeded. Production and cron target
+both matched the original and public health reported full `44da7ac` before cron was re-enabled.
+The first enabled-state assertion mishandled Vercel's `disabledAt: null`; a fresh read verified
+enabled state correctly. Cron resumed at 15:22:46.781 UTC, after **703.669 seconds** paused.
+
+Recovery evidence is in `_local/wp213-web-candidate/`: `deploy.log`, `staged-state.json`,
+`candidate-exposure-logs.jsonl`, `cron-contained.json`, `restoration-health.log`,
+`restore-via-equivalent-code.log`, `recovery-current.json`, `restore-original-after-ready.log`,
+`rollback-verified.json` and `cron-restored-final.json`. Failed attempts remain in their logs.
+The old-code clone briefly served production; it is incorrect to claim the public site stayed
+on the exact original throughout. No hosted schema change or Amazon mutation was deliberately
+issued in this web window. The unverified sync invocation remains an operational evidence gap.
+
+**Corrected candidate:** an API redeployment with literal `target: staging`, preserving the
+main source and adding matching GitHub SHA/ref metadata, is Ready with no aliases. Independent
+reads prove this attempt preserved enabled cron on the original deployment and live `44da7ac`.
+The existing `verifyPublicCandidateIdentity` implementation passes both checks against it:
+full main SHA with `revisionSource: vercel`, and official SVG HTTP/media-type/digest validation.
+`identity-candidate-create.json`, `identity-candidate-state.json` and
+`public-candidate-verification.json` retain this proof. Do not treat CLI `--target staging`
+as equivalent to the literal API target or treat a staging promotion as artifact-preserving:
+the earlier promotion created a new deployment which must itself be verified.
+
+Deployment protection remains `all_except_custom_domains`; the one automation bypass record
+predates this window. The integration worker is active with zero restarts. Browser navigation
+to the candidate requires Vercel sign-in, and the public OpenSpell tab is also signed out.
+Candidate authentication routing has not been proven. The forbidden cookie-extraction verifier
+was not run. Signed-in screen coverage, counted job completion and publication remain pending.
+WP-201–205, Claude's protected files, the ten-migration write window and all write gates retain
+their prior status. The runbook and replan now distinguish this recovered attempt from a release.
+
+**Configured review environment, 15:35–15:42 UTC:** the Ready API-staging deployment's key-name
+comparison confirmed missing authentication settings. It was not promoted. A dedicated
+`release-review` custom environment was created through Vercel's documented server-side
+configuration import. Before its first deployment, the cron secret and all Amazon credentials
+were detached; the original production records retained their targets and types. Seven review
+settings remain: database, public Supabase URL/key, secure cookies, signed navigation,
+review-specific application origin and explicitly disabled weekly recommendation scheduling.
+No secret value was downloaded or exported to a file. The custom environment has no branch
+matcher, and its sign-in origin was updated to its provider-assigned stable alias without
+changing production's origin.
+
+The final configured candidate is Ready and passes the existing public revision/brand verifier.
+Project reads preserve enabled cron on the exact original, and public health remains `44da7ac`.
+Evidence: `review-environment-create.json`, `review-environment-scope.json`,
+`review-origin-config.json`, `review-final-create.json`, `review-final-state.json` and
+`review-final-public-verification.json` in `_local/wp213-web-candidate/`. A subsequent original
+cron request at 15:25:13.099 UTC returned 200 (`restored-cron-logs-final.jsonl`). Counted job
+completion remains unproven. The first hosted auth-config read returned 403 with the generic HTTP user-agent. A retry
+using the Supabase CLI user-agent succeeded; this was not missing credential authority.
+
+The operator signed into Vercel and the old public website. Refreshing the old dashboard proves
+its authenticated shell; it does not prove candidate authentication. The candidate's separate
+OpenSpell sign-in and redirect are pending. Earlier directions sent the operator to the wrong
+origin for the new UI; the correction names the configured review alias. No cookie or session
+store was inspected. Public identity checks do not establish authenticated coverage, deployment
+readiness or a complete marketer release.
+
+**Operator changes the verification location, 15:46 UTC:** preview email did not arrive, and
+the operator explicitly requested publishing main to the public website instead. This
+supersedes the brief's requirement to complete authenticated preview checks before promotion;
+it does not turn pending checks into passes. The frontend is already merged into main, so
+this authorizes deployment of `9672d93`, not merging PR #141 or deploying its write migrations.
+Production account-screen checks and exact-original rollback apply to this cutover.
+
+Before that decision, the hosted Supabase auth allowlist was read and found to cover only the
+public site and localhost. Two exact callback patterns for the protected review alias were
+appended and independently verified; the existing entries and site URL were preserved.
+`auth-redirect-before.json` and `auth-redirect-updated.json` record that narrow configuration
+change. The review cron route independently returned 401 because its credential is absent.
+A read-only hosted `sync_jobs` census found no retained job whose start fell in 15:08–15:15;
+that time-based census cannot prove the earlier request's complete outcome or exclude inline
+sync work. Evidence: `review-cron-refusal.txt` and `exposure-job-census.json`.
+
+The explicit direct publication paused cron, then promoted the configured review source into
+a new production build. That build reached Ready/STAGED with complete production key names,
+no custom environment and the matching main metadata. The first live-domain assertion still
+saw the old revision and correctly failed. The existing public verifier then passed against
+the new production artifact itself, before a separate promotion assigned it. Terminal
+publication, cron restoration and signed-in screen results are recorded in the next checkpoint.
+
+**Publication verified, 15:49 UTC:** the separately verified production artifact was promoted
+successfully. Public health reports full main `9672d93` with `revisionSource: vercel`; the
+official SVG digest matches. The production target and cron target agree, deployment protection
+is preserved and cron resumed at 15:49:47.271 UTC after **208.619 seconds** paused. Evidence:
+`production-candidate-verification.json`, `direct-publication-assign.log`,
+`direct-publication-live-check.json` and `direct-publication-cron-restored.json`. The first
+`direct-publication-verified.json` contains the correctly failed pre-assignment check and must
+not be cited as the successful final state. GitHub main still matches the published SHA.
+
+Read-only browser smoke checks on the actual public session observed the loaded dashboard,
+optimizer, campaign grid, empty Recommendations result, Time Machine history and Creative
+Performance's inactive-sync state. The optimizer was visually inspected in light and dark;
+fullscreen was entered/exited and light mode restored. No recommendation run, export or
+provider write was triggered. The data-freshness warning persists and remains product work.
+This is not complete 35-page/both-theme coverage or the full marketer-release milestone.
+
+The new deployment has one unique cron invocation at 15:50:27.919 UTC returning 200 in
+`publication-runtime-logs-final.jsonl`. The CLI output repeats that same request ID four times;
+deduplicate it rather than claiming four cycles. No 5xx appears in that retrieved sample.
+Counted job outcomes, worker artifact/claim ownership and a complete preview lifecycle remain
+WP-213 acceptance work. No write migration, write gate or worker replacement was included.
+The [new-chat handover](HANDOVER-CODEX-2026-09-06-PRODUCT-CONTINUATION.md) records the next steps
+and preserves the user's product-first sequence and Claude's frontend boundaries.
+
+### Earlier source and preparation checkpoints
 
 **Persisted campaign preview implementation:** shared error contract `a7d27f9` preceded the
 DB and HTTP consumers. The selected design in `docs/design/WP-215-PERSISTED-PREVIEW.md` now

@@ -46,18 +46,25 @@ A web-only release does not authorize MCP installation, another database window,
 or Amazon writes. Keep report/creative flags as WP-210 left them and the recommendation worker
 flag unset for WP-216's legacy fallback. Do not lift the optimizer freeze during preparation.
 
-After authorization, stage the production-target prebuilt artifact without moving the live
-domain, setting `OPENSPELL_WEB_REVISION` on the deployment's runtime to the same reviewed SHA:
+The initial production-target CLI staging command is suspended. In the September 6 attempt,
+`--prod --skip-domain` reassigned cron and the default alias before candidate verification.
+It preserved only the custom production domain. Do not repeat it with enabled cron or claim
+that the flag isolates a candidate from production scheduling. See the incident below.
 
-```sh
-pnpm --filter @wizard-ads/web exec vercel deploy --prebuilt --prod --skip-domain --cwd ../.. \
-  --env OPENSPELL_WEB_REVISION="$OPENSPELL_WEB_REVISION"
-```
+A literal API `target: staging` redeployment left cron and aliases unchanged, but used preview
+configuration and omitted required authentication settings. It is therefore only a successful
+identity experiment, not a configured release candidate. CLI `--target staging` instead names
+a custom environment; the two forms are not interchangeable. Use a separately configured,
+protected review environment and verify its variable scopes, authentication origin, disabled
+execution entrypoints, full revision and assets before authenticated review. Record how its
+configuration differs from production; promoting it may create a new deployment and requires
+fresh identity/configuration checks. Do not silently treat a rebuild as the reviewed artifact.
 
-Record its immutable URL and deployment ID. Vercel documents this
-[staged production deployment and promotion flow](https://vercel.com/docs/cli/deploying-from-cli).
-Keep deployment protection enabled. Verify the live domain and cron still refer to the old
-deployment before checking the candidate; stop if staging changes either unexpectedly.
+For CLI uploads, matching Git metadata must accompany the real reviewed SHA. The observed
+`gitCommitSha` metadata alone did not populate usable system identity; a redeployment with
+matching `githubCommitSha` and `githubCommitRef` produced the expected Vercel identity.
+These fields describe the actual source, never invented provider provenance. An `--env`
+argument alone did not establish that the runtime received the explicit revision variable.
 
 Verify the candidate's full revision and brand digest before using an authenticated session.
 Run the candidate artifact checks and record the 35-page, both-theme review required by WP-213,
@@ -100,5 +107,56 @@ production database credential entered the local build. Private evidence is in
 `_local/wp213-web-candidate/`. The old production deployment was checked Ready for rollback.
 Read-only project inspection also confirms Pro with Fluid compute, which supports the artifact's
 300-second duration under [Vercel's duration limits](https://vercel.com/docs/functions/configuring-functions/duration).
-Web-only authorization has been requested. Candidate upload, authenticated verifier/visual
-checks, promotion and post-promotion cron evidence are pending. This is not a deployed release.
+The operator subsequently authorized the main-only web release. The first upload and recovery
+are recorded below; authentication and final publication remain pending.
+
+
+## Deployment incident and recovery, 2026-09-06
+
+The first production-target candidate reported unknown revision and took the cron target.
+One scheduled request returned 200 before cron was paused. Its job outcomes are not yet counted.
+Rollback to the original was initially refused because it was still current production;
+restoring its alias alone did not restore cron. Recovery then promoted an old-code staging
+clone without evaluating the unknown health response first. This was a gate-order failure.
+The immediate rollback raced promotion completion; after observing the completed promotion,
+rollback to the exact original succeeded. Cron resumed only after separate checks established
+the original deployment ID, public health revision and scheduler target. Its pause lasted
+703.669 seconds. A subsequent original-deployment cron request returned 200; this is not
+per-job completion evidence. Private records are in `_local/wp213-web-candidate/`.
+
+Every dependent operational gate must be a separate step: issue the mutation, wait for its
+terminal state, inspect and assert the artifact/target, then authorize the next mutation.
+Never compose a health read and promotion without evaluating the read. Never redeploy or
+promote an unverified artifact as a restoration bridge. Keep the exact original rollback
+available and verify both custom-domain identity and cron target after restoration.
+
+
+## Configured review environment
+
+The September 6 continuation created a protected custom `release-review` environment without
+a branch matcher. Vercel's server-side import references the production configuration; no
+secret export is needed. Before deployment, detach the custom environment from the cron secret
+and Amazon credential records, preserving those records' production targets, types and values.
+Keep only the database, public Supabase settings, secure cookies and signed-navigation settings.
+Use independent custom-only records for the review origin and disabled weekly scheduling.
+Never update the value of a shared production record to customize a review deployment.
+
+The seven effective review keys are recorded privately, as are the stable alias and immutable
+candidate. Verify key names after Ready and run the existing public identity/brand verifier.
+The review origin must be the review alias; a successful login on the public website does not
+create a session there. Prove the real email callback stays on that origin. Use the supported CLI user-agent for the management API; the generic client received 403
+while the CLI user-agent succeeded. Verify exact redirect allowlist entries before requesting
+a review email. The two added callback patterns are recorded privately.
+The user is signing in through the permitted browser surface. This step remains incomplete
+until the candidate's loaded account screens are actually observed.
+
+
+## Operator exception for this release
+
+After preview email failed, the operator explicitly requested publication to the main website
+and verification there. That instruction supersedes pre-publication authenticated preview
+coverage for this release only. Keep those checks pending until observed on the public site;
+do not weaken identity, configuration, cron or rollback verification. Production promotion
+from the custom review environment produced a new Ready/STAGED production build. Verify that
+build's identity and production configuration, then promote it separately. Neither the first
+CLI success nor Ready alone proves the custom domain moved.
