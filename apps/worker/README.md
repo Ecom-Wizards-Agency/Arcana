@@ -1,8 +1,9 @@
 # worker
 
-Owned by **WP-03**. The always-on process that does everything Amazon-facing: entity sync, the
-three-pass Reporting v3 pipeline, the recommendation runs, and the crosscheck ingest. Nothing else
-in the repo talks to the Amazon Ads API — `apps/web` reads the database the worker fills.
+The worker handles Amazon entity sync, asynchronous report ingestion, recommendation
+runs and crosscheck ingestion. Web requests preview, approve and enqueue work;
+provider execution belongs here. The root [installation guide](../../README.md)
+records the remaining onboarding and legacy OAuth limitations.
 
 ## The shape of it
 
@@ -74,9 +75,8 @@ it. Recovery is deliberately attended because a timeout cannot prove provider wo
 
 ## The auth healthcheck is not a queue job — deliberately
 
-The brief called for "an hourly `auth.healthcheck` job hitting `/v2/profiles` per region". It is
-implemented as an in-process timer (`AuthHealthMonitor`) rather than a row in `sync_jobs`, and the
-manager accepted that.
+`AuthHealthMonitor` probes account access on an in-process timer. It does not depend
+on the queue it monitors.
 
 The reason is that a liveness probe which depends on the subsystem it monitors cannot report the
 failure that matters most. If the queue stops draining — a stuck claim, a wedged pool, a worker
@@ -265,7 +265,10 @@ not:
   again. Report downloads are bounded to 32 MiB compressed, 64 MiB inflated, 60 seconds idle and
   15 minutes total.
 
-`recommendations.run` still returns a stub result pending WP-05's engine.
+`recommendations.run` executes the implemented recommendation pipeline. The dedicated
+recommendation lane has its own role, immutable release and database authority
+requirements; follow its [deployment guide](../../docs/deploy/evo-recommendation-worker.md).
+A running general worker does not prove that one-time preview admission is enabled.
 
 ## Running it
 
@@ -281,40 +284,16 @@ auth healthcheck, the stale-claim reaper and the schedule provisioner, with grac
 SIGTERM/SIGINT. Nothing syncs until a profile has `sync_enabled = true` **and** a schedule (the
 provisioner installs defaults for enabled profiles that have none).
 
-## Enabling pilot profiles
+## Selecting profiles to synchronize
 
-The worker spends money, so profiles are off by default. Turn on exactly two — the smallest, to keep
-the pilot cheap. First choose them (fewest campaigns wins):
+Choose profiles explicitly within the agency that owns their Amazon connection.
+Enable synchronization through the application's profile settings after verifying
+that connection and worker deployment. A scheduler provisions only the enabled
+profiles for its configured lane. Keep the entity/report/recommendation ownership
+handoff consistent with web cron; do not enable a second independent claimant.
 
-```sql
-select p.id, p.amazon_profile_id, p.account_name, count(c.id) as campaigns
-  from public.ad_profiles p
-  left join public.campaigns c on c.profile_id = p.id
- where p.connection_id is not null
-   and exists (
-     select 1 from public.ads_connections k
-      where k.id = p.connection_id and k.status = 'active'
-   )
- group by p.id
- order by campaigns asc, p.amazon_profile_id
- limit 10;
-```
-
-Then enable exactly the two smallest:
-
-```sql
-update public.ad_profiles set sync_enabled = true
- where id in (
-   select p.id from public.ad_profiles p
-     left join public.campaigns c on c.profile_id = p.id
-    where p.connection_id is not null
-      and exists (select 1 from public.ads_connections k where k.id = p.connection_id and k.status = 'active')
-    group by p.id order by count(c.id) asc, p.amazon_profile_id limit 2
- );
-```
-
-Within ~15 minutes the provisioner installs their default schedules; within ~5 more, pg_cron enqueues
-the first jobs.
+Profile selection is never inferred from account size or copied from another
+installation. Read-only synchronization does not authorize an Amazon mutation.
 
 ## Verifying facts landed
 
@@ -331,6 +310,8 @@ select p.amazon_profile_id,
   join public.fact_profile_daily f on f.profile_id = p.id
   left join public.report_requests r on r.profile_id = p.id
  where p.sync_enabled
+   and p.org_id = '<selected-org-uuid>'::uuid
+   and p.id = '<selected-profile-uuid>'::uuid
  group by p.amazon_profile_id
  order by p.amazon_profile_id;
 ```
@@ -340,8 +321,9 @@ each report; a completed report with a positive `fact_rows` count is the sync wo
 
 ## Deploying to Fly.io
 
-`fly.toml` and `Dockerfile` here define the machine (`wizard-ads-worker`, `ams`, one always-on
-instance, `/healthz` check). Deploy from the repo root:
+`fly.toml` and `Dockerfile` provide an alternative worker deployment. Set your own
+Fly application name and region in the configuration and verify the selected lane
+before deploying from the repository root:
 
 ```
 fly deploy --config apps/worker/fly.toml
@@ -359,7 +341,7 @@ fly secrets set \
 ```
 
 Do **not** run the first live sync against the hosted database from a developer machine — enable the
-pilot profiles and let the deployed worker pick them up on its own cadence.
+explicitly selected profiles and let the deployed worker pick them up on its own cadence.
 
 ## Tests
 
@@ -367,9 +349,8 @@ pilot profiles and let the deployed worker pick them up on its own cadence.
 WIZARD_ADS_TEST_DATABASE_URL=postgres://…  pnpm --filter @wizard-ads/worker test
 ```
 
-The DB-backed suite skips itself when no Postgres is reachable, so `pnpm check` stays honest on a
-machine without one — which also means **a green run on such a machine has not tested the worker**.
-Point it at a database.
+Local DB-backed suites can skip when PostgreSQL is unavailable; that does not
+validate the worker. CI requires its disposable database and fails on an outage.
 
 Everything above the client is exercised against `AdsApiClient` fakes and a real database;
 `DbAdsApiClient` itself is unit-tested against a mock underlying client and a mock Vault

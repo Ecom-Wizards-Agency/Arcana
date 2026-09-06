@@ -9,7 +9,7 @@
  *
  * Three decisions here are inherited from the AdLabs recon rather than invented:
  *
- *  - **One filter vocabulary across every level** (`tools/recon/02-data-grid.md`
+ *  - **One filter vocabulary across every level** (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md`
  *    §3). Uppercase keys, lowercase columns, the same shape everywhere.
  *  - **Archived is not optional.** Their campaign grid cannot see ARCHIVED at
  *    all, so any period total silently excludes archived spend. Ours reads the

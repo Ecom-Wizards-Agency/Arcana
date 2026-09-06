@@ -4,7 +4,7 @@
  * The point of these tests is the cascade's *first* step: an assignment map
  * that is empty today and populated when per-campaign strategy assignment
  * ships. If the assignment case works now, adding assignment later is a data
- * change, which is exactly what `docs/DECISIONS.md` asks WP-07 to guarantee.
+ * change, which is exactly what `https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/docs/DECISIONS.md` asks WP-07 to guarantee.
  *
  * No doctrine value appears here. The snapshots below are shapes with
  * obviously-synthetic numbers.

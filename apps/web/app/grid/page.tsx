@@ -4,7 +4,7 @@
  * The browser loads the **whole** result set for the selected entity level and
  * period from the authenticated `/api/grid/rows` boundary. Keeping every row
  * client-side is the product decision the recon argues for at length
- * (`02-data-grid.md` §6): QA-ing an optimization means sorting four thousand
+ * (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md` §6): QA-ing an optimization means sorting four thousand
  * rows by spend, filtering to one change reason and scanning. The separate
  * request keeps those rows out of the initial RSC document without introducing
  * server pagination or a second Grid model.

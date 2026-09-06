@@ -42,10 +42,16 @@ export function optional(
  * `WIZARD_ADS_MCP_URL` is the same name `apps/analyst` already reads, so one
  * value configures both consumers.
  */
-export const DEFAULT_MCP_ENDPOINT = 'https://mcp.ecomwizards.agency/mcp';
-
-export function mcpEndpoint(env: NodeJS.ProcessEnv = process.env): string {
-  return env['NEXT_PUBLIC_MCP_URL'] || env['WIZARD_ADS_MCP_URL'] || DEFAULT_MCP_ENDPOINT;
+export function mcpEndpoint(env: NodeJS.ProcessEnv = process.env): string | null {
+  const value = env['NEXT_PUBLIC_MCP_URL']?.trim() || env['WIZARD_ADS_MCP_URL']?.trim();
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
 }
 
 /** Amazon's LWA endpoints, and the hosts the profile fetch talks to. */

@@ -1,7 +1,7 @@
 /**
  * Periods, and the comparison period every grid gets for free.
  *
- * The recon's best small idea (`02-data-grid.md` §2): the comparison period
+ * The recon's best small idea (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md` §2): the comparison period
  * defaults to *the immediately preceding period of the same length*, so every
  * grid can show a delta without the operator choosing a baseline. Copied
  * exactly, including the "same length" part -- comparing a 30-day window

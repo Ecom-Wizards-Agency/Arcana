@@ -6,7 +6,7 @@
  * Before this existed the product had no visible way in — `/login` was reachable
  * only by typing it — and then, briefly, a flat bar of ten equal links. Neither
  * is a shape a tool with ten screens can wear. This is the incumbent's pattern
- * (`tools/recon/01-navigation-map.md`, `UI-verified`): grouped, collapsible
+ * (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/01-navigation-map.md`, `UI-verified`): grouped, collapsible
  * navigation down the left, tenancy and identity along the top, content in the
  * remaining space.
  *

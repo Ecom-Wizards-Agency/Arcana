@@ -1,12 +1,11 @@
-# @wizard-ads/analyst — headless daily analyst (WP-13)
+# @wizard-ads/analyst
 
 A scheduled, headless run that reads each sync-enabled profile through the
 wizard-ads MCP server with a **read-only** key, analyzes it against the profile's
 target ACOS, goal lens and doctrine flags, writes a structured row to the
 `insights` table, and returns a per-profile Markdown digest.
 
-It is designed to run daily from cron on the always-on Mac mini
-(`docs/VISION.md` §4).
+Run it from an explicitly configured scheduler on your worker host.
 
 ## What it does, and what it deliberately does not
 
@@ -20,10 +19,8 @@ It is designed to run daily from cron on the always-on Mac mini
   reads never travel down it. The org id is resolved inside the insert from the
   profile's own row, so an insight cannot be misfiled.
 - **Posts nothing.** Slack is intentionally not wired here. The run prints (and
-  persists) each digest; the **operator's downstream step** hands the digest,
-  unaltered, to the guarded Wizards AI Slack helper (`~/os/wizards-ai/slack.sh`
-  conventions — never a direct Slack write). This process holds no Slack
-  credential.
+  persists) each digest. Any external delivery is a separately configured and
+  authorized integration. This process holds no messaging credential.
 
 ## Configuration (environment)
 

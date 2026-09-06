@@ -2,7 +2,7 @@
  * `/connect-claude` — the AI (MCP) surface.
  *
  * The recon found the incumbent shipping an `AI → MCP` nav item and generating
- * the key itself in settings (`tools/recon/01-navigation-map.md`). WP-09 built
+ * the key itself in settings (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/01-navigation-map.md`). WP-09 built
  * our half of that — the `apps/mcp` server and the `mcp.api_keys` model — and
  * left the operator with only a CLI to issue a key. This page is the missing
  * entry: issue a read-only key, see the keys an org already has, and revoke one.
@@ -56,7 +56,7 @@ export default async function ConnectClaudePage(): Promise<ReactNode> {
       />
 
       <div className="wa-stack">
-        <section className="wa-card">
+        {endpoint !== null ? <section className="wa-card">
           <header className="wa-card__head">
             <h2 className="wa-card__title">How it connects</h2>
           </header>
@@ -81,7 +81,7 @@ export default async function ConnectClaudePage(): Promise<ReactNode> {
               OpenSpell currently exposes no Amazon write tools through MCP.
             </p>
           </div>
-        </section>
+        </section> : null}
 
         <ConnectClaudeManager
           keys={keys}

@@ -3,7 +3,7 @@
 /**
  * The data grid.
  *
- * No pagination, ever. The recon is unambiguous about why (`02-data-grid.md`
+ * No pagination, ever. The recon is unambiguous about why (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md`
  * §6): QA-ing an optimization means sorting four thousand rows by spend,
  * filtering to one change reason and scanning, and a server-paginated grid
  * makes that workflow physically impossible. So the whole result set is in
