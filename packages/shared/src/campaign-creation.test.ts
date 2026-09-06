@@ -513,6 +513,8 @@ function sbProductVideoPlan(): CampaignCreationPlanType {
   });
 }
 
+// Synthetic consistency evidence only. These records do not prove provider
+// execution, current eligibility, profile ownership, or reservation authority.
 function completedSpExecutionEvidence(plan: CampaignCreationPlanType | CampaignCreationPlanV2 = spPlan()) {
   const providerResults = plan.nodes.map((node, index) => ({
     effect: node.effect,
@@ -705,6 +707,10 @@ function v2PlanWithNodes(
   return CampaignCreationPlanV2.parse({
     ...source,
     schemaVersion: PLAN_VERSION_V2,
+    providerScope: 'providerScope' in source ? source.providerScope : {
+      amazonProfileId: '900000000001', connectionId: '00000000-0000-4000-8000-000000000080',
+      region: 'NA', marketplaceId: source.marketplaceId, currencyCode: 'USD', accountType: 'seller',
+    },
     nodes,
     counts: { totalNodes: nodes.length, readChecks, irreversibleCreates: nodes.length - readChecks, byKind },
   });
@@ -913,6 +919,98 @@ describe('versioned campaign creation inputs', () => {
     expect(RecordedCampaignCreationPlan.safeParse({ ...historical, nodes: [newNode, ...historical.nodes.slice(1)] }).success).toBe(false);
   });
 
+  it('requires complete provider scope and matching marketplace and campaign currencies', () => {
+    const plan = v2Fixture(spPlan());
+    expect(CampaignCreationPlanV2.safeParse({ ...plan, providerScope: undefined }).success).toBe(false);
+    for (const field of Object.keys(plan.providerScope)) {
+      const incomplete = structuredClone(plan);
+      Reflect.deleteProperty(incomplete.providerScope, field);
+      expect(CampaignCreationPlanV2.safeParse(incomplete).success).toBe(false);
+    }
+    expect(CampaignCreationPlanV2.safeParse({ ...plan,
+      providerScope: { ...plan.providerScope, accountType: null } }).success).toBe(false);
+    expect(CampaignCreationPlanV2.safeParse({ ...plan,
+      providerScope: { ...plan.providerScope, marketplaceId: 'OTHER-MARKETPLACE' } }).success).toBe(false);
+    expect(CampaignCreationPlanV2.safeParse({ ...plan,
+      providerScope: { ...plan.providerScope, currencyCode: 'EUR' } }).success).toBe(false);
+    const changedCampaign = structuredClone(plan);
+    v2Node(changedCampaign, 'campaign.create').payload.budget.currencyCode = 'EUR';
+    expect(CampaignCreationPlanV2.safeParse(changedCampaign).success).toBe(false);
+  });
+
+  it('binds every frozen provider-scope field into the plan fingerprint and receipt', () => {
+    const plan = fingerprintedV2(v2Fixture(spPlan()));
+    const { authorization, job } = authorityFor(plan);
+    const mutations: ((changed: CampaignCreationPlanV2) => void)[] = [
+      (changed) => { changed.providerScope.amazonProfileId = '900000000002'; },
+      (changed) => { changed.providerScope.connectionId = GENERATION_ID; },
+      (changed) => { changed.providerScope.region = 'EU'; },
+      (changed) => { changed.providerScope.accountType = 'vendor'; },
+      (changed) => { changed.providerScope.marketplaceId = 'OTHER-MARKETPLACE'; changed.marketplaceId = 'OTHER-MARKETPLACE'; },
+      (changed) => { changed.providerScope.currencyCode = 'EUR';
+        v2Node(changed, 'campaign.create').payload.budget.currencyCode = 'EUR'; },
+    ];
+    for (const mutate of mutations) {
+      const changed = structuredClone(plan);
+      mutate(changed);
+      expect(serializeCampaignCreationPlanFingerprint(changed)).not.toBe(serializeCampaignCreationPlanFingerprint(plan));
+      expect(() => verifyCampaignCreationPlanFingerprints(changed, sha256)).toThrow(/fingerprint does not match/);
+      const freshlyHashed = fingerprintedV2(changed);
+      expect(() => verifyCampaignCreationJobArtifacts(freshlyHashed, authorization, job,
+        '2026-08-30T00:03:00.000Z', sha256)).toThrow(/receipt does not match/);
+    }
+  });
+
+  it('refuses every new v1 SP provider call because its approved plan lacks provider scope', () => {
+    const plan = fingerprintedSpPlan();
+    const { authorization, job } = authorityFor(plan);
+    const completed = completedSpExecutionEvidence(plan);
+    expect(RecordedCampaignCreationPlan.parse(plan)).toEqual(plan);
+    expect(() => requireCampaignCreationDispatchInputs(plan)).toThrow(/omit frozen provider scope/);
+    expect(() => verifyCampaignCreationProviderCallArtifacts(plan, authorization, job, completed,
+      completed.providerCallIntents[0], '2026-08-30T00:03:00.000Z', sha256)).toThrow(/omit frozen provider scope/);
+  });
+
+  it('requires seller SKU and refuses an agency product-ad recipe without rewriting readable plans', () => {
+    const plan = v2Fixture(spPlan());
+    const product = v2Node(plan, 'eligibility.require_product');
+    product.payload.sku = null;
+    expect(CampaignCreationPlanV2.parse(plan)).toEqual(plan);
+    expect(() => requireCampaignCreationDispatchInputs(plan)).toThrow(/checked product SKU/);
+    plan.providerScope.accountType = 'vendor';
+    expect(requireCampaignCreationDispatchInputs(plan)).toEqual(plan);
+    plan.providerScope.accountType = 'agency';
+    expect(CampaignCreationPlanV2.parse(plan)).toEqual(plan);
+    expect(() => requireCampaignCreationDispatchInputs(plan)).toThrow(/agency accounts requires a verified/);
+  });
+
+  it('keeps negative expression history readable but dispatches only supported predicates and campaign targeting', () => {
+    const plan = v2Fixture(spPlan());
+    const target = v2Node(plan, 'target.create');
+    target.payload = { targetType: 'expression', parent: { source: 'plan_node', kind: 'campaign', nodeId: CAMPAIGN_NODE_ID },
+      scope: 'campaign', polarity: 'negative', expression: [{ type: 'asin_same_as', value: 'B000000001' }],
+      bid: null, state: 'paused' };
+    target.dependsOn = [CAMPAIGN_NODE_ID];
+    expect(CampaignCreationPlanV2.parse(plan)).toEqual(plan);
+    expect(() => requireCampaignCreationDispatchInputs(plan)).toThrow(/require automatic targeting/);
+    const settings = v2Node(plan, 'campaign.create').payload.settings;
+    if (settings.product !== 'SP') throw new Error('synthetic SP settings missing');
+    settings.targetingType = 'auto';
+    expect(requireCampaignCreationDispatchInputs(plan)).toEqual(plan);
+    for (const type of ['asin_category_same_as', 'asin_expanded_from'] as const) {
+      target.payload.expression = [{ type, value: 'SYNTHETIC-TARGET' }];
+      expect(CampaignCreationPlanV2.parse(plan)).toEqual(plan);
+      expect(() => requireCampaignCreationDispatchInputs(plan)).toThrow(/only ASIN and brand predicates/);
+    }
+    target.payload.expression = [{ type: 'asin_brand_same_as', value: 'SYNTHETIC-BRAND' }];
+    expect(requireCampaignCreationDispatchInputs(plan)).toEqual(plan);
+    settings.targetingType = 'manual';
+    target.payload.parent = ref('ad_group', AD_GROUP_NODE_ID);
+    target.payload.scope = 'ad_group';
+    target.dependsOn = [AD_GROUP_NODE_ID];
+    expect(requireCampaignCreationDispatchInputs(plan)).toEqual(plan);
+  });
+
   it('preserves SP automatic targeting safety and requires reviewed default bids', () => {
     const plan = v2Fixture(spPlan());
     v2Node(plan, 'ad_group.create').payload.defaultBid = null;
@@ -923,7 +1021,7 @@ describe('versioned campaign creation inputs', () => {
     if (oldGroup?.kind !== 'ad_group.create') throw new Error('synthetic ad group missing');
     oldGroup.payload.defaultBid = null;
     expect(RecordedCampaignCreationPlan.parse(old)).toEqual(old);
-    expect(() => requireCampaignCreationDispatchInputs(old)).toThrow(/explicit numeric/);
+    expect(() => requireCampaignCreationDispatchInputs(old)).toThrow(/omit frozen provider scope/);
     expect(CampaignCreationExecutionEvidence.parse(completedSpExecutionEvidence(old)).snapshot.status).toBe('succeeded');
 
     const automatic = v2Fixture(spPlan());
@@ -1184,7 +1282,7 @@ describe('versioned campaign creation inputs', () => {
     if (observation === undefined) throw new Error('synthetic observation missing');
     expect(verifyCampaignCreationPlanFingerprints(plan, sha256)).toEqual(plan);
     expect(() => verifyCampaignCreationProviderCallArtifacts(plan, authorization, job, completed,
-      completed.providerCallIntents[0], '2026-08-30T00:03:00.000Z', sha256)).toThrow(/omit required creation inputs/);
+      completed.providerCallIntents[0], '2026-08-30T00:03:00.000Z', sha256)).toThrow(/omit frozen provider scope/);
     expect(verifyCampaignCreationObservationArtifacts(plan, authorization,
       { ...job, type: 'campaign_creation.observe', attempt: 1 }, completed,
       observation, '2026-08-30T00:03:00.000Z', sha256).observation).toEqual(observation);
@@ -2084,7 +2182,7 @@ describe('campaign creation approval and evidence', () => {
   });
 
   it('joins the exact frozen plan, receipt, job, generation, and call intent at runtime', () => {
-    const plan = fingerprintedSpPlan();
+    const plan = fingerprintedV2(v2Fixture(spPlan()));
     const authorization = {
       authorizationId: AUTHORIZATION_ID,
       executionId: EXECUTION_ID,

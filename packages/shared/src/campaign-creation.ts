@@ -9,6 +9,7 @@ import {
   AmazonId,
   CurrencyCode,
   IsoDate,
+  Region,
   Uuid,
 } from './primitives.js';
 
@@ -773,6 +774,17 @@ export type CampaignCreationNodeV2 = z.infer<typeof CampaignCreationNodeV2>;
 export const CampaignCreationNode = z.union([CampaignCreationNodeV1, CampaignCreationNodeV2]);
 export type CampaignCreationNode = z.infer<typeof CampaignCreationNode>;
 
+/** Frozen provider identity; admission must resolve and verify it from the owned profile. */
+export const CampaignCreationProviderScope = z.object({
+  amazonProfileId: z.string().regex(/^\d+$/),
+  connectionId: CampaignCreationUuid,
+  region: Region,
+  marketplaceId: AmazonId,
+  currencyCode: CurrencyCode,
+  accountType: z.enum(['seller', 'vendor', 'agency']),
+}).strict();
+export type CampaignCreationProviderScope = z.infer<typeof CampaignCreationProviderScope>;
+
 const count = z.number().int().nonnegative();
 
 const CountsByKind = z.object({
@@ -1493,8 +1505,18 @@ export type CampaignCreationPlanV1 = z.infer<typeof CampaignCreationPlanV1>;
 
 export const CampaignCreationPlanV2 = CampaignCreationPlanShape.extend({
   schemaVersion: z.literal('openspell.campaign-creation-plan.v2'),
+  providerScope: CampaignCreationProviderScope,
   nodes: z.array(CampaignCreationNodeV2).min(1),
-}).superRefine(validateCampaignCreationPlan);
+}).superRefine(validateCampaignCreationPlan).superRefine((plan, context) => {
+  if (plan.providerScope.marketplaceId !== plan.marketplaceId) {
+    context.addIssue({ code: 'custom', path: ['providerScope', 'marketplaceId'], message: 'provider marketplace differs from the frozen plan marketplace' });
+  }
+  plan.nodes.forEach((node, index) => {
+    if (node.kind === 'campaign.create' && node.payload.budget.currencyCode !== plan.providerScope.currencyCode) {
+      context.addIssue({ code: 'custom', path: ['nodes', index, 'payload', 'budget', 'currencyCode'], message: 'campaign currency differs from the frozen provider scope' });
+    }
+  });
+});
 export type CampaignCreationPlanV2 = z.infer<typeof CampaignCreationPlanV2>;
 
 export const CampaignCreationPlan = z.discriminatedUnion('schemaVersion', [
@@ -1509,14 +1531,38 @@ export type CampaignCreationPlan = z.infer<typeof CampaignCreationPlan>;
  * asset eligibility, or reservation purchase authority. Those runtime checks
  * remain mandatory in addition to receipt, gate and dependency verification.
  */
-export function requireCampaignCreationDispatchInputs(rawPlan: unknown): CampaignCreationPlan {
+export function requireCampaignCreationDispatchInputs(rawPlan: unknown): CampaignCreationPlanV2 {
   const plan = CampaignCreationPlan.parse(rawPlan);
   if (plan.schemaVersion === 'openspell.campaign-creation-plan.v1') {
-    if (plan.adProduct !== 'SP') {
-      throw new Error('historical SB and SD plans omit required creation inputs; record and approve a v2 plan');
-    }
-    if (plan.nodes.some((node) => node.kind === 'ad_group.create' && node.payload.defaultBid === null)) {
-      throw new Error('Sponsored Products dispatch requires an explicit numeric ad-group default bid');
+    throw new Error('historical v1 plans omit frozen provider scope; record and approve a v2 plan');
+  }
+  if (plan.adProduct === 'SP') {
+    const byId = new Map(plan.nodes.map((node) => [node.nodeId, node]));
+    for (const node of plan.nodes) {
+      if (node.kind === 'ad.create' && node.payload.format === 'sp_product_ad') {
+        if (plan.providerScope.accountType === 'agency') {
+          throw new Error('SP product-ad creation for agency accounts requires a verified provider recipe');
+        }
+        const product = byId.get(node.payload.product.nodeId);
+        if (plan.providerScope.accountType === 'seller'
+          && (product?.kind !== 'eligibility.require_product' || product.payload.sku === null)) {
+          throw new Error('SP seller product-ad creation requires the checked product SKU');
+        }
+      }
+      if (node.kind === 'target.create' && node.payload.targetType === 'expression'
+        && node.payload.polarity === 'negative') {
+        if (node.payload.expression.some((predicate) => predicate.type !== 'asin_same_as'
+          && predicate.type !== 'asin_brand_same_as')) {
+          throw new Error('SP negative targets support only ASIN and brand predicates');
+        }
+        if (node.payload.scope === 'campaign') {
+          const campaign = campaignForParent(node.payload.parent, byId);
+          if (campaign?.kind !== 'campaign.create' || campaign.payload.settings.product !== 'SP'
+            || campaign.payload.settings.targetingType !== 'auto') {
+            throw new Error('SP campaign-level negative expression targets require automatic targeting');
+          }
+        }
+      }
     }
   }
   return plan;
@@ -1549,6 +1595,7 @@ export function serializeCampaignCreationPlanFingerprint(rawPlan: CampaignCreati
     plan.marketplaceId,
     plan.adProduct,
     plan.apiDialect,
+    ...(plan.schemaVersion === 'openspell.campaign-creation-plan.v2' ? [plan.providerScope] : []),
     plan.generatedAt,
     plan.frozenAt,
     plan.expiresAt,
