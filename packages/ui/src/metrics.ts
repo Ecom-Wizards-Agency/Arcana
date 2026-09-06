@@ -3,7 +3,7 @@
  * ratio is rebuilt from the sums underneath it.
  *
  * This file is the single answer to the one question the recon says AdLabs got
- * right and everybody else gets wrong (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/02-data-grid.md` §4):
+ * right and everybody else gets wrong (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md` §4):
  *
  *   "Do not use GROUP BY in query. Use group_by_column -- it correctly
  *    recalculates derived metrics (ACOS, ROAS, CTR, CVR, CPC, RPC, CPA, CPM,
@@ -15,7 +15,7 @@
  * this wrong because there is nothing else it could call.
  *
  * `scale` is carried as data rather than inferred from the metric's name, for
- * the reason the dashboard recon gives (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/03-dashboards.md` §3): a renderer that
+ * the reason the dashboard recon gives (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/03-dashboards.md` §3): a renderer that
  * guesses "acos sounds like a percent" is one rename away from printing 2430%.
  */
 

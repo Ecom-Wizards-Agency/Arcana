@@ -1,7 +1,7 @@
 /**
  * Column sets, one per entity level.
  *
- * Built against `https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/02-data-grid.md` §2, which is exact: those column
+ * Built against `https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md` §2, which is exact: those column
  * names were read off live `get_entity_data` responses, not transcribed from
  * documentation. Where our fact tables cannot source a recon column it is
  * absent and the reason is written down, rather than shipped as a plausible

@@ -2,7 +2,7 @@
  * How the column picker groups and searches the sixty-odd columns a level
  * offers. Pure; no React.
  *
- * The recon (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/02-data-grid.md` §3.0) records AdLabs' filter combobox as
+ * The recon (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md` §3.0) records AdLabs' filter combobox as
  * "searchable and grouped by category with sticky group headers". A flat
  * checklist of sixty entries is the alternative, and it is the reason the
  * comparison and delta columns went unused: nobody scrolls a wall of

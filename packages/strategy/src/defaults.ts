@@ -3,7 +3,7 @@
  *
  * This document contains METHOD and no NUMBERS, and that is a rule rather than
  * an accident of the current content. The cut order, the lever vocabulary and
- * the pat-split method are published in `https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/docs/PLAN.md`; a target ACOS, a change
+ * the pat-split method are published in `https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/docs/PLAN.md`; a target ACOS, a change
  * cap or a search-volume band is the agency's doctrine and lives as per-tenant
  * database data seeded from a gitignored file. This repository is public.
  *

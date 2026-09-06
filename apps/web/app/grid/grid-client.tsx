@@ -170,7 +170,7 @@ function startGridRequest(scope: string): InFlightGridRequest {
  * The default view, matching AdLabs' enabled-only default — but as a *visible*
  * filter chip rather than a hidden server-side exclusion.
  *
- * The recon's sharpest finding about that default (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/02-data-grid.md` §3): their
+ * The recon's sharpest finding about that default (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md` §3): their
  * campaign entity returns only ENABLED and PAUSED, never ARCHIVED, so a month
  * total silently excludes archived spend and will not reconcile against Amazon.
  * Ours applies the same default and shows it, so removing it is one click and

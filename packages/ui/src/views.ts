@@ -1,7 +1,7 @@
 /**
  * Saved views: columns + filters + sort + group-by + date range, named.
  *
- * The recon (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/02-data-grid.md` §5) found that AdLabs has *one implicit
+ * The recon (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md` §5) found that AdLabs has *one implicit
  * remembered layout per user* -- no named presets, no per-view filter sets, no
  * sharing. Its verdict, and ours: clone the auto-persisted layout, beat it with
  * named views that bundle the lens rather than the result.
@@ -10,7 +10,7 @@
  * no profile id. "My Monday pacing view" is worth having precisely because it
  * applies to any of the profiles an agency runs; binding it to one would make
  * it fifteen views that drift apart, which is the exact failure the recon
- * records in AdLabs' dashboard duplication model (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/03-dashboards.md` §6).
+ * records in AdLabs' dashboard duplication model (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/03-dashboards.md` §6).
  *
  * ## Storage
  *

@@ -1,7 +1,7 @@
 /**
  * The strategy / objective dimension every proposal carries.
  *
- * `https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/docs/DECISIONS.md` (2026-08-14, the vision entry) makes this a constraint on
+ * `https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/docs/DECISIONS.md` (2026-08-14, the vision entry) makes this a constraint on
  * WP-07 rather than a nicety: **per-campaign strategy assignment is coming, and
  * the recommendation surfaces have to carry the dimension now so adding
  * assignment later is a data change and not a rework.** So every proposal

@@ -1,7 +1,7 @@
 /**
  * Sync status, v0.
  *
- * Operator trust starts here (https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/docs/PLAN.md, v1 module scope item 3), so the
+ * Operator trust starts here (https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/docs/PLAN.md, v1 module scope item 3), so the
  * page shows what the queue is doing and what the report requests did. Raw
  * provider and database failures stay in the worker's operational logs; this
  * user-facing boundary emits only bounded, actionable summaries. Two things it

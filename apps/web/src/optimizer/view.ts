@@ -3,13 +3,13 @@
  *
  * Pure functions from the data the page already loads — the recommendation run's
  * proposals and the profile's daily facts — to the three things the AdLabs
- * "Bid Optimizer" layout puts on screen (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/04-optimizer.md`): the KPI
+ * "Bid Optimizer" layout puts on screen (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/04-optimizer.md`): the KPI
  * tile row, the optimization-group rollup, and the settings summary chip. The
  * page renders these and computes nothing else, so the arithmetic can be tested
  * without a browser.
  *
  * The one rule that governs every number here is the grid's rule
- * (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/02-data-grid.md` §4): a ratio is recomputed from summed bases, never
+ * (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md` §4): a ratio is recomputed from summed bases, never
  * averaged. KPI values go through `deriveMetric`, which is the only path that
  * produces a ratio, so ACOS on a tile and ACOS on the grid can never disagree.
  */
@@ -18,7 +18,7 @@ import { ZERO_TOTALS } from '@wizard-ads/ui';
 import type { BaseTotals } from '@wizard-ads/ui';
 import type { ProposalView } from '../recommendations/view';
 
-/** The AdLabs stat-tile row, in its order (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/02-data-grid.md` §0). */
+/** The AdLabs stat-tile row, in its order (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md` §0). */
 export const KPI_METRICS = [
   'spend',
   'sales',

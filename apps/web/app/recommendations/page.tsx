@@ -3,12 +3,12 @@
  *
  * The whole run is loaded and shipped in one payload, like the grid: QA-ing a
  * preview means sorting the set and scanning it, and server-side pagination
- * makes that workflow impossible (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/02-data-grid.md` §6).
+ * makes that workflow impossible (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md` §6).
  *
  * The one thing this page does that the incumbent's does not: every proposal
  * arrives carrying the strategy / objective that produced it, resolved against
  * **the run's own doctrine snapshot** rather than today's document. That is the
- * constraint `https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/docs/DECISIONS.md` puts on WP-07 so per-campaign strategy
+ * constraint `https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/docs/DECISIONS.md` puts on WP-07 so per-campaign strategy
  * assignment lands later as a data change.
  *
  * And the differentiator the brief names: the provenance panel. AdLabs publishes

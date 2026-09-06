@@ -8,7 +8,7 @@
  * the other's files, and the handler can be run from the CLI against the same
  * code path an operator will later blame for a verdict.
  *
- * `https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/docs/handoffs-to-wp03.md` is the integration note.
+ * `https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/docs/handoffs-to-wp03.md` is the integration note.
  */
 import { stat } from 'node:fs/promises';
 import { basename, dirname } from 'node:path';
