@@ -46,24 +46,6 @@ export const RecommendationPreviewChildStatus = z.object({
 });
 export type RecommendationPreviewChildStatus = z.infer<typeof RecommendationPreviewChildStatus>;
 
-export const RecommendationPreviewBatchStatus = z.object({
-  batchId: z.string().min(1),
-  status: RecommendationPreviewStatus,
-  campaignCount: CampaignCount,
-  proposalsCount: Count,
-  children: z.array(RecommendationPreviewChildStatus).min(1).max(ONE_TIME_PREVIEW_CAMPAIGN_MAX),
-  executionSnapshot: OneTimeRpcSnapshot.optional(),
-}).superRefine((batch, context) => {
-  if (new Set(batch.children.map((child) => child.runId)).size !== batch.children.length) {
-    context.addIssue({ code: 'custom', path: ['children'], message: 'Preview run identities must be distinct.' });
-  }
-  if (batch.children.reduce((count, child) => count + child.campaignCount, 0) !== batch.campaignCount ||
-      batch.children.reduce((count, child) => count + child.proposalsCount, 0) !== batch.proposalsCount) {
-    context.addIssue({ code: 'custom', path: ['children'], message: 'Preview totals must match the complete run roster.' });
-  }
-});
-export type RecommendationPreviewBatchStatus = z.infer<typeof RecommendationPreviewBatchStatus>;
-
 /** Compiled execution support; deployment configuration cannot claim extra formats. */
 export const RECOMMENDATION_EXECUTION_VERSIONS = [1, 2] as const;
 export const OneTimePreviewUnavailableReason = z.enum([
@@ -76,3 +58,23 @@ export const OneTimePreviewReadiness = z.discriminatedUnion('ready', [
   z.object({ ready: z.literal(false), reason: OneTimePreviewUnavailableReason }),
 ]);
 export type OneTimePreviewReadiness = z.infer<typeof OneTimePreviewReadiness>;
+
+export const RecommendationPreviewBatchStatus = z.object({
+  batchId: z.string().min(1),
+  status: RecommendationPreviewStatus,
+  campaignCount: CampaignCount,
+  proposalsCount: Count,
+  children: z.array(RecommendationPreviewChildStatus).min(1).max(ONE_TIME_PREVIEW_CAMPAIGN_MAX),
+  executionSnapshot: OneTimeRpcSnapshot.optional(),
+  availability: OneTimePreviewReadiness.optional(),
+}).superRefine((batch, context) => {
+  if (new Set(batch.children.map((child) => child.runId)).size !== batch.children.length) {
+    context.addIssue({ code: 'custom', path: ['children'], message: 'Preview run identities must be distinct.' });
+  }
+  if (batch.children.reduce((count, child) => count + child.campaignCount, 0) !== batch.campaignCount ||
+      batch.children.reduce((count, child) => count + child.proposalsCount, 0) !== batch.proposalsCount) {
+    context.addIssue({ code: 'custom', path: ['children'], message: 'Preview totals must match the complete run roster.' });
+  }
+});
+export type RecommendationPreviewBatchStatus = z.infer<typeof RecommendationPreviewBatchStatus>;
+
