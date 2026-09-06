@@ -72,7 +72,7 @@ describe.skipIf(!available)('tag routes', () => {
       new Request('http://localhost/api/tags', {
         method: 'POST',
         headers: headers(USER_A, orgA),
-        body: JSON.stringify({ name: 'Markets', color: '#2563eb' }),
+        body: JSON.stringify({ name: 'Markets', color: 'signal' }),
       }),
     );
     expect(created.status).toBe(201);
