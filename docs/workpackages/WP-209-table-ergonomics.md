@@ -686,3 +686,248 @@ fixes adds to either list.
 
 Remaining tables inventory is still due in slice 5's close-out, together with the
 `GridViewport` measured fill carried forward above.
+
+### Slice 5: N-grams, the cockpit above the grid, first paint, and what is not converted
+
+The closing slice. Three surfaces of work and one inventory.
+
+#### N-gram drill-down (`apps/web/app/ngrams/explorer.tsx`, `page.tsx`)
+
+The gram table was already the Data Grid. The **drill-down** — the search terms
+behind a selected gram, and the population "propose as negative" acts on — was a
+hand-rolled `<table>` printing `row.cost.toFixed(2)`: a bare number with no
+currency, no thousands separator, no locale and no absent marker, beside raw
+`clicks`, `purchases7d` and `sales7d`, with no derived ratio at all.
+
+It is now the same Data Grid, with its columns taken from the shared registry
+(`allMetricColumns`), so spend and sales are the profile's currency through
+`formatMoney`, clicks and orders are grouped integers, and CVR, RPC and ACOS are
+recomputed from the summed bases at the level on screen rather than printed from
+a row. Base sums only, `comparison: null`, `units` left at zero because the
+search-term fact does not carry it and no column shows it — the same call
+`src/ngrams/rows.ts` already makes for grams.
+
+- **Selection is unchanged in substance and stricter in fact.** The proposal set
+  is still the workspace's own `selectedTerms`; the grid paints it. The header
+  checkbox takes or clears every term behind the gram, and ids arriving from the
+  grid's Space key are filtered through the term map, so the grid's selection
+  and the "propose selected as negatives" population cannot disagree — the same
+  guard the optimizer and the queue apply.
+- **Every count on the screen is formatted once**, through `formatInteger`: the
+  gram count, the filtered gram count, the term count and the select-all label.
+- **The gram grid gains the slice 2 chrome** it never had: `GridViewport` with a
+  420 floor (the height it shipped with), the density select and the fullscreen
+  toggle, through `GridToolbar`'s own controls. The drill-down keeps a bounded
+  320 px box: two grids competing for one viewport leaves neither usable.
+- **The page is full width** (`page.tsx`), like `/grid`, `/optimizer` and
+  `/recommendations`. The `96rem` centred column is gone.
+
+Evidence: `apps/web/app/ngrams/explorer.test.ts`, new, 3 tests, jsdom on the real
+component through the `initialGridRect` seam. Run against the pre-slice explorer
+(`git stash push apps/web/app/ngrams/explorer.tsx`) all three fail with `Error:
+the drill-down is not a Data Grid`; with the change, 3 of 3. They assert the
+formatted cells (`$1,234.50`, `$9,876.25`, `4,000`, `1,000`, `25.0%`, `$2.47`,
+`12.5%`) against the raw numbers the old table printed, that the section holds no
+`<table>` at all, 400 terms in one continuous scroll with a viewport in the DOM
+and a header click reversing the order, and that "propose" posts exactly the term
+that was ticked.
+
+#### Tiles and chart above `/grid` (`apps/web/app/grid/page.tsx`)
+
+WP-24 ordered a KPI tile row and a trend chart for this page and it was never
+delivered here. It is the same `Cockpit` and the same `loadProfileDailyRows` the
+dashboard and the optimizer mount — one component, one loader, three pages — with
+the dashboard's coverage clamp, so a profile whose facts begin after the settled
+window opens is not described as sixteen settled days while four of them exist.
+
+It is inside a `Suspense` boundary rather than awaited in the page body. The rows
+the operator came for arrive over `/api/grid/rows`, which the browser cannot
+request until the document has streamed; a profile-daily query awaited above the
+workspace would put itself in front of that request for nothing. A profile with
+no daily facts renders nothing rather than an empty chart.
+
+Evidence: `grid.spec.ts` gains "grid carries the performance tiles and trend
+above the rows, streamed outside the row path" — the cockpit region is visible,
+carries the `Performance trend` heading and at least one tile, its box ends above
+the grid viewport's, the rows still reach `data-ready="true"`, and the browser
+still makes exactly one `/api/grid/rows` request. Against the pre-slice page it
+fails at `expect(locator).toBeVisible()` / `element(s) not found` for the cockpit
+region. `apps/web/src/e2e-suite-registry.ts` moves `auth` to `expectedTests: 7`
+and the conserved total from 78 to 79, per the ratified exception; the suite runs
+7 of 7.
+
+#### Grid first paint (`packages/ui/src/views.ts`, `apps/web/app/grid/grid-client.tsx`)
+
+Two gates delayed the first usable frame and one of them was a promise around a
+synchronous read.
+
+- **Synchronous cache read.** `LocalViewStore` now also implements
+  `SynchronousLayoutSource` (`cachedLayout`), and the workspace restores the
+  remembered layout in a state initializer, so the operator's own columns,
+  filter, sort, grouping and density are on the first frame the rows allow
+  instead of behind a "Restoring your saved grid layout…" render. It is
+  hydration-safe by construction: this subtree renders only after the client's
+  own row request resolves, so there is no server HTML for it to disagree with,
+  and the browser store is constructed only when `window` exists.
+- **The asynchronous port is untouched.** `cachedLayout` is an optional
+  capability, not a required method, precisely so a remote store is not forced to
+  invent a synchronous lie. A store without it — `MemoryViewStore`, the tests'
+  `DeferredViewStore`, any future database-backed store — takes exactly the path
+  it took before, gate and all. Cancellation on a scope change is unchanged, and
+  a client-side entity switch gets the same synchronous read from inside the
+  effect.
+- **Late restoration can no longer overwrite the operator.** A scope restored
+  synchronously never asks for `lastLayout` at all, so there is no late answer to
+  overwrite anything with. `viewReady` still opens only for the matching
+  entity/deep-link scope. A campaign deep link (`?campaign=`) is never restored
+  over: it names the scope the operator asked for.
+- **Debounced persistence.** `LayoutWriteBuffer` writes the first change of a
+  gesture immediately — so a single click is persisted at once and a reader that
+  looks straight after it sees the truth — and collapses everything inside a
+  200 ms window into one trailing write. It flushes on a scope change and on
+  unmount, because the state the operator ended on must never be the one that is
+  dropped. A rejecting store is caught: losing a preference is not worth an
+  unhandled rejection in the middle of a resize.
+
+Evidence, each run with the change reverted (fails, message quoted) and applied:
+
+- `packages/ui` `views.test.ts`, 4 new tests: `cachedLayout` agrees with
+  `lastLayout` and keeps every defence (wrong entity, unknown density, corrupt
+  JSON all yield null); `hasCachedLayout` is false for `MemoryViewStore` and
+  null; forty simulated mouse moves produce one leading and one trailing write
+  carrying the last width; `flush()` writes the queued state and cancels the
+  window; a rejected write does not stop the next one.
+- `apps/web` `grid-client.test.ts`, 2 new tests. "opens on the remembered layout
+  with no restoring state when the store can answer synchronously" — reverted:
+  `expected <p role="status" …(2)></p> to be null`, the restoring gate. It also
+  drives a late, disagreeing `lastLayout` answer in after the operator has
+  sorted, and the operator's sort stands. "writes the first layout change at once
+  and collapses the rest of a burst into one write" — against a mutant that
+  restores `void store?.rememberLayout(next)` in place of the buffer:
+  `expected [ { id: 'default', …(10) }, …(2) ] to have a length of 1 but got 3`.
+
+**First paint on the reference fixture**, `pnpm --filter @wizard-ads/web
+test:e2e:grid-performance` (3,597 seeded search-term rows, disposable local
+Postgres 17, `usableMs` = navigation start to the export button reporting the
+complete set). Interleaved before/after runs, alternating on the same machine
+because the run-to-run spread turned out to be larger than the change:
+
+| Run | before (HEAD before slices 5b/5c) | after |
+|---|---|---|
+| pair 1 | 1,473.8 ms | 1,537.3 ms |
+| pair 2 | 1,616.3 ms | 1,454.3 ms |
+| pair 3 | 1,368.6 ms | 1,584.1 ms |
+| block of five, before | 1,490.2 / 1,583.2 / 1,905.0 / 1,500.8 / 2,020.9 ms | — |
+| block of five, after | — | 1,384.0 / 1,410.9 / 1,581.1 / 1,866.9 / 1,492.9 ms |
+
+Median before 1,490 ms, median after 1,493 ms, against the suite's 2,000 ms
+reference budget. The honest reading is **no regression and no demonstrable
+improvement in this suite**, and the reason is worth stating rather than hiding:
+the fifth "before" run *failed the suite at 2,020.9 ms on the unchanged tree*
+(one-minute load average 4.5), so this measurement is dominated by the dev
+server and the 1.29 MB row payload, not by the layout gate. It also cannot show
+the synchronous-cache benefit at all: the suite opens a fresh browser context
+with no remembered layout, so `cachedLayout` returns null there and the code path
+under test never fires. The deterministic artifacts for that path are the two
+jsdom tests above — the gate is not rendered, and `lastLayout` is not called.
+Initial document 80,764 → 81,513 bytes (the suspended cockpit's shell), one row
+request, 3,597 rows, exports identical in both.
+
+#### `GridViewport` measured fill, carried from the slice 3 and slice 4 reviews
+
+Resolved, and measured rather than reasoned about. The expression is
+`viewportHeight - documentTop - bottomGap` in document coordinates, so on a page
+whose grid starts below the fold it resolves negative and clamps to the floor.
+Adding the tile row and the trend chart made `/grid` such a page, and its default
+floor of 320 was *smaller* than the height the grid had before them — so this
+slice's own change is what forced the decision. `/grid` now takes an explicit
+560 floor, the same number and the same reason as the optimizer's since slice 3.
+
+The measurement the reviews asked for is in `grid.spec.ts`: at the suite's real
+1280x720 viewport it reads the grid viewport's own rectangle and asserts both
+that the grid keeps 560 px and that its bottom edge is at or below the bottom of
+the window — no screen space is left unused underneath it, the page scrolls to
+the rest. Without the floor the same assertion fails at
+`expect(received).toBeGreaterThanOrEqual(expected)` with the 320 default. All
+four converted surfaces now resolve the fill to their floor, which makes the
+floor the design and fullscreen the gesture that gives a table the whole screen.
+Re-measuring `rect.top` viewport-relatively on scroll is still refused, for the
+slice 4 reason: it is a feedback loop in ordinary document flow.
+
+#### Also fixed here, previously reported outside the owned files
+
+- `apps/web/e2e/optimization-groups.spec.ts` (manager-ratified for this slice)
+  had been red since slice 3 removed the 25-row page slice: it asserted the page
+  window `1–25 of 56` and turned pages with `Next →`. Confirmed still failing
+  before the edit — 1 passed, 1 failed at line 72, element not found — and 2 of 2
+  after. The four edits are exactly the ones the slice 3 close-out listed: the
+  count becomes `56 of 57 campaigns` from `.wa-optimizer-campaigns__shown`, the
+  three `Next →` clicks become a narrowed `Find campaign` (what the surrounding
+  assertions already did), and "across pages" in the name becomes "across a
+  filter". What the test is about is untouched: the header checkbox still owns
+  the complete filtered eligible population, hidden selections survive a narrowed
+  filter, `Clear selected` still empties the whole transient set, and the preview
+  scope, fingerprint and stored-batch assertions are unchanged. No test was added
+  or removed, so that suite stays at `expectedTests: 2`.
+- `apps/web/app/optimizer/loading.tsx` used the shared 84rem `tokens.page` measure
+  while the loaded optimizer is full width, so the route flashed a narrow column
+  and jumped wider. It now takes the measure of the page it stands in for, with
+  `app/optimizer/loading.test.ts` as the artifact (reverted: `expected '<main
+  style="margin:0 auto;max-width:…' not to contain 'max-width:84rem'`).
+
+#### Operator tables this package did **not** convert
+
+Four surfaces were in scope and four were delivered. These eight were not, and
+none of them should be reported as done. Each is a follow-up, not a defect.
+
+| Surface | File | State, in one line |
+|---|---|---|
+| Creative performance | `apps/web/app/creative/creative-performance.tsx` | Two `wa-table` tables (creatives, and an ad-level drill-down inside an expanded row) with no sorting, no grouping and no virtualisation; the drill-down's expand-in-place model is the part that does not map onto a uniform-height virtual grid without a design decision. |
+| Dayparting | `apps/web/app/dayparting/page.tsx` | Not a table at all: a day-of-week × hour heatmap plus a proposed-schedule list, filtered by a server `<form method="get">`. The grid is the wrong shape for the heatmap; the schedule list below it is the convertible half. |
+| Query intelligence | `apps/web/app/query-intelligence/workspace.tsx` | Three `wa-table` tables, two of them hard-sliced in the client (`queryLimit` 250, `ppcLimit` 150) with the count stated honestly; a conversion would remove the slice, which is exactly the change the optimizer needed. |
+| Experiments | `apps/web/app/experiments/list.tsx` | A `<ul>` of experiment cards, not a table — status, window and scope per card. Converting it is a product decision about whether the roster should be scannable as rows, not a mechanical port. |
+| Time machine | `apps/web/app/time-machine/page.tsx` | Batch history navigation plus day-grouped change sections, paged server-side at `TIMELINE_PAGE_SIZE` 50 with an older/newer window. The pagination is a real server boundary over an unbounded history, so removing it is not free the way the optimizer's client-side slice was. |
+| Crosscheck | `apps/web/app/crosscheck/panel.tsx` | Two small evidence tables (per-day verdicts, per-week campaign verdicts) rendered from a bounded comparison artifact. Small enough that the grid's machinery would be the larger half of the screen. |
+| Tags | `apps/web/app/tags/tag-manager.tsx` | A nested `<ul>` tag tree and a campaign assignment list. A tree of tags is not a row set; the grid's grouping replaces rows with aggregates, which is the wrong model for editing a hierarchy. |
+| Sync status | `apps/web/app/sync-status/page.tsx` | Three plain inline-styled tables (profile freshness, job queue, report ledger). Deliberately plain and read-only; the parsed/loaded reconciliation columns matter more than the ergonomics, and it is the surface an operator reads when something is already wrong. |
+
+Still outside this package's owned files, reported and not fixed: the dead
+`.wa-optimizer-campaigns__tablewrap` / `__pagination` / `__empty` and
+`.wa-review__lane` / `__lane-head` / `__clusters` / `__cluster` /
+`__cluster-count` / `__tablewrap` rules in `apps/web/src/ui/theme.css` — all
+still present in the stylesheet and referenced by no markup, confirmed by grep on
+the delivered tree. Nothing in this slice adds to that list; the n-gram
+conversion introduced no CSS of its own.
+
+#### Evidence on the delivered tree
+
+With `WIZARD_ADS_TEST_DATABASE_URL` and `DATABASE_URL` both on the disposable
+local Postgres 17:
+
+- `pnpm typecheck` 22 of 22, `pnpm lint`, `pnpm hygiene` (1,489 of 1,490 tracked
+  files, clean) and `git diff --check` clean.
+- `packages/ui`: `vitest run --exclude src/pipeline.perf.test.ts` 210 of 210 (was
+  206; four new in `views.test.ts`).
+- `apps/web`: `vitest run` 692 of 692 functional tests with the one known
+  `verifier-subprocess` load flake, which passes 3 of 3 in isolation — the same
+  flake slice 3 recorded. `vitest run app/grid` 17 of 17, `app/ngrams` 3 of 3,
+  `app/optimizer` 29 of 29 including the new loading-width test,
+  `src/e2e-suite-registry.test.ts` 4 of 4.
+- e2e `auth` 7 of 7, `tags-goto` 33 of 33, `optimization-groups` 2 of 2,
+  `grid-performance` 1 of 1.
+
+Performance, same invocation and environment as slices 1 to 4 (`vitest run
+src/pipeline.perf.test.ts --maxWorkers=1`, three runs; one-minute load average
+7.1 falling, the highest of any slice because the full web suite had just run):
+
+| Run | Line 158 best-of-5 (budget 125 ms) | Other nine assertions |
+|---|---|---|
+| slice 5, run 1 | 154.3 ms | pass |
+| slice 5, run 2 | 159.0 ms | pass |
+| slice 5, run 3 | 155.3 ms | pass |
+
+Line 158 remains the pre-existing failure inside the slice 1–4 range (144.6 to
+160.9 ms). This slice added `SynchronousLayoutSource` and `LayoutWriteBuffer` to
+`views.ts` and touched neither `pipeline.ts` nor `filter-options.ts`; the
+threshold was not changed. Resolving that baseline is still open for whoever
+touches the pipeline.
