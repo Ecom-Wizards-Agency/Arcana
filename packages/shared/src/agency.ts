@@ -148,3 +148,9 @@ export const TeamInvitationDeliveryContext = z.object({
   email: z.email(),
 }).strict();
 export type TeamInvitationDeliveryContext = z.infer<typeof TeamInvitationDeliveryContext>;
+
+/** Provider acceptance is not proof of inbox delivery or agency membership. */
+export const InvitationDeliveryStatus = z.enum([
+  'accepted_by_provider', 'existing_account', 'unavailable', 'failed', 'uncertain',
+]);
+export type InvitationDeliveryStatus = z.infer<typeof InvitationDeliveryStatus>;
