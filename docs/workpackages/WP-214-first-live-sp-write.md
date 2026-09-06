@@ -42,12 +42,44 @@ tests. Land contracts and fixtures first; integrate the page once Claude's compo
 Keep Time Machine actor data and original/inverse links stable while Claude renders them.
 The approval-screen acceptance check remains unmet until the UI and browser flow pass.
 
+The contract and read implementation are committed at `10bd35b`, `72c98a5` and `94f2323`.
+The server loader is `loadSpWriteApproval(headers, { profileId, planId })`; it resolves
+authentication from request headers and calls `readRecordedSpWritePreview` directly.
+Browser refresh uses `GET /api/sp-writes/preview?profileId=...&planId=...`, with no-store
+responses. `SpWriteRecordedPreview` supplies `preview`, `profile`, `currentRows`,
+`freshness` and nullable `admission`. Frozen expected/proposed amounts remain distinct from
+current synchronized observations. A current read is not approval authority; confirmation
+still rechecks the plan transactionally.
+
+Claude's `ApprovalScreen` takes `{ review: SpWriteRecordedPreview }`. The server page will
+load that prop and render the client after the component exists. Confirmation uses the
+existing POST `/api/sp-writes/approve` with the recorded binding, manual mode and a stable
+`approvalRequestId`; retain that identity across uncertain-response retries. Use the returned
+execution and plan IDs with GET `/api/sp-writes/status`. A prior admission from a reload
+resumes status display instead of creating a new confirmation. Opening or refreshing the
+screen never calls the recording POST.
+
+`spWriteApprovalFixtures()` provides current, stale, unavailable, queued and inverse examples,
+plus a lost-response/recovery sequence. Its synthetic plan and inverse fingerprints verify.
+`seedRecordedSpWritePreview(testDatabase)` creates one additional, recorded and unapproved
+preview and returns the actor, profile, plan, review and `/writes/[planId]?profile=...` path.
+It uses the existing synthetic tenant fixture, which also contains unrelated historical test
+evidence. Assertions count this new plan's one action, zero receipts and zero outbox rows.
+Keep presentation fixtures outside production imports; the database fixture stays in e2e support.
+
 The repair slice also owns `apps/worker/src/store.ts`,
 `apps/worker/src/sp-write-outbox/composition.ts` and focused tests; the unhosted
 `20260905040000` migration and revision tests; approval retry query/test; Time Machine
 query/test; `eslint.config.js`, the write blast test, the DB test harness and
 `.github/workflows/ci.yml` and `turbo.json` test-environment forwarding. The trusted-kernel workflow and Claude's client/design files
 remain outside this scope.
+
+The terminal-observation repair also owns the existing SP adapter/codec and their tests,
+`apps/worker/src/sp-write-outbox/{artifacts,loop}.ts` and tests, the shared observed-state and
+mirror contracts, `packages/db/src/queries/sp-write-mirror.ts` and tests, and the still-unhosted
+`20260905030000` mirror RPC. Absent rows after a complete provider read and archived rows are
+different facts. Failed reads must never fabricate absence; archived state is read-only and
+cannot widen the writable-state contract. This correction adds no migration file.
 
 Source PR:
 

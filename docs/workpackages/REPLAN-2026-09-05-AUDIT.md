@@ -2,6 +2,37 @@
 
 ## Implementation resumed, 2026-09-06
 
+### Committed source checkpoint
+
+`37025c2` fixes revision purge and approval retry; `4f10487` requires DB evidence in CI;
+`8a22152` couples the write worker to its configured store; `721e0e8` fixes date-filtered
+Time Machine suppression. Three new timeline regressions failed before that fix and all
+15 timeline tests pass afterward, including cursor-independent deduplication.
+
+The recorded-preview contract, DB reader and web handoff are committed at `10bd35b`,
+`72c98a5` and `94f2323`. Nine shared tests, nine database tests and seven web tests pass.
+The DB suite proves one read-only repeatable snapshot during a concurrent committed edit;
+the HTTP suite proves repeated GET/server loads leave ledger counts unchanged. Forward,
+MCP and inverse plans preserve verified frozen evidence and prior admission.
+Initial web integration exposed a nonexistent `profile.label` column; the reader now derives
+the display label from the existing account-name field, and the HTTP tests pass.
+
+`87243b8` adds executable MCP root/subpath provider-import prohibitions and pins existing
+root provider consumers individually. The test first exposed that ESLint's existing helper
+blocked roots only; MCP now includes subpath patterns. Five blast tests and the existing
+runtime-consumer assertion pass. Production worker registration remains absent.
+
+Presentation fixtures cover current, stale, unavailable, queued and inverse review with
+verified plan fingerprints and a lost-response sequence. The browser seed produces one new
+plan with one action and no approval/outbox rows for that plan. Existing tenant fixture history
+is counted separately. Web typecheck and focused lint pass. Hygiene scans 1563 files cleanly
+with the operator's private denylist present. None of these results proves a rendered approval
+screen or a deployed marketer release; those remain pending Claude integration and activation.
+
+`918f7a5` adds read-only archived-keyword observation support without widening mutable states.
+All 36 focused write/mirror contract tests pass. Adapter, observation loop and unhosted mirror
+RPC consumers are still being implemented and tested; no activation is authorized here.
+
 Verified repairs in the current working tree:
 
 - Revision deletion: the new regression failed with `23503` before the fix. Cascading only
