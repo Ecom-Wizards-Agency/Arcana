@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./sp-write-adapter": "./src/sp-write-adapter.ts",
+    "./sp-creation-adapter": "./src/sp-creation-adapter.ts",
     "./asset-library": "./src/asset-library.ts"
   },
   "scripts": {

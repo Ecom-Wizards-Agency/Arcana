@@ -4,6 +4,33 @@
 
 ### Latest preparation checkpoint
 
+**SP creation transport implemented and tested:** shared prerequisite `1c53d80` lands before
+the inert `./sp-creation-adapter` export. `prepareNode` returns digest/positions without I/O;
+`executeOneAttempt` rejoins authority, frozen credential scope and exact recompiled request,
+then performs at most one POST. The private decoder enforces all nine endpoint spellings,
+lossless string IDs, duplicate-member/index/count rejection and supplied parent-ID agreement.
+It records sanitized outcome evidence and a digest of status/request binding/exact response bytes.
+Whole-request definite refusals remain distinct; malformed, unknown and transport failures never
+cause another create. Returned representations are not authoritative observations.
+
+Adversarial review found and reproduced five failed assertions: expiry during the header/fetch
+microtask gap; conflicting returned parent identity; valid400 with an empty error list; and two
+contradictory/unrecognized row error labels. All are corrected. The final fetch wrapper checks
+the deadline synchronously with no intervening await before the underlying fetch. Row errorType
+agreement is a conservative local rule because S1 leaves that string open. Independent reviewers
+verified the corrections and reported no residual finding within those bounded scopes.
+
+Verification: **157 focused tests** (40 compiler, 50 adapter, 67 decoder), **566 total Ads API
+tests**, **186 shared tests**, **22 workspace typechecks** and **five import-boundary tests**
+pass. Private evidence under `_local/sp-creation-adapter-design/`: `review-regressions-before.log`,
+`focused-tests.log`, `ads-api-tests-verified.log`, `shared-tests.log`, `workspace-typecheck.log` and
+`import-boundary-tests.log`. A final fixture-import cleanup initially failed the codec suite; the duplicate type import was
+removed, then all 566 Ads API tests and package typecheck/lint passed on the corrected source.
+The existing compiler test data was extracted into a synthetic shared
+fixture without changing production compiler behavior. No database migration, runtime registration,
+Amazon call or production setting change occurred. Durable exclusive admission, current gates,
+observation-only recovery, campaign/frontend contracts and live checks remain required.
+
 **SP transport design and prerequisite:** three independent designs were synthesized in
 `docs/design/WP-215-SP-TRANSPORT.md` under the authorized implementation plan. The shared intent
 verifier now rejects reused call/attempt identities from a different pending node before I/O;
