@@ -54,7 +54,7 @@ test('edits a canonical local weekday schedule and still queues a manual preview
   }
 });
 
-test('selects filtered campaigns across pages and polls the exact read-only preview scope', async ({
+test('selects filtered campaigns across a filter and polls the exact read-only preview scope', async ({
   page,
 }) => {
   const state = await readState();
@@ -69,7 +69,12 @@ test('selects filtered campaigns across pages and polls the exact read-only prev
 
   const search = page.getByRole('search', { name: 'Filter optimizer campaigns' });
   await search.getByLabel('Find campaign').fill(FILTERED_CAMPAIGN_PREFIX);
-  await expect(page.getByText(`1–25 of ${FILTERED_CAMPAIGN_COUNT}`, { exact: true })).toBeVisible();
+  // WP-209 removed the 25-row page slice: the grid holds the whole filtered
+  // set and the workspace counts it against the campaigns the loader returned.
+  // The tenant fixture's own campaign is the extra one.
+  await expect(page.locator('.wa-optimizer-campaigns__shown')).toHaveText(
+    `${FILTERED_CAMPAIGN_COUNT} of ${FILTERED_CAMPAIGN_COUNT + 1} campaigns`,
+  );
 
   const selectFiltered = page.getByTestId('optimizer-select-filtered');
   await expect(selectFiltered).toHaveAccessibleName(
@@ -80,13 +85,15 @@ test('selects filtered campaigns across pages and polls the exact read-only prev
     `${FILTERED_CAMPAIGN_COUNT} campaigns selected`,
   );
 
-  // The header owns the complete filtered result, not only the first 25 rows.
-  await page.getByRole('button', { name: 'Next →', exact: true }).click();
-  const pageTwoCampaign = page.getByRole('checkbox', {
+  // The header owns the complete filtered result, not the rows the virtualizer
+  // happens to have rendered. Narrowing to one campaign is how a row far down
+  // the set is reached now that there is no page to turn.
+  await search.getByLabel('Find campaign').fill(filteredCampaignName(26));
+  const distantCampaign = page.getByRole('checkbox', {
     name: `Select ${filteredCampaignName(26)} for this preview`,
   });
-  await expect(pageTwoCampaign).toBeChecked();
-  await pageTwoCampaign.uncheck();
+  await expect(distantCampaign).toBeChecked();
+  await distantCampaign.uncheck();
   await expect(page.getByTestId('optimizer-selection-count')).toContainText('55 campaigns selected');
 
   // Narrowing the view preserves every hidden selection. Clear selected must
@@ -99,20 +106,20 @@ test('selects filtered campaigns across pages and polls the exact read-only prev
   await page.getByRole('button', { name: 'Clear selected', exact: true }).click();
   await expect(page.getByTestId('optimizer-selection-count')).toHaveText('No campaigns selected.');
 
-  // Build an explicit subset from three different pages after the global clear.
-  await search.getByLabel('Find campaign').fill(FILTERED_CAMPAIGN_PREFIX);
+  // Build an explicit subset from three widely separated rows after the global
+  // clear, each reached by narrowing the filter to it.
+  await search.getByLabel('Find campaign').fill(filteredCampaignName(1));
   await page.getByRole('checkbox', {
     name: `Select ${filteredCampaignName(1)} for this preview`,
   }).check();
+  await search.getByLabel('Find campaign').fill(FILTERED_CAMPAIGN_PREFIX);
   await expect(selectFiltered).toHaveJSProperty('indeterminate', true);
-  await page.getByRole('button', { name: 'Next →', exact: true }).click();
-  await page.getByRole('checkbox', {
-    name: `Select ${filteredCampaignName(26)} for this preview`,
-  }).check();
-  await page.getByRole('button', { name: 'Next →', exact: true }).click();
-  await page.getByRole('checkbox', {
-    name: `Select ${filteredCampaignName(51)} for this preview`,
-  }).check();
+  for (const index of [26, 51]) {
+    await search.getByLabel('Find campaign').fill(filteredCampaignName(index));
+    await page.getByRole('checkbox', {
+      name: `Select ${filteredCampaignName(index)} for this preview`,
+    }).check();
+  }
 
   await expect(page.getByRole('radio', { name: 'Selected campaigns (3)', exact: true }))
     .toBeChecked();
