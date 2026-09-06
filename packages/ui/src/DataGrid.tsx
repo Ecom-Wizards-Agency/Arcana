@@ -123,6 +123,37 @@ export interface DataGridProps {
   emptyMessage?: string;
   /** Shown when the period itself produced no rows. */
   noDataMessage?: string;
+  /**
+   * What one row is, in the footer's own count. Default `rows`.
+   *
+   * A grid holding a capped slice of a larger population is not showing
+   * "rows", it is showing *loaded* rows, and the footer is the count sitting
+   * directly under the table — closer to the operator's eye than any notice
+   * the page prints above it. A host that had to cap its query says so here so
+   * the two numbers cannot be read as contradicting each other.
+   */
+  rowNoun?: string;
+  /**
+   * A qualifier printed after the footer counts, for a grid whose rows are not
+   * the whole population: `40 in this run`. Only the host that issued the
+   * capped query knows this; the grid can only count what it was handed.
+   */
+  populationNote?: string;
+  /**
+   * What "the operator changed what is shown" means to this host, in place of
+   * the matched row count.
+   *
+   * The grid returns to the top when the ordering changes, and it infers that
+   * from `model.matched` because a filter is normally the only thing that
+   * moves it. On a decision queue it is not: taking a proposal drops it out of
+   * a `Status = proposed` filter, `matched` falls, and the operator working
+   * down the list is thrown back to row zero by their own decision. A host
+   * that knows which changes are the operator re-asking the question — and
+   * which are rows leaving because their data moved — passes a key that
+   * changes only for the former. Sorting and grouping still reset regardless:
+   * those really are a new ordering.
+   */
+  filterKey?: string;
 }
 
 const helper = createColumnHelper<GridRow>();
@@ -149,6 +180,9 @@ export function DataGrid({
   renderHeader,
   emptyMessage = 'No rows match this filter.',
   noDataMessage = 'Nothing was reported at this level for this period. Amazon omits zero-impression rows, so this is either a period with no activity or a report that has not loaded — the freshness banner says which.',
+  rowNoun = 'rows',
+  populationNote,
+  filterKey,
 }: DataGridProps): ReactNode {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const resolvedRowHeight = rowHeight ?? rowHeightFor(density);
@@ -299,8 +333,13 @@ export function DataGrid({
    * arbitrary slice of the answer you just asked for. The scroll offset is only
    * meaningful relative to an ordering, so when the ordering changes the offset
    * stops meaning anything -- and so does the row that held the tab stop.
+   *
+   * `filterKey` is how a host says which row-set changes are the operator
+   * re-asking the question. Without one the matched count stands in for that,
+   * which is right for a metric grid and wrong for a queue whose rows leave
+   * the filtered set because the operator just decided them.
    */
-  const orderKey = `${sort.map((rule) => `${rule.columnId}:${rule.direction}`).join(',')}|${model.matched}|${model.groupBy.join(',')}`;
+  const orderKey = `${sort.map((rule) => `${rule.columnId}:${rule.direction}`).join(',')}|${filterKey ?? model.matched}|${model.groupBy.join(',')}`;
   const [activeIndex, setActiveIndex] = useState(0);
   const [focusWithin, setFocusWithin] = useState(false);
   const pendingFocus = useRef<number | null>(null);
@@ -493,7 +532,8 @@ export function DataGrid({
         <span>
           {model.grouped
             ? `${visibleRows.length === model.shown ? formatInteger(model.shown, locale) : `${formatInteger(visibleRows.length, locale)} visible of ${formatInteger(model.shown, locale)}`} hierarchy rows · ${formatInteger(model.exported, locale)} deepest groups · ${formatInteger(model.matched, locale)} matched source rows of ${formatInteger(model.total, locale)}`
-            : `${formatInteger(model.shown, locale)} of ${formatInteger(model.total, locale)} rows`}
+            : `${formatInteger(model.shown, locale)} of ${formatInteger(model.total, locale)} ${rowNoun}`}
+          {populationNote === undefined ? null : ` · ${populationNote}`}
           {selected.size === 0 ? null : (
             <>
               {' · '}

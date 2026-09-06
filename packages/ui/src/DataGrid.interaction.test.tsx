@@ -8,6 +8,7 @@
  * virtualizer is handed one viewport-sized box and everything downstream is
  * the production component.
  */
+import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { DataGrid } from './DataGrid.js';
@@ -404,5 +405,56 @@ describe('DataGrid header affordances', () => {
     const spend = screen.getByRole('columnheader', { name: 'Spend' });
     expect(spend.getAttribute('aria-sort')).toBe('descending');
     expect(within(spend).getByTestId('sort-direction-spend').textContent).toContain('▼');
+  });
+});
+
+describe('DataGrid footer counts and scroll reset', () => {
+  it('counts a capped row set in the host\'s own words', () => {
+    // The footer is the number directly under the rows. A grid holding a
+    // capped slice must not print it as if it were the population, whatever a
+    // notice further up the page says.
+    renderGrid(12, { rowNoun: 'loaded rows', populationNote: '40 in this run' });
+    expect(screen.getByTestId('grid-shell').lastElementChild?.textContent).toBe(
+      '12 of 12 loaded rows · 40 in this run',
+    );
+
+    cleanup();
+    renderGrid(12);
+    expect(screen.getByTestId('grid-shell').lastElementChild?.textContent).toBe('12 of 12 rows');
+  });
+
+  it('keeps the scroll when rows leave a set the operator never re-filtered', () => {
+    // Without `filterKey` the grid reads any change in the matched count as
+    // "the operator re-filtered" and returns to the top. On a decision queue
+    // the rows leave because the operator decided them, and being thrown back
+    // to row zero by your own decision is the opposite of what you asked for.
+    const rows = syntheticSearchTermRows(400, { seed: 20260905 });
+    const sort = [{ columnId: 'spend', direction: 'desc' } as const];
+    const grid = (data: typeof rows, filterKey: string): ReactElement => (
+      <DataGrid
+        model={buildGridModel(data, { sort })}
+        columns={visible}
+        currencyCode="USD"
+        sort={sort}
+        onSortChange={() => {}}
+        height={VIEWPORT.height}
+        initialRect={VIEWPORT}
+        filterKey={filterKey}
+      />
+    );
+
+    const { rerender } = render(grid(rows, 'status=proposed'));
+    const scroller = (): HTMLElement => screen.getByTestId('grid-scroller');
+    scroller().scrollTop = 4_000;
+    fireEvent.scroll(scroller());
+    expect(scroller().scrollTop).toBe(4_000);
+
+    // Ten rows decided out of the filtered set. The question is unchanged.
+    rerender(grid(rows.slice(10), 'status=proposed'));
+    expect(scroller().scrollTop).toBe(4_000);
+
+    // Moving the filter is a new question, and that still starts at the top.
+    rerender(grid(rows.slice(10), 'status=accepted'));
+    expect(scroller().scrollTop).toBe(0);
   });
 });
