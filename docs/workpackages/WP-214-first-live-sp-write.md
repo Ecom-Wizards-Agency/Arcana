@@ -268,7 +268,7 @@ DDL lock. These unhosted files are corrected before their first application; app
 bytes remain immutable. The second window is not purely additive behavior: it renames and
 revokes functions and permissions. Rehearse index-build duration, lock acquisition and the
 versioned application functions against the first window's resulting 46-file prefix plus
-the verified operational ACL repair described above. The
+the verified operational ACL repair and unused-login/default-grant restriction described above. The
 reviewed bundle policy must pin all 56 files with exact bytes and digests. Rehearsal
 must cover the stricter approval behavior and mirror triggers as well as creation of new
 objects. The first four precede any web revision containing the native Time Machine
@@ -279,6 +279,13 @@ The versioned
 application entry must exist before exposing approval. Every ordinary
 entity-sync owner must receive the keyword-mirror capability before enabling native writes.
 Do not mix this second window into WP-207 or use source tests as hosted-application evidence.
+
+Fresh read-only history reconciliation recovered all 46 current recorded bodies. Ten differ
+from the old policy; nine differences are blank lines, while hardening contains the expanded
+current-source implementation. The 46-file baseline is 672,673 bytes; with the same ten additions,
+the observed input set is 56 files / 921,245 bytes. Keep both old policies unchanged and review
+the reconciled baseline separately. The audit records exact private evidence and rehearsal
+status. This inventory is not authorization to apply the second window.
 
 The same source branch also carries the five WP-217 migration files, `20260906000000`
 through `20260906040000`, explicitly inventoried in

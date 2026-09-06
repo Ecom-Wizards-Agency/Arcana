@@ -9,10 +9,20 @@ Preparation checkpoint: `pnpm migration:write-window -- build ...` / `verify ...
 separate fixed 46+10 policy in `tools/hosted-migration-bundle/src/write-window-policy.ts`.
 It takes the same exact flags as `migration:bundle`; the original first-window command is
 unchanged. Build still requires a reviewed clean main revision and all fetched baseline bytes.
-The repository-schema upgrade test passes, but historical source differs from the hosted pins.
-The offline reconstruction has only 45/46 baseline files; the historical experiments SQL is
-missing. Do not stage that incomplete directory, substitute current source, or weaken the pins.
-The exact fetched-baseline rehearsal and host-specific pre/post checks remain prerequisites.
+The repository-schema upgrade test passes. Read-only recovery now supplies all 46 old pinned
+files, including the previously missing experiments SQL. Fresh hosted evidence nevertheless
+matches only 36 of those pins. All ten different recorded bodies were recovered and hash-checked:
+nine differ from the old pins only by blank lines; the hardening file contains the expanded
+current-source implementation. The actual 46-file history totals 672,673 bytes. Together with
+the unchanged ten additions it totals 56 files / 921,245 bytes. Preserve the old fixed policies;
+a distinct reviewed baseline and rehearsal are required. Do not use the old command's success
+on old inputs as evidence for the current hosted database.
+
+The starting state also includes the completed eight-function ACL repair and the separately
+authorized login/default-grant restriction. Both were operational changes without migration-ledger
+entries. The local rehearsal uses recovered SQL and captured role/grant facts; platform fixture
+doubles are not a clone of hosted Supabase. Host-specific pre/post checks and index/lock timing
+remain prerequisites. Evidence and the current rehearsal status are in the replan audit.
 
 ## Release dependencies
 

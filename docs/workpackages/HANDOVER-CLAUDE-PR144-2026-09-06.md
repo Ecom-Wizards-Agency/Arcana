@@ -91,8 +91,9 @@ provides an original proposal, an edited proposal with an exact decimal, a trunc
 mixed stale/missing refusals, and a selected row hidden by filtering. Import it only into tests
 or fixture tooling. It needs no database or Amazon access.
 
-The view and fixture suites pass **16 tests**; web typecheck and focused ESLint pass before
-the subsequent main integration. Existing database tests cover revision persistence,
+The view and fixture suites pass **16 tests**. After merging main in `2dd1688`, the full web
+suite passes **736 tests**, with the local database required; web typecheck, clean-checkout
+repository lint and hygiene pass. Existing database tests cover revision persistence,
 concurrency and counted windows. These results do not replace client browser acceptance.
 
 Claude's browser checks should prove that an edited value's revision is submitted on decision

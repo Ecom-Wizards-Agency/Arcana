@@ -4,6 +4,22 @@
 
 ### Latest preparation checkpoint
 
+**Main integration verified:** `a78a8b4` records the recommendation view/fixture handoff;
+`2dd1688` merges main `9672d93`, including Claude's table conversion and window record. The
+only merge conflict was the WP-209 brief: both the earlier requirements and Claude's complete
+closeout/performance evidence were retained. Claude's client and owned status files arrived
+unchanged through the merge. All **141 web files / 736 tests pass**, including the 16 new
+view/fixture checks, with disposable loopback PostgreSQL and the database required. Web
+typecheck, unmodified repository lint in the clean verification checkout, hygiene and diff
+checks pass. Private logs use the `_local/pr144-main-integration-` prefix: `web-tests.log`,
+`typecheck.log`, `clean-lint.log` and `hygiene.log`.
+
+The first root-checkout lint attempt encountered an isolated nested source clone; it was moved
+outside the repository. The next root attempt reported lint errors in private probe scripts.
+Neither lint configuration nor private evidence was weakened or deleted. The clean checkout
+at the identical source revision passes the unchanged command; those earlier failures remain
+in their logs. Client fixes in the handoff remain pending despite the green existing suites.
+
 **Table integration follow-up:** PR #144 merged at `5c90c88`, with both CI jobs green;
 PR #145's window record also merged, advancing main to `9672d93`. A source review of table head
 `8c95f77` verified three client issues: omitted revision references in decision/export requests;
@@ -25,7 +41,11 @@ under the documented statement-array rendering. Ten differ. Hardening is substan
 the old policy: 16,449 pinned bytes versus 42,800 recorded rendered bytes (current source is
 42,822). All ten actual bodies were then recovered through read-only SQL and independently
 checked against the database's byte lengths and SHA-256 digests; none was reconstructed by
-editing current source. Smaller differences still require comparison before classification.
+editing current source. Exact comparison then confirmed all ten differ from current source only
+by deleted blank lines. Nine also differ from the old policy only by blank lines; hardening is
+the sole substantive old-policy change. All 46 recovered renders were assembled and independently
+hash-verified: 672,673 bytes. The same ten write-path additions produce **56 inputs / 921,245 bytes**.
+This is a verified input inventory, not a completed rehearsal or production bundle approval.
 
 Private reconstruction evidence is in `_local/write-window-baseline-reconstruction/`:
 `HOSTED-EXPERIMENTS-RECOVERY.json`, `HOSTED-LEDGER-DIGESTS-2026-09-06.json` and
@@ -36,6 +56,10 @@ correctly refused a source branch that was not clean main. Preserve both fixed p
 review a distinct reconciled baseline before production preparation. A local rehearsal against
 the recovered history and two completed operational changes remains pending at this checkpoint.
 No hosted migration or ledger repair was performed during recovery.
+The later assembly/comparison evidence is `_local/write-window-exact-rehearsal/`:
+`VERIFICATION.json`, `observed-inputs.json` and individual files under `diffs/`. Captured
+role attributes, memberships and retained grant identities support the local rehearsal;
+Supabase platform components remain explicit fixture doubles.
 
 **Unused-login restriction completed, 2026-09-06:** the operator asked Codex to continue
 in response to the exact credential-change approval request. A fresh production read confirmed
