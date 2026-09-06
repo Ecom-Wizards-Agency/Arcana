@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { tagSwatchStyle } from '../../app/tags/colors.js';
 
 const css = readFileSync(new URL('./theme.css', import.meta.url), 'utf8');
 const tokensSource = readFileSync(new URL('./tokens.ts', import.meta.url), 'utf8');
@@ -141,6 +142,39 @@ describe('WP-47B brand contract', () => {
     expect(contrast(BRAND_TOKENS['--wa-mist'], BRAND_TOKENS['--wa-carbon'])).toBeGreaterThanOrEqual(3);
     expect(css).toContain('--wa-viz-1-outline: var(--wa-mist)');
     expect(css).toContain('--wa-focus-contrast: var(--wa-mist)');
+  });
+});
+
+/**
+ * The focus affordance on the controls that have no text.
+ *
+ * `theme.css` promises a 2px `--wa-ring` outline on every focused control, and
+ * in the light theme — the shipped default — that outline is the *whole*
+ * promise, because `--wa-focus-contrast` is `transparent` there and the second
+ * half of the rule paints nothing. An inline `outline` beats the stylesheet, so
+ * a component that writes one at any value on a control with no label text
+ * silently removes the only thing a keyboard user can see.
+ */
+describe('WP-211 tag swatch focus', () => {
+  const swatches = [tagSwatchStyle('var(--wa-signal)', false), tagSwatchStyle('var(--wa-signal)', true)];
+
+  it('is the stylesheet\'s to paint, on the selected swatch and the unselected one alike', () => {
+    expect(css).toContain(':focus-visible {\n  outline: 2px solid var(--wa-ring);\n  outline-offset: 2px;');
+    // The light default really does leave the outline alone on the job.
+    expect(css).toMatch(/:root \{[^}]*--wa-focus-contrast: transparent;/);
+
+    // Counted against both states, not just the one a reader happens to check.
+    expect(
+      swatches.map((style) => Object.keys(style).filter((property) => property.startsWith('outline'))),
+    ).toEqual([[], []]);
+  });
+
+  it('carries selection inside the swatch, so selected and focused are different states', () => {
+    const [unselected, selected] = swatches;
+    expect(unselected?.boxShadow).toBeUndefined();
+    // Inset: outside the border box belongs to focus.
+    expect(selected?.boxShadow).toMatch(/^inset /);
+    expect(selected?.boxShadow).not.toContain('var(--wa-ring)');
   });
 });
 

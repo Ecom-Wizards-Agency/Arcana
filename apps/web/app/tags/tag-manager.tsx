@@ -5,7 +5,7 @@ import type { FormEvent } from 'react';
 import type { CampaignTagListRow, JsonValue } from '@wizard-ads/db';
 import { TAG_COLORS } from '@wizard-ads/shared';
 import type { TagColor } from '@wizard-ads/shared';
-import { NEUTRAL_SWATCH, tagSwatchColor, tagSwatchLabel } from './colors';
+import { NEUTRAL_SWATCH, tagSwatchColor, tagSwatchLabel, tagSwatchStyle } from './colors';
 import { tagFilterFromState, tagFilterState } from '../../src/tags/filter';
 import type { TagDescendants, TagFilter } from '../../src/tags/filter';
 import { useTagFilter } from '../../src/tags/use-tag-filter';
@@ -43,25 +43,6 @@ const swatchFieldset = {
 } as const;
 
 const swatchRow = { display: 'flex', gap: 6, flexWrap: 'wrap' } as const;
-
-/**
- * A swatch is a fixed brand colour, so the *selected* state cannot be carried
- * by the fill without inventing a sixth hue. It is carried by the ring, which
- * reads on every swatch and in both themes.
- */
-function swatchStyle(background: string, selected: boolean) {
-  return {
-    background,
-    border: '1px solid var(--wa-border-strong)',
-    borderRadius: 'var(--wa-radius-pill)',
-    cursor: 'pointer',
-    height: 22,
-    outline: selected ? '2px solid var(--wa-ring)' : 'none',
-    outlineOffset: 2,
-    padding: 0,
-    width: 22,
-  } as const;
-}
 
 function flattenTags(tags: readonly UiTag[]): UiTag[] {
   return tags.flatMap((tag) => [tag, ...flattenTags(tag.children)]);
@@ -240,7 +221,7 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
                   aria-checked={color === null}
                   aria-label="No color"
                   onClick={() => setColor(null)}
-                  style={swatchStyle(NEUTRAL_SWATCH, color === null)}
+                  style={tagSwatchStyle(NEUTRAL_SWATCH, color === null)}
                 />
                 {TAG_COLORS.map((option) => (
                   <button
@@ -250,7 +231,7 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
                     aria-checked={color === option}
                     aria-label={tagSwatchLabel(option)}
                     onClick={() => setColor(option)}
-                    style={swatchStyle(tagSwatchColor(option), color === option)}
+                    style={tagSwatchStyle(tagSwatchColor(option), color === option)}
                   />
                 ))}
               </div>
