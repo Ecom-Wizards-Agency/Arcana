@@ -410,3 +410,108 @@ Evidence on the fixed tree: `pnpm typecheck` 22 of 22, `pnpm lint`, `pnpm hygien
 isolation; `app/optimizer` 27 of 27.
 
 Remaining tables inventory is still due in slice 5's close-out.
+
+### Slice 4: Recommendations queue
+
+`apps/web/app/recommendations/review.tsx` and `page.tsx`, converted to the Data Grid.
+
+- **One grid, not three nested tables.** The decision lanes and their reason
+  `<details>` clusters are gone. Every loaded proposal is a row, in the order
+  `groupByDecision` has always produced — needs review, then ready to export, then
+  completed, by reason inside each — and the lane it belonged to is a `Queue` column on
+  the row. Twelve columns: two `control` (the selection checkbox and the evidence
+  toggle) and ten dimensions. Click-to-sort on every data column, shift-click to add a
+  key, a `GroupBar` above the grid, a density select and a fullscreen toggle, all the
+  slice-2 components unchanged.
+- **It opens ungrouped, deliberately.** Grouping in this grid *replaces* source rows
+  with their aggregates (`aggregate.ts` returns `GroupedRow[]` only), which is right for
+  a metric grid and wrong as a default for a decision queue: an operator cannot tick a
+  checkbox on a summary. Dropping `Queue` on the group bar rebuilds the three lanes as a
+  treegrid whenever the counts are what is wanted, and the surface then says the rows
+  became summaries rather than leaving an operator hunting for the controls they lost.
+  This was found by measurement, not by reasoning: the first wiring defaulted to
+  `groupBy: ['queue']` and rendered one group row and no proposals at all.
+- **Full width** (`page.tsx`): the `96rem` centred column is gone; the application frame
+  already supplies the horizontal padding, as on `/grid` and `/optimizer`.
+- **No `window.location.reload()` anywhere.** A decision posts to the unchanged
+  `/api/recommendations/decide`, reads that route's own `updated` / `refused` answer,
+  writes an optimistic status per id (the refused ones take the status the route
+  reported, not a hopeful one), calls `router.refresh()` and renders the result inline
+  in a `decision-result` status region. An effect retires each optimistic entry as the
+  refreshed server payload agrees with it, so a slow refresh never flickers a row back
+  to the status the operator just changed. The run's status tiles move with the same
+  bookkeeping and conserve the total. A successful export also refreshes rather than
+  leaving the queue showing the world before the batch.
+- **Filters, selection, evidence and scroll survive a decision**, because none of them
+  is server state any more. Selection is the workspace's own set and the grid paints it;
+  `Select all N filtered loaded rows` and the new header checkbox add the filtered rows
+  without disturbing rows the filter hides, matching the optimizer's slice-3 contract,
+  and `Clear selection` is the control that empties it. Evidence is a stack of
+  provenance panels under the grid rather than an expanded row (the grid is virtualised
+  and uniform-height by design); several can be open at once.
+- **The grid keeps a floor.** The evidence stack and the grid are flex children of the
+  same `GridViewport` column, and a grid with `minHeight: 0` shrinks to nothing to make
+  room for an open panel — which is exactly what it did the first time this was wired
+  (the e2e failed with the treegrid `hidden`). The grid now sits in a wrapper with
+  `minHeight: 200` and the evidence region is capped at 40% of the column and scrolls
+  itself. The e2e asserts the scroller is still over 100 px tall with a panel open.
+- **Loaded rows are never presented as the run.** `listRecommendations` caps this page at
+  20,000 rows and returns no completeness metadata, so `page.tsx` now passes that cap by
+  name and the workspace compares what arrived against the run's own per-status counts —
+  a database aggregate over the whole run. The filter count reads `N of M loaded rows
+  shown`, the selection reads `N of M filtered loaded rows selected`, the button reads
+  `Select all M filtered loaded rows`, and a `queue-truncated` notice appears when the
+  run holds more than arrived. The export control is the one count that may speak for
+  the run, because an export with no selection is executed server-side over every
+  accepted proposal; its copy already said so and still does.
+
+Evidence:
+
+- `apps/web`: `vitest run` 679 of 679 (local disposable Postgres 17).
+  `app/recommendations/review.test.ts` is rewritten as a jsdom DOM test on the real
+  component (the `initialGridRect` seam, as `campaign-workspace.test.ts` uses) and grew
+  from 1 test to 6: the ungrouped queue in decision order, grouping on request and what
+  it costs, click-to-sort in both directions, a decision keeping the filter/selection/
+  evidence and reporting itself, the optimistic status retiring on a server-confirmed
+  refresh, and the truncation notice. All six were run against the pre-slice component
+  (`git show HEAD:…/review.tsx`) and all six fail there — `expected null not to be null`
+  for the grid shell, `no grouping select`, `no column header labelled 'Entity'`,
+  `expected '' to be '2 of 3 loaded rows shown'`, `expected 'proposed' to be 'accepted'`,
+  and `expected '' to contain 'loaded 3 of the 40 proposals in this…'`.
+- e2e `tags-goto` suite (`pnpm --filter @wizard-ads/web test:e2e:tags-goto`, disposable
+  local Postgres 17): 33 of 33. The spec follows the queue onto the grid and adds a fifth
+  test, `a decision keeps the active filter, the selection and the open evidence, and
+  reports itself inline`. Against a mutant that restores `window.location.reload()` in
+  place of the optimistic status and `router.refresh()`, that test fails at
+  `expect(locator).toHaveText('1 of 1 proposals moved to accepted.')` and takes the
+  accept/dismiss/export test with it: 31 passed, 2 failed. With the change, 33 passed.
+  The 390×844 mobile keyboard test and the three-act export gesture are unchanged in
+  substance; only the control copy they assert moved to the loaded-rows wording.
+  `apps/web/src/e2e-suite-registry.ts` moves `tags-goto` to `expectedTests: 33` and the
+  conserved total from 77 to 78, per the ratified exception.
+- `packages/ui`: 204 of 204 functional tests (`vitest run --exclude
+  src/pipeline.perf.test.ts`), unchanged — this slice touches no file in that package.
+- `pnpm typecheck` (22 of 22), `pnpm lint`, `pnpm hygiene` (1,488 of 1,489 tracked files,
+  clean) and `git diff --check` clean.
+
+Performance, same invocation and environment as slices 1 to 3
+(`vitest run src/pipeline.perf.test.ts --maxWorkers=1`, three runs; one-minute load
+average 6.3 falling as the e2e server exited, higher than the earlier slices):
+
+| Run | Line 158 best-of-5 (budget 125 ms) | Other nine assertions |
+|---|---|---|
+| slice 4, run 1 | 153.5 ms | pass |
+| slice 4, run 2 | 149.8 ms | pass |
+| slice 4, run 3 | 158.7 ms | pass |
+
+Line 158 remains the pre-existing failure inside the slice 1–3 range (144.6 to 160.9 ms).
+This slice changed nothing in `packages/ui`; the threshold was not changed.
+
+**Dead CSS left behind, reported and not fixed** (`apps/web/src/ui/theme.css` is outside
+this package's owned files): `.wa-review__lane`, `.wa-review__lane-head`,
+`.wa-review__clusters`, `.wa-review__cluster`, `.wa-review__cluster-count` and
+`.wa-review__tablewrap` have no markup left to style. Its owner should remove them, the
+same way the optimizer's `__tablewrap` / `__pagination` / `__empty` rules from slice 3
+are still waiting.
+
+Remaining tables inventory is still due in slice 5's close-out.
