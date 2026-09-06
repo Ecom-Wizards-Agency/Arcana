@@ -20,8 +20,19 @@ import { useCallback, useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { aggregateNgrams, tokenize } from '@wizard-ads/core';
 import type { SearchTermRow } from '@wizard-ads/core';
-import { DataGrid, GridToolbar, buildGridModelSafely, toCsv } from '@wizard-ads/ui';
-import type { FilterSet, GridColumn, GridRow, SortRule } from '@wizard-ads/ui';
+import {
+  DEFAULT_DENSITY,
+  DataGrid,
+  GridToolbar,
+  GridViewport,
+  allMetricColumns,
+  buildGridModel,
+  buildGridModelSafely,
+  formatInteger,
+  rowHeightFor,
+  toCsv,
+} from '@wizard-ads/ui';
+import type { FilterSet, GridColumn, GridDensity, GridRow, SortRule } from '@wizard-ads/ui';
 import { DEFAULT_NGRAM_COLUMNS, GRAM_SIZES, GRAM_SIZE_LABELS, ngramColumns, toGridRows } from '../../src/ngrams/rows';
 import type { GramSize } from '../../src/ngrams/rows';
 import type { ScopeOption } from '../../src/ngrams/data';
@@ -32,12 +43,122 @@ export interface NgramExplorerProps {
   profileId: string;
   currencyCode: string;
   period: { start: string; end: string };
+  /** Test seam: react-virtual measures a real element and jsdom has none. */
+  initialGridRect?: { width: number; height: number };
 }
 
 const MATCH_TYPES = [
   { value: 'negative_exact', label: 'Negative exact' },
   { value: 'negative_phrase', label: 'Negative phrase' },
 ];
+
+const TERM_SELECT_COLUMN_ID = 'select';
+/**
+ * The drill-down is a second grid on the same screen, under the gram grid it
+ * belongs to, so it takes a bounded box rather than the flex fill: two grids
+ * competing for the viewport leaves neither usable.
+ */
+const TERM_GRID_HEIGHT = 320;
+/** The gram grid's floor, the height it shipped with before it could fill. */
+const GRAM_GRID_MIN_HEIGHT = 420;
+const TERM_DEFAULT_SORT: readonly SortRule[] = [{ columnId: 'spend', direction: 'desc' }];
+const METRIC_COLUMNS = allMetricColumns();
+
+function metricColumn(id: string): GridColumn {
+  const column = METRIC_COLUMNS.find((candidate) => candidate.id === id);
+  if (column === undefined) throw new Error(`the n-gram drill-down asked for unknown metric '${id}'`);
+  return column;
+}
+
+/** A search term's identity in this scope: the ad group is what a negative is created in. */
+export function searchTermKey(row: SearchTermRow): string {
+  return `${row.campaignId ?? ''}|${row.adGroupId ?? ''}|${row.searchTerm}`;
+}
+
+/**
+ * The drill-down's columns.
+ *
+ * Every metric comes from the shared registry (`allMetricColumns`), so spend
+ * and sales are the profile's currency through `formatMoney`, clicks and orders
+ * go through `formatInteger`, and CVR, RPC and ACOS are derived from the summed
+ * bases at the level on screen. The table this replaced printed
+ * `row.cost.toFixed(2)` — a bare number with no currency, no thousands
+ * separator, no locale and no absent marker — and derived nothing at all.
+ *
+ * `select` is a `control` column: it holds a gesture, not a value, so it
+ * carries no ordering and the host draws it.
+ */
+export function ngramTermColumns(): GridColumn[] {
+  return [
+    {
+      id: TERM_SELECT_COLUMN_ID,
+      header: 'Select',
+      kind: 'control',
+      scale: 'text',
+      align: 'left',
+      width: 44,
+      pinned: true,
+    },
+    {
+      id: 'search_term',
+      header: 'Search term',
+      kind: 'dimension',
+      scale: 'text',
+      align: 'left',
+      width: 320,
+      pinned: true,
+    },
+    {
+      id: 'match_type',
+      header: 'Match',
+      kind: 'dimension',
+      scale: 'text',
+      align: 'left',
+      width: 110,
+      filterKind: 'categorical',
+    },
+    metricColumn('impressions'),
+    metricColumn('clicks'),
+    metricColumn('spend'),
+    metricColumn('orders'),
+    metricColumn('sales'),
+    metricColumn('cvr'),
+    metricColumn('rpc'),
+    metricColumn('acos'),
+  ];
+}
+
+/**
+ * The search terms behind one gram, as grid rows.
+ *
+ * Base sums only, as everywhere in the grid: no ratio is stored, so grouping
+ * the drill-down by match type recomputes CVR, RPC and ACOS from the sums of
+ * that group rather than averaging per-term ratios. `units` is left at zero
+ * because the search-term fact this page loads does not carry it and no column
+ * shows it — see `src/ngrams/rows.ts`, which makes the same call for grams.
+ */
+export function toTermGridRows(
+  rows: readonly SearchTermRow[],
+  currencyCode: string,
+): GridRow[] {
+  return rows.map((row) => ({
+    id: searchTermKey(row),
+    dimensions: {
+      search_term: row.searchTerm,
+      match_type: row.matchType ?? null,
+    },
+    totals: {
+      impressions: row.impressions,
+      clicks: row.clicks,
+      spend: row.cost,
+      sales: row.sales7d,
+      orders: row.purchases7d,
+      units: 0,
+    },
+    comparison: null,
+    currencyCode,
+  }));
+}
 
 export function NgramExplorer(props: NgramExplorerProps): ReactNode {
   const [size, setSize] = useState<GramSize>(2);
@@ -53,6 +174,9 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [density, setDensity] = useState<GridDensity>(DEFAULT_DENSITY);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [termSort, setTermSort] = useState<SortRule[]>([...TERM_DEFAULT_SORT]);
 
   const scopeCampaigns = useMemo(() => {
     if (scopeId === 'profile') return null;
@@ -131,9 +255,85 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
       .sort((a, b) => b.cost - a.cost);
   }, [gram, scopedRows]);
 
-  const termKey = useCallback(
-    (row: SearchTermRow) => `${row.campaignId ?? ''}|${row.adGroupId ?? ''}|${row.searchTerm}`,
-    [],
+  const termKey = useCallback((row: SearchTermRow) => searchTermKey(row), []);
+
+  const termRows = useMemo(
+    () => toTermGridRows(terms, props.currencyCode),
+    [props.currencyCode, terms],
+  );
+  const termColumns = useMemo(() => ngramTermColumns(), []);
+  const termModel = useMemo(
+    () => buildGridModel(termRows, { sort: termSort }),
+    [termRows, termSort],
+  );
+  const termSourceById = useMemo(() => {
+    const byId = new Map<string, SearchTermRow>();
+    for (const row of terms) byId.set(searchTermKey(row), row);
+    return byId;
+  }, [terms]);
+  const selectedTermIds = useMemo(() => [...selectedTerms], [selectedTerms]);
+
+  /**
+   * The grid's Space key hands back whatever row is focused. Only ids that
+   * resolve to a search term may enter the proposal set — the same guard the
+   * optimizer and the recommendations queue apply, so the grid's own selection
+   * and the "propose selected" population can never disagree.
+   */
+  const applyTermSelection = useCallback(
+    (ids: string[]) => {
+      setSelectedTerms(new Set(ids.filter((id) => termSourceById.has(id))));
+    },
+    [termSourceById],
+  );
+
+  const renderTermHeader = useMemo(
+    () => ({
+      [TERM_SELECT_COLUMN_ID]: () => (
+        <input
+          aria-label={`Select all ${formatInteger(terms.length)} search terms containing this gram`}
+          checked={terms.length > 0 && selectedTerms.size === terms.length}
+          data-testid="ngram-select-all-terms"
+          disabled={busy || terms.length === 0}
+          onChange={(event) =>
+            setSelectedTerms(event.target.checked ? new Set(terms.map(searchTermKey)) : new Set())
+          }
+          ref={(element) => {
+            if (element !== null) {
+              element.indeterminate = selectedTerms.size > 0 && selectedTerms.size < terms.length;
+            }
+          }}
+          type="checkbox"
+        />
+      ),
+    }),
+    [busy, selectedTerms, terms],
+  );
+
+  const renderTermCell = useMemo(
+    () => ({
+      [TERM_SELECT_COLUMN_ID]: (gridRow: GridRow) => {
+        const source = termSourceById.get(gridRow.id);
+        if (source === undefined) return null;
+        return (
+          <input
+            aria-label={`Select ${source.searchTerm}`}
+            checked={selectedTerms.has(gridRow.id)}
+            data-testid="ngram-term-select"
+            disabled={busy}
+            onChange={() =>
+              setSelectedTerms((current) => {
+                const next = new Set(current);
+                if (next.has(gridRow.id)) next.delete(gridRow.id);
+                else next.add(gridRow.id);
+                return next;
+              })
+            }
+            type="checkbox"
+          />
+        );
+      },
+    }),
+    [busy, selectedTerms, termSourceById],
   );
 
   const propose = useCallback(async () => {
@@ -240,59 +440,74 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
           />
         </label>
         <span style={muted} data-testid="gram-count">
-          {ngrams.length} grams over {scopedRows.length} search terms
+          {formatInteger(ngrams.length)} grams over {formatInteger(scopedRows.length)} search terms
         </span>
       </fieldset>
 
-      <GridToolbar
-        entity="search_terms"
-        available={available}
-        visible={visible}
-        onVisibleChange={setVisible}
-        filter={filter}
-        onFilterChange={updateFilter}
-        groupBy={groupBy}
-        onGroupByChange={updateGrouping}
-        model={model}
-        optionRows={gridRows}
-        onExport={exportCsv}
+      <GridViewport
+        fullscreen={fullscreen}
+        onExitFullscreen={() => setFullscreen(false)}
+        minHeight={GRAM_GRID_MIN_HEIGHT}
       >
-        <span role="status" aria-live="polite" style={muted} data-testid="filtered-gram-count">
-          {model.matched === model.total
-            ? `${model.total} grams`
-            : `${model.matched} of ${model.total} grams`}
-        </span>
-      </GridToolbar>
+        <GridToolbar
+          entity="search_terms"
+          available={available}
+          visible={visible}
+          onVisibleChange={setVisible}
+          filter={filter}
+          onFilterChange={updateFilter}
+          groupBy={groupBy}
+          onGroupByChange={updateGrouping}
+          model={model}
+          optionRows={gridRows}
+          onExport={exportCsv}
+          density={density}
+          onDensityChange={setDensity}
+          fullscreen={fullscreen}
+          onFullscreenChange={setFullscreen}
+        >
+          <span role="status" aria-live="polite" style={muted} data-testid="filtered-gram-count">
+            {model.matched === model.total
+              ? `${formatInteger(model.total)} grams`
+              : `${formatInteger(model.matched)} of ${formatInteger(model.total)} grams`}
+          </span>
+        </GridToolbar>
 
-      {filterError === null ? null : (
-        <p role="alert" style={warning}>
-          Filter not applied — {filterError}. Every gram is shown until the filter is fixed or
-          removed.
-        </p>
-      )}
+        {filterError === null ? null : (
+          <p role="alert" style={warning}>
+            Filter not applied — {filterError}. Every gram is shown until the filter is fixed or
+            removed.
+          </p>
+        )}
 
-      <DataGrid
-        model={model}
-        columns={columns}
-        currencyCode={props.currencyCode}
-        sort={sort}
-        onSortChange={setSort}
-        onRowClick={(row: GridRow) => {
-          const value = row.dimensions['gram'];
-          setGram(typeof value === 'string' ? value : null);
-          setSelectedTerms(new Set());
-        }}
-        height={420}
-        emptyMessage="No gram clears this click floor."
-        noDataMessage="No search-term data in this period."
-      />
+        <DataGrid
+          model={model}
+          columns={columns}
+          currencyCode={props.currencyCode}
+          sort={sort}
+          onSortChange={setSort}
+          onRowClick={(row: GridRow) => {
+            const value = row.dimensions['gram'];
+            setGram(typeof value === 'string' ? value : null);
+            setSelectedTerms(new Set());
+          }}
+          density={density}
+          rowHeight={rowHeightFor(density)}
+          rowNoun="grams"
+          emptyMessage="No gram clears this click floor."
+          noDataMessage="No search-term data in this period."
+          {...(props.initialGridRect === undefined
+            ? {}
+            : { initialRect: props.initialGridRect })}
+        />
+      </GridViewport>
 
       {gram === null ? (
         <p style={muted}>Select a gram to see the search terms behind it and propose negatives.</p>
       ) : (
         <section data-testid="gram-terms">
           <h2 style={{ fontSize: '1rem', margin: '0.5rem 0' }}>
-            Search terms containing “{gram}” · {terms.length}
+            Search terms containing “{gram}” · {formatInteger(terms.length)}
           </h2>
           <fieldset style={panel}>
             <legend style={legend}>Propose as negative</legend>
@@ -311,7 +526,7 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
               onClick={() => setSelectedTerms(new Set(terms.map(termKey)))}
               disabled={busy}
             >
-              Select all {terms.length}
+              Select all {formatInteger(terms.length)}
             </button>
             <button type="button" onClick={() => void propose()} disabled={busy}>
               Propose selected as negatives
@@ -332,49 +547,35 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
             </p>
           )}
 
-          <table style={table}>
-            <thead>
-              <tr>
-                <th style={th} scope="col">
-                  <span aria-hidden="true">✓</span>
-                </th>
-                <th style={th} scope="col">Search term</th>
-                <th style={thRight} scope="col">Clicks</th>
-                <th style={thRight} scope="col">Spend</th>
-                <th style={thRight} scope="col">Orders</th>
-                <th style={thRight} scope="col">Sales</th>
-              </tr>
-            </thead>
-            <tbody>
-              {terms.map((row) => {
-                const key = termKey(row);
-                return (
-                  <tr key={key}>
-                    <td style={td}>
-                      <input
-                        type="checkbox"
-                        checked={selectedTerms.has(key)}
-                        aria-label={`Select ${row.searchTerm}`}
-                        onChange={() =>
-                          setSelectedTerms((current) => {
-                            const next = new Set(current);
-                            if (next.has(key)) next.delete(key);
-                            else next.add(key);
-                            return next;
-                          })
-                        }
-                      />
-                    </td>
-                    <td style={td}>{row.searchTerm}</td>
-                    <td style={tdRight}>{row.clicks}</td>
-                    <td style={tdRight}>{row.cost.toFixed(2)}</td>
-                    <td style={tdRight}>{row.purchases7d}</td>
-                    <td style={tdRight}>{row.sales7d.toFixed(2)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          {/*
+            * The drill-down is the same Data Grid as the gram table above, not a
+            * second hand-rolled `<table>`: continuous scrolling over every term
+            * behind the gram, click-to-sort on each data column, and every
+            * figure through the shared formatters — the profile's currency on
+            * spend and sales, grouped integers on clicks and orders, and CVR,
+            * RPC and ACOS derived from the summed bases rather than printed
+            * from the row.
+            */}
+          <DataGrid
+            model={termModel}
+            columns={termColumns}
+            currencyCode={props.currencyCode}
+            sort={termSort}
+            onSortChange={setTermSort}
+            selectedRowIds={selectedTermIds}
+            onSelectionChange={applyTermSelection}
+            renderCell={renderTermCell}
+            renderHeader={renderTermHeader}
+            density={density}
+            rowHeight={rowHeightFor(density)}
+            height={TERM_GRID_HEIGHT}
+            rowNoun="search terms"
+            emptyMessage="No search term behind this gram matches the filter."
+            noDataMessage="No search term in this scope contains this gram."
+            {...(props.initialGridRect === undefined
+              ? {}
+              : { initialRect: props.initialGridRect })}
+          />
         </section>
       )}
     </section>
@@ -403,15 +604,6 @@ const panel: CSSProperties = {
 const legend: CSSProperties = { fontSize: '0.8125rem', fontWeight: 600, padding: '0 0.25rem' };
 const label: CSSProperties = { display: 'flex', flexDirection: 'column', fontSize: '0.8125rem', gap: '0.25rem' };
 const muted: CSSProperties = { color: 'var(--wa-text-muted)', fontSize: '0.8125rem' };
-const table: CSSProperties = { borderCollapse: 'collapse', fontSize: '0.8125rem', width: '100%' };
-const th: CSSProperties = {
-  borderBottom: '1px solid var(--wa-border-strong)',
-  padding: '0.25rem 0.5rem',
-  textAlign: 'left',
-};
-const thRight: CSSProperties = { ...th, textAlign: 'right' };
-const td: CSSProperties = { borderBottom: '1px solid var(--wa-surface-3)', padding: '0.25rem 0.5rem' };
-const tdRight: CSSProperties = { ...td, textAlign: 'right' };
 const warning: CSSProperties = {
   background: 'var(--wa-bad-bg)',
   border: '1px solid var(--wa-bad-border)',
