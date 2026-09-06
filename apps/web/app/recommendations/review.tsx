@@ -106,6 +106,16 @@ interface Filters {
 type ReviewPanel = 'dismiss' | 'export' | null;
 type Decision = 'accepted' | 'dismissed' | 'proposed';
 
+/**
+ * A status this client wrote before the server answered, tagged with the
+ * refresh generation it was written against so it can be retired on time
+ * rather than on agreement.
+ */
+interface OptimisticStatus {
+  readonly status: string;
+  readonly writtenAt: number;
+}
+
 const EMPTY_FILTERS: Filters = { reason: '', status: '', objective: '', text: '' };
 
 function matches(proposal: ProposalView, filters: Filters): boolean {
@@ -256,8 +266,14 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
   const [groupBy, setGroupBy] = useState<readonly string[]>([]);
   const [density, setDensity] = useState<GridDensity>(DEFAULT_DENSITY);
   const [fullscreen, setFullscreen] = useState(false);
-  /** id → status this client believes, until the server says the same thing. */
-  const [optimistic, setOptimistic] = useState<ReadonlyMap<string, string>>(new Map());
+  /** id → the status this client wrote, until a refresh has answered for it. */
+  const [optimistic, setOptimistic] = useState<ReadonlyMap<string, OptimisticStatus>>(new Map());
+  /**
+   * How many server payloads have arrived since this component mounted, and
+   * which payload each optimistic write was made against. A write is retired
+   * once a payload landed after it, whatever that payload says.
+   */
+  const refreshes = useRef(0);
   const dismissalNoteRef = useRef<HTMLTextAreaElement>(null);
   const exportNoteRef = useRef<HTMLTextAreaElement>(null);
   const dismissButtonRef = useRef<HTMLButtonElement>(null);
@@ -268,17 +284,31 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
     [props.proposals],
   );
 
-  // A refresh that agrees with the optimistic status retires it. Anything the
-  // server has not confirmed yet stays, so a slow refresh never flickers the
-  // row back to the status the operator just changed.
+  /**
+   * Reconcile on time, not on agreement.
+   *
+   * An optimistic status is a claim made while the server had not answered
+   * yet. It survives until a payload rendered *after* the write arrives, and
+   * then it goes — whether or not the server says what this client expected.
+   * Retiring only on agreement pins any disagreement forever: a proposal a
+   * concurrent run superseded, or a row the route silently refused, would
+   * contradict the database, and the shifted run counts with it, until the
+   * page was reloaded. The server is authoritative once it has answered; the
+   * optimistic value only covers the gap before it does.
+   */
+  const lastServer = useRef(serverStatus);
   useEffect(() => {
+    if (lastServer.current !== serverStatus) {
+      lastServer.current = serverStatus;
+      refreshes.current += 1;
+    }
+    const landed = refreshes.current;
     setOptimistic((current) => {
       if (current.size === 0) return current;
       const next = new Map(
-        [...current].filter(([id, status]) => {
-          const server = serverStatus.get(id);
-          return server !== undefined && server !== status;
-        }),
+        [...current].filter(
+          ([id, entry]) => entry.writtenAt >= landed && serverStatus.get(id) !== entry.status,
+        ),
       );
       return next.size === current.size ? current : next;
     });
@@ -287,7 +317,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
   const proposals = useMemo(
     () =>
       props.proposals.map((proposal) => {
-        const pending = optimistic.get(proposal.id);
+        const pending = optimistic.get(proposal.id)?.status;
         return pending === undefined || pending === proposal.status
           ? proposal
           : { ...proposal, status: pending };
@@ -303,7 +333,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
   const counts = useMemo(() => {
     const next: Record<string, number> = { ...props.counts };
     for (const proposal of props.proposals) {
-      const pending = optimistic.get(proposal.id);
+      const pending = optimistic.get(proposal.id)?.status;
       if (pending === undefined || pending === proposal.status) continue;
       next[proposal.status] = Math.max(0, (next[proposal.status] ?? 0) - 1);
       next[pending] = (next[pending] ?? 0) + 1;
@@ -494,10 +524,13 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         // the optimistic state can be exactly right rather than hopeful.
         const refused = readRefused(result['refused']);
         const refusedIds = new Set(refused.map((entry) => entry.id));
+        const writtenAt = refreshes.current;
         setOptimistic((current) => {
           const next = new Map(current);
-          for (const id of offered) if (!refusedIds.has(id)) next.set(id, decision);
-          for (const entry of refused) next.set(entry.id, entry.status);
+          for (const id of offered) {
+            if (!refusedIds.has(id)) next.set(id, { status: decision, writtenAt });
+          }
+          for (const entry of refused) next.set(entry.id, { status: entry.status, writtenAt });
           return next;
         });
         setDecisionMessage(
