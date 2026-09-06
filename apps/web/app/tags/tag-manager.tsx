@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { CampaignTagListRow, JsonValue } from '@wizard-ads/db';
+import { TAG_COLORS } from '@wizard-ads/shared';
+import type { TagColor } from '@wizard-ads/shared';
+import { NEUTRAL_SWATCH, tagSwatchColor, tagSwatchLabel } from './colors';
 import { tagFilterFromState, tagFilterState } from '../../src/tags/filter';
 import type { TagDescendants, TagFilter } from '../../src/tags/filter';
 import { useTagFilter } from '../../src/tags/use-tag-filter';
@@ -11,6 +14,11 @@ interface UiTag {
   id: string;
   parentId: string | null;
   name: string;
+  /**
+   * The stored value, not a colour. New writes are a `TagColor`; rows written
+   * before the contract hold whatever the old free input produced, so the
+   * swatch resolver — not this type — decides what paints.
+   */
   color: string | null;
   children: UiTag[];
 }
@@ -27,6 +35,33 @@ const panel = {
   padding: 18,
   background: 'var(--wa-surface)',
 } as const;
+
+const swatchFieldset = {
+  border: 0,
+  margin: 0,
+  padding: 0,
+} as const;
+
+const swatchRow = { display: 'flex', gap: 6, flexWrap: 'wrap' } as const;
+
+/**
+ * A swatch is a fixed brand colour, so the *selected* state cannot be carried
+ * by the fill without inventing a sixth hue. It is carried by the ring, which
+ * reads on every swatch and in both themes.
+ */
+function swatchStyle(background: string, selected: boolean) {
+  return {
+    background,
+    border: '1px solid var(--wa-border-strong)',
+    borderRadius: 'var(--wa-radius-pill)',
+    cursor: 'pointer',
+    height: 22,
+    outline: selected ? '2px solid var(--wa-ring)' : 'none',
+    outlineOffset: 2,
+    padding: 0,
+    width: 22,
+  } as const;
+}
 
 function flattenTags(tags: readonly UiTag[]): UiTag[] {
   return tags.flatMap((tag) => [tag, ...flattenTags(tag.children)]);
@@ -61,7 +96,7 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
   const [filter, setFilter] = useState<TagFilter>(() => tagFilterFromState(initialState));
   const [name, setName] = useState('');
   const [parentId, setParentId] = useState('');
-  const [color, setColor] = useState('#FD4807');
+  const [color, setColor] = useState<TagColor | null>(null);
   const [bulkTagId, setBulkTagId] = useState('');
   const [message, setMessage] = useState('');
   const filteredCampaigns = useTagFilter(campaigns, filter, descendants);
@@ -89,7 +124,7 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
   const create = (event: FormEvent) => {
     event.preventDefault();
     void act(
-      () => mutate('/api/tags', 'POST', { name, parentId: parentId || null, color: color || null }),
+      () => mutate('/api/tags', 'POST', { name, parentId: parentId || null, color }),
       'Tag created',
     );
   };
@@ -164,7 +199,7 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
     <li key={tag.id} style={{ marginLeft: depth * 18, marginBottom: 8 }}>
       <span
         aria-hidden="true"
-        style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 10, marginRight: 7, background: tag.color ?? 'var(--wa-series-3)' }}
+        style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 10, marginRight: 7, background: tagSwatchColor(tag.color) }}
       />
       <strong>{tag.name}</strong> <small style={{ color: 'var(--wa-text-faint)' }}>{tag.id}</small>{' '}
       <button type="button" onClick={() => rename(tag)}>Rename</button>{' '}
@@ -196,7 +231,30 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
                 {allTags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}
               </select>
             </label>
-            <label>Color <input type="color" value={color} onChange={(event) => setColor(event.target.value)} /></label>
+            <fieldset style={swatchFieldset}>
+              <legend style={{ padding: 0 }}>Color</legend>
+              <div role="radiogroup" aria-label="Tag color" style={swatchRow}>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={color === null}
+                  aria-label="No color"
+                  onClick={() => setColor(null)}
+                  style={swatchStyle(NEUTRAL_SWATCH, color === null)}
+                />
+                {TAG_COLORS.map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    role="radio"
+                    aria-checked={color === option}
+                    aria-label={tagSwatchLabel(option)}
+                    onClick={() => setColor(option)}
+                    style={swatchStyle(tagSwatchColor(option), color === option)}
+                  />
+                ))}
+              </div>
+            </fieldset>
             <button type="submit">Create tag</button>
           </form>
           {tags.length > 0 ? <ul style={{ listStyle: 'none', padding: 0 }}>{renderTree(tags)}</ul> : <p>No tags yet.</p>}
