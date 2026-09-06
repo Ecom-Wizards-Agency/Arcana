@@ -34,6 +34,10 @@ export type SpMoney = z.infer<typeof SpMoney>;
 export const SpMutableState = z.enum(['enabled', 'paused']);
 export type SpMutableState = z.infer<typeof SpMutableState>;
 
+/** Observing an archived keyword never grants a writable archived state. */
+export const SpKeywordObservedState = z.enum(['enabled', 'paused', 'archived']);
+export type SpKeywordObservedState = z.infer<typeof SpKeywordObservedState>;
+
 export const SpWriteProviderScope = z.object({
   amazonProfileId: AmazonId,
   connectionId: SpWriteUuid,
@@ -1416,7 +1420,7 @@ const SpKeywordObservedAction = z.object({
   amazonEntityId: AmazonId,
   values: z.object({
     bid: SpMoney.optional(),
-    state: SpMutableState.optional(),
+    state: SpKeywordObservedState.optional(),
   }).strict(),
 }).strict().superRefine((value, context) => requireObservedValues(value.values, context));
 

@@ -27,6 +27,8 @@ export const SpWriteMirrorReceipt = z.object({
   outcome: SpWriteMirrorOutcome,
   before: SpMoney.nullable(),
   observed: SpMoney.nullable(),
+  /** Terminal presence evidence; an archived keyword's explicit bid may be absent. */
+  observedState: z.literal('archived').optional(),
   after: SpMoney.nullable(),
   /** PostgreSQL bigint stays decimal text across transports. */
   entityChangeId: z.string().regex(/^[1-9]\d*$/).nullable(),
@@ -41,7 +43,11 @@ export const SpWriteMirrorReceipt = z.object({
   }
   const currencies = [value.before, value.observed, value.after].flatMap((money) => money === null ? [] : [money.currencyCode]);
   if (new Set(currencies).size > 1) context.addIssue({ code: 'custom', message: 'mirror reconciliation must preserve currency' });
-  if ((value.observationOutcome === 'missing') !== (value.observed === null)) {
+  const archived = value.observedState === 'archived';
+  if (archived && (value.observationOutcome !== 'conflict' || !['superseded', 'missing'].includes(value.outcome))) {
+    context.addIssue({ code: 'custom', message: 'an archived keyword is a conflict and cannot promote a bid' });
+  }
+  if (!archived && (value.observationOutcome === 'missing') !== (value.observed === null)) {
     context.addIssue({ code: 'custom', message: 'only a missing provider observation has no observed value' });
   }
   const promoted = value.outcome === 'promoted';

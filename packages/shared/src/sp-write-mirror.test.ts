@@ -27,6 +27,16 @@ describe('mirror evidence contracts', () => {
     expect(SpWriteMirrorReceipt.safeParse({ ...promoted, observationOutcome: 'conflict', changeAttribution: 'observation' }).success).toBe(true);
   });
 
+  it.each([null, money('0.7')])('retains the local bid for an archived keyword whose explicit observed bid is %j', (observed) => {
+    const archived = { ...promoted, observationOutcome: 'conflict', observedState: 'archived',
+      outcome: 'superseded', observed, after: promoted.before, entityChangeId: null, changeAttribution: null };
+    expect(SpWriteMirrorReceipt.parse(archived)).toEqual(archived);
+    expect(SpWriteMirrorReceipt.safeParse({ ...archived, observedState: undefined, observed: null }).success).toBe(false);
+    expect(SpWriteMirrorReceipt.safeParse({ ...archived, observationOutcome: 'missing' }).success).toBe(false);
+    expect(SpWriteMirrorReceipt.safeParse({ ...promoted, observedState: 'archived' }).success).toBe(false);
+    expect(SpWriteMirrorReceipt.safeParse({ ...archived, outcome: 'already_current' }).success).toBe(false);
+  });
+
   it('distinguishes an unchanged mirror from a superseded or missing value', () => {
     const unchanged = { ...promoted, entityChangeId: null, changeAttribution: null };
     expect(SpWriteMirrorReceipt.safeParse({ ...unchanged, outcome: 'already_current', before: money('0.7') }).success).toBe(true);

@@ -9,12 +9,14 @@ import {
   ApproveSpWritePlan,
   SpCanonicalDecimal,
   SpCompleteCampaignBiddingState,
+  SpMutableState,
   SpWriteAction,
   SpWriteAuthorizationReceipt,
   SpWriteBoundedAuthorization,
   SpWriteExecutionEvidence,
   SpWriteFutureJobPayload,
   SpWriteObservation,
+  SpWriteObservedAction,
   SpWritePlan,
   SpWritePreDispatchDisposition,
   SpWritePredispatchObservation,
@@ -1378,6 +1380,36 @@ describe('guarded Sponsored Products write contracts', () => {
       '2026-08-31T08:10:00.000Z',
       sha256,
     )).toThrow(/do not match/i);
+  });
+
+  it.each([true, false])('records an archived keyword as a terminal conflict with explicit bid present %s', (withBid) => {
+    const plan = keywordPlan();
+    const receipt = manualReceipt(plan);
+    const providerObservation = predispatchObservation(plan);
+    const intent = providerIntent(plan, providerObservation);
+    const result = providerResult(intent, 'accepted');
+    const evidence = executionEvidence(plan, receipt, {
+      predispatchObservations: [providerObservation], providerCallIntents: [intent], providerResults: [result],
+    });
+    const base = postWriteObservation(plan, intent, 'conflict');
+    const current = base.observed!;
+    const observed = SpWriteObservedAction.parse({ ...current,
+      values: { ...(withBid ? current.values : {}), state: 'archived' } });
+    const observation = SpWriteObservation.parse({ ...base, observed,
+      fingerprint: sha256.digest(serializeSpWriteObservationFingerprint({ ...base, observed })),
+    });
+    expect(verifySpWriteObservationArtifacts(plan, receipt, observeJob(plan), evidence,
+      observation, '2026-08-31T08:16:00.000Z', sha256).observation).toEqual(observation);
+    const terminal = executionEvidence(plan, receipt, { ...evidence, observations: [observation] });
+    expect(verifySpWriteExecutionEvidence(terminal, sha256).snapshot).toMatchObject({
+      status: 'conflict', accounting: { observationConflict: 1, observationMissing: 0, observedRequested: 0 },
+    });
+    expect(SpMutableState.safeParse('archived').success).toBe(false);
+    expect(SpWriteAction.safeParse({ ...plan.actions[0], changes: { state: { expected: 'enabled', requested: 'archived' } } }).success).toBe(false);
+    const claimedSuccess = { ...observation, outcome: 'observed_requested' as const };
+    claimedSuccess.fingerprint = sha256.digest(serializeSpWriteObservationFingerprint(claimedSuccess));
+    expect(() => verifySpWriteObservationArtifacts(plan, receipt, observeJob(plan), evidence,
+      claimedSuccess, '2026-08-31T08:16:00.000Z', sha256)).toThrow(/open observation/);
   });
 
   it('rejects observations attached to rejected, wrong-call, or conflicting action evidence', () => {
