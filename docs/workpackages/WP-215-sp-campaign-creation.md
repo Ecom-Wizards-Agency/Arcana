@@ -127,15 +127,17 @@ The inert adapter, private response decoder and synthetic fixtures/tests follow 
 commit. Durable reservation and runtime activation remain pending.
 
 The inert `createSpCreationAdapter` now exposes `prepareNode` and `executeOneAttempt` through
-`@wizard-ads/ads-api/sp-creation-adapter`, absent from the default export. It verifies frozen
-credential scope, saved authority and exact recompiled request digests, checks expiry at the
+`@wizard-ads/ads-api/sp-creation-adapter`, absent from the default export. It verifies declared scope against the frozen plan, saved authority and exact recompiled request digests, checks expiry at the
 underlying fetch boundary, sends once, and returns shared acceptance/refusal/ambiguity evidence.
 It rejects duplicate/missing response accounting and conflicting returned IDs/parents; provider
 prose is discarded. All 157 focused tests and 566 Ads API tests pass, plus 186 shared tests,
 22 workspace typechecks and five import-boundary tests. The new tests reproduce and close
 five review failures. This is source transport only: durable reservation/ledger, worker admission,
 observation/recovery, campaign approval fixtures/screens, SB/SD transport and live checks remain.
-No campaign resource or production setting was changed in this slice.
+The supplied scope does not attest to credential provenance. The worker must load credentials
+and scope from the same currently owned connection record before execution. A final shared
+regression also closes reuse of a prior read-check call ID, with 186 shared and 50 adapter tests
+passing after correction. No campaign resource or production setting was changed in this slice.
 
 ## Objective
 

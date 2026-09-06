@@ -1250,6 +1250,10 @@ describe('versioned campaign creation inputs', () => {
         { ...intent, [field]: priorIntent[field] },
         '2026-08-30T00:03:00.000Z', sha256)).toThrow(/reuses a reserved/);
     }
+    const priorRead = current.providerResults.find((result) => result.effect === 'read_check')!;
+    expect(() => verifyCampaignCreationProviderCallArtifacts(plan, authorization, job, current,
+      { ...intent, providerCallId: priorRead.providerCallId },
+      '2026-08-30T00:03:00.000Z', sha256)).toThrow(/reuses a reserved/);
     const waitingForParent = { ...current,
       observations: current.observations.map((value) => value.nodeId === AD_NODE_ID
         ? { ...value, observation: 'pending', providerEntityId: null } : value),

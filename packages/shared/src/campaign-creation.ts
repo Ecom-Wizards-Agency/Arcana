@@ -2612,6 +2612,8 @@ export function verifyCampaignCreationProviderCallArtifacts(
   if (currentEvidence.providerCallIntents.some((priorIntent) => (
     priorIntent.providerCallId === intent.providerCallId
       || priorIntent.attemptId === intent.attemptId
+  )) || currentEvidence.providerResults.some((priorResult) => (
+    priorResult.providerCallId === intent.providerCallId
   ))) {
     throw new Error('provider call intent reuses a reserved call or attempt identity');
   }

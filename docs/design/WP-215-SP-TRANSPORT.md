@@ -29,7 +29,9 @@ underlying fetch boundary, closing the asynchronous header-resolution gap. Const
 
 The evidence is explicitly the reservation transaction's retained **pre-reservation** snapshot.
 The current post-reservation projection correctly refuses dispatch. Never erase an intent to
-manufacture that snapshot. Only the unique transaction winner may call the transport. The adapter
+manufacture that snapshot. Only the unique transaction winner may call the transport. The declared scope is caller-supplied and cannot prove credential provenance. The future worker
+must atomically resolve scope and credentials from the same currently owned connection record;
+raw credentials paired with a matching scope object do not establish that ownership. The adapter
 promises one POST per invocation; durable ownership, current gates and recovery belong to the
 future worker/store. Neither an in-memory token nor an old snapshot proves exclusive admission.
 
@@ -43,7 +45,8 @@ knowledge without exposing raw responses. A generic raw-wire sender leaks provid
 a mutable one-use handle loses its guarantee across processes. Both alternatives were rejected.
 
 Before this consumer, shared verification now rejects reused provider-call or attempt IDs even
-when the proposed pending node differs from the previous one. The regression lives in the shared
+when the proposed pending node differs from the previous one. It also refuses a call ID already
+used by a read check, matching the execution projection's prohibition on read/create ID collisions. The regression lives in the shared
 campaign-creation suite. No shared lifecycle or accounting enum is widened for this transport.
 
 ## Provider response contract

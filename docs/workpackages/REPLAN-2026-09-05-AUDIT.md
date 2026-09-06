@@ -6,7 +6,7 @@
 
 **SP creation transport implemented and tested:** shared prerequisite `1c53d80` lands before
 the inert `./sp-creation-adapter` export. `prepareNode` returns digest/positions without I/O;
-`executeOneAttempt` rejoins authority, frozen credential scope and exact recompiled request,
+`executeOneAttempt` rejoins authority, declared scope against the frozen plan and exact recompiled request,
 then performs at most one POST. The private decoder enforces all nine endpoint spellings,
 lossless string IDs, duplicate-member/index/count rejection and supplied parent-ID agreement.
 It records sanitized outcome evidence and a digest of status/request binding/exact response bytes.
@@ -30,6 +30,20 @@ The existing compiler test data was extracted into a synthetic shared
 fixture without changing production compiler behavior. No database migration, runtime registration,
 Amazon call or production setting change occurred. Durable exclusive admission, current gates,
 observation-only recovery, campaign/frontend contracts and live checks remain required.
+
+**Final verification correction:** the shared verifier also now rejects a proposed create call ID
+already used by a read-check result. The new regression failed before correction; all 186 shared
+tests, shared typecheck and 50 adapter tests pass afterward. Evidence: `read-call-collision-before.log`,
+`shared-tests-final.log`, `shared-typecheck-final.log` and `adapter-shared-fix-tests.log` under the
+same private evidence directory. Scope validation is explicitly validation of a caller-supplied
+scope; it cannot attest to raw credential provenance. The future worker/store must resolve scope
+and credentials from the same owned connection record. Cross-model review requested this
+clarification and direct test-log pointers in the private decision trail.
+
+The inert transport is committed at `2411c18`, after `1c53d80`. Clean-checkout repository lint
+passed at `2411c18` (exec session3748, exit0); the source was pushed and PR #141's description
+updated. The subsequent shared correction retains the same consumer contract. No hosted operation
+or frontend file is part of either source change.
 
 **SP transport design and prerequisite:** three independent designs were synthesized in
 `docs/design/WP-215-SP-TRANSPORT.md` under the authorized implementation plan. The shared intent
