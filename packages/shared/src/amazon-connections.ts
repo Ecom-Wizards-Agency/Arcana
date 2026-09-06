@@ -46,7 +46,12 @@ export const AmazonConnectionBegin = z.object({
   requestId: Uuid,
   nonceHash: Digest,
   clientId: z.string().min(1).max(256),
-  redirectUri: z.url().max(2048),
+  redirectUri: z.url().max(2048).refine((value) => {
+    const url = new URL(value);
+    return !url.username && !url.password && !url.hash
+      && (url.protocol === 'https:' || (url.protocol === 'http:'
+        && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)));
+  }, 'Expected an HTTPS callback or local development origin'),
   scope: z.string().min(1).max(256),
 }).strict();
 export type AmazonConnectionBegin = z.infer<typeof AmazonConnectionBegin>;
@@ -105,8 +110,33 @@ export const AmazonConnectionOperation = z.object({
   updatedAt: z.iso.datetime({ offset: true }),
   regions: z.array(AmazonConnectionRegionProgress).length(3),
 }).strict().superRefine((value, ctx) => {
+  const refuse = (message: string): void => { ctx.addIssue({ code: 'custom', message }); };
   if (new Set(value.regions.map((row) => row.region)).size !== 3) {
-    ctx.addIssue({ code: 'custom', message: 'Expected each discovery region exactly once' });
+    refuse('Expected each discovery region exactly once');
   }
+  const beforeGrant = ['awaiting_consent', 'queued', 'exchanging'].includes(value.state);
+  const completedRegions = value.regions.filter((region) => region.state === 'completed').length;
+  const allSettled = value.regions.every((region) => ['completed', 'failed'].includes(region.state));
+  const hasRefusals = value.regions.some((region) => region.state === 'failed' || region.rejected > 0);
+  const written = value.regions.reduce((total, region) => total + region.upserted, 0);
+  if (beforeGrant && (value.connectionId !== null || value.reason !== null
+    || value.regions.some((region) => region.state !== 'pending'))) refuse('Consent cannot claim discovery progress');
+  if (['discovering', 'completed', 'partial', 'empty'].includes(value.state) && value.connectionId === null) {
+    refuse('Discovery requires an attached connection');
+  }
+  if (value.state === 'discovering' && value.reason !== null) refuse('Active discovery has no terminal reason');
+  if (value.state === 'completed' && (!allSettled || hasRefusals || written === 0 || value.reason !== null)) {
+    refuse('Completed connection requires fully reconciled profiles');
+  }
+  if (value.state === 'partial' && (!allSettled || !hasRefusals || completedRegions === 0
+    || value.reason !== 'discovery_incomplete')) refuse('Partial connection requires settled regional evidence');
+  if (value.state === 'empty' && (!allSettled || hasRefusals || written !== 0 || value.reason !== 'no_profiles')) {
+    refuse('Empty connection requires a complete empty discovery');
+  }
+  if (value.state === 'cancelled' && value.reason !== 'operator_cancelled') refuse('Cancellation reason mismatch');
+  if (value.state === 'refused' && value.reason !== 'authority_changed') refuse('Authority refusal reason mismatch');
+  if (value.state === 'reconnect_required' && (value.reason === null
+    || !['consent_expired', 'code_expired', 'exchange_refused', 'exchange_uncertain',
+      'installation_changed', 'discovery_failed'].includes(value.reason))) refuse('Reconnection requires a fixed reason');
 });
 export type AmazonConnectionOperation = z.infer<typeof AmazonConnectionOperation>;
