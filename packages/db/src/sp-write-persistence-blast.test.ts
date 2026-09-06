@@ -91,7 +91,8 @@ describe('SP write persistence facade blast radius', () => {
         expect(result?.messages.some((message) => message.ruleId === 'no-restricted-imports'), `${filePath}: ${specifier}`).toBe(true);
       }
     }
-    for (const specifier of ['@wizard-ads/ads-api/asset-library', '@wizard-ads/ads-api/sp-write-adapter']) {
+    for (const specifier of ['@wizard-ads/ads-api/asset-library', '@wizard-ads/ads-api/sp-write-adapter',
+      '@wizard-ads/ads-api/sp-creation-adapter', '@wizard-ads/ads-api/future-client/nested']) {
       const [result] = await eslint.lintText(`import * as provider from '${specifier}'; void provider;`, {
         filePath: 'apps/web/app/api/amazon/oauth/synthetic-provider-import.ts',
       });
