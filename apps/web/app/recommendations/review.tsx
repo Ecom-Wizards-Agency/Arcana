@@ -96,6 +96,14 @@ const LEVERS = ['bid-down', 'push', 'waste-cut', 'budget', 'placement', 'negativ
 const SELECT_COLUMN_ID = 'select';
 const EVIDENCE_COLUMN_ID = 'evidence';
 
+/**
+ * Below this viewport width the pinned identity column costs more room than it
+ * saves: `Select` (44) plus `Entity` (260) is 304 of a 390 px phone, and the
+ * remaining ten columns have to share what is left of the scroller. Above it
+ * the pin is what keeps a horizontally scrolled row readable.
+ */
+const PINNED_ENTITY_MIN_WIDTH = 640;
+
 interface Filters {
   reason: string;
   status: string;
@@ -108,8 +116,16 @@ type Decision = 'accepted' | 'dismissed' | 'proposed';
 
 /**
  * A status this client wrote before the server answered, tagged with the
- * refresh generation it was written against so it can be retired on time
- * rather than on agreement.
+ * number of refreshes that had been *requested* when it was written, so it can
+ * be retired on time rather than on agreement.
+ *
+ * Requested, not landed. Tagging with the number of payloads that had already
+ * arrived makes two decisions taken inside one refresh round trip carry the
+ * same generation, and the first payload — which was asked for before the
+ * second decision existed and cannot know about it — retires both. The row the
+ * operator had just moved then flickers back to the status they changed. A
+ * write is retired only once a payload that this client asked for *after* the
+ * write has arrived.
  */
 interface OptimisticStatus {
   readonly status: string;
@@ -128,6 +144,35 @@ function matches(proposal: ProposalView, filters: Filters): boolean {
     if (!haystack.includes(needle)) return false;
   }
   return true;
+}
+
+/**
+ * Every count on this screen, formatted the one way.
+ *
+ * The queue caps at 20,000 loaded rows and a run can hold more, so these are
+ * five-figure numbers in ordinary use; "20000 of 20000" beside a notice reading
+ * "20,000 of the 41,000 proposals" is the same number written two ways.
+ */
+function int(value: number): string {
+  return value.toLocaleString('en-US');
+}
+
+/**
+ * A name for a row's controls that two rows cannot share.
+ *
+ * One run routinely proposes two fields for one entity — a bid and a budget on
+ * the same campaign — and `Select <entity>` then gives two checkboxes the same
+ * accessible name, which is the one thing an accessible name may not do. The
+ * field and the scope are what distinguishes them on screen, so they are what
+ * distinguishes them to a screen reader.
+ */
+function rowName(proposal: ProposalView): string {
+  return `${proposal.entityLabel}, ${proposal.field}, in ${proposal.scope}`;
+}
+
+/** The evidence panel a row's toggle controls, when it is open. */
+function evidencePanelId(proposalId: string): string {
+  return `evidence-panel-${proposalId}`;
 }
 
 function percent(value: number | null): string {
@@ -156,6 +201,13 @@ const dimension = (
  * a gesture, not a value, so they carry no ordering — the header offers no
  * `aria-sort` and a click on it does nothing (`packages/ui/src/columns.ts`).
  *
+ * `entity` is pinned so the row keeps its identity while the operator scrolls
+ * the rest of it sideways — except on a phone, where the checkbox and a 260 px
+ * identity column would together claim 304 of 390 pixels and leave the other
+ * ten columns 86. Below `PINNED_ENTITY_MIN_WIDTH` the identity column scrolls
+ * with everything else, which is the only way the rest of the row is reachable
+ * at all.
+ *
  * `queue` is the decision lane, resolved by `groupByDecision` rather than
  * restated here, and it is the column the old lane sections became. `delta` is
  * the only numeric column; `current_value` and `proposed_value` stay the exact strings
@@ -163,7 +215,8 @@ const dimension = (
  * row (a bid, a budget, a placement modifier) and there is no single scale that
  * would be true for all of them.
  */
-export function reviewQueueColumns(): GridColumn[] {
+export function reviewQueueColumns(options: { pinEntity?: boolean } = {}): GridColumn[] {
+  const { pinEntity = true } = options;
   return [
     {
       id: SELECT_COLUMN_ID,
@@ -174,7 +227,7 @@ export function reviewQueueColumns(): GridColumn[] {
       width: 44,
       pinned: true,
     },
-    dimension('entity', 'Entity', { width: 260, pinned: true }),
+    dimension('entity', 'Entity', { width: 260, pinned: pinEntity }),
     dimension('queue', 'Queue', { width: 150, filterKind: 'categorical' }),
     dimension('reason', 'Reason', { width: 180, filterKind: 'categorical' }),
     dimension('objective', 'Objective', { width: 170, filterKind: 'categorical' }),
@@ -250,6 +303,8 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  /** What the evidence disclosure last did, for the polite live region. */
+  const [announcement, setAnnouncement] = useState('');
   const [activePanel, setActivePanel] = useState<ReviewPanel>(null);
   const [dismissalNote, setDismissalNote] = useState('');
   const [exportNote, setExportNote] = useState('');
@@ -269,11 +324,34 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
   /** id → the status this client wrote, until a refresh has answered for it. */
   const [optimistic, setOptimistic] = useState<ReadonlyMap<string, OptimisticStatus>>(new Map());
   /**
-   * How many server payloads have arrived since this component mounted, and
-   * which payload each optimistic write was made against. A write is retired
-   * once a payload landed after it, whatever that payload says.
+   * The two halves of the refresh clock: how many payloads this client has
+   * *asked* for and how many have *arrived*. An optimistic write records the
+   * requested count at the moment it was made and is retired once the landed
+   * count has passed it, so a payload already in flight when the write
+   * happened can never answer for it.
    */
-  const refreshes = useRef(0);
+  const requested = useRef(0);
+  const landed = useRef(0);
+  /** Ask the server for a fresh payload, on the record. */
+  const refresh = useCallback(() => {
+    requested.current += 1;
+    router.refresh();
+  }, [router]);
+  /**
+   * Whether this is a phone-width viewport, measured rather than guessed.
+   *
+   * `useEffect`, not `useLayoutEffect`: the server render has no window, the
+   * first client render must match it, and correcting one column's pin a frame
+   * later is cheaper than a hydration mismatch.
+   */
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const measure = (): void => setNarrow(window.innerWidth < PINNED_ENTITY_MIN_WIDTH);
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, []);
   const dismissalNoteRef = useRef<HTMLTextAreaElement>(null);
   const exportNoteRef = useRef<HTMLTextAreaElement>(null);
   const dismissButtonRef = useRef<HTMLButtonElement>(null);
@@ -285,29 +363,33 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
   );
 
   /**
-   * Reconcile on time, not on agreement.
+   * Reconcile on time, not on agreement — and on the right payload.
    *
    * An optimistic status is a claim made while the server had not answered
-   * yet. It survives until a payload rendered *after* the write arrives, and
-   * then it goes — whether or not the server says what this client expected.
+   * yet. It survives until a payload *this write asked for* arrives, and then
+   * it goes, whether or not the server says what this client expected.
+   *
    * Retiring only on agreement pins any disagreement forever: a proposal a
    * concurrent run superseded, or a row the route silently refused, would
    * contradict the database, and the shifted run counts with it, until the
-   * page was reloaded. The server is authoritative once it has answered; the
-   * optimistic value only covers the gap before it does.
+   * page was reloaded. Retiring on the next payload to *land* is wrong in the
+   * other direction: an operator working down a queue makes a second decision
+   * while the first refresh is still in flight, and that first payload — which
+   * predates the second decision — would retire it and flicker the row back.
+   * Counting requested refreshes separates the two.
    */
   const lastServer = useRef(serverStatus);
   useEffect(() => {
     if (lastServer.current !== serverStatus) {
       lastServer.current = serverStatus;
-      refreshes.current += 1;
+      landed.current += 1;
     }
-    const landed = refreshes.current;
+    const answered = landed.current;
     setOptimistic((current) => {
       if (current.size === 0) return current;
       const next = new Map(
         [...current].filter(
-          ([id, entry]) => entry.writtenAt >= landed && serverStatus.get(id) !== entry.status,
+          ([id, entry]) => entry.writtenAt >= answered && serverStatus.get(id) !== entry.status,
         ),
       );
       return next.size === current.size ? current : next;
@@ -397,7 +479,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
   );
   const exportCount = selectedIds.length > 0 ? acceptedSelected : (counts['accepted'] ?? 0);
 
-  const columns = useMemo(() => reviewQueueColumns(), []);
+  const columns = useMemo(() => reviewQueueColumns({ pinEntity: !narrow }), [narrow]);
   const dimensions = useMemo(
     () => columns.filter((column) => column.kind === 'dimension'),
     [columns],
@@ -438,14 +520,32 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
     });
   }, []);
 
-  const toggleEvidence = useCallback((id: string) => {
-    setExpanded((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+  /**
+   * Open or close one proposal's evidence, and say so.
+   *
+   * The panel is not inside the row that opened it — the grid is virtualised
+   * and uniform-height, so the disclosure lands in the stack below the queue,
+   * possibly hundreds of rows away from a control that has just announced
+   * itself as expanded. `aria-controls` states the relationship; this states
+   * the event, because focus deliberately stays on the toggle so the operator
+   * keeps their place in the queue.
+   */
+  const toggleEvidence = useCallback(
+    (id: string) => {
+      const name = byId.get(id)?.entityLabel ?? 'this proposal';
+      const opening = !expanded.has(id);
+      setExpanded((current) => {
+        const next = new Set(current);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+      setAnnouncement(
+        opening ? `Evidence for ${name} opened below the queue.` : `Evidence for ${name} closed.`,
+      );
+    },
+    [byId, expanded],
+  );
 
   /**
    * Add every filtered loaded row to the selection without disturbing rows the
@@ -478,10 +578,22 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
     setConfirmed(false);
   }, []);
 
-  /** The grid's own selection keys (Space toggles, Escape clears) land here. */
-  const applyGridSelection = useCallback((rowIds: readonly string[]) => {
-    setSelected(new Set(rowIds));
-  }, []);
+  /**
+   * The grid's own selection keys (Space toggles, Escape clears) land here.
+   *
+   * Filtered through the proposal map, because the grid emits whatever row the
+   * tab stop is on and a grouped queue's rows are summaries: Space on a `Queue`
+   * group row would otherwise put an id no checkbox can reach into the
+   * operator's selection, and the footer and the selection count would then
+   * disagree about what is selected. This mirrors the optimizer's slice-3
+   * guard, which drops ids whose campaign is not selectable.
+   */
+  const applyGridSelection = useCallback(
+    (rowIds: readonly string[]) => {
+      setSelected(new Set(rowIds.filter((id) => byId.has(id))));
+    },
+    [byId],
+  );
 
   const closePanel = useCallback((panel: Exclude<ReviewPanel, null>) => {
     if (panel === 'dismiss') dismissButtonRef.current?.focus();
@@ -524,11 +636,28 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         // the optimistic state can be exactly right rather than hopeful.
         const refused = readRefused(result['refused']);
         const refusedIds = new Set(refused.map((entry) => entry.id));
-        const writtenAt = refreshes.current;
+        const updated = typeof result['updated'] === 'number' ? result['updated'] : null;
+        /*
+         * Claim a move only for rows the route actually moved.
+         *
+         * `decideRecommendations` returns a refusal only for ids that still
+         * resolve to a row in this org; an id that resolves to nothing is
+         * neither updated nor refused, so "offered minus refused" is an upper
+         * bound rather than the answer. When it does not equal the reported
+         * `updated`, this client does not know *which* rows moved, and a
+         * status it invents would disagree with the count it prints beside it.
+         * The refusals are still exact — the route read those statuses out of
+         * the database — so they are written either way, and the rest waits
+         * the one refresh for the server's own answer.
+         */
+        const reconciled = updated !== null && offered.length - refused.length === updated;
+        const writtenAt = requested.current;
         setOptimistic((current) => {
           const next = new Map(current);
-          for (const id of offered) {
-            if (!refusedIds.has(id)) next.set(id, { status: decision, writtenAt });
+          if (reconciled) {
+            for (const id of offered) {
+              if (!refusedIds.has(id)) next.set(id, { status: decision, writtenAt });
+            }
           }
           for (const entry of refused) next.set(entry.id, { status: entry.status, writtenAt });
           return next;
@@ -537,7 +666,8 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
           `${String(result['updated'])} of ${String(result['offered'])} proposals moved to ${decision}.`
             + (refused.length === 0
               ? ''
-              : ` ${refused.length} refused: a proposal that has already been exported or applied cannot be decided again.`),
+              : ` ${refused.length} refused: a proposal that has already been exported, applied or`
+                + ' superseded cannot be decided again.'),
         );
         if (decision === 'dismissed') {
           setDismissalNote('');
@@ -545,14 +675,14 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         }
         // In place, not a reload: the filter, the selection, the open evidence
         // and the scroll position are the operator's working state.
-        router.refresh();
+        refresh();
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : 'Decision failed');
       } finally {
         setBusy(false);
       }
     },
-    [closePanel, post, router, selectedIds],
+    [closePanel, post, refresh, selectedIds],
   );
 
   const openDismissal = useCallback(() => {
@@ -608,19 +738,19 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
       setConfirmed(false);
       // The export moved statuses server-side; ask for them rather than
       // leaving the queue showing the world before the batch.
-      router.refresh();
+      refresh();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Export failed');
     } finally {
       setBusy(false);
     }
-  }, [confirmed, exportNote, lever, optGroup, post, props.client, props.profileId, props.runId, router, selectedIds]);
+  }, [confirmed, exportNote, lever, optGroup, post, props.client, props.profileId, props.runId, refresh, selectedIds]);
 
   const renderHeader = useMemo(
     () => ({
       [SELECT_COLUMN_ID]: () => (
         <input
-          aria-label={`${allVisibleSelected ? 'Deselect' : 'Select'} all ${visible.length.toLocaleString('en-US')} filtered loaded rows`}
+          aria-label={`${allVisibleSelected ? 'Deselect' : 'Select'} all ${int(visible.length)} filtered loaded rows`}
           checked={allVisibleSelected}
           className="wa-checkbox"
           data-testid="review-select-filtered"
@@ -644,7 +774,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         if (proposal === undefined) return null;
         return (
           <input
-            aria-label={`Select ${proposal.entityLabel}`}
+            aria-label={`Select ${rowName(proposal)}`}
             checked={selected.has(proposal.id)}
             className="wa-checkbox"
             onChange={() => toggle(proposal.id)}
@@ -683,7 +813,10 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         return (
           <button
             aria-expanded={open}
-            aria-label={`${open ? 'Hide' : 'Show'} evidence for ${proposal.entityLabel}`}
+            // Only while it exists: `aria-controls` pointing at nothing is a
+            // broken relationship, not a weaker one.
+            {...(open ? { 'aria-controls': evidencePanelId(proposal.id) } : {})}
+            aria-label={`${open ? 'Hide' : 'Show'} evidence for ${rowName(proposal)}`}
             className="wa-btn wa-btn--ghost wa-btn--sm"
             data-testid={`evidence-toggle-${proposal.id}`}
             onClick={(event) => {
@@ -712,26 +845,28 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
       <div className="wa-review__summary" data-testid="run-counts">
         <div className="wa-review__stat wa-review__stat--attention">
           <span className="wa-label">Needs review</span>
-          <strong>{counts['proposed'] ?? 0}</strong>
+          <strong>{int(counts['proposed'] ?? 0)}</strong>
           {' '}
           <span>new proposals</span>
         </div>
         <div className="wa-review__stat">
           <span className="wa-label">Ready to export</span>
-          <strong>{counts['accepted'] ?? 0}</strong>
+          <strong>{int(counts['accepted'] ?? 0)}</strong>
           {' '}
           <span>accepted proposals</span>
         </div>
         <div className="wa-review__stat">
           <span className="wa-label">Completed</span>
           <strong>
-            {(counts['dismissed'] ?? 0) +
-              (counts['exported'] ?? 0) +
-              (counts['applied'] ?? 0) +
-              (counts['superseded'] ?? 0)}
+            {int(
+              (counts['dismissed'] ?? 0) +
+                (counts['exported'] ?? 0) +
+                (counts['applied'] ?? 0) +
+                (counts['superseded'] ?? 0),
+            )}
           </strong>
           <span data-testid="exported-count">
-            {counts['exported'] ?? 0} exported · {counts['dismissed'] ?? 0} dismissed
+            {int(counts['exported'] ?? 0)} exported · {int(counts['dismissed'] ?? 0)} dismissed
           </span>
         </div>
       </div>
@@ -745,8 +880,8 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
 
       {truncated ? (
         <p style={warning} role="status" data-testid="queue-truncated">
-          This queue loaded {loaded.toLocaleString('en-US')} of the{' '}
-          {runTotal.toLocaleString('en-US')} proposals in this run. Filtering, sorting, grouping and
+          This queue loaded {int(loaded)} of the {int(runTotal)} proposals in this run. Filtering,
+          sorting, grouping and
           selection act on the loaded rows only. An export with no selection is executed on the
           server over every accepted proposal in the run, so it is the one count here that speaks
           for more than what loaded.
@@ -762,7 +897,8 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         <div className="wa-review__filter-heading">
           <strong>Recommendation queue</strong>
           <span data-testid="queue-count">
-            {visible.length} of {loaded} loaded rows shown
+            {int(visible.length)} of {int(loaded)} loaded rows
+            shown
           </span>
         </div>
         <label className="wa-review__filter">
@@ -832,8 +968,11 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
       >
         <div className="wa-review__selection">
           <span className="wa-review__selection-count" data-testid="selection-count" aria-live="polite">
-            <strong>{selectedIds.length}</strong> of {visible.length} filtered loaded rows selected
-            {selectedIds.length === 0 ? '' : ` · ${acceptedSelected} accepted`}
+            <strong>{int(selectedIds.length)}</strong> of {int(visible.length)} filtered loaded rows
+            selected
+            {selectedIds.length === 0
+              ? ''
+              : ` · ${int(acceptedSelected)} accepted`}
           </span>
           <button
             className="wa-btn wa-btn--sm"
@@ -841,7 +980,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
             onClick={selectAllVisible}
             disabled={busy || visible.length === 0}
           >
-            Select all {visible.length} filtered loaded rows
+            Select all {int(visible.length)} filtered loaded rows
           </button>
           <button
             className="wa-btn wa-btn--ghost wa-btn--sm"
@@ -860,7 +999,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
             onClick={() => void decide('accepted')}
             disabled={busy || selectedIds.length === 0}
           >
-            {selectedIds.length > 0 ? `Accept ${selectedIds.length} selected` : 'Accept selected'}
+            {selectedIds.length > 0 ? `Accept ${int(selectedIds.length)} selected` : 'Accept selected'}
           </button>
           <button
             ref={dismissButtonRef}
@@ -871,7 +1010,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
             aria-expanded={activePanel === 'dismiss'}
             aria-controls="dismissal-controls"
           >
-            {selectedIds.length > 0 ? `Dismiss ${selectedIds.length} selected` : 'Dismiss selected'}
+            {selectedIds.length > 0 ? `Dismiss ${int(selectedIds.length)} selected` : 'Dismiss selected'}
           </button>
           <button
             className="wa-btn wa-btn--ghost wa-btn--sm"
@@ -879,7 +1018,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
             onClick={() => void decide('proposed')}
             disabled={busy || selectedIds.length === 0}
           >
-            {selectedIds.length > 0 ? `Re-open ${selectedIds.length} selected` : 'Re-open selected'}
+            {selectedIds.length > 0 ? `Re-open ${int(selectedIds.length)} selected` : 'Re-open selected'}
           </button>
           <span className="wa-review__action-divider" aria-hidden="true" />
           <button
@@ -891,7 +1030,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
             aria-expanded={activePanel === 'export'}
             aria-controls="export-controls"
           >
-            Prepare export · {exportCount}
+            Prepare export · {int(exportCount)}
           </button>
         </div>
       </div>
@@ -907,7 +1046,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         >
           <div className="wa-review__composer-copy">
             <h2 id="dismissal-title">
-              Dismiss {selectedIds.length} selected proposal{selectedIds.length === 1 ? '' : 's'}
+              Dismiss {int(selectedIds.length)} selected proposal{selectedIds.length === 1 ? '' : 's'}
             </h2>
             <p>Record why these recommendations should not move forward.</p>
           </div>
@@ -932,7 +1071,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
               onClick={() => void decide('dismissed', dismissalNote)}
               disabled={busy || selectedIds.length === 0}
             >
-              Confirm dismissal · {selectedIds.length}
+              Confirm dismissal · {int(selectedIds.length)}
             </button>
           </div>
         </section>
@@ -949,12 +1088,12 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         >
           <div className="wa-review__composer-copy">
             <h2 id="export-title">
-              Review export · {exportCount} accepted change{exportCount === 1 ? '' : 's'}
+              Review export · {int(exportCount)} accepted change{exportCount === 1 ? '' : 's'}
             </h2>
             <p>
               {selectedIds.length > 0
-                ? `${acceptedSelected} accepted proposal${acceptedSelected === 1 ? '' : 's'} among the selected loaded rows.`
-                : `Every accepted proposal in this run (${exportCount}).`}
+                ? `${int(acceptedSelected)} accepted proposal${acceptedSelected === 1 ? '' : 's'} among the selected loaded rows.`
+                : `Every accepted proposal in this run (${int(exportCount)}).`}
               {' '}
               Creates review files only. OpenSpell does not update Amazon.
             </p>
@@ -1020,7 +1159,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
               disabled={busy || !canExport || exportCount === 0}
               data-testid="export-accepted"
             >
-              Export {exportCount} accepted change{exportCount === 1 ? '' : 's'}
+              Export {int(exportCount)} accepted change{exportCount === 1 ? '' : 's'}
             </button>
           </div>
         </section>
@@ -1045,6 +1184,10 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
           {message}
         </p>
       )}
+
+      <p className="wa-sr-only" role="status" data-testid="evidence-announcement">
+        {announcement}
+      </p>
 
       <GridViewport
         fullscreen={fullscreen}
@@ -1107,6 +1250,23 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
             rowHeight={rowHeightFor(density)}
             emptyMessage="No proposal matches this filter."
             noDataMessage="This run proposed nothing."
+            /*
+             * The grid's own footer is the count directly under the rows, so
+             * it says what population it is counting rather than leaving that
+             * to a notice at the top of the page: `3 of 3 loaded rows · 40 in
+             * this run`, not `3 of 3 rows` under a notice that says 40.
+             */
+            rowNoun="loaded rows"
+            {...(truncated ? { populationNote: `${int(runTotal)} in this run` } : {})}
+            /*
+             * Scroll survives a decision. Without this the grid infers "the
+             * operator re-filtered" from the matched row count, and the
+             * queue's most ordinary workflow — filter to `proposed` and work
+             * down — drops every decided row out of the filtered set, which
+             * threw the operator back to row zero on every decision. The key
+             * moves when the operator moves a filter, and only then.
+             */
+            filterKey={`${filters.reason}\u0000${filters.status}\u0000${filters.objective}\u0000${filters.text}`}
           />
         </div>
 
@@ -1147,7 +1307,14 @@ function EvidencePanel({
   onClose: () => void;
 }): ReactNode {
   return (
-    <div style={provenancePanel} data-testid={`provenance-${proposal.id}`}>
+    <div
+      aria-label={`Evidence for ${rowName(proposal)}`}
+      data-testid={`provenance-${proposal.id}`}
+      id={evidencePanelId(proposal.id)}
+      role="group"
+      style={provenancePanel}
+      tabIndex={-1}
+    >
       <div style={{ alignItems: 'baseline', display: 'flex', gap: '0.75rem', justifyContent: 'space-between' }}>
         <p style={{ margin: '0 0 0.5rem' }}>
           <strong>{proposal.entityLabel}</strong> · {proposal.scope} · {proposal.field}{' '}
@@ -1157,7 +1324,7 @@ function EvidencePanel({
           className="wa-btn wa-btn--ghost wa-btn--sm"
           onClick={onClose}
           type="button"
-          aria-label={`Hide evidence for ${proposal.entityLabel}`}
+          aria-label={`Hide evidence for ${rowName(proposal)}`}
         >
           Hide
         </button>

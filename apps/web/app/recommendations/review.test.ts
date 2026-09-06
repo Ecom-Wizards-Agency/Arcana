@@ -53,7 +53,12 @@ vi.mock('next/navigation', () => ({ useRouter: () => navigation }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const mounted: Array<{ unmount: () => void }> = [];
 
-function proposal(id: string, status: string, reason: string): ProposalView {
+function proposal(
+  id: string,
+  status: string,
+  reason: string,
+  overrides: Partial<ProposalView> = {},
+): ProposalView {
   return {
     id,
     runId: 'run-1',
@@ -89,7 +94,18 @@ function proposal(id: string, status: string, reason: string): ProposalView {
     strategyLabel: 'Unassigned',
     provenance: [{ key: 'clicks', label: 'Clicks', value: '42', hint: 'in the window' }],
     exportable: true,
+    ...overrides,
   };
+}
+
+/**
+ * What a row's checkbox and evidence toggle are called.
+ *
+ * Entity alone is not a name: one run proposes a bid and a budget for the same
+ * campaign, and two controls may not share an accessible name.
+ */
+function rowLabel(id: string, field = 'bid'): string {
+  return `Synthetic keyword ${id}, ${field}, in Synthetic campaign`;
 }
 
 const QUEUE = [
@@ -160,6 +176,15 @@ function testid(host: HTMLElement, id: string): string {
   return host.querySelector(`[data-testid="${id}"]`)?.textContent ?? '';
 }
 
+/** The decide route answering that it moved the single row it was offered. */
+function okDecision(): ReturnType<typeof vi.fn> {
+  return vi.fn(async () => ({
+    ok: true,
+    statusText: 'OK',
+    json: async () => ({ updated: 1, offered: 1, refused: [] }),
+  }));
+}
+
 function setSelectValue(select: HTMLSelectElement, value: string): void {
   const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
   if (setter === undefined) throw new Error('select value setter is unavailable');
@@ -173,11 +198,15 @@ function labelled(host: HTMLElement, label: string): HTMLElement {
   return element;
 }
 
-afterEach(() => {
+function cleanupMounted(): void {
   act(() => {
     for (const root of mounted.splice(0)) root.unmount();
   });
   document.body.replaceChildren();
+}
+
+afterEach(() => {
+  cleanupMounted();
   navigation.refresh.mockReset();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -307,7 +336,7 @@ describe('ReviewWorkspace operator queue', () => {
     act(() => setSelectValue(reason, 'high_acos'));
     expect(testid(host, 'queue-count')).toBe('2 of 3 loaded rows shown');
 
-    act(() => labelled(host, 'Select Synthetic keyword new').click());
+    act(() => labelled(host, `Select ${rowLabel('new')}`).click());
     expect(testid(host, 'selection-count')).toBe('1 of 2 filtered loaded rows selected · 0 accepted');
     act(() => host.querySelector<HTMLElement>('[data-testid="evidence-toggle-new"]')!.click());
     expect(host.querySelector('[data-testid="provenance-new"]')).not.toBeNull();
@@ -349,7 +378,7 @@ describe('ReviewWorkspace operator queue', () => {
     mounted.push(root);
     act(() => root.render(createElement(ReviewWorkspace, props())));
 
-    act(() => labelled(host, 'Select Synthetic keyword new').click());
+    act(() => labelled(host, `Select ${rowLabel('new')}`).click());
     await act(async () => {
       button(host, 'Accept 1 selected').click();
     });
@@ -374,6 +403,274 @@ describe('ReviewWorkspace operator queue', () => {
     );
     expect(statusOf(host, 'new')).toBe('accepted');
     expect(testid(host, 'run-counts')).toContain('0');
+  });
+
+  it('retires the optimistic status when the refreshed payload disagrees with it', async () => {
+    // The reconciliation exists for exactly this: a concurrent run superseded
+    // the proposal while this operator was accepting it. Retiring only when
+    // the server agrees would pin the client's claim against the database
+    // forever, and the run tiles with it, until the page was reloaded.
+    vi.stubGlobal('fetch', okDecision());
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    mounted.push(root);
+    act(() => root.render(createElement(ReviewWorkspace, props())));
+
+    act(() => labelled(host, `Select ${rowLabel('new')}`).click());
+    await act(async () => {
+      button(host, 'Accept 1 selected').click();
+    });
+    expect(statusOf(host, 'new')).toBe('accepted');
+    expect(testid(host, 'run-counts')).toContain('2');
+
+    act(() =>
+      root.render(
+        createElement(
+          ReviewWorkspace,
+          props({
+            proposals: [
+              proposal('new', 'superseded', 'high_acos'),
+              proposal('accepted', 'accepted', 'low_visibility'),
+              proposal('done', 'exported', 'high_acos'),
+            ],
+            counts: { proposed: 0, accepted: 1, exported: 1, superseded: 1 },
+          }),
+        ),
+      ),
+    );
+
+    // The server has answered. Its answer wins, on the row and in the tiles.
+    expect(statusOf(host, 'new')).toBe('superseded');
+    expect(testid(host, 'run-counts')).toContain('1 exported · 0 dismissed');
+    expect(testid(host, 'run-counts')).toContain('0');
+  });
+
+  it('does not flicker a second decision back when a slow earlier refresh lands', async () => {
+    // An operator works down the queue faster than the server answers. The
+    // payload for the first decision predates the second one and cannot speak
+    // for it; retiring on the next payload to *land* would drop the second
+    // claim and show the row at the status the operator had just changed.
+    vi.stubGlobal('fetch', okDecision());
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    mounted.push(root);
+    act(() => root.render(createElement(ReviewWorkspace, props())));
+
+    act(() => labelled(host, `Select ${rowLabel('new')}`).click());
+    await act(async () => {
+      button(host, 'Accept 1 selected').click();
+    });
+    // Decision two, while refresh #1 is still in flight.
+    act(() => labelled(host, `Select ${rowLabel('new')}`).click());
+    act(() => labelled(host, `Select ${rowLabel('done')}`).click());
+    await act(async () => {
+      button(host, 'Accept 1 selected').click();
+    });
+    expect(statusOf(host, 'new')).toBe('accepted');
+    expect(statusOf(host, 'done')).toBe('accepted');
+
+    // Refresh #1 finally lands: it knows about the first decision only.
+    act(() =>
+      root.render(
+        createElement(
+          ReviewWorkspace,
+          props({
+            proposals: [
+              proposal('new', 'accepted', 'high_acos'),
+              proposal('accepted', 'accepted', 'low_visibility'),
+              proposal('done', 'exported', 'high_acos'),
+            ],
+            counts: { proposed: 0, accepted: 2, exported: 1 },
+          }),
+        ),
+      ),
+    );
+    expect(statusOf(host, 'new')).toBe('accepted');
+    expect(statusOf(host, 'done')).toBe('accepted');
+    expect(testid(host, 'decision-result')).toBe('1 of 1 proposals moved to accepted.');
+  });
+
+  it('keeps the operator in place when a decision drops the row out of their filter', async () => {
+    // The queue's most ordinary workflow: filter to `proposed` and work down.
+    // Every decision removes rows from the filtered set, and a grid that reads
+    // "the row set shrank" as "the operator re-filtered" throws them back to
+    // row zero on every single decision.
+    vi.stubGlobal('fetch', okDecision());
+    const many = Array.from({ length: 400 }, (_, index) =>
+      proposal(`p${String(index).padStart(3, '0')}`, 'proposed', 'high_acos'),
+    );
+    const { host } = mount({ proposals: many, counts: { proposed: 400 } });
+
+    const status = [...host.querySelectorAll('select')].find(
+      (candidate) => candidate.previousElementSibling?.textContent === 'Status',
+    );
+    if (status === undefined) throw new Error('no status filter');
+    act(() => setSelectValue(status, 'proposed'));
+
+    const scroller = (): HTMLElement => {
+      const element = host.querySelector<HTMLElement>('[data-testid="grid-scroller"]');
+      if (element === null) throw new Error('no grid scroller');
+      return element;
+    };
+    act(() => {
+      scroller().scrollTop = 4000;
+      scroller().dispatchEvent(new Event('scroll'));
+    });
+    expect(scroller().scrollTop).toBe(4000);
+
+    const first =
+      host
+        .querySelector('[data-testid^="proposal-"]')
+        ?.getAttribute('data-testid')
+        ?.replace('proposal-', '') ?? '';
+    expect(first).not.toBe('');
+    act(() => labelled(host, `Select ${rowLabel(first)}`).click());
+    await act(async () => {
+      button(host, 'Accept 1 selected').click();
+    });
+
+    // The decision landed, the row left the filtered set, and the operator is
+    // still where they were.
+    expect(testid(host, 'queue-count')).toBe('399 of 400 loaded rows shown');
+    expect(scroller().scrollTop).toBe(4000);
+
+    // Moving a filter is the operator re-asking the question, and that still
+    // returns them to the top.
+    act(() => setSelectValue(status, 'accepted'));
+    expect(scroller().scrollTop).toBe(0);
+  });
+
+  it('refuses the grid keyboard a selection a group summary could never have', () => {
+    const { host } = mount();
+    const add = host.querySelector<HTMLSelectElement>('[aria-label="Add grouping level"]');
+    if (add === null) throw new Error('no grouping select');
+    act(() => setSelectValue(add, 'queue'));
+
+    const row = host.querySelector<HTMLElement>('[data-testid="grid-row"]');
+    if (row === null) throw new Error('no grid row');
+    act(() => {
+      row.focus();
+      row.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    });
+
+    // A group row is a summary of proposals, not a proposal. Nothing the
+    // operator can act on was selected, so nothing claims to be.
+    expect(testid(host, 'selection-count')).toBe('0 of 3 filtered loaded rows selected');
+    expect(host.querySelector('[data-testid="grid-shell"]')?.textContent).not.toContain('selected');
+    expect(button(host, 'Clear selection').disabled).toBe(true);
+  });
+
+  it('qualifies the grid footer count when the queue is a slice of the run', () => {
+    const { host } = mount({ counts: { proposed: 20, accepted: 15, exported: 5 } });
+    const shell = host.querySelector('[data-testid="grid-shell"]');
+    if (shell === null) throw new Error('no grid shell');
+
+    // The footer sits directly under the rows, closer to the eye than the
+    // notice above the page, so it says the same thing the notice does.
+    expect(shell.lastElementChild?.textContent).toBe('3 of 3 loaded rows · 40 in this run');
+
+    // An untruncated queue has no population to qualify and says nothing extra.
+    const { host: whole } = mount({ counts: { proposed: 1, accepted: 1, exported: 1 } });
+    expect(
+      whole.querySelector('[data-testid="grid-shell"]')?.lastElementChild?.textContent,
+    ).toBe('3 of 3 loaded rows');
+  });
+
+  it('names each row control for the proposal it acts on, not just the entity', () => {
+    // One campaign, two proposals: a bid and a budget. Naming both controls
+    // after the entity gives two checkboxes one name.
+    const { host } = mount({
+      counts: { proposed: 2 },
+      proposals: [
+        proposal('bid', 'proposed', 'high_acos', { entityLabel: 'Synthetic keyword one', field: 'bid' }),
+        proposal('budget', 'proposed', 'high_acos', {
+          entityLabel: 'Synthetic keyword one',
+          field: 'budget',
+        }),
+      ],
+    });
+
+    const names = [...host.querySelectorAll('input[type="checkbox"]')]
+      .map((element) => element.getAttribute('aria-label') ?? '')
+      .filter((name) => name.startsWith('Select Synthetic'));
+    expect(names).toEqual([
+      'Select Synthetic keyword one, bid, in Synthetic campaign',
+      'Select Synthetic keyword one, budget, in Synthetic campaign',
+    ]);
+    expect(new Set(names).size).toBe(names.length);
+
+    // The disclosure points at the panel it opens, and says it opened: the
+    // panel is not in the row, it is in the stack below the queue.
+    const toggle = host.querySelector<HTMLElement>('[data-testid="evidence-toggle-bid"]');
+    if (toggle === null) throw new Error('no evidence toggle');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.getAttribute('aria-controls')).toBeNull();
+
+    act(() => toggle.click());
+    const open = host.querySelector<HTMLElement>('[data-testid="evidence-toggle-bid"]');
+    expect(open?.getAttribute('aria-expanded')).toBe('true');
+    expect(open?.getAttribute('aria-controls')).toBe('evidence-panel-bid');
+    expect(host.querySelector('[data-testid="provenance-bid"]')?.id).toBe('evidence-panel-bid');
+    expect(testid(host, 'evidence-announcement')).toBe(
+      'Evidence for Synthetic keyword one opened below the queue.',
+    );
+  });
+
+  it('claims a move only for the rows the route reports moving, and names every refusal', async () => {
+    // The route returns a refusal only for ids that still resolve to a row, so
+    // an id that resolves to nothing is neither updated nor refused. Claiming
+    // it moved would contradict the count printed beside it.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        statusText: 'OK',
+        json: async () => ({
+          updated: 0,
+          offered: 2,
+          refused: [{ id: 'done', status: 'superseded' }],
+        }),
+      })),
+    );
+    const { host } = mount();
+
+    act(() => labelled(host, `Select ${rowLabel('new')}`).click());
+    act(() => labelled(host, `Select ${rowLabel('done')}`).click());
+    await act(async () => {
+      button(host, 'Accept 2 selected').click();
+    });
+
+    // `superseded` is a refused state too, and the message says so.
+    expect(testid(host, 'decision-result')).toBe(
+      '0 of 2 proposals moved to accepted. 1 refused: a proposal that has already been exported,'
+        + ' applied or superseded cannot be decided again.',
+    );
+    // The refusal is exact — the route read it out of the database — so it is
+    // written. The unaccounted-for row keeps the status the server last gave it.
+    expect(statusOf(host, 'done')).toBe('superseded');
+    expect(statusOf(host, 'new')).toBe('proposed');
+  });
+
+  it('stops pinning the identity column when the viewport cannot afford it', () => {
+    // At 390 px the checkbox and a 260 px pinned Entity claim 304 pixels and
+    // leave the other ten columns 86 to share, so the row is unreachable by
+    // horizontal scroll. The pin is what has to give, not the columns.
+    const width = window.innerWidth;
+    try {
+      const { host } = mount();
+      expect(header(host, 'Entity').style.position).toBe('sticky');
+
+      cleanupMounted();
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+      const { host: phone } = mount();
+      expect(header(phone, 'Entity').style.position).toBe('relative');
+      // The 44 px checkbox column is affordable at any width and stays put.
+      expect(header(phone, 'Select').style.position).toBe('sticky');
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+    }
   });
 
   it('never presents the loaded rows as the whole run', () => {
