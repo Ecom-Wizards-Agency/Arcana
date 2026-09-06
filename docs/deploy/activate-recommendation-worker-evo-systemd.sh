@@ -28,7 +28,7 @@ assert_recommendation_worker_transition_source "$expected_revision" || {
 }
 acquire_recommendation_worker_deployment_lock
 verify_recommendation_worker_credential
-verify_recommendation_authority_broker || {
+verify_recommendation_authority_broker "$recommendation_worker_release_root/releases/$expected_revision" "$expected_revision" || {
   echo 'refusing activation: root-owned authority broker contract is unavailable' >&2; exit 1;
 }
 preserved_before="$(capture_preserved_worker_state)" || {

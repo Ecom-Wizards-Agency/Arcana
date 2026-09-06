@@ -105,7 +105,7 @@ for (const file of files) {
     inputs.add(relative);
   }
 }
-const forbidden = /(?:^|\/)(?:packages\/(?:ads-api|sp-api|keepa-api|mrp-api|datadive-api)|apps\/worker\/src\/(?:ads-api|store|worker|schedules)\.ts)(?:\/|$)/u;
+const forbidden = /(?:^|\/)(?:packages\/(?:ads-api|sp-api|keepa-api|mrp-api|datadive-api)|apps\/worker\/src\/(?:ads-api|store|worker|schedules)\.ts|tools\/recommendation-authority\/src\/(?:entry|broker|database)\.ts)(?:\/|$)/u;
 const providerStore = /node_modules\/\.pnpm\/(?:@aws-sdk|@smithy|@wizard-ads\+(?:ads-api|sp-api|keepa-api|mrp-api|datadive-api))/u;
 if ([...inputs].some((input) => forbidden.test(input) || providerStore.test(input))) process.exit(1);
 fs.writeFileSync(output, `${[...inputs].sort().join('\n')}\n`, { mode: 0o644 });

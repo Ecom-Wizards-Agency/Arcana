@@ -2,134 +2,13 @@
 
 import { Buffer } from 'node:buffer';
 import process from 'node:process';
+import { clearTimeout, setTimeout } from 'node:timers';
 import { pathToFileURL } from 'node:url';
 
 const MAX_INPUT_BYTES = 8_192;
+import { parseCutoverEvidence, parseAuthorityTuple, expectedTransition, classifyTransitionReadback, parseBrokerResult, validateCutoverEvidence } from './openspell-recommendation-authority-contract.mjs';
+export { parseAuthorityTuple, expectedTransition, classifyTransitionReadback, parseBrokerResult, validateCutoverEvidence } from './openspell-recommendation-authority-contract.mjs';
 const REVISION = /^[0-9a-f]{40}$/u;
-const AUTHORITY_KEYS = ['admission', 'authorizedRevision', 'epoch', 'protocol'];
-const BROKER_KEYS = [...AUTHORITY_KEYS, 'decision', 'unresolved'].sort();
-const EVIDENCE_KEYS = [
-  ...AUTHORITY_KEYS,
-  'invalidActiveScopes',
-  'queuedJobs',
-  'runningJobs',
-  'tokenBearingJobs',
-].sort();
-
-export function parseAuthorityTuple(value) {
-  assertExactObject(value, AUTHORITY_KEYS);
-  if (!['legacy', 'fenced'].includes(value.protocol)
-    || !['legacy', 'blocked', 'scoped'].includes(value.admission)
-    || !Number.isSafeInteger(value.epoch) || value.epoch < 0
-    || (value.authorizedRevision !== null && !REVISION.test(value.authorizedRevision))) {
-    throw new Error('recommendation authority tuple is invalid');
-  }
-  return Object.freeze({
-    protocol: value.protocol,
-    admission: value.admission,
-    epoch: value.epoch,
-    authorizedRevision: value.authorizedRevision,
-  });
-}
-
-export function expectedTransition(operation, oldValue, revision) {
-  const oldTuple = parseAuthorityTuple(oldValue);
-  if (!REVISION.test(revision ?? '')) throw new Error('transition revision is invalid');
-  if (operation === 'block') {
-    if (oldTuple.admission === 'blocked') return oldTuple;
-    return Object.freeze({ ...oldTuple, admission: 'blocked', epoch: nextEpoch(oldTuple.epoch) });
-  }
-  if (operation === 'activate') {
-    if (oldTuple.protocol !== 'legacy' || oldTuple.admission !== 'blocked') {
-      throw new Error('activation source tuple is invalid');
-    }
-    return Object.freeze({
-      protocol: 'fenced', admission: 'blocked', epoch: nextEpoch(oldTuple.epoch),
-      authorizedRevision: revision,
-    });
-  }
-  if (operation === 'rebind') {
-    if (oldTuple.protocol !== 'fenced' || oldTuple.admission !== 'blocked'
-      || oldTuple.authorizedRevision === revision) {
-      throw new Error('rebind source tuple is invalid');
-    }
-    return Object.freeze({
-      ...oldTuple, epoch: nextEpoch(oldTuple.epoch), authorizedRevision: revision,
-    });
-  }
-  if (operation === 'authorize') {
-    if (oldTuple.protocol !== 'fenced' || oldTuple.admission !== 'blocked'
-      || oldTuple.authorizedRevision !== revision) {
-      throw new Error('scoped admission source tuple is invalid');
-    }
-    return Object.freeze({
-      ...oldTuple, admission: 'scoped', epoch: nextEpoch(oldTuple.epoch),
-    });
-  }
-  throw new Error('transition operation is invalid');
-}
-
-export function classifyTransitionReadback(oldValue, newValue, actualValue) {
-  const oldTuple = parseAuthorityTuple(oldValue);
-  const newTuple = parseAuthorityTuple(newValue);
-  const actualTuple = parseAuthorityTuple(actualValue);
-  if (sameTuple(actualTuple, newTuple)) return 'committed';
-  if (sameTuple(actualTuple, oldTuple)) return 'not_committed';
-  return 'ambiguous';
-}
-
-export function parseBrokerResult(value, operation) {
-  assertExactObject(value, BROKER_KEYS);
-  parseAuthorityTuple({
-    protocol: value.protocol,
-    admission: value.admission,
-    epoch: value.epoch,
-    authorizedRevision: value.authorizedRevision,
-  });
-  if (!Number.isSafeInteger(value.unresolved) || value.unresolved < 0) {
-    throw new Error('authority broker result is invalid');
-  }
-  const decisions = {
-    block: ['blocked', 'already_blocked', 'stale_epoch'],
-    activate: [
-      'activated', 'already_fenced', 'stale_epoch', 'revision_conflict',
-      'admission_not_blocked', 'unresolved',
-    ],
-    rebind: ['rebound', 'stale_epoch', 'authority_mismatch', 'unresolved'],
-    authorize: [
-      'authorized', 'already_scoped', 'stale_epoch', 'authority_mismatch',
-      'admission_not_blocked', 'unresolved',
-    ],
-  };
-  if (!decisions[operation]?.includes(value.decision)) {
-    throw new Error('authority broker decision is invalid');
-  }
-  return Object.freeze(value);
-}
-
-export function validateCutoverEvidence(value, phase, revision) {
-  assertExactObject(value, EVIDENCE_KEYS);
-  const authority = parseAuthorityTuple(authorityFields(value));
-  if ((phase !== 'pre' && phase !== 'post') || !REVISION.test(revision ?? '')) {
-    throw new Error('cutover evidence expectation is invalid');
-  }
-  for (const key of ['queuedJobs', 'runningJobs', 'tokenBearingJobs', 'invalidActiveScopes']) {
-    if (!Number.isSafeInteger(value[key]) || value[key] < 0) {
-      throw new Error('recommendation cutover evidence count is invalid');
-    }
-  }
-  const admission = phase === 'pre' ? 'blocked' : 'scoped';
-  if (authority.protocol !== 'fenced' || authority.admission !== admission
-    || authority.authorizedRevision !== revision
-    || value.invalidActiveScopes !== 0
-    || value.runningJobs !== value.tokenBearingJobs
-    || value.runningJobs > 1
-    || (phase === 'pre' && (value.queuedJobs !== 0 || value.runningJobs !== 0))) {
-    throw new Error('recommendation cutover evidence does not close');
-  }
-  return Object.freeze(value);
-}
-
 async function readAuthority(databaseUrl, revision) {
   const { RecommendationWorkerDatabase } = await import('@wizard-ads/db/recommendation-worker');
   const database = new RecommendationWorkerDatabase({
@@ -154,7 +33,7 @@ async function readCutoverEvidence(databaseUrl, revision) {
     statementTimeoutSeconds: 5,
   });
   try {
-    return validateCutoverEvidenceShape(await database.getCutoverEvidence());
+    return parseCutoverEvidence(await database.getCutoverEvidence());
   } finally {
     await database.close();
   }
@@ -162,6 +41,13 @@ async function readCutoverEvidence(databaseUrl, revision) {
 
 async function runCommand() {
   const [mode, ...args] = process.argv.slice(2);
+  if (mode === '--verify-broker' && args.length === 0) {
+    // Bundled into the immutable worker deployment helper, with no broker
+    // credential loader invocation or authority database connection.
+    const { verifyInstalledLauncher } = await import('../../tools/recommendation-authority/src/artifact.ts');
+    await verifyInstalledLauncher();
+    return;
+  }
   if (mode === '--read') {
     const [revision] = args;
     if (!REVISION.test(revision ?? '')) throw new Error('authority readback failed');
@@ -205,17 +91,6 @@ async function runCommand() {
   throw new Error('authority command is invalid');
 }
 
-function validateCutoverEvidenceShape(value) {
-  assertExactObject(value, EVIDENCE_KEYS);
-  parseAuthorityTuple(authorityFields(value));
-  for (const key of ['queuedJobs', 'runningJobs', 'tokenBearingJobs', 'invalidActiveScopes']) {
-    if (!Number.isSafeInteger(value[key]) || value[key] < 0) {
-      throw new Error('recommendation cutover evidence count is invalid');
-    }
-  }
-  return Object.freeze(value);
-}
-
 async function boundedStdin() {
   const chunks = [];
   let bytes = 0;
@@ -230,38 +105,16 @@ async function boundedStdin() {
   return Buffer.concat(chunks, bytes).toString('utf8');
 }
 
-function sameTuple(left, right) {
-  return left.protocol === right.protocol
-    && left.admission === right.admission
-    && left.epoch === right.epoch
-    && left.authorizedRevision === right.authorizedRevision;
-}
-
-function authorityFields(value) {
-  return {
-    protocol: value.protocol,
-    admission: value.admission,
-    epoch: value.epoch,
-    authorizedRevision: value.authorizedRevision,
-  };
-}
-
-function nextEpoch(epoch) {
-  const value = epoch + 1;
-  if (!Number.isSafeInteger(value)) throw new Error('transition epoch is invalid');
-  return value;
-}
-
-function assertExactObject(value, keys) {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)
-    || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...keys].sort())) {
-    throw new Error('recommendation authority object is invalid');
-  }
-}
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // Each readback attempt must finish even if the transport loses a response
+  // while leaving its socket open. Deadline failure remains unknown authority.
+  const deadline = setTimeout(() => {
+    process.stderr.write('OpenSpell recommendation authority operation failed\n');
+    process.exit(78);
+  }, 15_000);
   runCommand().catch(() => {
     process.stderr.write('OpenSpell recommendation authority operation failed\n');
     process.exitCode = 1;
-  });
+  }).finally(() => clearTimeout(deadline));
 }

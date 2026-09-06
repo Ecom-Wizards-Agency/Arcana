@@ -260,6 +260,7 @@ const graph = await bundledSourceGraph(
   join(root, 'apps/worker/src/recommendation-lane/main.ts'),
 );
 for (const path of graph) {
+  assert.doesNotMatch(path, /tools\/recommendation-authority/u);
   assert.doesNotMatch(path, /packages\/(?:ads-api|sp-api|keepa-api|mrp-api|datadive-api)/u);
   assert.doesNotMatch(path, /apps\/worker\/src\/(?:ads-api|store|worker|schedules)\.ts$/u);
 }

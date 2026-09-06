@@ -21,7 +21,7 @@ root-owned `/usr/local/libexec/openspell-recommendation-authority` broker. Its i
 
 ```text
 openspell-recommendation-authority block <expected-epoch> <old-revision-or-dash> <target-revision>
-openspell-recommendation-authority activate <expected-epoch> <old-revision-or-dash> <target-revision>
+openspell-recommendation-authority activate <expected-epoch> - <target-revision>
 openspell-recommendation-authority rebind <expected-epoch> <old-revision> <target-revision>
 openspell-recommendation-authority authorize <expected-epoch> <current-revision> <current-revision>
 ```
@@ -31,6 +31,11 @@ invokes it exactly once per compare-and-set. Whether the broker reports success,
 its response, the narrow credential then reads the exact authority tuple. Only the exact old tuple
 or exact expected new tuple is actionable. A foreign tuple or unavailable readback stops both paths
 for attended reconciliation; the CAS is never retried blindly.
+
+Build and install the [verified authority command](recommendation-authority.md) before
+first activation. Its separate infrastructure credential never enters the worker. The
+broker and every independent readback attempt have a fixed process deadline, including
+when a transport loses the COMMIT response while leaving its socket open.
 
 ## Immutable stage
 
