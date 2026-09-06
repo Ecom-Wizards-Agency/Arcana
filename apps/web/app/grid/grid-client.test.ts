@@ -2,8 +2,14 @@
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { columnsFor } from '@wizard-ads/ui';
-import type { EntityLevel, GridRow, SavedView, ViewStore } from '@wizard-ads/ui';
+import { DEFAULT_LAYOUT_WRITE_DELAY_MS, columnsFor } from '@wizard-ads/ui';
+import type {
+  EntityLevel,
+  GridRow,
+  SavedView,
+  SynchronousLayoutSource,
+  ViewStore,
+} from '@wizard-ads/ui';
 import { GridWorkspace, experimentScopeIds, withValidGrouping } from './grid-client';
 
 const navigation = vi.hoisted(() => ({ push: vi.fn() }));
@@ -382,5 +388,150 @@ describe('grid density and grouped headers', () => {
       'clicks',
       'spend',
     ]);
+  });
+});
+
+/**
+ * A store that can answer without waiting, plus one that can be made to answer
+ * late and differently — the two halves of "restore fast, and never let a slow
+ * answer overwrite what the operator has already done".
+ */
+class CachedViewStore implements ViewStore, SynchronousLayoutSource {
+  readonly remembered: SavedView[] = [];
+  readonly asked: EntityLevel[] = [];
+  private late: SavedView | null = null;
+  private resolveLate: ((layout: SavedView | null) => void) | null = null;
+
+  constructor(private readonly cached: Partial<Record<EntityLevel, SavedView>>) {}
+
+  cachedLayout(entity: EntityLevel): SavedView | null {
+    return this.cached[entity] ?? null;
+  }
+
+  async list(): Promise<SavedView[]> {
+    return [];
+  }
+
+  async save(): Promise<void> {}
+
+  async remove(): Promise<void> {}
+
+  lastLayout(entity: EntityLevel): Promise<SavedView | null> {
+    this.asked.push(entity);
+    return new Promise((resolve) => {
+      this.resolveLate = resolve;
+      if (this.late !== null) {
+        resolve(this.late);
+        this.late = null;
+      }
+    });
+  }
+
+  async rememberLayout(layout: SavedView): Promise<void> {
+    this.remembered.push(layout);
+  }
+
+  /** Answer an outstanding asynchronous restoration with a different layout. */
+  answerLate(layout: SavedView | null): void {
+    if (this.resolveLate === null) this.late = layout;
+    else {
+      this.resolveLate(layout);
+      this.resolveLate = null;
+    }
+  }
+}
+
+describe('grid first paint', () => {
+  it('opens on the remembered layout with no restoring state when the store can answer synchronously', async () => {
+    stubGridFetch();
+    const store = new CachedViewStore({
+      campaigns: scopedView('campaigns', {
+        columns: ['campaign_name', 'campaign_state', 'clicks', 'spend'],
+        filter: { groups: [] },
+        sort: [{ columnId: 'clicks', direction: 'asc' }],
+        groupBy: ['campaign_state'],
+      }),
+    });
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    mounted.push(root);
+
+    act(() => root.render(createElement(GridWorkspace, workspaceProps('campaigns', store))));
+    await flushGridLoad();
+
+    // The operator's own layout on the first frame the rows allow: no
+    // "Restoring your saved grid layout…" gate, and the grid is interactive.
+    expect(host.querySelector('[data-testid="grid-layout-restoring"]')).toBeNull();
+    expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('true');
+    expect(host.querySelector('[role="treegrid"]')).not.toBeNull();
+    expect(
+      host.querySelector('[role="columnheader"][aria-label="Clicks"]')?.getAttribute('aria-sort'),
+    ).toBe('ascending');
+    // Nothing was asked for asynchronously, because nothing needed to be.
+    expect(store.asked).toEqual([]);
+
+    // A late answer that disagrees cannot take the layout back: the operator
+    // has been working in this grid since the first frame.
+    const spend = host.querySelector<HTMLElement>('[role="columnheader"][aria-label="Spend"]');
+    await act(async () => {
+      spend?.click();
+      await Promise.resolve();
+    });
+    expect(spend?.getAttribute('aria-sort')).toBe('descending');
+    await act(async () => {
+      store.answerLate(
+        scopedView('campaigns', {
+          columns: ['campaign_name', 'spend'],
+          filter: { groups: [] },
+          sort: [{ columnId: 'spend', direction: 'asc' }],
+          groupBy: [],
+        }),
+      );
+      await Promise.resolve();
+    });
+    expect(spend?.getAttribute('aria-sort')).toBe('descending');
+    expect(host.querySelector('[role="treegrid"]')).not.toBeNull();
+  });
+
+  it('writes the first layout change at once and collapses the rest of a burst into one write', async () => {
+    stubGridFetch();
+    const store = new CachedViewStore({
+      campaigns: scopedView('campaigns', {
+        columns: ['campaign_name', 'campaign_state', 'clicks', 'spend'],
+        filter: { groups: [] },
+        sort: [],
+        groupBy: [],
+      }),
+    });
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    mounted.push(root);
+
+    act(() => root.render(createElement(GridWorkspace, workspaceProps('campaigns', store))));
+    await flushGridLoad();
+    expect(store.remembered).toHaveLength(0);
+
+    const spend = host.querySelector<HTMLElement>('[role="columnheader"][aria-label="Spend"]');
+    const clicks = host.querySelector<HTMLElement>('[role="columnheader"][aria-label="Clicks"]');
+    await act(async () => {
+      spend?.click();
+      spend?.click();
+      clicks?.click();
+      await Promise.resolve();
+    });
+
+    // One write for the burst, not three: the leading change is persisted at
+    // once and the rest are still in the buffer.
+    expect(store.remembered).toHaveLength(1);
+    expect(store.remembered[0]?.sort).toEqual([{ columnId: 'spend', direction: 'desc' }]);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, DEFAULT_LAYOUT_WRITE_DELAY_MS + 60));
+    });
+    // The state the operator ended on is the state that survives.
+    expect(store.remembered).toHaveLength(2);
+    expect(store.remembered.at(-1)?.sort).toEqual([{ columnId: 'clicks', direction: 'desc' }]);
   });
 });

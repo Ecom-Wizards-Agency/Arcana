@@ -23,12 +23,14 @@ import {
   BASE_METRICS,
   GridToolbar,
   GridViewport,
+  LayoutWriteBuffer,
   LocalViewStore,
   STATE_COLUMN,
   buildGridModelSafely,
   columnsFor,
   defaultVisibleColumns,
   formatInteger,
+  hasCachedLayout,
   newViewId,
   rowHeightFor,
   toCsv,
@@ -348,23 +350,78 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
   );
 }
 
+/**
+ * The remembered layout, if the store can produce it without waiting.
+ *
+ * A campaign deep link is never restored over: `?campaign=` names the scope the
+ * operator asked for, so it opens on its own defaults exactly as it did before.
+ */
+function cachedLayoutFor(
+  store: ViewStore | null,
+  entity: EntityLevel,
+  campaignId: string | null,
+  available: readonly GridColumn[],
+): SavedView | null {
+  if (campaignId !== null || !hasCachedLayout(store)) return null;
+  try {
+    const layout = store.cachedLayout(entity);
+    return layout === null
+      ? null
+      : withValidGrouping({ ...layout, id: 'default', name: 'Default' }, available);
+  } catch {
+    // Browser storage is a preference cache; a throwing one restores nothing.
+    return null;
+  }
+}
+
 function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   const router = useRouter();
   const available = useMemo(() => columnsFor(props.entity), [props.entity]);
-  const [view, setView] = useState<SavedView>(() => defaultView(props.entity, props.campaignId));
-  const [saved, setSaved] = useState<readonly SavedView[]>([]);
-  const [restoredScope, setRestoredScope] = useState<{
-    key: string;
-    store: ViewStore | null;
-  } | null>(null);
-  const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
-  const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
-  const [fullscreen, setFullscreen] = useState(false);
   const [browserStore] = useState(() =>
     typeof window === 'undefined' ? null : new LocalViewStore(window.localStorage),
   );
   const store = props.viewStore === undefined ? browserStore : props.viewStore;
   const scopeKey = `${props.entity}\u0000${props.campaignId ?? ''}`;
+  /**
+   * First paint, before any await.
+   *
+   * This subtree is not part of hydration: it renders only once the client's
+   * own `/api/grid/rows` request has resolved, so the server HTML never
+   * contains a grid whose layout could disagree with the browser's. That is
+   * what makes reading storage in a state initializer safe here, and the read
+   * is guarded on the store advertising `cachedLayout` so a remote or
+   * deliberately asynchronous store keeps the exact behaviour it had.
+   */
+  const [initialRestore] = useState(() => {
+    const cached = cachedLayoutFor(store, props.entity, props.campaignId, available);
+    return {
+      scopeKey,
+      restored: cached !== null,
+      view: cached ?? defaultView(props.entity, props.campaignId),
+    };
+  });
+  const [view, setView] = useState<SavedView>(initialRestore.view);
+  const [saved, setSaved] = useState<readonly SavedView[]>([]);
+  const [restoredScope, setRestoredScope] = useState<{
+    key: string;
+    store: ViewStore | null;
+  } | null>(initialRestore.restored ? { key: initialRestore.scopeKey, store } : null);
+  // Which scope, if any, a synchronous read has already answered for. The
+  // asynchronous restoration must not overwrite it, because by the time it
+  // lands the operator may have moved a column.
+  const syncRestoredScope = useRef<string | null>(
+    initialRestore.restored ? initialRestore.scopeKey : null,
+  );
+  const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
+  const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
+  const [fullscreen, setFullscreen] = useState(false);
+  const layoutWrites = useMemo(
+    () => (store === null ? null : new LayoutWriteBuffer(store)),
+    [store],
+  );
+  // The last state of a gesture is the one worth keeping, so a scope change or
+  // an unmount writes whatever the debounce is still holding.
+  useEffect(() => () => layoutWrites?.flush(), [layoutWrites]);
   // Readiness belongs to the exact entity/deep-link scope that was restored.
   // Deriving it from the current props prevents one render of stale `true`
   // before an effect can reset a boolean after a client-side route change.
@@ -382,34 +439,63 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       return;
     }
     let cancelled = false;
+
+    // A client-side entity switch remounts nothing, so the synchronous read
+    // happens here as well as in the state initializer above — the operator
+    // who moves from campaigns to targets should not wait either.
+    if (syncRestoredScope.current !== scopeKey) {
+      const cached = cachedLayoutFor(store, props.entity, props.campaignId, available);
+      if (cached !== null) {
+        syncRestoredScope.current = scopeKey;
+        setView(cached);
+        setSelectedTargetId(null);
+        setSelectedRowIds([]);
+        setRestoredScope({ key: scopeKey, store });
+      }
+    }
+    const restoredSynchronously = syncRestoredScope.current === scopeKey;
+
     void (async () => {
       try {
         const [layout, list] = await Promise.all([
-          store.lastLayout(props.entity),
+          // Nothing to ask for: this scope already has its layout, and asking
+          // again could only produce an answer that arrives after the operator
+          // has started working and overwrites what they did.
+          restoredSynchronously
+            ? Promise.resolve<SavedView | null>(null)
+            : store.lastLayout(props.entity),
           store.list(props.entity),
         ]);
         if (cancelled) return;
-        if (props.campaignId !== null) setView(defaultView(props.entity, props.campaignId));
-        else if (layout !== null) {
-          setView(withValidGrouping({ ...layout, id: 'default', name: 'Default' }, available));
+        if (!restoredSynchronously) {
+          if (props.campaignId !== null) setView(defaultView(props.entity, props.campaignId));
+          else if (layout !== null) {
+            setView(withValidGrouping({ ...layout, id: 'default', name: 'Default' }, available));
+          }
+          else setView(defaultView(props.entity, null));
         }
-        else setView(defaultView(props.entity, null));
         setSaved(list);
       } catch {
         if (cancelled) return;
         // Browser storage is a preference cache. A rejected custom/remote
         // store must not strand the analytical grid behind a permanent loader.
-        setView(defaultView(props.entity, props.campaignId));
+        if (!restoredSynchronously) setView(defaultView(props.entity, props.campaignId));
         setSaved([]);
       }
-      setSelectedTargetId(null);
-      setSelectedRowIds([]);
+      if (!restoredSynchronously) {
+        setSelectedTargetId(null);
+        setSelectedRowIds([]);
+      }
       // This is deliberately later than hydration alone. An interaction that
       // lands after React attaches but before the saved layout resolves can be
       // overwritten by the restoration above just as surely as a pre-hydration
       // interaction can be lost. The restored scope opens only the matching
       // entity/deep-link workspace, never a later render with different props.
-      setRestoredScope({ key: scopeKey, store });
+      setRestoredScope((current) =>
+        current?.key === scopeKey && current.store === store
+          ? current
+          : { key: scopeKey, store },
+      );
     })();
     return () => {
       cancelled = true;
@@ -421,11 +507,15 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       if (!viewReady) return;
       setView((current) => {
         const next = { ...current, ...patch, updatedAt: new Date().toISOString() };
-        void store?.rememberLayout(next);
+        // Debounced: a column resize changes this state on every mouse move and
+        // every write but the last is thrown away by the next one. The buffer
+        // writes the first change of a gesture immediately and collapses the
+        // rest, and flushes when the scope changes or the workspace unmounts.
+        layoutWrites?.remember(next);
         return next;
       });
     },
-    [store, viewReady],
+    [layoutWrites, viewReady],
   );
 
   const { model, filterError } = useMemo(

@@ -1,6 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import { LocalViewStore, MemoryViewStore, newViewId } from './views.js';
-import type { KeyValueStorage, SavedView } from './views.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  DEFAULT_LAYOUT_WRITE_DELAY_MS,
+  LayoutWriteBuffer,
+  LocalViewStore,
+  MemoryViewStore,
+  hasCachedLayout,
+  newViewId,
+} from './views.js';
+import type { KeyValueStorage, SavedView, ViewStore } from './views.js';
 
 function view(overrides: Partial<SavedView> = {}): SavedView {
   return {
@@ -185,5 +192,116 @@ describe('density in the saved layout', () => {
 
     storage.put('wizard-ads:layout:v1', { campaigns: { ...view(), density: 'dense' } });
     expect(await store.lastLayout('campaigns')).toBeNull();
+  });
+});
+
+describe('synchronous layout restoration', () => {
+  it('answers the remembered layout with no round trip, and refuses what it cannot trust', async () => {
+    const storage = new FakeStorage();
+    const store = new LocalViewStore(storage);
+    const layout = view({ density: 'compact' });
+    await store.rememberLayout(layout);
+
+    // The same answer as the promise, without the promise. A caller may render
+    // the operator's own layout on the first frame rather than a placeholder.
+    expect(store.cachedLayout('campaigns')).toEqual(layout);
+    expect(store.cachedLayout('campaigns')).toEqual(await store.lastLayout('campaigns'));
+    expect(hasCachedLayout(store)).toBe(true);
+    // A store that cannot answer synchronously must not be asked to pretend.
+    expect(hasCachedLayout(new MemoryViewStore())).toBe(false);
+    expect(hasCachedLayout(null)).toBe(false);
+
+    // Every defence the asynchronous read had is still in force.
+    expect(store.cachedLayout('targets')).toBeNull();
+    storage.put('wizard-ads:layout:v1', { campaigns: { ...view(), density: 'dense' } });
+    expect(store.cachedLayout('campaigns')).toBeNull();
+    storage.poison('wizard-ads:layout:v1');
+    expect(store.cachedLayout('campaigns')).toBeNull();
+  });
+});
+
+describe('LayoutWriteBuffer', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  class RecordingStore implements ViewStore {
+    readonly remembered: SavedView[] = [];
+    async list(): Promise<SavedView[]> {
+      return [];
+    }
+    async save(): Promise<void> {}
+    async remove(): Promise<void> {}
+    async lastLayout(): Promise<SavedView | null> {
+      return null;
+    }
+    async rememberLayout(layout: SavedView): Promise<void> {
+      this.remembered.push(layout);
+    }
+  }
+
+  it('writes the first change at once and collapses a gesture into one trailing write', () => {
+    vi.useFakeTimers();
+    const store = new RecordingStore();
+    const buffer = new LayoutWriteBuffer(store);
+
+    // A column drag: forty mouse moves, forty layout states, one width each.
+    for (let width = 200; width < 240; width += 1) {
+      buffer.remember(view({ widths: { campaign_name: width } }));
+    }
+    // The first lands immediately, so a single click is never deferred.
+    expect(store.remembered).toHaveLength(1);
+    expect(store.remembered[0]?.widths['campaign_name']).toBe(200);
+
+    vi.advanceTimersByTime(DEFAULT_LAYOUT_WRITE_DELAY_MS);
+    // The other thirty-nine collapse into the one state that survived them.
+    expect(store.remembered).toHaveLength(2);
+    expect(store.remembered[1]?.widths['campaign_name']).toBe(239);
+
+    // The window closes when the gesture stops; nothing keeps writing.
+    vi.advanceTimersByTime(DEFAULT_LAYOUT_WRITE_DELAY_MS * 5);
+    expect(store.remembered).toHaveLength(2);
+  });
+
+  it('flushes the last state of a gesture rather than dropping it', () => {
+    vi.useFakeTimers();
+    const store = new RecordingStore();
+    const buffer = new LayoutWriteBuffer(store);
+
+    buffer.remember(view({ widths: { campaign_name: 200 } }));
+    buffer.remember(view({ widths: { campaign_name: 260 } }));
+    // The operator navigates away mid-gesture: the queued state is the one
+    // they will come back to, so it must not be the one that is lost.
+    buffer.flush();
+    expect(store.remembered.map((layout) => layout.widths['campaign_name'])).toEqual([200, 260]);
+
+    // Flushing an empty buffer writes nothing and cancels the window.
+    buffer.flush();
+    vi.advanceTimersByTime(DEFAULT_LAYOUT_WRITE_DELAY_MS * 3);
+    expect(store.remembered).toHaveLength(2);
+  });
+
+  it('keeps persisting after a rejected write instead of stopping at it', async () => {
+    vi.useFakeTimers();
+    const offered: SavedView[] = [];
+    const buffer = new LayoutWriteBuffer({
+      list: async () => [],
+      save: async () => {},
+      remove: async () => {},
+      lastLayout: async () => null,
+      rememberLayout: async (layout: SavedView) => {
+        offered.push(layout);
+        // A full quota, a private-mode storage, a rejected remote store: the
+        // gesture continues and the next state is still offered.
+        throw new Error('QuotaExceededError');
+      },
+    });
+
+    buffer.remember(view({ widths: { campaign_name: 200 } }));
+    buffer.remember(view({ widths: { campaign_name: 260 } }));
+    vi.advanceTimersByTime(DEFAULT_LAYOUT_WRITE_DELAY_MS);
+    buffer.remember(view({ widths: { campaign_name: 300 } }));
+    await vi.advanceTimersByTimeAsync(DEFAULT_LAYOUT_WRITE_DELAY_MS);
+    expect(offered.map((layout) => layout.widths['campaign_name'])).toEqual([200, 260, 300]);
   });
 });
