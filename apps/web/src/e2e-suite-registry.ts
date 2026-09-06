@@ -19,7 +19,7 @@ export const E2E_SUITE_DEFINITIONS = [
       'tags-goto.spec.ts',
       'time-machine.spec.ts',
     ],
-    expectedTests: 32,
+    expectedTests: 33,
   },
   {
     name: 'grid-performance',
