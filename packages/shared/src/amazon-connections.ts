@@ -1,6 +1,6 @@
 /** Organization-scoped Amazon consent and discovery, before any profile exists. */
 import { z } from 'zod';
-import { AmazonId, Region, Uuid } from './primitives.js';
+import { AmazonId, CurrencyCode, Region, Uuid } from './primitives.js';
 
 export const DiscoveredAdsProfile = z.object({
   profileId: AmazonId,
@@ -64,6 +64,11 @@ export const AmazonConnectionBegin = z.object({
   scope: z.string().min(1).max(256),
 }).strict();
 export type AmazonConnectionBegin = z.infer<typeof AmazonConnectionBegin>;
+
+export const AmazonConnectionInstallation = AmazonConnectionBegin.pick({
+  clientId: true, redirectUri: true, scope: true,
+});
+export type AmazonConnectionInstallation = z.infer<typeof AmazonConnectionInstallation>;
 
 /** Transport to encrypted custody only; never a job payload, view or audit value. */
 export const AmazonConnectionSubmit = z.object({
@@ -152,3 +157,45 @@ export const AmazonConnectionOperation = z.object({
       'installation_changed', 'discovery_failed'].includes(value.reason))) refuse('Reconnection requires a fixed reason');
 });
 export type AmazonConnectionOperation = z.infer<typeof AmazonConnectionOperation>;
+
+/** Required roster metadata is checked before persistence, with every refusal counted. */
+export const AmazonConnectionRosterProfile = DiscoveredAdsProfile.extend({
+  countryCode: z.string().regex(/^[A-Z]{2}$/),
+  currencyCode: CurrencyCode,
+  timezone: z.string().min(1).max(100),
+});
+export type AmazonConnectionRosterProfile = z.infer<typeof AmazonConnectionRosterProfile>;
+
+export const AmazonConnectionRosterInput = z.object({
+  region: Region,
+  received: z.number().int().nonnegative(),
+  profiles: z.array(AmazonConnectionRosterProfile).max(10_000),
+  rejected: z.number().int().nonnegative(),
+}).strict().superRefine((value, ctx) => {
+  if (value.received !== value.profiles.length + value.rejected
+    || value.profiles.some((profile) => profile.region !== value.region)
+    || new Set(value.profiles.map((profile) => profile.profileId)).size !== value.profiles.length) {
+    ctx.addIssue({ code: 'custom', message: 'Roster input counts or identities do not reconcile' });
+  }
+});
+export type AmazonConnectionRosterInput = z.infer<typeof AmazonConnectionRosterInput>;
+
+/** Worker-only transient response. Never serialize a claim into status, jobs or logs. */
+const ClaimCustody = z.object({
+  leaseId: Uuid,
+  leaseExpiresAt: z.iso.datetime({ offset: true }),
+  operation: AmazonConnectionOperation,
+  installation: AmazonConnectionInstallation,
+});
+export const AmazonConnectionClaim = z.discriminatedUnion('kind', [
+  ClaimCustody.extend({ kind: z.literal('exchange'), code: z.string().min(1).max(8192) }).strict(),
+  ClaimCustody.extend({ kind: z.literal('discover'), binding: AdsConnectionCredentialBinding }).strict(),
+]).superRefine((value, ctx) => {
+  if ((value.kind === 'exchange' && value.operation.state !== 'exchanging')
+    || (value.kind === 'discover' && (value.operation.state !== 'discovering'
+      || value.binding.orgId !== value.operation.orgId
+      || value.binding.connectionId !== value.operation.connectionId))) {
+    ctx.addIssue({ code: 'custom', message: 'Connection claim does not match operation custody' });
+  }
+});
+export type AmazonConnectionClaim = z.infer<typeof AmazonConnectionClaim>;
