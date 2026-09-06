@@ -1,3 +1,6 @@
+set local lock_timeout = '5s';
+select pg_advisory_xact_lock(pg_catalog.hashtextextended('wizard-ads:schema-ddl:v1', 0));
+
 -- Explicit one-time RPC previews. Additive to the recommendation custody baseline.
 -- Historical/scheduled v1 rows remain unchanged. No producer is enabled here.
 

@@ -1,4 +1,5 @@
 import type { DbHandle } from '../client.js';
+import { OneTimePreviewUnavailableReason, type OneTimePreviewReadiness } from '@wizard-ads/shared';
 
 const FULL_GIT_SHA = /^[0-9a-f]{40}$/;
 
@@ -95,6 +96,30 @@ export async function resolveOptimizerPreviewReadiness(
   if (!evidence.available) return { ready: false, reason: 'authority_unavailable' };
   if (intent.state === 'disabled') return legacyReadiness(evidence.row);
   return fencedReadiness(evidence.row, intent.revision);
+}
+
+/** One-time admission never inherits the legacy worker fallback. */
+export async function resolveOneTimePreviewReadiness(
+  handle: Pick<DbHandle, 'sql'>,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): Promise<OneTimePreviewReadiness> {
+  const intent = recommendationLaneIntentFromEnv(env);
+  if (intent.state === 'invalid') return { ready: false, reason: 'misconfigured' };
+  if (intent.state === 'disabled') return { ready: false, reason: 'worker_not_activated' };
+  try {
+    const rows = await handle.sql<{ ready: unknown; reason: unknown }[]>`
+      select ready, reason from public.get_one_time_recommendation_readiness(${intent.revision})
+    `;
+    if (rows.length !== 1) return { ready: false, reason: 'authority_unavailable' };
+    const row = rows[0];
+    if (row?.ready === true && row.reason === null) return { ready: true, mode: 'fenced' };
+    const reason = OneTimePreviewUnavailableReason.safeParse(row?.reason);
+    return row?.ready === false && reason.success
+      ? { ready: false, reason: reason.data }
+      : { ready: false, reason: 'authority_unavailable' };
+  } catch {
+    return { ready: false, reason: 'authority_unavailable' };
+  }
 }
 
 /**

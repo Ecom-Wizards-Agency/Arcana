@@ -43,6 +43,9 @@ import {
   OneTimeRecommendationsRunJob,
   OneTimeRpcSnapshot,
   OneTimeRpcConfiguration,
+  RecommendationPreviewBatchStatus,
+  type RecommendationPreviewAccepted,
+  type OneTimePreviewReadiness,
   TenantStrategy,
   OptimizationRunScheduleContext,
   normalizeOptimizationGroupSnapshot,
@@ -61,6 +64,8 @@ import {
   type StrategyDocument,
 } from '@wizard-ads/strategy';
 import { profileToday } from './profile-calendar.js';
+import { previewResultDetails } from './preview-result.js';
+export type { RecommendationPreviewAccepted, RecommendationPreviewBatchStatus } from '@wizard-ads/shared';
 import { RECOMMENDATION_CADENCE } from './recommendation-cadence.js';
 import { freezeOneTimeRpcSnapshot, oneTimePreviewRequestFingerprint, oneTimeRpcSnapshotFingerprint, oneTimeRpcWindowDays } from './one-time-preview.js';
 
@@ -79,6 +84,7 @@ export type RecommendationPreviewErrorCode =
   | 'idempotency_conflict'
   | 'active_run_conflict'
   | 'safety_hold'
+  | 'worker_unavailable'
   | 'integrity_failure';
 
 /** Fixed-code, operator-safe failure boundary for the optimizer HTTP adapter. */
@@ -87,7 +93,7 @@ export class RecommendationPreviewError extends Error {
 
   constructor(
     readonly code: RecommendationPreviewErrorCode,
-    readonly httpStatus: 400 | 409 | 413 | 422 | 500,
+    readonly httpStatus: 400 | 409 | 413 | 422 | 500 | 503,
     message: string,
   ) {
     super(message);
@@ -132,35 +138,11 @@ export interface EnqueueRecommendationPreviewBatchInput extends ProfileScope {
   lookbackDays?: number;
   runAt?: Date;
   oneTimeConfiguration?: OneTimeRpcConfiguration;
-}
-
-export interface RecommendationPreviewAccepted {
-  batchId: string;
-  status: 'queued';
-  scope: {
-    mode: 'all' | 'selected';
-    campaignCount: number;
-    fingerprint: string;
-  };
-  childCount: number;
+  oneTimeReadiness?: OneTimePreviewReadiness;
 }
 
 export interface RecommendationPreviewBatchScope extends ProfileScope {
   batchId: string;
-}
-
-export interface RecommendationPreviewBatchStatus {
-  batchId: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed';
-  campaignCount: number;
-  proposalsCount: number;
-  children: Array<{
-    runId: string;
-    groupName: string | null;
-    status: 'queued' | 'running' | 'succeeded' | 'failed';
-    campaignCount: number;
-    proposalsCount: number;
-  }>;
 }
 
 type BidReason = Extract<
@@ -2208,6 +2190,9 @@ implements RecommendationRunStore, RecommendationScheduleStore {
         };
       }
 
+      if (configuration !== null && input.oneTimeReadiness?.ready === false) {
+        throw new RecommendationPreviewError('worker_unavailable', 503, 'The recommendation worker is unavailable for a new one-time preview.');
+      }
       let executionSnapshot: OneTimeRpcSnapshot | null;
       try {
         executionSnapshot = configuration === null ? null : freezeOneTimeRpcSnapshot(configuration, profile.timezone, runAt);
@@ -2409,8 +2394,9 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       id: string;
       scope_count: number;
       child_count: number;
+      execution_snapshot: unknown;
     }[]>`
-      select id, scope_count, child_count
+      select id, scope_count, child_count, execution_snapshot
         from public.recommendation_preview_batches
        where id = ${scope.batchId} and org_id = ${scope.orgId} and profile_id = ${scope.profileId}
     `;
@@ -2425,10 +2411,15 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       group_id: string | null;
       group_snapshot: unknown;
       job_status: string | null;
+      narrative: unknown;
     }[]>`
       select run.id as run_id, run.status::text as run_status,
              run.proposals_count, run.scope_count, run.group_id, run.group_snapshot,
              job.status::text as job_status,
+             (select event.payload -> 'narrative' from public.audit_log event
+               where event.org_id = run.org_id and event.target_type = 'recommendation_run'
+                 and event.target_id = run.id::text and event.action = 'recommendation.run.succeeded'
+               order by event.created_at desc, event.id desc limit 1) as narrative,
              (select count(*)::integer
                 from public.recommendation_run_campaigns run_campaign
                where run_campaign.org_id = run.org_id
@@ -2467,24 +2458,26 @@ implements RecommendationRunStore, RecommendationScheduleStore {
         status,
         campaignCount: Number(row.scope_count),
         proposalsCount: Number(row.proposals_count),
+        ...previewResultDetails(status, Number(row.proposals_count), row.narrative),
       };
     });
     const hasFailedChild = children.some((child) => child.status === 'failed');
     const hasActiveChild = children.some((child) => child.status === 'running');
     const status = children.every((child) => child.status === 'queued')
       ? 'queued' as const
-      : hasFailedChild
-        ? 'failed' as const
-        : hasActiveChild || children.some((child) => child.status === 'queued')
-          ? 'running' as const
+      : hasActiveChild || children.some((child) => child.status === 'queued')
+        ? 'running' as const
+        : hasFailedChild
+          ? 'failed' as const
           : 'succeeded' as const;
-    return {
+    return RecommendationPreviewBatchStatus.parse({
       batchId: batch.id,
       status,
       campaignCount: Number(batch.scope_count),
       proposalsCount: children.reduce((sum, child) => sum + child.proposalsCount, 0),
       children,
-    };
+      ...(batch.execution_snapshot == null ? {} : { executionSnapshot: OneTimeRpcSnapshot.parse(batch.execution_snapshot) }),
+    });
   }
 
   async enqueueRecommendationRun(input: QueueRecommendationRunInput): Promise<QueuedRecommendationRun> {

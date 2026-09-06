@@ -27,6 +27,9 @@
  * facts and a campaign is often both.
  */
 import { useRouter } from 'next/navigation';
+import type { OneTimeRpcConfiguration } from '@wizard-ads/shared';
+import { OneTimeSettingsDialog } from './one-time-settings-dialog';
+import { oneTimePreviewUnavailableMessage } from '../../src/optimizer/preview-availability';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
@@ -229,6 +232,9 @@ export function CampaignWorkspace({
   run,
   mayRunOptimizer,
   previewReady,
+  previewUnavailableMessage,
+  profileToday,
+  profileTimezone,
   initialBatchId,
   initialGridRect,
 }: {
@@ -239,6 +245,9 @@ export function CampaignWorkspace({
   run: { id: string; status: string } | null;
   mayRunOptimizer: boolean;
   previewReady: boolean;
+  previewUnavailableMessage?: string;
+  profileToday: string;
+  profileTimezone: string;
   initialBatchId: string | null;
   /**
    * Test seam. The virtualizer measures a real element and jsdom has none, so
@@ -247,6 +256,7 @@ export function CampaignWorkspace({
   initialGridRect?: { width: number; height: number };
 }): ReactNode {
   const router = useRouter();
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [group, setGroup] = useState('all');
   const [state, setState] = useState('all');
@@ -675,18 +685,20 @@ export function CampaignWorkspace({
     toggleCampaign,
   ]);
 
-  async function runPreview(): Promise<void> {
+  async function runPreview(configuration: OneTimeRpcConfiguration): Promise<void> {
     if (runDisabled || submittingRef.current) return;
     const campaignIds = [...selectedCampaignIds].sort();
     const scope = scopeMode === 'all'
       ? { mode: 'all' as const }
       : { mode: 'selected' as const, campaignIds };
-    const scopeKey = JSON.stringify({ profileId, scope });
+    const scopeKey = JSON.stringify({ profileId, scope, configuration });
     const priorUncertain = uncertainRequest.current;
     const clientRequestId = priorUncertain?.scopeKey === scopeKey
       ? priorUncertain.clientRequestId
       : globalThis.crypto.randomUUID();
     const body = JSON.stringify({
+      version: 1,
+      configuration,
       profileId,
       clientRequestId,
       scope,
@@ -711,6 +723,7 @@ export function CampaignWorkspace({
       const result = await postPreview(body, controller.signal);
       if (controller.signal.aborted) return;
       uncertainRequest.current = null;
+      setSettingsOpen(false);
       setAccepted(result);
       setActiveBatchId(result.batchId);
       rememberBatchInUrl(result.batchId);
@@ -720,7 +733,7 @@ export function CampaignWorkspace({
       uncertainRequest.current = caught instanceof UncertainPreviewResponseError
         ? { clientRequestId, scopeKey }
         : null;
-      setAnnouncement('Recommendation preview was not queued.');
+      setAnnouncement(caught instanceof UncertainPreviewResponseError ? 'The preview response was interrupted; its saved status needs checking.' : 'Recommendation preview was not queued.');
       setError(caught instanceof Error ? caught.message : 'Recommendation preview could not be queued.');
     } finally {
       if (submitController.current === controller) submitController.current = null;
@@ -731,6 +744,13 @@ export function CampaignWorkspace({
 
   return (
     <section className="wa-card wa-optimizer-campaigns" aria-labelledby="optimizer-campaigns-title">
+      {settingsOpen ? <OneTimeSettingsDialog
+        campaignCount={scopeMode === 'all' ? eligibleRows.length : selectedCampaignIds.size}
+        settings={(scopeMode === 'all' ? eligibleRows : eligibleRows.filter((row) => selectedCampaignIds.has(row.campaignId))).map((row) => row.oneTimeSettings)}
+        period={period} profileToday={profileToday} timezone={profileTimezone} currencyCode={currencyCode}
+        submitting={submitting} submissionError={error}
+        onClose={() => setSettingsOpen(false)} onConfirm={(configuration) => void runPreview(configuration)}
+      /> : null}
       <header className="wa-card__head wa-optimizer-campaigns__head">
         <div>
           <h2 className="wa-card__title" id="optimizer-campaigns-title">Campaigns</h2>
@@ -831,7 +851,7 @@ export function CampaignWorkspace({
             className="wa-btn wa-btn--primary wa-btn--sm"
             data-testid="optimizer-run-preview"
             disabled={runDisabled}
-            onClick={() => void runPreview()}
+            onClick={() => { setError(null); setSettingsOpen(true); }}
             type="button"
           >
             {submitting
@@ -851,7 +871,7 @@ export function CampaignWorkspace({
           <p className="wa-optimizer-preview__permission">Your role can view previews but cannot queue one.</p>
         ) : !previewReady ? (
           <p className="wa-optimizer-preview__permission">
-            Recommendation previews are temporarily unavailable.
+            {previewUnavailableMessage ?? 'Recommendation previews are temporarily unavailable.'}
           </p>
         ) : allModeTooLarge ? (
           <p className="wa-optimizer-preview__error" role="alert">
@@ -944,7 +964,7 @@ async function postPreview(body: string, signal: AbortSignal): Promise<Optimizer
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let response: Response;
     try {
-      response = await fetch('/api/optimizer/runs', {
+      response = await fetch('/api/optimizer/runs/one-time', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json' },
@@ -1010,10 +1030,14 @@ function PreviewChildren({
 }): ReactNode {
   if (status.children.length === 0) return null;
   return (
+    <>
+    {status.executionSnapshot === undefined ? null : <p className="wa-hint">RPC · {status.executionSnapshot.configuration.window.start}–{status.executionSnapshot.configuration.window.end} · {status.executionSnapshot.profileTimezone} · target ACOS {status.executionSnapshot.configuration.targetAcos * 100}%</p>}
     <ul className="wa-optimizer-preview__children" aria-label="Preview runs">
       {status.children.map((child) => (
         <li key={child.runId}>
-          <span>{child.groupName ?? 'Unassigned campaigns'} · {child.campaignCount.toLocaleString('en-US')} campaigns · {titleCase(child.status)}</span>
+          <span>{child.groupName ?? 'Unassigned campaigns'} · {child.campaignCount.toLocaleString('en-US')} campaigns · {titleCase(child.outcome ?? child.status)}</span>
+          {child.detail === undefined ? null : <span>{child.detail}</span>}
+          {child.diagnostics === undefined ? null : <span>{child.diagnostics.targetsRead} targets read · {child.diagnostics.targetsConsidered} evaluated · {child.diagnostics.proposed} proposed · {child.diagnostics.suppressed + child.diagnostics.blockedOutOfStock} held · {child.diagnostics.declined} unchanged</span>}
           {child.status === 'succeeded' ? (
             <a href={reviewHref(profileId, child.runId)}>
               Review {child.proposalsCount.toLocaleString('en-US')} {child.proposalsCount === 1 ? 'recommendation' : 'recommendations'} →
@@ -1022,10 +1046,14 @@ function PreviewChildren({
         </li>
       ))}
     </ul>
+    </>
   );
 }
 
 function previewAnnouncement(status: OptimizerPreviewBatchStatus): string {
+  if ((status.status === 'queued' || status.status === 'running') && status.availability?.ready === false) {
+    return `Preview saved. ${oneTimePreviewUnavailableMessage(status.availability.reason)}`;
+  }
   if (status.status === 'queued') {
     return `Preview queued for ${status.campaignCount.toLocaleString('en-US')} campaigns.`;
   }

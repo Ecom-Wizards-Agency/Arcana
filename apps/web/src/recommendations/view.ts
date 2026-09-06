@@ -10,6 +10,7 @@
  * that is assembled inside a component is a view model nothing can test.
  */
 import type { RecommendationRecord } from '@wizard-ads/db';
+import type { OneTimeRpcSnapshot } from '@wizard-ads/shared';
 import { limitReason, provenanceLines, reasonFormula, reasonLabel } from './provenance';
 import type { ProvenanceLine } from './provenance';
 import { resolveProposalStrategy, strategyLabel } from './strategy';
@@ -66,12 +67,13 @@ function numeric(value: unknown): number | null {
 
 export function toProposalView(
   record: RecommendationRecord,
-  options: { strategySnapshot: unknown; assignments?: StrategyAssignments },
+  options: { strategySnapshot: unknown; executionSnapshot?: OneTimeRpcSnapshot; assignments?: StrategyAssignments },
 ): ProposalView {
   const strategy = resolveProposalStrategy({
     campaignId: record.campaignId,
     campaignName: record.campaignName,
     strategySnapshot: options.strategySnapshot,
+    ...(options.executionSnapshot === undefined ? {} : { executionSnapshot: options.executionSnapshot }),
     ...(options.assignments === undefined ? {} : { assignments: options.assignments }),
   });
 
@@ -105,7 +107,7 @@ export function toProposalView(
     strategy,
     strategyLabel: strategyLabel(strategy),
     provenance: provenanceLines(record.inputs),
-    exportable: EXPORTABLE_ENTITY_TYPES.has(record.entityType),
+    exportable: options.executionSnapshot === undefined && EXPORTABLE_ENTITY_TYPES.has(record.entityType),
   };
 }
 

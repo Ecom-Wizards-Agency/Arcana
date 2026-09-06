@@ -24,7 +24,8 @@ describe.skipIf(!available)('one-time preview persisted admission and execution'
   let scope: { orgId: string; profileId: string; groupId: string };
 
   beforeEach(async () => {
-    database = await createTestDatabase('one_time_admission');
+    // Exercise format/store compatibility before the separate runtime activation gate.
+    database = await createTestDatabase('one_time_admission', { throughMigration: '20260907000000_one_time_rpc_previews.sql' });
     store = new PostgresRecommendationRunStore(database);
     const [row] = await database.sql<{ org_id: string }[]>`
       select app.seed_tenant_fixture('one-time-synthetic', ${actorId}::uuid, 'owner', date '2026-08-26') as org_id

@@ -66,6 +66,21 @@ const SNAPSHOT = {
 };
 
 describe('toProposalView', () => {
+  it('presents confirmed one-time settings without claiming a saved strategy or export capability', () => {
+    const view = toProposalView(record('high_acos'), {
+      strategySnapshot: SNAPSHOT,
+      assignments: new Map([['c-1', 'Rank']]),
+      executionSnapshot: {
+        version: 1,
+        configuration: { version: 1, method: 'rpc', targetAcos: 0.37, bidFloor: 0.15, bidCeiling: 1.6, bidIncreaseCap: 0.12, bidDecreaseCap: 0.18, window: { start: '2026-07-01', end: '2026-07-28' } },
+        profileTimezone: 'UTC', profileToday: '2026-08-01', admittedAt: '2026-08-01T00:00:00.000Z',
+      },
+    });
+    expect(view.strategy).toMatchObject({ source: 'one_time', optGroup: null, targetAcos: 0.37 });
+    expect(view.strategyLabel).toBe('One-time RPC');
+    expect(view.exportable).toBe(false);
+    expect(view.strategy.explanation).toContain('confirmed');
+  });
   it.each(WHITE_BOX_REASONS)('renders every inputs field for %s', (reason) => {
     const view = toProposalView(record(reason), { strategySnapshot: SNAPSHOT });
     expect(view.provenance.map((line) => line.key)).toEqual(INPUT_KEYS);

@@ -106,7 +106,7 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
             limit: RECOMMENDATION_QUEUE_LOAD_CAP,
           });
     const proposals = records.map((record) =>
-      toProposalView(record, { strategySnapshot: run?.strategySnapshot ?? null }),
+      toProposalView(record, { strategySnapshot: run?.strategySnapshot ?? null, ...(run?.executionSnapshot === undefined ? {} : { executionSnapshot: run.executionSnapshot }) }),
     );
 
     return (
@@ -138,13 +138,14 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
               <p>
                 Engine {run.engineVersion ?? 'unversioned'} · status {run.status} · created{' '}
                 {run.createdAt.toISOString().replace('T', ' ').slice(0, 16)} UTC
-                {run.groupSnapshot ? ` · group ${run.groupSnapshot.name} (${run.groupSnapshot.role})` : ' · legacy profile run'}
+                {run.executionSnapshot ? ' · one-time RPC preview' : run.groupSnapshot ? ` · group ${run.groupSnapshot.name} (${run.groupSnapshot.role})` : ' · legacy profile run'}
               </p>
+              {run.executionSnapshot ? <p>Confirmed target ACOS {run.executionSnapshot.configuration.targetAcos * 100}% · bids {run.executionSnapshot.configuration.bidFloor}–{run.executionSnapshot.configuration.bidCeiling} {profile.currencyCode} · maximum increase {run.executionSnapshot.configuration.bidIncreaseCap * 100}% / decrease {run.executionSnapshot.configuration.bidDecreaseCap * 100}% · {run.executionSnapshot.configuration.window.start} to {run.executionSnapshot.configuration.window.end} ({run.executionSnapshot.profileTimezone}).</p> : null}
             </details>
           )}
           {runs.length > 1 ? (
             <details className="wa-dashboard-context" style={{ marginTop: 0 }}>
-              <summary>Choose run · {run?.groupSnapshot?.name ?? 'Legacy profile run'}</summary>
+              <summary>Choose run · {run?.executionSnapshot ? 'One-time RPC' : run?.groupSnapshot?.name ?? 'Legacy profile run'}</summary>
               <nav style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }} aria-label="Runs">
                 {runs.map((option) => (
                   <a
@@ -152,7 +153,7 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
                     href={`/recommendations?profile=${profile.id}&run=${option.id}`}
                     style={{ ...pill, fontWeight: option.id === run?.id ? 600 : 400 }}
                   >
-                    {option.groupSnapshot?.name ?? 'Legacy profile'} · {option.createdAt.toISOString().slice(0, 10)} ·{' '}
+                    {option.executionSnapshot ? 'One-time RPC' : option.groupSnapshot?.name ?? 'Legacy profile'} · {option.createdAt.toISOString().slice(0, 10)} ·{' '}
                     {option.finishedAt === null ? option.status : option.proposalsCount}
                   </a>
                 ))}
@@ -176,8 +177,8 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
             title={run.status === 'running' ? 'Recommendations run in progress' : 'Recommendations run queued'}
             body={
               run.status === 'running'
-                ? 'The worker is assembling facts, doctrine, pacing, and bid corridors now. Refresh shortly to see the preview.'
-                : "The preview is in the worker queue. It will use the last complete seven-day window in this profile's timezone."
+                ? run.executionSnapshot ? 'The worker is checking reporting facts and safeguards with your confirmed RPC settings.' : 'The worker is assembling facts, doctrine, pacing, and bid corridors now. Refresh shortly to see the preview.'
+                : run.executionSnapshot ? 'The preview is queued with your confirmed settings and fixed reporting dates.' : "The preview is in the worker queue. It will use the last complete seven-day window in this profile's timezone."
             }
           />
         ) : run.status !== 'succeeded' ? (
@@ -211,6 +212,8 @@ export default async function RecommendationsPage({ searchParams }: { searchPara
               counts={run.counts}
               role={role}
               hasStrategySnapshot={run.strategySnapshot !== null}
+              oneTimePreview={run.executionSnapshot !== undefined}
+              exportDisabledReason={run.executionSnapshot === undefined ? undefined : 'One-time results are available for review. Export awaits observation support.'}
               runGroupName={run.groupSnapshot?.name}
             />
           </div>

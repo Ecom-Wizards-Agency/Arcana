@@ -609,7 +609,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       `;
       expect((await statusStore.getRecommendationPreviewBatchStatus({
         orgId, profileId, batchId: first.batchId,
-      }))?.status).toBe('failed');
+      }))?.status).toBe('running');
       await database.sql`
         update public.sync_jobs set status = 'dead'
          where id = any (${children.slice(1).map((child) => child.job_id)}::uuid[])

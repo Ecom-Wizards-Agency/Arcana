@@ -36,9 +36,9 @@ import {
   totalsOf,
 } from '../../src/optimizer/view';
 import { buildOptimizerCampaignRows } from '../../src/optimizer/campaigns';
-import { resolveOptimizerPreviewReadiness } from '../../src/optimizer/readiness';
+import { resolveOneTimePreviewReadiness, oneTimePreviewUnavailableMessage } from '../../src/optimizer/readiness';
 import { loadOptimizerPageData } from '../_lib/optimizer-page-data';
-import { periodFromParams, settledComparisonWindows, todayIso } from '../_lib/periods';
+import { periodFromParams, settledComparisonWindows, todayIso, todayIsoInTimeZone } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
 import { OptimizerGroupTable, ReasonCoverageRow, SettingsChip } from './optimizer-view';
 import { CampaignWorkspace } from './campaign-workspace';
@@ -106,7 +106,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
       settledComparison: settled.comparison,
       ...(params.run === undefined ? {} : { requestedRunId: params.run }),
     }),
-    resolveOptimizerPreviewReadiness(handle),
+    resolveOneTimePreviewReadiness(handle),
   ]);
   const {
     runs,
@@ -119,7 +119,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
     campaignFacts,
   } = pageData;
   const proposals = records.map((record) =>
-    toProposalView(record, { strategySnapshot: run?.strategySnapshot ?? null }),
+    toProposalView(record, { strategySnapshot: run?.strategySnapshot ?? null, ...(run?.executionSnapshot === undefined ? {} : { executionSnapshot: run.executionSnapshot }) }),
   );
 
   // Same clamp the dashboard applies: never claim settled days that have no
@@ -146,6 +146,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
     campaignFacts,
     optimizationWorkspace.groups,
     proposals,
+    true,
   );
   const freshness = assessFreshness(ledger, { now: new Date() });
 
@@ -165,7 +166,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
         subtitle="Campaign performance, group context, and read-only recommendation previews"
         actions={
           <div className="wa-row" style={{ gap: '0.5rem' }}>
-            <SettingsChip summary={summary} group={run?.groupSnapshot} />
+            {run?.executionSnapshot ? <span className="wa-pill">One-time RPC</span> : <SettingsChip summary={summary} group={run?.groupSnapshot} />}
             <a
               className="wa-btn wa-btn--sm"
               href={`/recommendations?profile=${profile.id}${run === null ? '' : `&run=${run.id}`}`}
@@ -196,13 +197,19 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
 
         <FreshnessBar assessment={freshness} />
 
+        {run?.executionSnapshot ? (
+          <p className="wa-page-sub">
+            One-time RPC · target ACOS {run.executionSnapshot.configuration.targetAcos * 100}% · bids {run.executionSnapshot.configuration.bidFloor}–{run.executionSnapshot.configuration.bidCeiling} {profile.currencyCode} · maximum increase {run.executionSnapshot.configuration.bidIncreaseCap * 100}% / decrease {run.executionSnapshot.configuration.bidDecreaseCap * 100}% · {run.executionSnapshot.configuration.window.start} to {run.executionSnapshot.configuration.window.end} ({run.executionSnapshot.profileTimezone}).
+          </p>
+        ) : null}
+
         {runs.length > 1 ? (
           <details className="wa-run-history">
             <summary>
               <span aria-hidden="true" className="wa-run-history__icon">↺</span>
               <span className="wa-run-history__label">Run history</span>
               <span className="wa-run-history__meta">
-                {run?.groupSnapshot?.name ?? 'Legacy profile run'}
+                {run?.executionSnapshot ? 'One-time RPC' : run?.groupSnapshot?.name ?? 'Legacy profile run'}
               </span>
               <span className="wa-run-history__status" data-status={run?.status ?? 'none'}>
                 {formatRunStatus(run?.status ?? 'none')}
@@ -217,7 +224,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
                   key={candidate.id}
                   aria-current={candidate.id === run?.id ? 'page' : undefined}
                 >
-                  {candidate.groupSnapshot?.name ?? 'Legacy profile'} · {candidate.createdAt.toISOString().slice(0, 10)} · {candidate.status === 'succeeded' ? `${candidate.proposalsCount} proposals` : candidate.status}
+                  {candidate.executionSnapshot ? 'One-time RPC' : candidate.groupSnapshot?.name ?? 'Legacy profile'} · {candidate.createdAt.toISOString().slice(0, 10)} · {candidate.status === 'succeeded' ? `${candidate.proposalsCount} proposals` : candidate.status}
                 </a>
               ))}
             </nav>
@@ -242,17 +249,20 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
           run={run === null ? null : { id: run.id, status: run.status }}
           mayRunOptimizer={mayRunOptimizer}
           previewReady={previewReadiness.ready}
+          previewUnavailableMessage={previewReadiness.ready ? undefined : oneTimePreviewUnavailableMessage(previewReadiness.reason)}
+          profileToday={todayIsoInTimeZone(profile.timezone)}
+          profileTimezone={profile.timezone}
           initialBatchId={params.batch ?? null}
         />
 
         {run === null ? (
-          <p className="wa-page-sub">No recommendation preview has run yet. Campaigns remain visible above; queue a preview when the group settings are ready.</p>
+          <p className="wa-page-sub">No recommendation preview has run yet. Campaigns remain visible above; choose settings above to queue a one-time preview.</p>
         ) : run.status !== 'succeeded' ? (
           <p className="wa-page-sub" role="status">
             {run.status === 'queued'
-              ? 'Recommendation preview queued. It will use the last complete profile-local evidence window.'
+              ? run.executionSnapshot ? 'One-time preview queued with the confirmed settings and reporting dates.' : 'Recommendation preview queued. It will use the last complete profile-local evidence window.'
               : run.status === 'running'
-                ? 'Recommendation preview is assembling facts, strategy, pacing, and bid corridors.'
+                ? run.executionSnapshot ? 'One-time preview is checking reporting facts and safeguards with the confirmed settings.' : 'Recommendation preview is assembling facts, strategy, pacing, and bid corridors.'
                 : 'The recommendation preview failed. Campaign performance above remains available; check Sync status before retrying.'}
           </p>
         ) : (
@@ -262,7 +272,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
             {campaignGroups.length === 0 ? null : (
               <section aria-label="Campaign drill-down" className="wa-stack">
                 <h2 className="wa-section-title" style={{ margin: 0 }}>
-                  {run.groupSnapshot ? `${run.groupSnapshot.name} campaign drill-down` : 'Legacy campaign drill-down'} · {campaignGroups.length}
+                  {run.executionSnapshot ? 'One-time campaign drill-down' : run.groupSnapshot ? `${run.groupSnapshot.name} campaign drill-down` : 'Legacy campaign drill-down'} · {campaignGroups.length}
                 </h2>
                 {campaignGroups.map((group) => (
                   <OptimizerGroupTable
@@ -279,7 +289,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
             )}
 
             <p className="wa-page-sub">
-              This is a read-only preview. To QA rows, edit values, and stage an export, open the{' '}
+              {run.executionSnapshot ? 'To inspect and review these proposals, open the ' : 'To review rows, edit values, and stage an export, open the '}
               <a href={`/recommendations?profile=${profile.id}&run=${run.id}`}>full review →</a>
             </p>
           </>

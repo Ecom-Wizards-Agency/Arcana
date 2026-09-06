@@ -106,6 +106,6 @@ describe('optimizer campaign workspace', () => {
     expect(() => parseOptimizerPreviewAccepted({ ...accepted, childCount: 0 }))
       .toThrow('invalid acceptance response');
     expect(() => parseOptimizerPreviewStatus({ ...status, children: [{ runId: 'run-one' }] }))
-      .toThrow('invalid child status');
+      .toThrow('invalid status response');
   });
 });
