@@ -5,6 +5,15 @@ migration, gate change, credential access, deployment or Amazon call. Source and
 proof live on `wp-214-sp-write-source`. The separate activation PR is not implemented.
 Claude owns the confirmation client and WP-207's original five-file migration window.
 
+Preparation checkpoint: `pnpm migration:write-window -- build ...` / `verify ...` uses the
+separate fixed 46+10 policy in `tools/hosted-migration-bundle/src/write-window-policy.ts`.
+It takes the same exact flags as `migration:bundle`; the original first-window command is
+unchanged. Build still requires a reviewed clean main revision and all fetched baseline bytes.
+The repository-schema upgrade test passes, but historical source differs from the hosted pins.
+The offline reconstruction has only 45/46 baseline files; the historical experiments SQL is
+missing. Do not stage that incomplete directory, substitute current source, or weaken the pins.
+The exact fetched-baseline rehearsal and host-specific pre/post checks remain prerequisites.
+
 ## Release dependencies
 
 1. Review and merge the source PR, resolve its required checks, then build the activation PR.

@@ -2,6 +2,55 @@
 
 ## Implementation resumed, 2026-09-06
 
+### Latest preparation checkpoint
+
+PR #142 and #143 merged to main at `0897f20`; `19db83d` incorporates them into this source
+branch. The replan conflict was reconciled by keeping Claude's status board and the detailed
+server handoff, updating their ordering to the accepted marketer-release plan. Claude's client
+files arrived through the merge; their worktrees were not edited.
+
+The power outage stopped PostgreSQL and removed the temporary verification checkout/processes.
+Committed work survived. The dedicated synthetic test container was restarted, and the clean
+verification checkout was recreated on persistent storage. No sudo command or hosted action
+was needed.
+
+Clean source `a39e197` passes unmodified ESLint, all 22 workspace typechecks and all 21 serial
+non-UI package tasks, including **618 DB, 552 worker, 66 MCP and 686 web tests**. The existing UI
+suite passes 163 ordinary tests and nine performance cases; the high-cardinality option-set
+case fails at **151.44 ms against 125 ms**. No Claude-owned test or threshold was changed.
+Hygiene passes with all nine private denylist terms, and all four analytical skill declarations
+pass. This is not a full `pnpm check` pass. CI for pushed `d3330f8` is running; its Playwright job
+has passed, while the package/check job is still pending at this checkpoint.
+
+Asset Library contracts (`d3330f8`, six shared tests) precede the isolated provider client
+(`d3540b5`). Search, exact-version reads, upload-location preparation and single-attempt
+registration are implemented without runtime wiring. Failed/uncertain registration is preserved;
+temporary transport URLs stay out of durable outcomes. The client tests and package typecheck
+pass. Web/MCP provider subpaths are now explicitly prohibited, including the new asset client
+inside OAuth callbacks; the five boundary tests pass. Binary upload, private Storage, durable
+upload recovery, picker screens and live eligibility remain pending.
+
+The separate write-window policy/entrypoint (`8d32ae6`, command `002b35f`) pins 46 baseline files
+plus ten additions: **56 files / 895,200 bytes**, ledger
+`491acc42c424a74beb33ce6af874cdf3bd90ecec9aa430f49887fc6b6efb0956`. Its 12 new tests plus 29
+existing bundle tests pass, with unchanged original first-window policy. These tests use an
+explicitly synthetic baseline where exact hosted bytes are unavailable; production wrappers
+correctly refuse that substitute. They do not certify a hosted bundle.
+
+**Exact-baseline rehearsal remains blocked:** only 45 of 46 pinned baseline files were recovered
+offline with matching bytes/digests. The missing file is
+`20260814172712_20260814180000_experiments.sql`. Some differences are fetch formatting; the
+hardening migration is a substantive historical difference: the hosted pin matches `5a3ea64`
+(16,449 bytes), while `fb9e693` expanded today's source to 42,822 bytes. The `b5767ab` regression
+therefore proves the current repository's 46-to-56 upgrade, not the exact fetched hosted schema.
+Obtain the actual history, verify every fixed pin and rehearse it before requesting the second
+hosted apply. Never fill the missing file with current source or change the policy to make it pass.
+
+Campaign v2 contracts are being implemented in the shared file and its test. They preserve
+historical v1 fingerprints, explicitly version v2 nodes, add the missing SB/SD settings/media
+shapes and separate complete dispatch inputs from historical readability. They are not yet a
+tested/committed checkpoint, an executor or a ready campaign-creation release.
+
 ### Committed source checkpoint
 
 `37025c2` fixes revision purge and approval retry; `4f10487` requires DB evidence in CI;

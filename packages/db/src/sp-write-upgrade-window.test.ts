@@ -17,7 +17,9 @@ const versions = [
   '20260906000000', '20260906010000', '20260906020000', '20260906030000', '20260906040000',
 ];
 
-describe.skipIf(!available)('separate 46 to 56 migration window with existing data', () => {
+// This proves the current repository schema upgrade. Historical hosted bytes have
+// separate fixed pins and require an additional exact-baseline rehearsal.
+describe.skipIf(!available)('repository schema 46 to 56 migration window with existing data', () => {
   let database: TestDatabase;
   const owner = randomUUID();
   const orgId = randomUUID();

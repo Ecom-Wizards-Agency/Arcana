@@ -67,6 +67,20 @@ attempt and preserves uncertain outcomes; reads verify selected identity/version
 slice supplies metadata preparation only. Private Storage authorization, binary transfer,
 durable upload recovery and the picker/upload screens remain separate pending work.
 
+Contracts are committed at `d3330f8`; the provider client and explicit subpath at `d3540b5`.
+`createAssetLibraryClient(options, scope)` exposes `search`, `get`, `prepareUploadLocation`
+and `register`. It performs no binary transfer and no runtime registration. Search requires
+complete counts; reads require the exact requested ID/version; registration attempts once
+and preserves uncertainty. ACTIVE processing does not imply creative eligibility/moderation.
+
+The next campaign slice owns `packages/shared/src/campaign-creation.ts` and its test only.
+It introduces explicit v2 plan/node schemas, preserves valid v1 fingerprint preimages and
+historical reading, and refuses incomplete historical inputs at dispatch. V2 includes classic
+collection and Gallery/RSOV, exact SB cost/optimization/marketplace/time inputs, and explicit
+SD ad-group-bound image/video properties. All resource references, counts, dependency gates
+and receipt checks remain shared. Profile eligibility and verified provider recipes stay
+separate prerequisites; this contract slice does not claim working campaign execution.
+
 ## Objective
 
 Let the operator take a plan from the Campaign Builder, preview it as an immutable dependency
