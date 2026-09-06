@@ -262,15 +262,20 @@ async function seed(connectionString: string): Promise<{
       if (revision === undefined || !/^[0-9a-f]{40}$/.test(revision)) {
         throw new Error('The optimization-groups fixture requires an exact recommendation revision');
       }
-      const authority = await handle.sql<{ authorized_revision: string }[]>`
-        update app.recommendation_claim_authority
-           set protocol = 'fenced', admission = 'scoped', epoch = epoch + 1,
-               authorized_revision = ${revision}, updated_at = now()
-         where singleton
-        returning authorized_revision
-      `;
-      if (authority.length !== 1 || authority[0]?.authorized_revision !== revision) {
-        throw new Error('The optimization-groups fixture did not bind recommendation authority');
+      const session = await handle.sql.reserve();
+      try {
+        await session.unsafe('set session authorization service_role');
+        const transitions = [
+          ...(await session`select decision from public.block_recommendation_admission(0)`),
+          ...(await session`select decision from public.activate_recommendation_fenced_claims(1, ${revision})`),
+          ...(await session`select decision from public.authorize_recommendation_scoped_admission(2, ${revision})`),
+        ];
+        if (transitions.map((row) => row['decision']).join(',') !== 'blocked,activated,authorized') {
+          throw new Error('The optimization-groups fixture did not bind recommendation authority');
+        }
+      } finally {
+        await session.unsafe('reset session authorization');
+        session.release();
       }
     }
 

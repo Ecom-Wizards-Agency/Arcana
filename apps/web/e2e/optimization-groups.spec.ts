@@ -1,5 +1,6 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
 import { createDb } from '@wizard-ads/db';
+import { OneTimeRpcPreviewRequest, RecommendationPreviewAccepted, type OneTimeRpcConfiguration, type OneTimeRpcSnapshot } from '@wizard-ads/shared';
 import { signIn } from './support/auth';
 import { readState, type E2EState } from './support/fixture';
 
@@ -8,6 +9,16 @@ test.describe.configure({ mode: 'serial' });
 const FILTERED_CAMPAIGN_COUNT = 56;
 const FILTERED_CAMPAIGN_PREFIX = 'WP195 Filtered Campaign';
 const FILTERED_CAMPAIGN_ID_PREFIX = 'wp195-filtered-campaign';
+const WORKER_REVISION = '0'.repeat(40);
+const WORKER_ID = 'e2e-recommendation-worker';
+const ONE_TIME_ENDPOINT = '/api/optimizer/runs/one-time';
+const ONE_TIME_CONFIGURATION: OneTimeRpcConfiguration = {
+  version: 1, method: 'rpc', targetAcos: 0.37, bidFloor: 0.11, bidCeiling: 4.3,
+  bidIncreaseCap: 0.23, bidDecreaseCap: 0.41,
+  window: { start: '2026-08-01', end: '2026-08-26' },
+};
+
+test.beforeEach(async () => { await reportRuntime(await readState()); });
 
 interface AssignmentEvidence {
   campaign_id: string;
@@ -126,19 +137,63 @@ test('selects filtered campaigns across a filter and polls the exact read-only p
   const run = page.getByTestId('optimizer-run-preview');
   await expect(run).toHaveText('Run preview · 3 selected');
 
+  const requests: OneTimeRpcPreviewRequest[] = [];
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname === ONE_TIME_ENDPOINT) {
+      requests.push(OneTimeRpcPreviewRequest.parse(request.postDataJSON()));
+    }
+  });
+  const beforePreview = await readPreviewCounts(state);
+  await run.click();
+  const dialog = page.getByRole('dialog', { name: 'Confirm one-time preview' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveJSProperty('open', true);
+  await expect(dialog.getByText('3 campaigns · RPC · USD', { exact: true })).toBeVisible();
+  await expect(dialog.getByLabel('Target ACOS (%)', { exact: true })).toHaveValue('');
+  await expect(dialog.getByText('Some settings are mixed or missing.', { exact: false })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(requests).toHaveLength(0);
+  expect(await readPreviewCounts(state)).toEqual(beforePreview);
+
+  await run.click();
+  await fillOneTimeSettings(dialog);
+  expect(requests).toHaveLength(0);
+  await reportRuntime(state);
+
+  // Let the real server commit the first request, then lose its response.
+  // The browser's retry must reconcile the same saved batch, never a fake acceptance.
+  let interruptedAcceptance: ReturnType<typeof RecommendationPreviewAccepted.parse> | undefined;
+  let attempts = 0;
+  await page.route(`**${ONE_TIME_ENDPOINT}`, async (route) => {
+    attempts += 1;
+    if (attempts === 1) {
+      const committed = await route.fetch();
+      expect(committed.status()).toBe(202);
+      interruptedAcceptance = RecommendationPreviewAccepted.parse(await committed.json());
+      await route.abort('failed');
+    } else {
+      await route.continue();
+    }
+  });
   const responsePromise = page.waitForResponse((response) => {
     const url = new URL(response.url());
-    return response.request().method() === 'POST' && url.pathname === '/api/optimizer/runs';
+    return response.request().method() === 'POST' && url.pathname === ONE_TIME_ENDPOINT;
   });
-  await run.click();
+  await dialog.getByRole('button', { name: 'Run read-only preview', exact: true }).click();
   const response = await responsePromise;
   expect(response.status()).toBe(202);
-  const accepted = await response.json() as {
-    batchId: string;
-    childCount: number;
-    scope: { campaignCount: number; fingerprint: string; mode: string };
-  };
+  const accepted = RecommendationPreviewAccepted.parse(await response.json());
+  await expect(dialog).toHaveCount(0);
+  expect(attempts).toBe(2);
+  expect(requests).toHaveLength(2);
+  expect(requests[1]).toEqual(requests[0]);
+  expect(requests[0]).toMatchObject({ configuration: ONE_TIME_CONFIGURATION,
+    scope: { mode: 'selected', campaignIds: selectedCampaignIds } });
+  expect(accepted).toEqual(interruptedAcceptance);
   expect(accepted.scope).toMatchObject({ mode: 'selected', campaignCount: 3 });
+  // Group custody remains partitioned even though both children use the same
+  // confirmed one-time settings instead of their saved bidding policy.
   expect(accepted.childCount).toBe(2);
   await expect(page.getByText(/Preview queued for 3 campaigns across 2 runs\./)).toBeVisible();
 
@@ -151,10 +206,21 @@ test('selects filtered campaigns across a filter and polls the exact read-only p
   });
   expect(stored.campaignIds).toEqual(selectedCampaignIds);
   expect(stored.childCounts).toEqual([1, 2]);
+  expect(stored.scopeVersions).toEqual([2, 2]);
+  expect(stored.executionSnapshot).toMatchObject({ configuration: ONE_TIME_CONFIGURATION, profileTimezone: 'UTC' });
+  const afterPreview = await readPreviewCounts(state);
+  expect(afterPreview).toEqual({ batches: beforePreview.batches + 1, runs: beforePreview.runs + 2,
+    campaigns: beforePreview.campaigns + 3, jobs: beforePreview.jobs + 2 });
 
   const afterEnqueue = await readDatabaseEvidence(state);
   expect(afterEnqueue.assignments).toEqual(before.assignments);
+  expect(afterEnqueue.savedGroups).toEqual(before.savedGroups);
   expect(afterEnqueue.applyEvidence).toEqual(before.applyEvidence);
+
+  await reportRuntime(state, false);
+  await expect(page.getByText('Preview saved. The recommendation worker is unavailable.', { exact: false }))
+    .toBeVisible({ timeout: 10_000 });
+  expect(await readPreviewCounts(state)).toEqual(afterPreview);
 
   // Emulate worker completion in the queue/run ledgers. The browser must
   // discover this through its bounded polling loop without a manual reload.
@@ -167,8 +233,57 @@ test('selects filtered campaigns across a filter and polls the exact read-only p
 
   const afterCompletion = await readDatabaseEvidence(state);
   expect(afterCompletion.assignments).toEqual(before.assignments);
+  expect(afterCompletion.savedGroups).toEqual(before.savedGroups);
   expect(afterCompletion.applyEvidence).toEqual(before.applyEvidence);
+
+  await page.getByRole('list', { name: 'Preview runs' })
+    .getByRole('link', { name: 'Review 0 recommendations →' }).first().click();
+  await expect(page.getByRole('heading', { name: 'Recommendations', exact: true })).toBeVisible();
+  await expect(page.getByText('This run proposed nothing', { exact: true })).toBeVisible();
+  await page.getByText('Run details', { exact: true }).click();
+  await expect(page.getByText('Confirmed target ACOS 37%', { exact: false }))
+    .toContainText('2026-08-01 to 2026-08-26 (UTC)');
 });
+
+test('explains unavailable readiness and refuses a worker lost after settings were opened', async ({ page }) => {
+  const state = await readState();
+  await signIn(page, 'admin');
+  await reportRuntime(state, false);
+  await page.goto(`/optimizer?profile=${state.fixtureProfileId}`);
+  const run = page.getByTestId('optimizer-run-preview');
+  await expect(run).toBeDisabled();
+  await expect(page.getByText('The recommendation worker is unavailable.', { exact: false })).toBeVisible();
+
+  await reportRuntime(state);
+  await page.reload();
+  await page.getByRole('checkbox', { name: `Select ${filteredCampaignName(1)} for this preview` }).check();
+  await run.click();
+  const dialog = page.getByRole('dialog', { name: 'Confirm one-time preview' });
+  await expect(dialog.getByLabel('Target ACOS (%)', { exact: true })).toHaveValue('20');
+  await fillOneTimeSettings(dialog);
+  await reportRuntime(state, false);
+  const before = await readPreviewCounts(state);
+  const refused = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === ONE_TIME_ENDPOINT);
+  await dialog.getByRole('button', { name: 'Run read-only preview', exact: true }).click();
+  const response = await refused;
+  expect(response.status()).toBe(503);
+  expect(await response.json()).toMatchObject({ reason: 'worker_unavailable' });
+  await expect(dialog.getByRole('alert')).toContainText('The recommendation worker is unavailable.');
+  await expect(dialog.getByRole('button', { name: 'Run read-only preview', exact: true })).toBeEnabled();
+  expect(await readPreviewCounts(state)).toEqual(before);
+  await expect(dialog.getByLabel('Target ACOS (%)', { exact: true })).toHaveValue('37');
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await reportRuntime(state);
+});
+
+async function fillOneTimeSettings(dialog: Locator): Promise<void> {
+  for (const [label, value] of [
+    ['Target ACOS (%)', '37'], ['Minimum bid (USD)', '0.11'], ['Maximum bid (USD)', '4.3'],
+    ['Maximum bid increase (%)', '23'], ['Maximum bid decrease (%)', '41'],
+    ['Reporting start', ONE_TIME_CONFIGURATION.window.start], ['Reporting end', ONE_TIME_CONFIGURATION.window.end],
+  ] as const) await dialog.getByLabel(label, { exact: true }).fill(value);
+}
 
 function filteredCampaignId(index: number): string {
   return `${FILTERED_CAMPAIGN_ID_PREFIX}-${String(index).padStart(2, '0')}`;
@@ -187,13 +302,46 @@ async function withDatabase<T>(state: E2EState, action: (database: ReturnType<ty
   }
 }
 
+async function reportRuntime(state: E2EState, ready = true): Promise<void> {
+  await withDatabase(state, async (database) => {
+    const session = await database.sql.reserve();
+    try {
+      await session.unsafe('set session authorization openspell_recommendation_worker');
+      expect(await session`select session_user`).toEqual([{ session_user: 'openspell_recommendation_worker' }]);
+      await session`select public.report_recommendation_runtime(${WORKER_ID}, ${WORKER_REVISION}, array[1,2], ${ready})`;
+    } finally {
+      await session.unsafe('reset session authorization');
+      session.release();
+    }
+    expect(await database.sql`select ready from public.get_one_time_recommendation_readiness(${WORKER_REVISION})`)
+      .toEqual([{ ready }]);
+  });
+}
+
+async function readPreviewCounts(state: E2EState): Promise<{
+  batches: number; runs: number; campaigns: number; jobs: number;
+}> {
+  return withDatabase(state, async (database) => {
+    const rows = await database.sql<{ batches: number; runs: number; campaigns: number; jobs: number }[]>`
+      select
+        (select count(*)::integer from public.recommendation_preview_batches where org_id = ${state.orgId}::uuid) as batches,
+        (select count(*)::integer from public.recommendation_runs where org_id = ${state.orgId}::uuid) as runs,
+        (select count(*)::integer from public.recommendation_run_campaigns where org_id = ${state.orgId}::uuid) as campaigns,
+        (select count(*)::integer from public.sync_jobs where org_id = ${state.orgId}::uuid and job_type = 'recommendations.run') as jobs
+    `;
+    expect(rows).toHaveLength(1);
+    return rows[0]!;
+  });
+}
+
 async function succeedQueuedRecommendationRuns(
   state: E2EState,
   expectedChildren: number,
 ): Promise<void> {
+  await reportRuntime(state);
   await withDatabase(state, async (database) => {
-    const revision = '0'.repeat(40);
-    const workerId = 'e2e-recommendation-worker';
+    const revision = WORKER_REVISION;
+    const workerId = WORKER_ID;
     const reserved = await database.sql.reserve();
     let completed = 0;
     try {
@@ -229,24 +377,28 @@ async function succeedQueuedRecommendationRuns(
         const runData = start?.run_data as {
           lookbackDays?: unknown;
           strategySnapshot?: unknown;
+          scopeVersion?: number;
+          executionSnapshot?: OneTimeRpcSnapshot;
         } | undefined;
         const lookbackDays = Number(runData?.lookbackDays);
         if (start?.decision !== 'started' || !Number.isSafeInteger(lookbackDays)
             || lookbackDays < 1 || runData?.strategySnapshot === undefined) {
           throw new Error('The E2E recommendation start returned an invalid run');
         }
+        const oneTime = runData.scopeVersion === 2 ? runData.executionSnapshot?.configuration : undefined;
+        if (runData.scopeVersion === 2) expect(oneTime).toEqual(ONE_TIME_CONFIGURATION);
         const windowStart = new Date(Date.UTC(2026, 0, 1));
         const windowEnd = new Date(windowStart);
         windowEnd.setUTCDate(windowEnd.getUTCDate() + lookbackDays - 1);
         const completion = {
           proposals: [],
           lookbackDays,
-          window: {
+          window: oneTime?.window ?? {
             start: windowStart.toISOString().slice(0, 10),
             end: windowEnd.toISOString().slice(0, 10),
           },
           strategySnapshot: runData.strategySnapshot,
-          narrative: { qualitative: [], decisions: [] },
+          narrative: { qualitative: [], decisions: [], ...(oneTime === undefined ? {} : { oneTimeConfiguration: oneTime }) },
         };
         const succeeded = await reserved<{ decision: string; proposals_count: number }[]>`
           select decision, proposals_count from public.succeed_recommendation_run_fenced(
@@ -317,6 +469,7 @@ async function seedFilteredCampaigns(state: E2EState): Promise<void> {
 async function readDatabaseEvidence(state: E2EState): Promise<{
   assignments: AssignmentEvidence[];
   applyEvidence: ApplyEvidence;
+  savedGroups: unknown[];
 }> {
   return withDatabase(state, async (database) => {
     const assignments = await database.sql<AssignmentEvidence[]>`
@@ -337,7 +490,12 @@ async function readDatabaseEvidence(state: E2EState): Promise<{
     `;
     const applyEvidence = rows[0];
     if (applyEvidence === undefined) throw new Error('Could not read apply evidence');
-    return { assignments, applyEvidence };
+    const savedGroups = await database.sql`
+      select to_jsonb(optimization_group) as settings from public.optimization_groups optimization_group
+       where org_id = ${state.orgId} and profile_id = ${state.fixtureProfileId} order by id
+    `;
+    expect(savedGroups.length).toBeGreaterThan(0);
+    return { assignments, applyEvidence, savedGroups };
   });
 }
 
@@ -350,6 +508,8 @@ async function readStoredScope(state: E2EState, batchId: string): Promise<{
   };
   campaignIds: string[];
   childCounts: number[];
+  scopeVersions: number[];
+  executionSnapshot: OneTimeRpcSnapshot;
 }> {
   return withDatabase(state, async (database) => {
     const batches = await database.sql<{
@@ -375,8 +535,10 @@ async function readStoredScope(state: E2EState, batchId: string): Promise<{
          and batch_id = ${batchId}
        order by campaign_id collate "C"
     `;
-    const children = await database.sql<{ scope_count: number; persisted_count: number }[]>`
-      select run.scope_count, count(member.campaign_id)::int as persisted_count
+    const children = await database.sql<{
+      scope_count: number; persisted_count: number; scope_version: number; execution_snapshot: OneTimeRpcSnapshot;
+    }[]>`
+      select run.scope_count, run.scope_version, run.execution_snapshot, count(member.campaign_id)::int as persisted_count
         from public.recommendation_runs run
         join public.sync_jobs job
           on job.org_id = run.org_id
@@ -395,10 +557,18 @@ async function readStoredScope(state: E2EState, batchId: string): Promise<{
     `;
     expect(children).toHaveLength(batch.child_count);
     for (const child of children) expect(child.persisted_count).toBe(child.scope_count);
+    const snapshots = await database.sql<{ execution_snapshot: OneTimeRpcSnapshot }[]>`
+      select execution_snapshot from public.recommendation_preview_batches
+       where org_id = ${state.orgId} and profile_id = ${state.fixtureProfileId} and id = ${batchId}
+    `;
+    expect(snapshots).toHaveLength(1);
+    for (const child of children) expect(child.execution_snapshot).toEqual(snapshots[0]!.execution_snapshot);
     return {
       batch,
       campaignIds: members.map((row) => row.campaign_id),
       childCounts: children.map((row) => row.scope_count),
+      scopeVersions: children.map((row) => row.scope_version),
+      executionSnapshot: snapshots[0]!.execution_snapshot,
     };
   });
 }
