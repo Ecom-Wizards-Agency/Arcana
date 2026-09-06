@@ -182,6 +182,33 @@ describe.skipIf(!available)('authenticated SP write admission', () => {
     expect(await counts(request.approval.plan.planId)).toEqual({ receipts: 1, requests: 1, wakes: 1 });
   });
 
+  it('returns a definite retry refusal after losing the first refusal response', async () => {
+    const request = await confirmation();
+    await database.sql`update public.keywords set bid = 1.1 where org_id = ${orgId} and amazon_id = 'kw-1'`;
+    let attempts = 0;
+    const sql = new Proxy(database.sql, {
+      get(target, property, receiver) {
+        if (property !== 'begin') return Reflect.get(target, property, receiver);
+        return async (...args: unknown[]) => {
+          attempts += 1;
+          try { return await Reflect.apply(target.begin, target, args); }
+          catch (error) {
+            if (attempts === 1) throw new Error('synthetic lost refusal response');
+            throw error;
+          }
+        };
+      },
+    });
+    try {
+      await expect(approveAndQueueSpWrite({ sql }, { orgId, userId: USER }, request))
+        .rejects.toMatchObject({ code: 'source_changed' });
+      expect(attempts).toBe(2);
+      expect(await counts(request.approval.plan.planId)).toEqual({ receipts: 0, requests: 0, wakes: 0 });
+    } finally {
+      await database.sql`update public.keywords set bid = 0.9 where org_id = ${orgId} and amazon_id = 'kw-1'`;
+    }
+  });
+
   it('recovers a lost enqueue response without confusing the outbox and execution identities', async () => {
     const request = await confirmation();
     let lost = 0;

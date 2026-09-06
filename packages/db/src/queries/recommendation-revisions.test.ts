@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { RecommendationRevisionRequest } from '@wizard-ads/shared/recommendation-revisions';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '../testing/harness.js';
-import { asUser } from '../testing/rls.js';
+import { asServiceRole, asUser } from '../testing/rls.js';
 import { reviseRecommendation } from './recommendation-revisions.js';
 import { decideRecommendations, exportAcceptedRecommendations, getExportBatch, listRecommendationWindow } from './recommendations.js';
 
@@ -30,12 +30,12 @@ describe.skipIf(!available)('audited recommendation revisions', () => {
   }, 60_000);
   afterAll(async () => { await database?.drop(); });
 
-  async function proposal(): Promise<RecommendationRevisionRequest> {
+  async function proposal(scope = { orgId, profileId, runId }): Promise<RecommendationRevisionRequest> {
     const [row] = await database.sql<{ id: string }[]>`insert into public.recommendations
       (org_id,profile_id,run_id,reason,entity_type,entity_id,ad_product,field,current_value,proposed_value,inputs)
-      values (${orgId},${profileId},${runId},'high_acos','keyword','kw-1','SP','bid','0.9'::jsonb,'0.7'::jsonb,'{}'::jsonb)
+      values (${scope.orgId},${scope.profileId},${scope.runId},'high_acos','keyword','kw-1','SP','bid','0.9'::jsonb,'0.7'::jsonb,'{}'::jsonb)
       returning id`;
-    return { requestId: randomUUID(), profileId, recommendationId: row!.id,
+    return { requestId: randomUUID(), profileId: scope.profileId, recommendationId: row!.id,
       expectedRevisionId: null, proposedValue: '0.8123', note: 'Reviewed synthetic bid' };
   }
   async function counts(id: string) {
@@ -178,5 +178,72 @@ describe.skipIf(!available)('audited recommendation revisions', () => {
       .rejects.toThrow('source is frozen');
     await expect(database.sql`update public.recommendation_proposal_revisions set receipt = '{}'::jsonb where id = ${revision.revisionId}`)
       .rejects.toThrow('immutable');
+  });
+
+  it('purges an organisation with chained, exported revisions while preserving live-organisation evidence', async () => {
+    const [tenant] = await database.sql<{ id: string }[]>`
+      select app.seed_tenant_fixture('proposal-revision-purge', ${owner}, 'owner') as id`;
+    const purgeOrgId = tenant!.id;
+    const [scope] = await database.sql<{ profile_id: string; id: string }[]>`
+      select profile_id, id from public.recommendation_runs where org_id = ${purgeOrgId} limit 1`;
+    const request = await proposal({ orgId: purgeOrgId, profileId: scope!.profile_id, runId: scope!.id });
+    const actor = { orgId: purgeOrgId, userId: owner };
+    const first = await reviseRecommendation(database, actor, request);
+    const second = await reviseRecommendation(database, actor, {
+      ...request, requestId: randomUUID(), expectedRevisionId: first.revisionId, proposedValue: '0.6',
+    });
+    // No exported-row FK exists yet: the revision trigger itself must refuse
+    // a parent cascade while this organisation still exists.
+    await expect(database.sql`delete from public.recommendations where id = ${request.recommendationId}`)
+      .rejects.toMatchObject({ code: '55000' });
+    const refs = [{ recommendationId: request.recommendationId, revisionId: second.revisionId }];
+    await decideRecommendations(database, { orgId: purgeOrgId, actorId: owner,
+      ids: [request.recommendationId], expectedRevisions: refs, decision: 'accepted' });
+    const batch = await exportAcceptedRecommendations(database, {
+      orgId: purgeOrgId, profileId: request.profileId, runId: scope!.id, actorId: owner,
+      ids: [request.recommendationId], expectedRevisions: refs,
+      tag: 'synthetic-purge-export', optGroup: 'synthetic', lever: 'bid', note: 'Synthetic purge proof',
+    });
+    expect(batch.exported).toBe(1);
+    const evidence = () => database.sql`
+      select id, previous_revision_id, request, receipt from public.recommendation_proposal_revisions
+      where org_id = ${purgeOrgId} order by created_at, id`;
+    const before = await evidence();
+    expect(before.map((row) => ({ id: row.id, previous_revision_id: row.previous_revision_id }))).toEqual([
+      { id: first.revisionId, previous_revision_id: null },
+      { id: second.revisionId, previous_revision_id: first.revisionId },
+    ]);
+    for (const revisionId of [first.revisionId, second.revisionId]) {
+      await expect(database.sql`delete from public.recommendation_proposal_revisions where id = ${revisionId}`)
+        .rejects.toMatchObject({ code: '55000' });
+      await expect(database.sql`update public.recommendation_proposal_revisions set receipt = '{}'::jsonb where id = ${revisionId}`)
+        .rejects.toMatchObject({ code: '55000' });
+    }
+    await expect(database.sql`delete from public.recommendations where id = ${request.recommendationId}`)
+      .rejects.toThrow();
+    await expect(database.sql`truncate public.recommendation_proposal_revisions cascade`)
+      .rejects.toMatchObject({ code: '55000' });
+    expect(await evidence()).toEqual(before);
+    const [exported] = await database.sql`select recommendation_id, proposal_revision_id from public.apply_rows
+      where batch_id = ${batch.batchId}`;
+    expect(exported).toEqual({ recommendation_id: request.recommendationId, proposal_revision_id: second.revisionId });
+    const retainedRequest = await proposal();
+    await reviseRecommendation(database, { orgId, userId: owner }, retainedRequest);
+    const retained = await database.sql`select id, receipt from public.recommendation_proposal_revisions
+      where org_id = ${orgId} order by id`;
+    expect(retained.length).toBeGreaterThan(0);
+
+    expect(await asServiceRole(database, (sql) => sql`delete from public.orgs where id = ${purgeOrgId} returning id`))
+      .toEqual([{ id: purgeOrgId }]);
+    const [remaining] = await database.sql`select
+      (select count(*)::integer from public.orgs where id = ${purgeOrgId}) as orgs,
+      (select count(*)::integer from public.recommendations where org_id = ${purgeOrgId}) as recommendations,
+      (select count(*)::integer from public.recommendation_proposal_revisions where org_id = ${purgeOrgId}) as revisions,
+      (select count(*)::integer from public.apply_batches where org_id = ${purgeOrgId}) as batches,
+      (select count(*)::integer from public.apply_rows where org_id = ${purgeOrgId}) as rows,
+      (select count(*)::integer from public.audit_log where org_id = ${purgeOrgId}) as audits`;
+    expect(remaining).toEqual({ orgs: 0, recommendations: 0, revisions: 0, batches: 0, rows: 0, audits: 0 });
+    expect(await database.sql`select id, receipt from public.recommendation_proposal_revisions
+      where org_id = ${orgId} order by id`).toEqual(retained);
   });
 });

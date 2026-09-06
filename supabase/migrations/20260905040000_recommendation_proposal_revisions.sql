@@ -18,7 +18,7 @@ create table public.recommendation_proposal_revisions (
   created_at timestamptz not null default clock_timestamp(),
   constraint recommendation_proposal_revisions_parent_fkey
     foreign key (org_id, profile_id, recommendation_id)
-    references public.recommendations (org_id, profile_id, id),
+    references public.recommendations (org_id, profile_id, id) on delete cascade,
   constraint recommendation_proposal_revisions_identity_key
     unique (org_id, profile_id, recommendation_id, id),
   constraint recommendation_proposal_revisions_request_key unique (org_id, actor_id, request_id),
@@ -41,7 +41,16 @@ grant select on public.recommendation_proposal_revisions to authenticated, servi
 
 create function app.reject_recommendation_revision_change() returns trigger
 language plpgsql set search_path = pg_catalog as $$
-begin raise exception 'recommendation revision evidence is immutable' using errcode = '55000'; end;
+begin
+  -- Only the organisation cascade may remove evidence. Deleting a live
+  -- recommendation or revision still fails, including through the parent FK.
+  if tg_op = 'DELETE' and not exists (
+    select 1 from public.orgs org where org.id = old.org_id
+  ) then
+    return old;
+  end if;
+  raise exception 'recommendation revision evidence is immutable' using errcode = '55000';
+end;
 $$;
 revoke all on function app.reject_recommendation_revision_change() from public;
 create trigger recommendation_proposal_revisions_immutable

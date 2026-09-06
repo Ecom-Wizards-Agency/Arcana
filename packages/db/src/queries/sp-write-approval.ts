@@ -56,7 +56,7 @@ export async function approveAndQueueSpWrite(
     // Recover only through the same versioned, idempotent authority. A dropped
     // connection can hide a missing-function error on an older database.
     try { receipt = await confirm(); }
-    catch { throw failure; }
+    catch (retryError) { throw approvalFailure(retryError); }
   }
   if (receipt.approvedBy !== actor.userId
     || receipt.approvalRequestId !== request.approval.approvalRequestId
