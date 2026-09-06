@@ -90,12 +90,12 @@ export default async function NgramsPage({ searchParams }: { searchParams: Searc
           </p>
         ) : null}
 
-        <div className="wa-embed">
+        <div className="wa-embed" style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <NgramExplorer
             rows={payload.rows}
-          scopes={scopes}
-          profileId={profile.id}
-          currencyCode={profile.currencyCode}
+            scopes={scopes}
+            profileId={profile.id}
+            currencyCode={profile.currencyCode}
             period={period}
           />
         </div>
@@ -123,14 +123,22 @@ export default async function NgramsPage({ searchParams }: { searchParams: Searc
   }
 }
 
+/**
+ * Full width, not a centred 96rem column.
+ *
+ * Same call as `/grid`, `/optimizer` and `/recommendations`: the explorer is a
+ * grid with a drill-down grid under it, and the application frame already
+ * supplies the horizontal padding. A reading measure on a table of thirteen
+ * columns is the first thing the operator named when comparing these pages
+ * against the grids they use elsewhere.
+ */
 const main: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   fontFamily: 'var(--wa-font)',
   gap: '1.5rem',
-  margin: '0 auto',
-  maxWidth: '96rem',
-  padding: '2rem 1.5rem',
+  minWidth: 0,
+  width: '100%',
 };
 const heading: CSSProperties = { fontSize: 'var(--wa-fs-xl)', fontWeight: 640, letterSpacing: '-0.02em', margin: 0 };
 const muted: CSSProperties = { color: 'var(--wa-text-muted)', fontSize: '0.875rem', margin: 0 };

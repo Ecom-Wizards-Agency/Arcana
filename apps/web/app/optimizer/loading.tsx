@@ -1,5 +1,5 @@
+import type { CSSProperties } from 'react';
 import { Card, PageHeader } from '../../src/ui/primitives';
-import { page } from '../../src/ui/tokens';
 
 /** Honest route feedback while campaigns and recommendation evidence load. */
 export default function OptimizerLoading() {
@@ -33,3 +33,19 @@ function LoadingSignals({ labels }: { labels: readonly string[] }) {
     </div>
   );
 }
+
+/**
+ * The same measure as the page it stands in for.
+ *
+ * It used the shared 84rem `tokens.page` column while the loaded optimizer is
+ * full width, so the route flashed a narrow column and then jumped wider once
+ * the campaigns arrived. Reported in slice 3, fixed here with the rest of the
+ * layout work.
+ */
+const page: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '1rem',
+  minWidth: 0,
+  width: '100%',
+};

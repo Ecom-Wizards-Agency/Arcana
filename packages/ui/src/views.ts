@@ -23,6 +23,8 @@
  */
 import { ENTITY_LEVELS } from './columns.js';
 import type { EntityLevel } from './columns.js';
+import { isGridDensity } from './density.js';
+import type { GridDensity } from './density.js';
 import type { FilterSet } from './filter.js';
 import type { SortRule } from './sort.js';
 
@@ -41,6 +43,11 @@ export interface SavedView {
   pinned: readonly string[];
   /** Per-column width overrides, keyed by column id. */
   widths: Readonly<Record<string, number>>;
+  /**
+   * Row density. Absent on layouts written before it existed, which render at
+   * the normal density they were designed against.
+   */
+  density?: GridDensity;
   filter: FilterSet;
   sort: readonly SortRule[];
   /** Unique dimension ids in outermost-to-innermost hierarchy order. */
@@ -61,6 +68,98 @@ export interface ViewStore {
   /** The layout to restore on load, per entity level. AdLabs' implicit memory. */
   lastLayout(entity: EntityLevel): Promise<SavedView | null>;
   rememberLayout(view: SavedView): Promise<void>;
+}
+
+/**
+ * The part of a store that can answer "which layout was this operator using"
+ * with no round trip at all.
+ *
+ * `ViewStore` is asynchronous because the shared, org-scoped, database-backed
+ * store this port exists for will be, and that stays true. But browser storage
+ * *is* synchronous, and paying a microtask — and a render of "Restoring your
+ * saved grid layout…" — for a value already in memory delays the first thing
+ * the operator sees for nothing. A store that can answer immediately says so by
+ * implementing this; one that cannot simply does not, and the asynchronous path
+ * is unchanged for it.
+ *
+ * It is an optional capability rather than a required method precisely so that
+ * a remote store is not forced to invent a synchronous lie.
+ */
+export interface SynchronousLayoutSource {
+  /** The remembered layout, or null when there is none and when the answer costs I/O. */
+  cachedLayout(entity: EntityLevel): SavedView | null;
+}
+
+/** Does this store answer `cachedLayout` without waiting? */
+export function hasCachedLayout(
+  store: ViewStore | null | undefined,
+): store is ViewStore & SynchronousLayoutSource {
+  return typeof (store as Partial<SynchronousLayoutSource> | null | undefined)?.cachedLayout
+    === 'function';
+}
+
+export const DEFAULT_LAYOUT_WRITE_DELAY_MS = 200;
+
+/**
+ * Persist a layout without writing once per mouse move.
+ *
+ * Dragging a column edge produces a `mousemove` stream, and the grid's layout
+ * state changes on every one of them. Serialising the whole view and handing it
+ * to storage that many times is work the operator paid for in dropped frames,
+ * and every write but the last is discarded by the next one anyway.
+ *
+ * Leading edge plus trailing edge, deliberately: the first change of a gesture
+ * lands immediately, so a single click — a sort, a density change — is
+ * persisted at once and a reader that looks straight after it sees the truth.
+ * Everything inside the window collapses into one trailing write. `flush()`
+ * exists because the last state of a gesture must never be the one that is
+ * dropped: the caller flushes when the scope changes and when it unmounts.
+ */
+export class LayoutWriteBuffer {
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private pending: SavedView | null = null;
+
+  constructor(
+    private readonly store: ViewStore,
+    private readonly delayMs: number = DEFAULT_LAYOUT_WRITE_DELAY_MS,
+  ) {}
+
+  remember(view: SavedView): void {
+    if (this.timer === null) {
+      this.write(view);
+      this.open();
+      return;
+    }
+    this.pending = view;
+  }
+
+  /** Write whatever is queued now. Safe to call when nothing is queued. */
+  flush(): void {
+    if (this.timer !== null) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    const queued = this.pending;
+    this.pending = null;
+    if (queued !== null) this.write(queued);
+  }
+
+  private open(): void {
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      const queued = this.pending;
+      this.pending = null;
+      if (queued === null) return;
+      this.write(queued);
+      this.open();
+    }, this.delayMs);
+  }
+
+  private write(view: SavedView): void {
+    // A layout is a preference. A store that rejects must not surface as an
+    // unhandled rejection in the middle of a resize.
+    void Promise.resolve(this.store.rememberLayout(view)).catch(() => {});
+  }
 }
 
 export function newViewId(): string {
@@ -145,6 +244,7 @@ function isSavedView(value: unknown): value is SavedView {
     isStringArray(value['pinned']) &&
     isRecord(widths) &&
     Object.values(widths).every((width) => typeof width === 'number' && Number.isFinite(width)) &&
+    (value['density'] === undefined || isGridDensity(value['density'])) &&
     isFilterSet(value['filter']) &&
     Array.isArray(sort) &&
     sort.every((rule) =>
@@ -172,7 +272,7 @@ export interface KeyValueStorage {
  * rather than an exception, because a bad JSON blob in a user's browser must
  * never be able to blank the grid. It is a cache of a preference, not data.
  */
-export class LocalViewStore implements ViewStore {
+export class LocalViewStore implements ViewStore, SynchronousLayoutSource {
   constructor(private readonly storage: KeyValueStorage) {}
 
   private readRecord(key: string): Record<string, unknown> {
@@ -223,6 +323,20 @@ export class LocalViewStore implements ViewStore {
   }
 
   async lastLayout(entity: EntityLevel): Promise<SavedView | null> {
+    return this.cachedLayout(entity);
+  }
+
+  /**
+   * The same answer as `lastLayout`, without the promise.
+   *
+   * `localStorage` is a synchronous API, so this is the read that was always
+   * happening; the promise around it only ever deferred the render that needed
+   * it. Every defence in `lastLayout` is kept — a corrupt or half-written entry
+   * yields "no layout" rather than an exception, and a layout stored under the
+   * wrong entity is refused — because a bad blob in one browser must never be
+   * able to blank the grid.
+   */
+  cachedLayout(entity: EntityLevel): SavedView | null {
     const candidate = this.readRecord(LAYOUT_KEY)[entity];
     return isSavedView(candidate) && candidate.entity === entity ? candidate : null;
   }

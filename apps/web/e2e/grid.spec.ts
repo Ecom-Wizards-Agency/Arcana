@@ -1,5 +1,6 @@
 /** Ordered nested grouping through the real session guard and production grid model. */
 import { expect, test } from '@playwright/test';
+import { createDb } from '@wizard-ads/db';
 import { signIn } from './support/auth';
 import { applyRequestedCpuThrottle } from './support/cpu-throttle';
 import { expectDateRangePresets } from './support/date-range';
@@ -159,3 +160,316 @@ test('grid selects every categorical value, filters exact rows, and restores the
     'does not equal',
   ]);
 });
+
+test('grid sorts on a header click, groups by dragging headers into the group bar, and persists density', async ({ page }) => {
+  await signIn(page, 'admin');
+  await page.goto('/grid?entity=campaigns');
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+
+  // The workspace is full width and the grid fills its viewport container
+  // rather than a fixed box.
+  const viewport = page.getByTestId('grid-viewport');
+  const viewportBox = await viewport.boundingBox();
+  const contentBox = await page.locator('main').boundingBox();
+  expect(viewportBox).not.toBeNull();
+  expect(contentBox).not.toBeNull();
+  expect(viewportBox!.width).toBeGreaterThanOrEqual(contentBox!.width - 2);
+  await expect(page.getByTestId('grid-scroller')).not.toHaveCSS('height', '620px');
+
+  // Click-to-sort: first click descending, second ascending, shift-click nests a second key.
+  const clicks = page.getByRole('columnheader', { name: 'Clicks', exact: true });
+  await clicks.click();
+  await expect(clicks).toHaveAttribute('aria-sort', 'descending');
+  await clicks.click();
+  await expect(clicks).toHaveAttribute('aria-sort', 'ascending');
+  await page.getByRole('columnheader', { name: 'Spend', exact: true }).click({ modifiers: ['Shift'] });
+  await expect(clicks).toHaveAttribute('aria-sort', 'ascending');
+  await expect(page.getByRole('columnheader', { name: 'Spend', exact: true })).toHaveAttribute('aria-sort', 'descending');
+
+  // Drag a header into the group bar, then drag a second header to nest it.
+  const bar = page.getByTestId('grid-group-bar');
+  await expect(bar).toContainText('Drag a column header here');
+  await page.getByRole('columnheader', { name: 'State', exact: true }).dragTo(bar);
+  const levels = page.getByRole('list', { name: 'Ordered grouping levels' });
+  await expect(levels.getByRole('listitem')).toHaveCount(1);
+  await expect(levels.getByRole('listitem').first()).toContainText('State');
+  await expect(page.getByRole('treegrid', { name: 'Results grouped by campaign_state' })).toBeVisible();
+
+  await page.getByRole('columnheader', { name: 'Ad type', exact: true }).dragTo(bar);
+  await expect(levels.getByRole('listitem')).toHaveCount(2);
+  await expect(levels.getByRole('listitem').nth(1)).toContainText('Ad type');
+  const tree = page.getByRole('treegrid', { name: 'Results grouped by campaign_state, ad_product' });
+  await expect(tree).toBeVisible();
+  await expect(tree.locator('[role="row"][aria-level="1"]').first()).toBeVisible();
+  await expect(tree.locator('[role="row"][aria-level="2"]').first()).toBeVisible();
+  await expect(page.getByRole('button', { name: /Export CSV \(1 deepest group\)/ })).toBeVisible();
+
+  // Density persists with the layout, so it survives a reload.
+  await page.getByLabel('Row density').selectOption('compact');
+  await expect(page.getByTestId('grid-shell')).toHaveAttribute('data-density', 'compact');
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const raw = window.localStorage.getItem('wizard-ads:layout:v1');
+        if (raw === null) return null;
+        const parsed = JSON.parse(raw) as { campaigns?: { density?: unknown; groupBy?: unknown } };
+        return parsed.campaigns ?? null;
+      }),
+    )
+    .toMatchObject({ density: 'compact', groupBy: ['campaign_state', 'ad_product'] });
+  await page.reload();
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await expect(page.getByTestId('grid-shell')).toHaveAttribute('data-density', 'compact');
+  await expect(page.getByLabel('Row density')).toHaveValue('compact');
+});
+
+/**
+ * WP-24 ordered a tile row and a trend chart above this grid and never got
+ * them. They are here now, and they are streamed: the document that carries
+ * the grid workspace does not wait for the profile-daily query behind them,
+ * because the rows the operator came for are fetched by the browser over
+ * `/api/grid/rows` and cannot start until that document has arrived.
+ */
+test('grid carries the performance tiles and trend above the rows, streamed outside the row path', async ({
+  page,
+}) => {
+  await signIn(page, 'admin');
+  const rowRequests: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/grid/rows') rowRequests.push(request.url());
+  });
+  await page.goto('/grid?entity=campaigns');
+
+  const cockpit = page.getByRole('region', { name: 'Performance cockpit' });
+  await expect(cockpit).toBeVisible();
+  await expect(cockpit.getByRole('heading', { name: 'Performance trend' })).toBeVisible();
+  await expect(cockpit.locator('.wa-cockpit__tile')).not.toHaveCount(0);
+
+  // Above the grid, not beside or below it, and the rows still arrive.
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  const cockpitBox = await cockpit.boundingBox();
+  const gridBox = await page.getByTestId('grid-viewport').boundingBox();
+  expect(cockpitBox).not.toBeNull();
+  expect(gridBox).not.toBeNull();
+  expect(cockpitBox!.y + cockpitBox!.height).toBeLessThanOrEqual(gridBox!.y);
+  await expect(page.getByTestId('grid-scroller')).toBeVisible();
+
+  // The tiles and the chart are a second read on the same page and they cost
+  // the rows nothing: the browser still makes exactly the one row request the
+  // boundary is measured on.
+  expect(rowRequests).toHaveLength(1);
+
+  // The `GridViewport` measured fill, carried from the slice 3 and slice 4
+  // reviews and measured here at a real viewport size rather than reasoned
+  // about. With the cockpit above it the fill can only resolve to the floor, so
+  // the floor is the decision: the grid keeps a usable height and runs past the
+  // bottom of the window, leaving no screen space unused below it.
+  const fill = await page.evaluate(() => {
+    const element = document.querySelector('[data-testid="grid-viewport"]');
+    if (element === null) return null;
+    const rect = element.getBoundingClientRect();
+    return { height: rect.height, below: window.innerHeight - rect.bottom };
+  });
+  expect(fill).not.toBeNull();
+  expect(fill!.height).toBeGreaterThanOrEqual(560);
+  expect(fill!.below).toBeLessThanOrEqual(0);
+});
+
+/**
+ * The operator's 2026-09-05 recording, on the surface it was recorded on.
+ *
+ * Scroll the whole campaign list, sort by spend, drag a header into the group
+ * bar, nest a second level, then select campaigns across a filter and confirm
+ * the count. The last step is the one WP-195 built and this conversion had to
+ * keep: the header checkbox owns the complete filtered eligible population, not
+ * the rows the virtualizer happens to have rendered, and narrowing or widening
+ * the filter never touches what is already selected.
+ *
+ * The campaigns are seeded here rather than in global setup, on a window far
+ * outside the `/grid` default period, so this test cannot change what the
+ * earlier `/grid` assertions in this file see whatever order they run in.
+ */
+const OPTIMIZER_CAMPAIGN_COUNT = 40;
+const OPTIMIZER_ENABLED_COUNT = 30;
+const OPTIMIZER_PREFIX = 'WP209 Optimizer Campaign';
+const OPTIMIZER_WINDOW = optimizerWindow();
+
+test('optimizer scrolls the whole campaign list, sorts by spend, nests dragged grouping levels, and keeps a filtered selection', async ({
+  page,
+}) => {
+  const { fixtureProfileId } = await readState();
+  await seedOptimizerCampaigns();
+  await signIn(page, 'admin');
+  const query = new URLSearchParams({
+    profile: fixtureProfileId,
+    from: OPTIMIZER_WINDOW.start,
+    to: OPTIMIZER_WINDOW.end,
+  });
+  await page.goto(`/optimizer?${query.toString()}`);
+  await expect(page.getByRole('heading', { name: 'Campaign Optimizer', exact: true })).toBeVisible();
+
+  // Full width, and no pagination anywhere: the whole set is one scroller.
+  const viewport = page.getByTestId('grid-viewport');
+  const viewportBox = await viewport.boundingBox();
+  const contentBox = await page.locator('main').boundingBox();
+  expect(viewportBox).not.toBeNull();
+  expect(contentBox).not.toBeNull();
+  expect(viewportBox!.width).toBeGreaterThanOrEqual(contentBox!.width - 2);
+  await expect(page.getByRole('button', { name: 'Next →', exact: true })).toHaveCount(0);
+  await expect(page.getByText(/\d+–\d+ of \d+/)).toHaveCount(0);
+  const shown = page.locator('.wa-optimizer-campaigns__shown');
+  await expect(shown).toHaveText(`${OPTIMIZER_CAMPAIGN_COUNT + 1} campaigns`);
+
+  // Scroll the whole list. Spend descending is the default order, so the
+  // cheapest seeded campaign only exists at the far end of the scroller.
+  const scroller = page.getByTestId('grid-scroller');
+  const rows = page.getByTestId('grid-row');
+  await expect(rows.first()).toContainText(optimizerCampaignName(OPTIMIZER_CAMPAIGN_COUNT));
+  await expect(page.getByText(optimizerCampaignName(1), { exact: true })).toHaveCount(0);
+  await scroller.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await expect(page.getByText(optimizerCampaignName(1), { exact: true })).toBeVisible();
+
+  // Sort by spend: click for ascending (it starts descending), click back.
+  const spend = page.getByRole('columnheader', { name: 'Spend', exact: true });
+  await expect(spend).toHaveAttribute('aria-sort', 'descending');
+  await spend.click();
+  await expect(spend).toHaveAttribute('aria-sort', 'ascending');
+  // Re-sorting returns the scroller to the top, so the cheapest campaigns are
+  // now the rendered ones and the most expensive is off-screen entirely.
+  await expect(page.getByText(optimizerCampaignName(1), { exact: true })).toBeVisible();
+  await expect(page.getByText(optimizerCampaignName(OPTIMIZER_CAMPAIGN_COUNT), { exact: true }))
+    .toHaveCount(0);
+  // Third state of the header cycle: descending, ascending, then no key at all.
+  await spend.click();
+  await expect(spend).toHaveAttribute('aria-sort', 'none');
+  await spend.click();
+  await expect(spend).toHaveAttribute('aria-sort', 'descending');
+  await expect(rows.first()).toContainText(optimizerCampaignName(OPTIMIZER_CAMPAIGN_COUNT));
+
+  // The selection and action columns never advertise an ordering.
+  await expect(page.getByRole('columnheader', { name: 'Select', exact: true }))
+    .not.toHaveAttribute('aria-sort', /.*/);
+  await expect(page.getByRole('columnheader', { name: 'Recommendation', exact: true }))
+    .not.toHaveAttribute('aria-sort', /.*/);
+
+  // Drag a header into the group bar, then drag a second to nest it.
+  const bar = page.getByTestId('grid-group-bar');
+  await expect(bar).toContainText('Drag a column header here');
+  await page.getByRole('columnheader', { name: 'State', exact: true }).dragTo(bar);
+  const levels = page.getByRole('list', { name: 'Ordered grouping levels' });
+  await expect(levels.getByRole('listitem')).toHaveCount(1);
+  await expect(page.getByRole('treegrid', { name: 'Results grouped by campaign_state' })).toBeVisible();
+
+  await page.getByRole('columnheader', { name: 'Bid strategy', exact: true }).dragTo(bar);
+  await expect(levels.getByRole('listitem')).toHaveCount(2);
+  await expect(levels.getByRole('listitem').nth(1)).toContainText('Bid strategy');
+  const tree = page.getByRole('treegrid', { name: 'Results grouped by campaign_state, bidding_strategy' });
+  await expect(tree).toBeVisible();
+  await expect(tree.locator('[role="row"][aria-level="1"]').first()).toBeVisible();
+  await expect(tree.locator('[role="row"][aria-level="2"]').first()).toBeVisible();
+
+  // Back to the flat list, which is where selection lives.
+  await page.getByRole('button', { name: 'Remove grouping level Bid strategy' }).click();
+  await page.getByRole('button', { name: 'Remove grouping level State' }).click();
+  await expect(levels.getByRole('listitem')).toHaveCount(0);
+
+  // Select across a filter: the header owns every filtered eligible campaign,
+  // and widening the filter afterwards keeps every one of them selected.
+  const search = page.getByRole('search', { name: 'Filter optimizer campaigns' });
+  await search.getByLabel('Find campaign').fill(OPTIMIZER_PREFIX);
+  await expect(shown).toHaveText(`${OPTIMIZER_CAMPAIGN_COUNT} of ${OPTIMIZER_CAMPAIGN_COUNT + 1} campaigns`);
+  const selectFiltered = page.getByTestId('optimizer-select-filtered');
+  await expect(selectFiltered).toHaveAccessibleName(
+    `Select all ${OPTIMIZER_ENABLED_COUNT} eligible campaigns matching current filters`,
+  );
+  await selectFiltered.check();
+  await expect(page.getByTestId('optimizer-selection-count')).toContainText(
+    `${OPTIMIZER_ENABLED_COUNT} campaigns selected`,
+  );
+
+  await search.getByLabel('Find campaign').fill('');
+  await expect(shown).toHaveText(`${OPTIMIZER_CAMPAIGN_COUNT + 1} campaigns`);
+  await expect(page.getByTestId('optimizer-selection-count')).toContainText(
+    `${OPTIMIZER_ENABLED_COUNT} campaigns selected`,
+  );
+  await expect(selectFiltered).toHaveJSProperty('indeterminate', true);
+  await expect(page.getByRole('radio', { name: `Selected campaigns (${OPTIMIZER_ENABLED_COUNT})`, exact: true }))
+    .toBeChecked();
+});
+
+function optimizerCampaignId(index: number): string {
+  return `wp209-optimizer-campaign-${String(index).padStart(2, '0')}`;
+}
+
+function optimizerCampaignName(index: number): string {
+  return `${OPTIMIZER_PREFIX} ${String(index).padStart(2, '0')}`;
+}
+
+/**
+ * A single day in the month after this one: inside the pre-created fact
+ * partitions (`app.ensure_fact_partitions` opens the current month and two
+ * ahead) and outside the default 30-day window every other test on this
+ * fixture reads, so these campaigns carry spend here and nowhere else. The
+ * same choice `grid-performance.spec.ts` makes, for the same two reasons.
+ */
+function optimizerWindow(): { start: string; end: string } {
+  const now = new Date();
+  const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 15))
+    .toISOString()
+    .slice(0, 10);
+  return { start: day, end: day };
+}
+
+async function seedOptimizerCampaigns(): Promise<void> {
+  const state = await readState();
+  const database = createDb({ connectionString: state.connectionString, max: 1 });
+  try {
+    const campaigns = Array.from({ length: OPTIMIZER_CAMPAIGN_COUNT }, (_, offset) => {
+      const position = offset + 1;
+      return {
+        amazon_id: optimizerCampaignId(position),
+        name: optimizerCampaignName(position),
+        state: position <= OPTIMIZER_ENABLED_COUNT ? 'enabled' : 'paused',
+        bidding_strategy: position % 2 === 0 ? 'manual' : 'auto_for_sales',
+        spend: position,
+      };
+    });
+    const inserted = await database.sql<{ amazon_id: string }[]>`
+      insert into public.campaigns
+        (org_id, profile_id, amazon_id, ad_product, name, state, budget_amount, budget_type,
+         bidding_strategy, start_date)
+      select ${state.orgId}, ${state.fixtureProfileId}, offered.amazon_id,
+             'SP'::public.ad_product, offered.name, offered.state::public.entity_state,
+             25.00, 'daily'::public.budget_type,
+             offered.bidding_strategy::public.bidding_strategy, ${OPTIMIZER_WINDOW.start}::date
+        from jsonb_to_recordset(${JSON.stringify(campaigns)}::jsonb) as offered(
+          amazon_id text,
+          name text,
+          state text,
+          bidding_strategy text
+        )
+      returning amazon_id
+    `;
+    expect(inserted).toHaveLength(OPTIMIZER_CAMPAIGN_COUNT);
+
+    const facts = await database.sql<{ campaign_id: string }[]>`
+      insert into public.fact_sp_target_daily
+        (org_id, profile_id, date, ad_product, campaign_id, ad_group_id, target_id,
+         target_kind, match_type, impressions, clicks, cost, purchases_7d, sales_7d,
+         units_sold_7d)
+      select ${state.orgId}, ${state.fixtureProfileId}, ${OPTIMIZER_WINDOW.start}::date, 'SP',
+             offered.amazon_id, 'wp209-ad-group', 'wp209-target',
+             'keyword'::public.target_kind, 'exact'::public.match_type,
+             offered.spend::int * 100, offered.spend::int * 4, offered.spend::numeric,
+             2, offered.spend::numeric * 4, 2
+        from jsonb_to_recordset(${JSON.stringify(campaigns)}::jsonb) as offered(
+          amazon_id text,
+          spend int
+        )
+      returning campaign_id
+    `;
+    expect(facts).toHaveLength(OPTIMIZER_CAMPAIGN_COUNT);
+  } finally {
+    await database.close();
+  }
+}

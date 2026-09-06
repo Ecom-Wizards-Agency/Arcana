@@ -51,8 +51,25 @@ export const ENTITY_LABELS: Record<EntityLevel, string> = {
   placements: 'Placements',
 };
 
-export type ColumnKind = 'dimension' | 'metric';
+/**
+ * What a column *is*, which decides what may be done to it.
+ *
+ * `control` is the third kind because a selection checkbox and a row action are
+ * columns on screen and nothing at all in the data: they have no value to sort
+ * by, group on, total or export. Making that a kind rather than a flag is what
+ * stops a selection header from ever advertising `aria-sort` -- the header
+ * cannot offer an ordering it has no accessor for.
+ */
+export type ColumnKind = 'dimension' | 'metric' | 'control';
 export type FilterKind = 'numeric' | 'text' | 'categorical';
+
+/**
+ * Whether a header may sort. Control columns carry no value, so they never do;
+ * every other column does.
+ */
+export function isSortableColumn(column: GridColumn): boolean {
+  return column.kind !== 'control';
+}
 
 export interface GridColumn {
   id: string;
@@ -210,10 +227,13 @@ const DIMENSIONS: Record<EntityLevel, GridColumn[]> = {
       width: 128,
       description: 'Current bid minus the latest Amazon suggested-bid median.',
     }),
-    dimension('rpc_category', 'RPC category', {
+    // The id stays `rpc_category` (the recon's name, and what saved views and
+    // filters already carry); the operator reads it as the campaign's role.
+    dimension('rpc_category', 'Campaign role', {
       width: 120,
       filterKind: 'categorical',
-      description: 'Campaign-name classification. A filter, not an optimizer run.',
+      description:
+        'The role the campaign name declares (rank, discovery, profit). A filter, not an optimizer run.',
     }),
     dimension('ad_group_name', 'Ad group', { width: 220, filterKind: 'categorical' }),
     dimension('campaign_name', 'Campaign', { width: 280, filterKind: 'categorical' }),

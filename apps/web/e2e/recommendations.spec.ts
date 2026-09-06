@@ -1,12 +1,17 @@
 /**
- * The four browser flows WP-07 is accepted on:
+ * The five browser flows WP-07 and WP-209 are accepted on:
  *
- *   1. the provenance panel renders every `inputs` field, plus the change
- *      reason, the limit reason and the strategy that produced the proposal;
- *   2. accept → export moves the status and produces the three files, and a
+ *   1. the queue is one Data Grid, full width, sorting and grouping like every
+ *      other operator table, and the provenance panel renders every `inputs`
+ *      field plus the change reason, the limit reason and the strategy;
+ *   2. the queue's own row is reachable, and filtered selection and the
+ *      progressive decision panels stay keyboard-reachable, on a phone-sized
+ *      viewport;
+ *   3. a decision updates in place: the active filter, the selection and the
+ *      open evidence survive it and the result is reported inline;
+ *   4. accept → export moves the status and produces the three files, and a
  *      dismissed proposal is not in the export;
- *   3. the export gesture is three separate acts: select, confirm, press;
- *   4. the n-gram explorer toggles uni/bi/tri and turns a gram into proposals
+ *   5. the n-gram explorer toggles uni/bi/tri and turns a gram into proposals
  *      without writing anything.
  *
  * Everything runs against a real Next server on a real migrated database; see
@@ -14,7 +19,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import { RELEASE_ARTIFACT } from '../src/ui/artifact-markers';
 
 const PROFILE = process.env['WIZARD_ADS_E2E_PROFILE_A'] ?? '';
@@ -38,26 +43,50 @@ async function openExplorer(page: Page): Promise<void> {
   await expect(page.locator('main[data-interactive="true"]')).toBeVisible();
 }
 
+/** Every proposal on screen. Group rows carry no proposal marker. */
+function proposalRows(page: Page): Locator {
+  return page.locator('[data-testid^="proposal-"]');
+}
+
+/** The grid row holding one proposal, for its checkbox and its cells. */
+function rowFor(page: Page, id: string): Locator {
+  return page.getByTestId('grid-row').filter({ has: page.getByTestId(`proposal-${id}`) });
+}
+
+async function firstProposalId(page: Page): Promise<string> {
+  const id = (await proposalRows(page).first().getAttribute('data-testid'))?.replace('proposal-', '') ?? '';
+  expect(id).not.toBe('');
+  return id;
+}
+
 test.describe('recommendations review', () => {
-  test('shows every proposal grouped by reason, with its work and its strategy', async ({ page }) => {
+  test('shows every proposal in one full-width grid, with its work and its strategy', async ({ page }) => {
     await openReview(page);
 
-    // Decision first, then reason: the operator sees one queue rather than a
-    // flat wall of recommendation rows.
-    const reviewLane = page.getByTestId('decision-lane-needs_review');
-    await expect(reviewLane).toBeVisible();
-    await expect(page.getByTestId('reason-group-needs_review-high_acos')).toBeVisible();
-    await expect(page.getByTestId('reason-group-needs_review-low_visibility')).toBeVisible();
+    // Full width, one continuous grid, and none of the nested tables the
+    // decision lanes used to be.
+    const viewport = page.getByTestId('grid-viewport');
+    const viewportBox = await viewport.boundingBox();
+    const contentBox = await page.locator('main').boundingBox();
+    expect(viewportBox).not.toBeNull();
+    expect(contentBox).not.toBeNull();
+    expect(viewportBox!.width).toBeGreaterThanOrEqual(contentBox!.width - 2);
+    await expect(page.locator('main table')).toHaveCount(0);
 
-    const rows = page.locator('tr[data-testid^="proposal-"]');
-    await expect(rows).toHaveCount(PROPOSALS);
+    // Every loaded proposal is a row, and the count says what population that is.
+    await expect(proposalRows(page)).toHaveCount(PROPOSALS);
+    await expect(page.getByTestId('queue-count')).toHaveText(
+      `${PROPOSALS} of ${PROPOSALS} loaded rows shown`,
+    );
+    // Decision-queue order survives the conversion: needs review leads, and the
+    // lane the old sections carried is a column on the row.
+    await expect(page.getByTestId('grid-row').first()).toContainText('Needs review');
 
     // The objective column: resolved from the run's own strategy snapshot.
-    const first = rows.first();
-    const id = (await first.getAttribute('data-testid'))?.replace('proposal-', '') ?? '';
+    const id = await firstProposalId(page);
     await expect(page.getByTestId(`objective-${id}`)).toHaveText('Rank · rank-launch');
 
-    await first.getByRole('button', { name: 'Show evidence' }).click();
+    await page.getByTestId(`evidence-toggle-${id}`).click();
     const panel = page.getByTestId(`provenance-${id}`);
     await expect(panel).toBeVisible();
     for (const key of INPUT_KEYS) {
@@ -68,6 +97,33 @@ test.describe('recommendations review', () => {
     await expect(page.getByTestId(`limit-${id}`)).toContainText('data_based_ad_group');
     await expect(page.getByTestId(`strategy-${id}`)).toContainText('rank-launch');
 
+    // The evidence shares the viewport column with the grid and never starves
+    // it: an open panel scrolls itself rather than shrinking the queue away.
+    const scrollerBox = await page.getByTestId('grid-scroller').boundingBox();
+    expect(scrollerBox).not.toBeNull();
+    expect(scrollerBox!.height).toBeGreaterThan(100);
+
+    // Click-to-sort on a data column; the control columns never claim one.
+    const entity = page.getByRole('columnheader', { name: 'Entity', exact: true });
+    await entity.click();
+    await expect(entity).toHaveAttribute('aria-sort', 'descending');
+    await entity.click();
+    await expect(entity).toHaveAttribute('aria-sort', 'ascending');
+    await expect(page.getByRole('columnheader', { name: 'Select', exact: true }))
+      .not.toHaveAttribute('aria-sort', /.*/);
+    await expect(page.getByRole('columnheader', { name: 'Evidence', exact: true }))
+      .not.toHaveAttribute('aria-sort', /.*/);
+
+    // Drag a header into the group bar: the lanes come back as a treegrid, and
+    // the surface says the rows became summaries.
+    const bar = page.getByTestId('grid-group-bar');
+    await expect(bar).toContainText('Drag a column header here');
+    await page.getByRole('columnheader', { name: 'Queue', exact: true }).dragTo(bar);
+    await expect(page.getByRole('list', { name: 'Ordered grouping levels' }).getByRole('listitem'))
+      .toHaveCount(1);
+    await expect(page.getByRole('treegrid', { name: 'Results grouped by queue' })).toBeVisible();
+    await expect(page.getByTestId('queue-grouped-note')).toContainText('Remove the grouping levels');
+    await expect(proposalRows(page)).toHaveCount(0);
   });
 
   test('keeps filtered selection and progressive decisions keyboard-accessible on mobile', async ({
@@ -78,10 +134,39 @@ test.describe('recommendations review', () => {
 
     await expect(page.getByTestId('review-filters')).toBeVisible();
     await expect(page.getByTestId('review-actionbar')).toBeVisible();
+
+    // The queue itself has to survive this width, not just the controls above
+    // it. `Select` (44 px) and a pinned `Entity` (260 px) would together claim
+    // 304 of 390 and leave the other ten columns 86 to share, so `Entity`
+    // scrolls with the rest below the breakpoint and only the checkbox stays
+    // put. The proof is that the far end of the row is reachable and readable.
+    const scroller = page.getByTestId('grid-scroller');
+    await expect(scroller).toBeVisible();
+    const entity = page.getByRole('columnheader', { name: 'Entity', exact: true });
+    await expect(entity).toHaveCSS('position', 'relative');
+    await expect(page.getByRole('columnheader', { name: 'Select', exact: true }))
+      .toHaveCSS('position', 'sticky');
+    const overflow = await scroller.evaluate((element) => element.scrollWidth - element.clientWidth);
+    expect(overflow).toBeGreaterThan(0);
+
+    await scroller.evaluate((element) => {
+      element.scrollLeft = element.scrollWidth;
+    });
+    const status = page.getByRole('columnheader', { name: 'Status', exact: true });
+    const statusBox = await status.boundingBox();
+    const pinnedBox = await page
+      .getByRole('columnheader', { name: 'Select', exact: true })
+      .boundingBox();
+    expect(statusBox).not.toBeNull();
+    expect(pinnedBox).not.toBeNull();
+    // Wholly on screen, and clear of the one column that stays pinned over it.
+    expect(statusBox!.x).toBeGreaterThanOrEqual(pinnedBox!.x + pinnedBox!.width);
+    expect(statusBox!.x + statusBox!.width).toBeLessThanOrEqual(390);
+
     await page.getByRole('combobox', { name: 'Reason' }).selectOption('high_acos');
-    await page.getByRole('button', { name: 'Select all 1 filtered' }).click();
+    await page.getByRole('button', { name: 'Select all 1 filtered loaded rows' }).click();
     await expect(page.getByTestId('selection-count')).toContainText(
-      '1 of 1 filtered selected · 0 accepted',
+      '1 of 1 filtered loaded rows selected · 0 accepted',
     );
 
     const dismiss = page.getByRole('button', { name: 'Dismiss 1 selected' });
@@ -92,16 +177,67 @@ test.describe('recommendations review', () => {
     await expect(dismiss).toBeFocused();
   });
 
+  test('a decision keeps the active filter, the selection and the open evidence, and reports itself inline', async ({
+    page,
+  }) => {
+    await openReview(page);
+
+    // Build a working state: one filter, one selected row, its evidence open.
+    await page.getByRole('combobox', { name: 'Reason' }).selectOption('high_acos');
+    await expect(page.getByTestId('queue-count')).toHaveText(
+      `1 of ${PROPOSALS} loaded rows shown`,
+    );
+    const id = await firstProposalId(page);
+    await rowFor(page, id).getByRole('checkbox').check();
+    await expect(page.getByTestId('selection-count')).toContainText(
+      '1 of 1 filtered loaded rows selected',
+    );
+    await page.getByTestId(`evidence-toggle-${id}`).click();
+    await expect(page.getByTestId(`provenance-${id}`)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Accept 1 selected' }).click();
+
+    // The decision is reported on the screen that made it, rather than being
+    // wiped by the reload this used to end in.
+    await expect(page.getByTestId('decision-result')).toHaveText(
+      '1 of 1 proposals moved to accepted.',
+    );
+    await expect(page.locator(`[data-testid="proposal-${id}"]`))
+      .toHaveAttribute('data-status', 'accepted');
+
+    // And every piece of that working state is still standing.
+    await expect(page.getByRole('combobox', { name: 'Reason' })).toHaveValue('high_acos');
+    await expect(page.getByTestId('queue-count')).toHaveText(
+      `1 of ${PROPOSALS} loaded rows shown`,
+    );
+    await expect(page.getByTestId('selection-count')).toContainText(
+      '1 of 1 filtered loaded rows selected · 1 accepted',
+    );
+    await expect(page.getByTestId(`provenance-${id}`)).toBeVisible();
+    await expect(page.getByTestId('run-counts')).toContainText('1 accepted');
+
+    // Re-open it, so the run is exactly as this test found it, and prove on a
+    // fresh load that both writes really reached the database.
+    await page.getByRole('button', { name: 'Re-open 1 selected' }).click();
+    await expect(page.getByTestId('decision-result')).toHaveText(
+      '1 of 1 proposals moved to proposed.',
+    );
+    await openReview(page);
+    await expect(page.getByTestId('run-counts')).toContainText(`${PROPOSALS} new proposals`);
+  });
+
   test('accept, dismiss and export: the three-act gesture, and dismissed rows never export', async ({
     page,
   }) => {
     await openReview(page);
 
     // Dismiss the low-visibility proposal, with the note the route demands.
-    const lowVisibilityGroup = page.getByTestId('reason-group-needs_review-low_visibility');
-    await lowVisibilityGroup.locator('summary').click();
-    const lowVisibility = lowVisibilityGroup.locator('tr[data-testid^="proposal-"]').first();
-    await lowVisibility.getByRole('checkbox').check();
+    await page.getByRole('combobox', { name: 'Reason' }).selectOption('low_visibility');
+    await expect(page.getByTestId('queue-count')).toHaveText(
+      `1 of ${PROPOSALS} loaded rows shown`,
+    );
+    await proposalRows(page).first().waitFor();
+    await rowFor(page, await firstProposalId(page)).getByRole('checkbox').check();
     await expect(page.getByTestId('selection-count')).toContainText('1 of');
     await page.getByRole('button', { name: 'Dismiss 1 selected' }).click();
     await page.getByLabel('Dismissal note').fill('Rank target: never cut on ACOS alone.');
@@ -110,13 +246,18 @@ test.describe('recommendations review', () => {
     await expect(page.getByTestId('run-counts')).toContainText('1 dismissed');
 
     // Accept everything still proposed.
+    await page.getByRole('combobox', { name: 'Reason' }).selectOption('');
     await page.getByRole('combobox', { name: 'Status' }).selectOption('proposed');
-    await page.getByRole('button', { name: /Select all \d+ filtered/ }).click();
+    await page
+      .getByRole('button', { name: `Select all ${PROPOSALS - 1} filtered loaded rows` })
+      .click();
     await expect(page.getByTestId('selection-count')).toContainText(
-      `${PROPOSALS - 1} of ${PROPOSALS - 1} filtered selected · 0 accepted`,
+      `${PROPOSALS - 1} of ${PROPOSALS - 1} filtered loaded rows selected · 0 accepted`,
     );
     await page.getByRole('button', { name: `Accept ${PROPOSALS - 1} selected` }).click();
-    await expect(page.locator('main[data-interactive="true"]')).toBeVisible();
+    await expect(page.getByTestId('decision-result')).toHaveText(
+      `${PROPOSALS - 1} of ${PROPOSALS - 1} proposals moved to accepted.`,
+    );
     await expect(page.getByTestId('run-counts')).toContainText(`${PROPOSALS - 1} accepted`);
 
     // Act two of the gesture is separate from act three: pressing Export
@@ -158,7 +299,7 @@ test.describe('recommendations review', () => {
     // And the statuses moved.
     await openReview(page);
     await expect(page.getByTestId('run-counts')).toContainText(`${PROPOSALS - 1} exported`);
-    await expect(page.locator('tr[data-status="dismissed"]')).toHaveCount(1);
+    await expect(page.locator('[data-testid^="proposal-"][data-status="dismissed"]')).toHaveCount(1);
   });
 });
 
@@ -232,7 +373,7 @@ test.describe('n-gram explorer', () => {
     await page.goto(`/recommendations?profile=${PROFILE}`);
     await page.getByText(/^Choose run/).click();
     await page.getByRole('navigation', { name: 'Runs' }).getByRole('link').first().click();
-    await expect(page.getByTestId('reason-group-needs_review-flag')).toBeVisible();
-    await expect(page.locator('tr[data-testid^="proposal-"]')).toHaveCount(chosen);
+    await expect(page.locator('[data-testid^="proposal-"]')).toHaveCount(chosen);
+    await expect(page.getByTestId('grid-row').first()).toContainText('Flag');
   });
 });
