@@ -4,6 +4,26 @@
 
 ### Latest preparation checkpoint
 
+**Unused-login restriction completed, 2026-09-06:** the operator asked Codex to continue
+in response to the exact credential-change approval request. A fresh production read confirmed
+LOGIN/BYPASSRLS enabled, zero active sessions, one creator default SELECT rule and 158 existing
+public SELECT grants. Codex executed the prepared transaction to remove the postgres/public
+default SELECT rule and set NOLOGIN/NOBYPASSRLS. Independent postflight confirms both flags
+false, zero automatic SELECT rules, zero sessions and all 158 grants retained. The fingerprint
+of existing relation/column/function/schema ACLs and the complete membership row are identical
+before and after. The role and its password were not deleted; its origin remains unexplained.
+Private evidence: `_local/unknown-preview-role-closed-2026-09-06.json`.
+
+The two postflight grant-count differences reported by Claude remain expected while those
+existing grants are retained. Removing them or dropping the role later is not authorized by
+this restriction. The second-window rehearsal must include both completed operational changes:
+the eight-function ACL repair and this login/default-grant restriction. No migration-ledger row
+was inserted for either operation.
+
+Both jobs in [CI run 34014347807](https://github.com/Ecom-Wizards-Agency/openspell/actions/runs/34014347807)
+have passed for source `5c8bd01`. PR #144 is open on Claude's table branch; its file scope stays
+with Claude. Codex is reviewing its backend compatibility, without modifying its client files.
+
 **Hosted ACL repair completed, 2026-09-06 05:23:54 UTC:** Codex ran the operator's
 exact eight-function revoke block through the linked production Supabase SQL editor.
 It reported success, but independent ACL reads showed no changes: the managed `postgres`
@@ -51,16 +71,17 @@ The final full DB rerun passes **66 files / 622 tests** with the database requir
 `_local/recommendation-acl-db-package-tests-final.log`. The existing 46-to-56 repository
 upgrade test also passes; it remains distinct from the pending exact hosted-history rehearsal.
 
-**Unknown-login read-only follow-up:** the operator relayed Claude's discovery of a creator
+**Earlier unknown-login read-only follow-up:** the operator relayed Claude's discovery of a creator
 default grant. Codex independently verified LOGIN and BYPASSRLS enabled, no validity deadline,
 zero current connections at the check, one postgres/public default SELECT grant, and an
-ADMIN-only operator membership. No production change to this login was authorized or applied.
+ADMIN-only operator membership. At that checkpoint no production change to this login was authorized or applied.
 The proposed closure removes that default SELECT grant and sets NOLOGIN/NOBYPASSRLS; existing
-table grants and the role remain. Its separate authorization is still required.
+table grants and the role remain. Its separate authorization was still required then and has
+since been granted and executed as recorded above.
 The second read counted 158 existing public SELECT grants and confirmed that the current
 administrator has the authority needed for the proposed closure. A synthetic transactional
 rehearsal verifies disabled login/bypass, retained old SELECT and no SELECT on a new table;
-all test objects were rolled back. The guarded production script is prepared only at
+all test objects were rolled back. The guarded production script was prepared at
 `_local/unknown-preview-role-closure-2026-09-06.sql`.
 
 **Cron restored, 2026-09-06 05:11:08 UTC:** the operator relayed Claude's completed-window,
