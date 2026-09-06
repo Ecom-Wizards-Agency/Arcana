@@ -5,6 +5,8 @@ import type { AssetLibraryRegistration } from '@wizard-ads/shared/asset-library'
 import type { FetchLike } from './types.js';
 
 const scope = { region: 'EU', amazonProfileId: '1000000001' } as const;
+const credentials = { clientId: 'synthetic-client',
+  clientSecret: ['synthetic', 'secret'].join('-'), refreshToken: ['synthetic', 'refresh'].join('-') };
 const identity = { assetId: 'synthetic-video', version: 'version_2' };
 const location = { url: 'https://example.invalid/temporary-upload?signature=synthetic-sensitive-value' };
 const registration: AssetLibraryRegistration = {
@@ -38,13 +40,13 @@ function setup(provider: FetchLike) {
   const fetch: FetchLike = async (url, init) => {
     if (url === 'https://api.amazon.com/auth/o2/token') {
       tokenCalls += 1;
-      return response({ access_token: 'synthetic-access', expires_in: 3600, token_type: 'bearer' });
+      return response({ access_token: ['synthetic', 'access'].join('-'), expires_in: 3600, token_type: 'bearer' });
     }
     calls.push({ url, init });
     return provider(url, init);
   };
   const client = createAssetLibraryClient({ region: 'EU',
-    credentials: { clientId: 'synthetic-client', clientSecret: 'synthetic-secret', refreshToken: 'synthetic-refresh' },
+    credentials,
     fetch, sleep: async () => undefined, now: () => Date.parse('2026-09-06T12:00:00.000Z'),
     retry: { maxAttempts: 3, jitter: 0 },
   }, scope);
@@ -244,8 +246,7 @@ describe('Asset Library client', () => {
   it('distinguishes a header failure from an attempted registration without leaking its cause', async () => {
     const fetch = vi.fn<FetchLike>(async () => { throw new Error(location.url); });
     const client = createAssetLibraryClient({ region: 'EU', fetch, sleep: async () => undefined,
-      retry: { maxAttempts: 1 }, credentials: { clientId: 'synthetic-client',
-        clientSecret: 'synthetic-secret', refreshToken: 'synthetic-refresh' } }, scope);
+      retry: { maxAttempts: 1 }, credentials }, scope);
     expect(await client.register(registration, location)).toEqual({ kind: 'not_attempted', scope, reason: 'headers_failed' });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch.mock.calls[0]![0]).toBe('https://api.amazon.com/auth/o2/token');

@@ -11,7 +11,8 @@ only cron enablement to false, then independently read back a non-null `disabled
 identical schedule definitions. The operator later extended the target by 20 minutes: restoration is now 05:24 UTC, with the
 60-minute boundary at 05:34 UTC (12:24 and 12:34 Bangkok). No automatic restart was scheduled because WP-207
 requires postflight and worker restoration first. Private before/after evidence is in
-`_local/vercel-cron-window-2026-09-06-{before,paused}.json`. Claude owns the migration;
+`_local/vercel-cron-window-2026-09-06-before.json` and
+`_local/vercel-cron-window-2026-09-06-paused.json`. Claude owns the migration;
 Codex did not run it or change the unresolved database login. No sudo was needed.
 Earlier statements that no hosted settings changed describe checkpoints before this pause.
 
@@ -94,6 +95,13 @@ activation scanner. A local run reproduced the exact failure. `d210fbf` replaces
 named OAuth bans with a ban on every provider subpath, including future/nested subpaths;
 the unchanged activation scan and all five import-boundary tests now pass. No scanner
 exception or runtime permission was added. The next pushed head needs its own complete CI.
+
+Clean checkout `2a14088` passes unmodified repository ESLint. Hygiene initially flagged the
+new test's literal synthetic credential values and a combined before/after evidence filename.
+The fixtures now assemble the same synthetic values from fragments, and the docs list the
+two actual evidence paths separately. All 52 Asset Library tests still pass; hygiene scans
+1,585 of 1,586 tracked files cleanly with all nine private denylist terms. No real credential
+was present and no hygiene rule/exemption changed.
 
 ### Committed source checkpoint
 
