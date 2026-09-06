@@ -224,6 +224,43 @@ test('grid sorts on a header click, groups by dragging headers into the group ba
 });
 
 /**
+ * WP-24 ordered a tile row and a trend chart above this grid and never got
+ * them. They are here now, and they are streamed: the document that carries
+ * the grid workspace does not wait for the profile-daily query behind them,
+ * because the rows the operator came for are fetched by the browser over
+ * `/api/grid/rows` and cannot start until that document has arrived.
+ */
+test('grid carries the performance tiles and trend above the rows, streamed outside the row path', async ({
+  page,
+}) => {
+  await signIn(page, 'admin');
+  const rowRequests: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/grid/rows') rowRequests.push(request.url());
+  });
+  await page.goto('/grid?entity=campaigns');
+
+  const cockpit = page.getByRole('region', { name: 'Performance cockpit' });
+  await expect(cockpit).toBeVisible();
+  await expect(cockpit.getByRole('heading', { name: 'Performance trend' })).toBeVisible();
+  await expect(cockpit.locator('.wa-cockpit__tile')).not.toHaveCount(0);
+
+  // Above the grid, not beside or below it, and the rows still arrive.
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  const cockpitBox = await cockpit.boundingBox();
+  const gridBox = await page.getByTestId('grid-viewport').boundingBox();
+  expect(cockpitBox).not.toBeNull();
+  expect(gridBox).not.toBeNull();
+  expect(cockpitBox!.y + cockpitBox!.height).toBeLessThanOrEqual(gridBox!.y);
+  await expect(page.getByTestId('grid-scroller')).toBeVisible();
+
+  // The tiles and the chart are a second read on the same page and they cost
+  // the rows nothing: the browser still makes exactly the one row request the
+  // boundary is measured on.
+  expect(rowRequests).toHaveLength(1);
+});
+
+/**
  * The operator's 2026-09-05 recording, on the surface it was recorded on.
  *
  * Scroll the whole campaign list, sort by spend, drag a header into the group

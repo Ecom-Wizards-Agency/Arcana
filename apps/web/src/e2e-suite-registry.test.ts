@@ -13,7 +13,7 @@ const EXPECTED_REGISTRY = [
   ['profile-context', 'authenticated-dev', 'playwright.profile-context.config.ts', 'profile-context', ['profile-context.spec.ts', 'sidebar-layout.spec.ts'], 8],
   ['auth-guards-anonymous', 'authenticated-dev', 'playwright.auth-guards-anonymous.config.ts', 'auth-guards-anonymous', ['guards-anonymous.spec.ts'], 2],
   ['auth-guards-signed-in', 'authenticated-dev', 'playwright.auth-guards-signed-in.config.ts', 'auth-guards-signed-in', ['guards-signed-in.spec.ts'], 3],
-  ['auth', 'authenticated-dev', 'playwright.auth.config.ts', 'auth', ['dashboard.spec.ts', 'grid.spec.ts'], 6],
+  ['auth', 'authenticated-dev', 'playwright.auth.config.ts', 'auth', ['dashboard.spec.ts', 'grid.spec.ts'], 7],
   ['auth-members', 'authenticated-dev', 'playwright.auth-members.config.ts', 'auth-members', ['members.spec.ts'], 5],
   ['auth-oauth', 'authenticated-dev', 'playwright.auth-oauth.config.ts', 'auth-oauth', ['oauth.spec.ts'], 7],
   ['auth-roles', 'authenticated-dev', 'playwright.auth-roles.config.ts', 'auth-roles', ['roles.spec.ts'], 8],
@@ -47,8 +47,8 @@ describe('web E2E suite registry', () => {
     }
   });
 
-  it('conserves all 78 logical test cases and resolves every dispatch entry', () => {
-    expect(E2E_SUITE_DEFINITIONS.reduce((total, suite) => total + suite.expectedTests, 0)).toBe(78);
+  it('conserves all 79 logical test cases and resolves every dispatch entry', () => {
+    expect(E2E_SUITE_DEFINITIONS.reduce((total, suite) => total + suite.expectedTests, 0)).toBe(79);
     expect(E2E_SUITES.map((suite) => getE2ESuiteDefinition(suite))).toEqual(E2E_SUITE_DEFINITIONS);
   });
 

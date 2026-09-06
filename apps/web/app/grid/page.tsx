@@ -32,11 +32,18 @@ import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
 import { gate } from '../../src/auth/guard';
 import { canonicalProfilePath } from '../../src/data/active-profile';
 import { gateMessage } from '../../src/ui/gate-message';
-import { loadReportLedger } from '../_lib/dashboard-data';
+import { loadProfileDailyRows, loadReportLedger } from '../_lib/dashboard-data';
 import { withExistingDatabase } from '../_lib/db';
-import { periodFromParams, precedingPeriod, todayIso } from '../_lib/periods';
+import {
+  periodFromParams,
+  precedingPeriod,
+  settledComparisonWindows,
+  todayIso,
+} from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
 import { OperatorContext } from '../../src/ui/operator-context';
+import { Cockpit } from '../../src/ui/cockpit';
+import { kpiTiles, totalsOf } from '../../src/optimizer/view';
 import { GridWorkspace } from './grid-client';
 import { CrosscheckChip } from '../crosscheck/panel';
 
@@ -71,8 +78,10 @@ export default async function GridPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const profileId = await requestedProfileId(params.profile);
   const entity = parseEntity(params.entity);
-  const period = periodFromParams(params, todayIso());
+  const today = todayIso();
+  const period = periodFromParams(params, today);
   const comparison = precedingPeriod(period);
+  const settled = settledComparisonWindows(period, today);
 
   const data = await withExistingDatabase(entry.handle, async (handle) => {
     const profiles = await listProfiles(handle, orgId);
@@ -139,6 +148,16 @@ export default async function GridPage({ searchParams }: PageProps) {
         }}
       />
 
+      <Suspense fallback={<CockpitPending />}>
+        <GridCockpit
+          handle={entry.handle}
+          orgId={orgId}
+          profile={profile}
+          period={period}
+          settled={settled}
+        />
+      </Suspense>
+
       <GridWorkspace
         key={`${profile.id}:${entity}:${period.start}:${period.end}:${params.campaign ?? ''}`}
         entity={entity}
@@ -164,6 +183,95 @@ export default async function GridPage({ searchParams }: PageProps) {
         </a>
       </p>
     </main>
+  );
+}
+
+/**
+ * The tile row and the trend chart WP-24 ordered for this page and never got.
+ *
+ * It is the same `Cockpit` and the same daily loader the dashboard and the
+ * optimizer mount — one component, one query, three pages — and it is
+ * deliberately inside a `Suspense` boundary rather than awaited in the page
+ * body. The rows the operator came for arrive over `/api/grid/rows`, which the
+ * browser cannot request until the document has streamed; a profile-daily
+ * query awaited above the workspace would put itself in front of that request
+ * for no reason. Suspended, the document flushes with the workspace in it and
+ * the tiles land when the query does.
+ */
+async function GridCockpit({
+  handle,
+  orgId,
+  profile,
+  period,
+  settled,
+}: {
+  handle: DbHandle;
+  orgId: string;
+  profile: { id: string; label: string; currencyCode: string };
+  period: { start: string; end: string };
+  settled: ReturnType<typeof settledComparisonWindows>;
+}) {
+  const window = {
+    start:
+      settled.comparison !== null && settled.comparison.start < period.start
+        ? settled.comparison.start
+        : period.start,
+    end: period.end,
+  };
+  const rows = await withExistingDatabase(handle, (open) =>
+    loadProfileDailyRows(open, orgId, profile.id, profile.label, window),
+  ).catch(() => null);
+  if (rows === null || rows.length === 0) return null;
+
+  // The dashboard's clamp, for the dashboard's reason: a profile whose facts
+  // begin after the settled window opens must not be described as sixteen
+  // settled days when four of them exist.
+  const coverageStart = rows[0]?.date ?? null;
+  const currentWindow =
+    settled.current !== null && coverageStart !== null && coverageStart > settled.current.start
+      ? { start: coverageStart, end: settled.current.end }
+      : settled.current;
+  const settledRows =
+    currentWindow === null
+      ? []
+      : rows.filter((row) => row.date >= currentWindow.start && row.date <= currentWindow.end);
+  const comparisonRows =
+    settled.comparison === null
+      ? []
+      : rows.filter(
+          (row) =>
+            row.date >= (settled.comparison as { start: string }).start &&
+            row.date <= (settled.comparison as { end: string }).end,
+        );
+  const inPeriod = rows.filter((row) => row.date >= period.start && row.date <= period.end);
+
+  return (
+    <Cockpit
+      days={inPeriod.map((row) => ({
+        date: row.date,
+        impressions: row.impressions,
+        clicks: row.clicks,
+        spend: row.spend,
+        sales: row.sales,
+        orders: row.orders,
+      }))}
+      tiles={kpiTiles(
+        settledRows.length === 0 ? null : totalsOf(settledRows),
+        comparisonRows.length === 0 ? null : totalsOf(comparisonRows),
+      )}
+      currencyCode={profile.currencyCode}
+      settlingStart={settled.settling.start}
+      coverageStart={coverageStart}
+      preferenceKey={profile.id}
+    />
+  );
+}
+
+function CockpitPending() {
+  return (
+    <p aria-busy="true" data-testid="grid-cockpit-pending" style={crosscheckPending}>
+      Loading the performance tiles and trend…
+    </p>
   );
 }
 
