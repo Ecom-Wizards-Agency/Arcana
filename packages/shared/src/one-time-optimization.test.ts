@@ -43,6 +43,7 @@ describe('one-time RPC contract', () => {
     { bidIncreaseCap: -0.1 }, { bidDecreaseCap: 1.01 },
     { window: { start: '2023-02-29', end: '2023-03-01' } },
     { window: { start: '2024-03-01', end: '2024-02-29' } },
+    { window: { start: '2023-01-01', end: '2024-01-02' } },
     { groupId: request.profileId }, { enableSchedule: true },
   ])('refuses invalid or unrecognized settings %j', (patch) => {
     expect(OneTimeRpcConfiguration.safeParse({ ...configuration, ...patch }).success).toBe(false);

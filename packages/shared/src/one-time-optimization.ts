@@ -12,6 +12,9 @@ export const OneTimeOptimizationWindow = z.strictObject({
 }).refine((window) => window.start <= window.end, {
   path: ['end'],
   message: 'The reporting end date must be on or after its start date.',
+}).refine((window) => Date.parse(window.end) - Date.parse(window.start) < 366 * 86_400_000, {
+  path: ['end'],
+  message: 'One preview can evaluate at most 366 reporting days.',
 });
 export type OneTimeOptimizationWindow = z.infer<typeof OneTimeOptimizationWindow>;
 
