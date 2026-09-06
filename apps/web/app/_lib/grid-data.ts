@@ -12,7 +12,7 @@
  *    file, and there is nowhere for one to hide: the SQL returns
  *    impressions/clicks/spend/sales/orders/units and the ratios are computed in
  *    `@wizard-ads/ui` from those sums, at whatever level is being displayed.
- *    This is the same rule the recon says to clone (`02-data-grid.md` §4), held
+ *    This is the same rule the recon says to clone (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md` §4), held
  *    at the query layer as well as the render layer.
  *
  * 3. **`c_days = 0` means no comparison row, not a zero one.** An entity that
@@ -87,7 +87,7 @@ export interface LoadGridOptions {
   comparison: Period;
   /**
    * Hard cap on rows returned. The grid holds the whole set in memory with no
-   * pagination, which is the point (`02-data-grid.md` §6) -- but "no pagination"
+   * pagination, which is the point (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md` §6) -- but "no pagination"
    * has to mean "50k rows", not "however many the account has". Past the cap the
    * page says so rather than silently truncating.
    */

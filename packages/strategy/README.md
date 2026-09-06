@@ -8,15 +8,19 @@ The numbers are per-tenant database data (`profile_strategy` jsonb), seeded by a
 script from a gitignored local file. `_local/strategy.TEMPLATE.json` shows the document's shape
 with every value replaced by a placeholder, and a test fails if a number ever appears in it.
 
-## The WP-00.1 widening — what reads each new field
+## Resolution and configuration references
 
-WP-00.1 widened `TenantStrategy` (in `packages/shared/src/strategy.ts`) so the operator's live
-strategy document has a home for every leaf it carries. Widening only: every added key is
-optional and no existing key changed meaning, so documents seeded against the earlier shape keep
-parsing and no consumer had to change.
+The authoritative schema is [TenantStrategy](../shared/src/strategy.ts), and the
+placeholder document is [strategy.TEMPLATE.json](../../_local/strategy.TEMPLATE.json).
+[src/resolve.ts](src/resolve.ts) validates the merged document and returns provenance.
+Missing `targetAcosFor` and `changeCapsFor` values return `null`; callers must decline
+the affected optimization instead of inventing tenant settings. `cutOnAcosAlone`
+returns true only when explicitly enabled. Goal lenses affect only declared groups.
 
-Nothing below is wired yet. This is the map the consuming work packages implement against; the
-resolver exposes the values, and each engine decides what to do with them.
+The following table describes schema intent and consuming responsibility. A field
+parsing successfully does not establish that a runtime consumes it. Check the actual
+accessor/engine and its tests before presenting a setting as effective. Most optional
+management fields below remain shape-only in this resolver.
 
 | Field | Consumer | What it means there |
 |---|---|---|
@@ -26,16 +30,16 @@ resolver exposes the values, and each engine decides what to do with them.
 | `opt_groups.<g>.placement_max_increase` | placement optimizer | Per-group override of `caps.max_placement_increase`. |
 | `opt_groups.<g>.max_increase_steady` | bidding engine | The increase ceiling once a group is out of its launch phase, where that differs from `max_increase`. |
 | `opt_groups.<g>.spend_share_max` | pacing / budget allocation | Ceiling on the share of profile spend the group may take. |
-| `opt_groups.<g>.preset` | staged-apply engine (WP-12) | Named starting point for the group's settings. Opaque string; the engine resolves it. |
+| `opt_groups.<g>.preset` | staged-apply engine | Named starting point for the group's settings. Opaque string; the engine resolves it. |
 | `opt_groups.<g>.tacos_x_breakeven[_min\|_max]` | doctrine engine / recommendations | Target TACOS as a multiple of breakeven, with a band where a range is used instead of a point target. |
-| `pacing.warn_above` / `act_above` / `underpace_below` | pacing governor (WP-03 job, WP-07 surface) | Three bands, not one tolerance: report, act on the cut order, and flag underspend. `run_rate_tolerance` stays as a deprecated single-tolerance fallback. |
+| `pacing.warn_above` / `act_above` / `underpace_below` | pacing governor | Three bands, not one tolerance: report, act on the cut order, and flag underspend. `run_rate_tolerance` stays as a deprecated single-tolerance fallback. |
 | `pacing.rank_cut_requires_operator` | pacing governor | Guard on the last step of `cut_order`. When true, the `rank` cut is proposed and never applied without an operator decision. |
-| `rank_lifecycle.graduate_weeks_stable` | rank lifecycle (WP-08 tags, recommendations) | **Weeks**, because it counts review cycles. `dwell_days` next to it is **days**. Both units are stated on the key and in the contract's doc comment; a lifecycle that mixes the two silently is a bug factory. |
+| `rank_lifecycle.graduate_weeks_stable` | rank lifecycle | **Weeks**, because it counts review cycles. `dwell_days` next to it is **days**. Both units are stated on the key and in the contract's doc comment; a lifecycle that mixes the two silently is a bug factory. |
 | `rank_lifecycle.stepdown_cycles_min` / `_max` | rank lifecycle | How many step-down cycles a graduated keyword walks through. |
 | `rank_lifecycle.regression_reescalate` | rank lifecycle | What a regressed keyword returns to. |
-| `staged_apply.max_batches_per_run` | staged-apply engine (WP-12) | Batches one run may push before it stops and waits for the next cycle. |
+| `staged_apply.max_batches_per_run` | staged-apply engine | Batches one run may push before it stops and waits for the next cycle. |
 | `staged_apply.cooldown_bypasses` | staged-apply engine | Levers allowed to ignore `cooldown_days`. |
-| `staged_apply.tag_format` | staged-apply engine + WP-08 tags | Template for the tag written onto a changed entity, so a batch can be found and reverted. |
+| `staged_apply.tag_format` | staged-apply engine + tags | Template for the tag written onto a changed entity, so a batch can be found and reverted. |
 | `staged_apply.push_rank_min_days` | staged-apply engine | Minimum days between two pushes on the same rank target. |
 | `staged_apply.priority_order` | staged-apply engine | Order the levers are worked through when a run cannot do everything. |
 | `staged_apply.group_cadence` | staged-apply engine | How often each opt group is touched, keyed by group name. |
@@ -43,10 +47,10 @@ resolver exposes the values, and each engine decides what to do with them.
 | `discovery.min_root_words` | n-gram / discovery (`packages/core`) | Minimum words a root needs to count as a discovery root. |
 | `expanded_candidate_filter.min_relevancy` / `max_sv` | keyword candidate intake | Gate an expanded (tool- or agent-suggested) candidate must clear to be considered. |
 
-## Note for the WP-01 seeder
+## Importing a source strategy document
 
-The operator's source document is not this contract, and the seeder is where the difference is
-resolved. It must, in this order:
+An external source document may use a different nesting or vocabulary. A separately
+scoped importer must normalize it before validation, in this order:
 
 1. **Flatten `management.*`.** The source nests `pacing`, `opt_groups`, `rank_lifecycle` and
    `staged_apply` under a `management` object. This contract keeps them at the top level, next
@@ -72,3 +76,14 @@ resolved. It must, in this order:
 5. **Verify coverage, not exit code.** Count the source document's leaf paths and assert every
    one landed somewhere in the seeded document. A seed that parses while dropping half the
    doctrine is the failure this step exists to catch.
+
+The optional fields retain the `wizard-ads.tenant-strategy.v1` schema identity;
+do not silently rename units, change existing meanings or introduce tenant threshold
+defaults in source. Keep [`src/merge.ts`](src/merge.ts), resolver tests and the shared
+schema in agreement. Strategy configuration cannot itself grant Amazon write
+authority or enable a scheduled cadence.
+
+```bash
+pnpm --filter @wizard-ads/strategy typecheck
+pnpm --filter @wizard-ads/strategy test
+```

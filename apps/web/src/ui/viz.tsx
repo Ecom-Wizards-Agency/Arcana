@@ -74,7 +74,7 @@ export interface TrendChartProps {
    * summing or averaging its daily values — it would have to be recomputed from
    * base sums, which this component does not carry — so the toggle stays off for
    * those and the chart is daily-only. This is the same discipline the grid's
-   * group-by follows (`tools/recon/02-data-grid.md` §4).
+   * group-by follows (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md` §4).
    */
   aggregatable?: boolean;
   /**
@@ -824,7 +824,7 @@ export function aggregateBidCorridorPoints(
 }
 
 /**
- * The bid corridor drill-down (`tools/recon/04-optimizer.md` §3).
+ * The bid corridor drill-down (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/04-optimizer.md` §3).
  *
  * Amazon's daily suggested-bid low↔high drawn as a filled orange band with a
  * dashed median through it — market evidence, not policy — and over it the

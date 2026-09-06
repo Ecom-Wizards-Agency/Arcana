@@ -9,7 +9,7 @@
  * Keys are snake_case because this schema validates the operator's own JSON
  * document unchanged, the same reason `ApplyRowWire` is snake_case. Sections
  * mirror `amazon-agent/tools/amazon-seo-keyword-workbook/ads-strategy.TEMPLATE.json`
- * plus the management sections named in docs/PLAN.md.
+ * plus the management sections named in https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/docs/PLAN.md.
  *
  * Leaves are deliberately permissive: a tenant that has not filled in a section
  * should fail at seed time with a clear message, not fail to parse here.

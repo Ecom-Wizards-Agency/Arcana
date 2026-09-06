@@ -1,7 +1,7 @@
 /**
  * Entry point: `pnpm --filter @wizard-ads/analyst start [-- --dry-run]`.
  *
- * Meant to run from cron on the always-on Mac mini (docs/VISION.md §4). It reads
+ * Meant to run from cron on the always-on Mac mini (https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/docs/VISION.md §4). It reads
  * its configuration from the environment, makes one pass, prints each digest to
  * stdout, and exits. Slack is deliberately not wired here: the operator's
  * downstream step takes the printed digest and posts it through the guarded

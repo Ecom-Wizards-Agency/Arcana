@@ -6,7 +6,7 @@
  *
  * **The note lives in `audit_log`, not on the row.** `public.recommendations`
  * has no note column and this package does not add migrations. That turned out
- * to be the better shape anyway: the recon (`tools/recon/04-optimizer.md` §5)
+ * to be the better shape anyway: the recon (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/04-optimizer.md` §5)
  * records that every mutating action in the incumbent demands a note "required
  * for audit logs", and a note that lives in the audit log is a history rather
  * than a single last-writer-wins string. `listRecommendations` reads the most
@@ -359,7 +359,7 @@ export async function getRecommendationRun(
  * the latest decision note attached.
  *
  * No pagination, on purpose and for the same reason the grid has none
- * (`tools/recon/02-data-grid.md` §6): QA-ing a preview means sorting the whole
+ * (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md` §6): QA-ing a preview means sorting the whole
  * set by spend and scanning it. `limit` exists as a safety valve, not as a page
  * size.
  */

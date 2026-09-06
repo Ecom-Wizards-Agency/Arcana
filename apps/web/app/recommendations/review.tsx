@@ -18,7 +18,7 @@
  * bar rebuilds those lanes as a treegrid whenever the operator wants the
  * counts instead of the rows.
  *
- * The two trust-building interactions from the recon (`tools/recon/04-optimizer.md`)
+ * The two trust-building interactions from the recon (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/04-optimizer.md`)
  * are unchanged:
  *
  * - **Bulk action over a filtered set.** Narrow by reason, status, strategy or

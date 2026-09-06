@@ -6,7 +6,7 @@
  * The settings chip and reason coverage are stateless; each group table owns
  * only the target id of its open bid-history modal. The preview keeps the
  * change-reasons / limit-reasons split as two separate pill columns
- * (`tools/recon/04-optimizer.md` §3). "This bid went up because low visibility"
+ * (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/04-optimizer.md` §3). "This bid went up because low visibility"
  * and "it did not go up as far as we wanted because the smart ceiling bound"
  * are two different facts and remain two different columns.
  */

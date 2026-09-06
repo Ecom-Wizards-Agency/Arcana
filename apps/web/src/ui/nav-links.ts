@@ -5,7 +5,7 @@
  * client component and a unit test without any of them dragging in the others.
  *
  * Grouping follows the recon's corrected map of the incumbent
- * (`tools/recon/01-navigation-map.md`): collapsible groups whose order is the
+ * (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/01-navigation-map.md`): collapsible groups whose order is the
  * order an operator walks the product — look at the numbers, work the set,
  * review what the engine proposes, check it against the source, hand the model
  * a key, then the product's own feedback loop and finally the plumbing. Their

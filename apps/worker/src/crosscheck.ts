@@ -3,7 +3,7 @@
  *
  * WP-10 owns the logic and ships it as `runCrosscheckIngest`; this file is the
  * seam the worker calls it through, so a test can substitute a fake without a
- * real inbox on disk, and `docs/handoffs-to-wp03.md`'s retry table has one
+ * real inbox on disk, and `https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/docs/handoffs-to-wp03.md`'s retry table has one
  * place to live.
  */
 import { isAbsolute, resolve } from 'node:path';

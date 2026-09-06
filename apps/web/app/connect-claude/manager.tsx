@@ -51,9 +51,10 @@ export function claudeSnippet(endpoint: string): string {
 
 /** Codex persists only the environment-variable name through its supported flag. */
 export function codexSnippet(endpoint: string): string {
+  const shellUrl = `'${endpoint.replaceAll("'", "'\\''")}'`;
   return [
     'codex mcp add openspell \\',
-    `  --url ${endpoint} \\`,
+    `  --url ${shellUrl} \\`,
     '  --bearer-token-env-var WIZARD_ADS_MCP_TOKEN',
   ].join('\n');
 }
@@ -122,7 +123,7 @@ export function ConnectClaudeManager({
   profiles: readonly McpProfileOption[];
   canManage: boolean;
   role: string;
-  endpoint: string;
+  endpoint: string | null;
 }): ReactNode {
   const [list, setList] = useState<Row[]>([...keys]);
   const [label, setLabel] = useState('');
@@ -301,7 +302,7 @@ export function ConnectClaudeManager({
           </div>
         )}
 
-        <div style={{ marginTop: '0.875rem', paddingTop: '0.125rem' }}>
+        {endpoint !== null ? <div style={{ marginTop: '0.875rem', paddingTop: '0.125rem' }}>
           <p className="wa-hint" style={{ margin: 0 }}>
             Set <code>WIZARD_ADS_MCP_TOKEN</code> privately before using either setup. These
             instructions contain the variable name only.
@@ -322,7 +323,12 @@ export function ConnectClaudeManager({
             copied={copiedId === 'codex'}
             onCopy={() => void copyText('codex', codexSnippet(endpoint))}
           />
-        </div>
+        </div> : (
+          <p className="wa-hint" data-testid="mcp-endpoint-unavailable">
+            AI connection unavailable. Ask your installation administrator to configure the MCP service.
+            You can still review and revoke existing keys here.
+          </p>
+        )}
 
         {list.length === 0 ? (
           <p className="wa-hint" style={{ marginTop: '0.75rem' }} data-testid="mcp-key-empty">
