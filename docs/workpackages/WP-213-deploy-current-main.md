@@ -7,6 +7,16 @@ Depends on: WP-207 postflight at 46 ledger versions; WP-216 merged; WP-208 merge
 `docs/HANDOVER.md` and `docs/STATUS.md` are edited here only after WP-207 has finished with
 them.
 
+## Readiness check, 2026-09-06
+
+Live web remains at `44da7ac`, independently confirmed through public health and Vercel's
+latest production deployment. Main `9672d93` includes the sidebar, brand and table improvements,
+but there is no up-to-date hosted preview. The next frontend review needs a tested candidate;
+merged UI source is not an available operator release. Keep the release scope explicit:
+a main-only candidate uses the completed WP-207 schema and WP-216 legacy fallback, whereas
+PR #141's write source additionally depends on the separately reviewed ten-migration window.
+Do not put the write branch on the hosted database before its schema prerequisites.
+
 ## Objective
 
 End the deployment drift: production web at the current main revision through a verified

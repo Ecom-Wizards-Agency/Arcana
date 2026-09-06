@@ -4,6 +4,17 @@
 
 ### Latest preparation checkpoint
 
+**Live frontend readiness independently checked:** public `/api/healthz` and the authenticated
+Vercel deployment health both return `44da7ac32e5a0503993e567c41aaccffd5c39b06`. Vercel lists the
+latest production deployment at 2026-08-30 16:09:49 UTC, with no newer hosted preview. Main is
+`9672d93`; PR #144's table changes and the earlier sidebar/brand changes are merged but not
+live. Only draft PR #141 is open. No write approval client page or direct-to-Amazon campaign creation screen
+has been added on the source branch. A finished inert transport slice is not marketer-release
+readiness. Evidence: `_local/frontend-readiness-2026-09-06.json` and the Vercel health response
+in `_local/frontend-readiness-health-2026-09-06.json`. These were read-only checks; no deployment,
+production setting or supervisor change occurred. The next reviewable frontend candidate and
+compatible release remain product priorities before WP-201–205.
+
 **SP creation transport implemented and tested:** shared prerequisite `1c53d80` lands before
 the inert `./sp-creation-adapter` export. `prepareNode` returns digest/positions without I/O;
 `executeOneAttempt` rejoins authority, declared scope against the frozen plan and exact recompiled request,
