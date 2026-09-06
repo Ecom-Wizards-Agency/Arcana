@@ -1,6 +1,9 @@
 # WP-218 — Sponsored Display creative attribution
 
-Owner: implementer, after WP-210 phase 2 and WP-213. Contract widening in `packages/shared`
+Owner: implementer. Run the read-only capability discovery early alongside the write-path
+repairs; SB activation is not a prerequisite for documentation research. The release requires
+both SD image and video insights. Implementation still depends on the verified provider grain
+and shared ingestion prerequisites from WP-210/WP-213. Contract widening in `packages/shared`
 is pre-approved by the manager as an additive change described below.
 
 ## Objective

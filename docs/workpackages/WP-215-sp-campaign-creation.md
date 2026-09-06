@@ -1,10 +1,36 @@
-# WP-215 — Sponsored Products campaign creation via API
+# WP-215 — SP, SB and SD campaign creation via API
 
 Owner: implementer. Starts only after WP-214 has proven one live write and its inverse.
 
-Depends on: decision D7 in `docs/workpackages/REPLAN-2026-09-05.md` (Sponsored Products
-only; Sponsored Brands and Sponsored Display deferred until the Asset Library client and SD
-observation reads exist).
+Operator decision, 2026-09-06: D7 now requires direct SP, all supported SB formats and SD
+creation, Amazon Asset Library selection and uploading the operator's own video. The old
+SP-only release boundary is superseded. SP remains the first vertical implementation;
+SB/SD and asset preparation are required follow-up slices in this package's release.
+
+## Required delivery slices
+
+1. Verify the per-profile format, objective, targeting and destination capability matrix from
+   pinned Amazon contracts and an authorized read-only probe. Cover SP automatic/manual,
+   SB manual/automatic collections, Store Spotlight and video with product-page/Store
+   destinations, and SD image/video. Unverified combinations stay explicit blockers.
+2. Implement the SP frozen-plan ledger, adapter, executor and approval/status contract below.
+3. Implement profile-scoped Asset Library search/read and own-video preparation. Stage uploads
+   in private Supabase Storage with scoped upload authorization. Only the worker calls Amazon
+   upload/register APIs. Expose processing, eligibility and moderation separately. A campaign
+   preview binds the eligible Amazon asset ID and version, never a transient upload URL.
+4. Implement each SB and SD adapter with matching eligibility, parent observation and response
+   correlation tests. Add supported shared contract variants before consumers when the verified
+   matrix requires them; the operator pre-approved this additive work. Do not infer full
+   coverage from the current enum or treat the legacy media client as the Asset Library.
+5. Expose campaign draft, recorded preview, approval and status contracts and synthetic fixtures
+   to Claude before client integration. Creation starts paused. Launch/pause is another exact
+   approved write through OpenSpell. Record creation and state changes in Time Machine;
+   pause/archive does not delete created resources.
+
+Each slice declares exact files before editing. Further migrations have their own reviewed
+scope and rehearsal; they do not join either existing hosted window without authorization.
+The final release requires creation and observation in Amazon for every supported format,
+including library selection and own-video upload. A generated export is not acceptance evidence.
 
 ## Objective
 
@@ -33,8 +59,9 @@ the preview says so and a pause proposal is a separate reviewed action.
 - `docs/deploy/campaign-creation-activation.md` (new);
 - this brief's close-out evidence for the current STATUS owner to integrate.
 
-Not owned: `packages/shared/src/campaign-creation.ts` (the contract from WP-125 is complete;
-stop and report on any needed change), `packages/campaigns` (pure planner stays export-capable).
+`packages/shared/src/campaign-creation.ts` remains authoritative; declare and verify any
+additive change before dependent implementations. `packages/campaigns` remains pure and
+export-capable; direct creation belongs to the application and worker, not the pure planner.
 
 ## Read first
 

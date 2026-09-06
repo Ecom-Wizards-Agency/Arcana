@@ -25,6 +25,30 @@ the MCP connection. Ordinary UI changes retain one exact-plan approval step.
 
 ## Owned files
 
+### Revised approval-screen handoff, 2026-09-06
+
+Codex owns `apps/web/src/writes/approval-loader.ts`, the read-only GET on the existing
+`apps/web/app/api/sp-writes/preview/route.ts`, the existing approve/status routes,
+`apps/web/src/writes/approval-fixtures.ts` and
+`apps/web/e2e/support/sp-write-preview.ts`. Add the authoritative recorded-preview shape to
+`packages/shared/src/sp-write-application.ts` before database/web consumers. It includes
+the immutable preview, current synchronized values, profile, freshness and prior admission;
+loading it never records a new plan, approval or outbox row.
+
+`apps/web/app/writes/[planId]/page.tsx` is Codex-owned server integration for forward and
+inverse review. It replaces the earlier unimplemented `recommendations/apply/[batchId]/page.tsx`
+reservation. Claude owns `apps/web/app/writes/[planId]/approval-screen.tsx` and its client
+tests. Land contracts and fixtures first; integrate the page once Claude's component exists.
+Keep Time Machine actor data and original/inverse links stable while Claude renders them.
+The approval-screen acceptance check remains unmet until the UI and browser flow pass.
+
+The repair slice also owns `apps/worker/src/store.ts`,
+`apps/worker/src/sp-write-outbox/composition.ts` and focused tests; the unhosted
+`20260905040000` migration and revision tests; approval retry query/test; Time Machine
+query/test; `eslint.config.js`, the write blast test, the DB test harness and
+`.github/workflows/ci.yml` and `turbo.json` test-environment forwarding. The trusted-kernel workflow and Claude's client/design files
+remain outside this scope.
+
 Source PR:
 
 - `packages/db/src/queries/authenticated-actor.ts` and tests (new; validated actor context,
@@ -32,7 +56,7 @@ Source PR:
 - `packages/db/src/sp-write-application.ts` and `packages/db/package.json` (explicit application
   subpath for plan/approval helpers; keep the persistence facade's existing export boundary);
 - `packages/db/src/queries/sp-write-plan-builder.ts` and test (new);
-- `apps/web/app/recommendations/apply/[batchId]/page.tsx` server loader and integration wiring;
+- `apps/web/app/writes/[planId]/page.tsx` server loader and integration wiring;
   the separate client component is Claude-owned, with props agreed before implementation;
 - `apps/web/app/api/sp-writes/**` (new routes: record plan, approve, status);
 - `apps/web/src/writes/**` (new server helpers, no `@wizard-ads/ads-api` import);
@@ -173,15 +197,21 @@ authorization for a second window containing these additional WP-214 migrations 
 | `20260905000000_sp_write_preview_evidence.sql` | Immutable reconstructable source and policy evidence |
 | `20260905010000_sp_write_preview_approval.sql` | Frozen-source checks around the existing approval function; tighter function permissions |
 | `20260905020000_sp_write_application_entry.sql` | Version-specific authenticated application approval entrypoint |
-| `20260905030000_sp_write_mirror_observations.sql` | Exact observation/diff links, keyword bid freshness and guarded mirror updates |
-| `20260905040000_recommendation_proposal_revisions.sql` | Immutable proposal revisions, atomic review decisions, frozen export revision identities and revision-aware preview validation |
+| `20260905030000_sp_write_mirror_observations.sql` | Exact observation/diff links and guarded mirror updates; builds a non-concurrent unique index on `entity_changes` and takes ACCESS EXCLUSIVE on `keywords` |
+| `20260905040000_recommendation_proposal_revisions.sql` | Immutable revisions and versioned review; takes ACCESS EXCLUSIVE on `recommendations` and revokes `authenticated` UPDATE |
 
 Each begins with `set local lock_timeout = '5s'` and the shared transaction-scoped advisory
-DDL lock. Keep changes in new migration files and preserve existing evidence. Rehearsal
+DDL lock. These unhosted files are corrected before their first application; applied migration
+bytes remain immutable. The second window is not purely additive behavior: it renames and
+revokes functions and permissions. Rehearse index-build duration, lock acquisition and the
+versioned application functions against the first window's resulting 46-file prefix. The
+reviewed bundle policy must pin all 56 files with exact bytes and digests. Rehearsal
 must cover the stricter approval behavior and mirror triggers as well as creation of new
 objects. The first four precede any web revision containing the native Time Machine
 queries; that existing page also reads their evidence tables. The fifth migration precedes
-deployment of the revised recommendation loader, review and export consumers. The versioned
+deployment of the revised recommendation loader, review and export consumers. Deploying the
+branch's web revision before `20260905040000` makes accept/dismiss fail with `42883`.
+The versioned
 application entry must exist before exposing approval. Every ordinary
 entity-sync owner must receive the keyword-mirror capability before enabling native writes.
 Do not mix this second window into WP-207 or use source tests as hosted-application evidence.

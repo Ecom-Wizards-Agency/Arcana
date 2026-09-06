@@ -1,5 +1,20 @@
 # OpenSpell repository overview for an external collaborator
 
+**Historical snapshot, superseded for write capabilities on 2026-09-06.** The inventories
+and read-only claims below describe `560d5e2`. Source PR #141 now includes UI preview,
+approval, status and inverse routes, operator-issued write keys, bounded MCP admission and
+native Time Machine projection. Source existence does not mean deployed or enabled.
+For current contracts and remaining gaps read
+[WP-214 application architecture](design/WP-214-APPLICATION-ARCHITECTURE.md),
+[WP-217](workpackages/WP-217-mcp-guarded-apply.md) and the
+[current replan](workpackages/REPLAN-2026-09-05.md).
+
+The write branch adds ten migrations, `20260905000000` through `20260906040000`, to
+the 46-file snapshot below. Its added routes are `/api/sp-writes/preview`,
+`/api/sp-writes/approve`, `/api/sp-writes/status`, `/api/sp-writes/inverse-preview`,
+`/api/recommendations/revise` and `/api/mcp-keys/write`. Use the appendix commands for
+the actual checkout inventory; the historical tables are not deployment evidence.
+
 Source snapshot: `560d5e2`, reviewed on 2026-09-05. Operational state below is reported
 historical evidence from `docs/HANDOVER.md` and `docs/STATUS.md`, not a fresh production audit.
 Appendix commands identify source inventories; WP-212 owns full reproducible table generation.
@@ -377,7 +392,7 @@ Command: `rg --files apps/web/app -g route.ts | sort | sed 's#^apps/web/app#- `#
 
 - Pages: `rg --files apps/web/app -g page.tsx | sort`
 - Job types: `sed -n '/JobType = z.enum/,/\]/p' packages/shared/src/jobs.ts`
-- MCP tools, including multiline calls: `rg -U -o "registerTool\(\s*'[a-z_]+'" apps/mcp/src/server.ts`
+- MCP tools, including multiline calls: `rg -U -o "registerTool\(\s*'[a-z_]+'" apps/mcp/src`
 - Table counts: `rg -c 'pgTable\(|\.table\(' packages/db/src/schema -g '*.ts'`
 - Selected env-name sources: `apps/web/env.TEMPLATE`, `apps/worker/src/config.ts`,
   `apps/mcp/src/config.ts`. These do not cover every imported runtime module or feature flag;

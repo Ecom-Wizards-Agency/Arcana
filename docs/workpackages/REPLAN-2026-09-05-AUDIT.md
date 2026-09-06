@@ -1,5 +1,50 @@
 # Re-plan audit and corrections, 2026-09-05
 
+## Implementation resumed, 2026-09-06
+
+Verified repairs in the current working tree:
+
+- Revision deletion: the new regression failed with `23503` before the fix. Cascading only
+  the recommendation-parent FK and allowing immutable DELETE only after organization removal
+  yields 10 passing revision/export tests. Direct mutation, live-parent deletion and truncate
+  remain refused; service-role organization purge removes all counted child rows and preserves
+  another organization's receipts.
+- Approval retry: the new real-database regression returned `outcome_unknown` instead of
+  `source_changed`. Mapping the retry error fixes it; all 11 approval tests pass, including
+  lost-commit/enqueue recovery and double-unknown behavior.
+- Worker composition: the factory now requires the actual configured `PostgresWorkerStore`
+  and uses its handle. Three construction tests and 21 loop tests pass, including a native bid
+  followed by a console edit and a repeated sync with no duplicate Time Machine history.
+- Required database: nine tests cover required/optional availability and sanitized failures.
+  Required mode is configured in CI and forwarded through Turbo's strict environment. Those
+  nine tests plus eight revision tests pass; the Turbo dry run confirms forwarding.
+
+These checks used disposable databases in a dedicated local PostgreSQL 17 container on
+loopback port 55439. The existing local Supabase role could connect but lacked `pg_authid`
+access required by the migration test platform. Its permissions were not changed. DB/worker
+typechecks and focused lint passed for the completed repairs; the new reader, web fixtures,
+Time Machine date fix and terminal-observation work remain in progress.
+
+The operator accepted the marketer-release plan, including direct SP/SB/SD campaign
+creation, Asset Library selection, own-video upload and frontend ownership by Claude.
+WP-201 through WP-205 remain parked unless a concrete dependency requires a narrow part.
+Source work continues on `wp-214-sp-write-source`; this request does not authorize a hosted
+migration or live Amazon operation.
+
+Merged main `3313a8a` at `26a557a` without conflicts or rebasing. This incorporates
+Claude's WP-207 without editing its implementation. PR #142 and PR #143 remain open at
+this checkpoint; Claude's worktrees are untouched.
+
+Both CI jobs passed source head `72358d3`: [check](https://github.com/Ecom-Wizards-Agency/openspell/actions/runs/33991605485/job/101374759480)
+and [Playwright](https://github.com/Ecom-Wizards-Agency/openspell/actions/runs/33991605485/job/101374759614).
+At that head, `loop.test.ts` has 20 tests and `mcp-history.test.ts` has 12. These historical
+results do not prove that Claude's newly identified failures have been fixed.
+
+One handover question is answerable from source: `app.defer_sp_write_outbox_claim` uses
+15, 30, 60, 120, 240 and then 300 seconds for every defer reason, including `shutdown`.
+Whether non-allowlisted work materially delays the pilot needs a scheduling regression.
+The hosted web role and current Amazon endpoint behavior remain unverified here.
+
 Original reviewed source: `560d5e2`. Original handoff commit: `1e62a92`. The audited handoff is
 `REPLAN-2026-09-05.md`. Documentation review used `wp-207-replan-audit`; authorized source work
 now continues on `wp-214-sp-write-source`. This document records meaningful implementation

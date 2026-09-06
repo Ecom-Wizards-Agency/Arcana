@@ -1,5 +1,10 @@
 # WP-217 — MCP-triggered guarded apply under bounded delegation
 
+Operator decision, 2026-09-06: do not impose an arbitrary global policy ceiling on
+`McpBidLimits.maximumRowsPerUtcDay`. The operator chooses a finite daily allowance when
+issuing the key. Per-call limits, bid-delta bounds, profile scope and the 90-day expiry
+remain enforced. This decision does not remove daily accounting or grant unlimited authority.
+
 Owner: implementer. Source design can follow WP-214's application contract; activation requires its
 proven direct Amazon write and inverse. Claude Fable 5.1 owns any key-management UI design.
 
