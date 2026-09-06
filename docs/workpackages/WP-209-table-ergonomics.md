@@ -350,4 +350,63 @@ read-only preview scope":
 4. nothing else in that file depends on the table's markup; the checkbox roles, testids and
    accessible names are unchanged.
 
+#### Slice 3 review fixes
+
+The slice 3 review returned one high finding outside the owned files, one medium inside them
+and four low. Fixed here, each with the command that proved it:
+
+- **Absent is not zero on an ineligible campaign** (medium,
+  `apps/web/app/optimizer/campaign-workspace.tsx`, `packages/ui/src/DataGrid.tsx`). The
+  campaign-name subline chose between the ineligibility reason and the no-activity note, so a
+  campaign that is both — a paused Sponsored Brands campaign Amazon reported nothing for —
+  lost the note entirely and read as `$0.00` spend, `$0.00` sales and `0` orders it never
+  measured. Both notes now render, and spend, spend change, sales, ACOS and orders read `—`
+  for a campaign with `currentRows === 0`, which is what the table this replaced showed. The
+  grid supports that without the host reimplementing money, ratios or the empty marker: a
+  `renderCell` override may return `undefined` for a row it has nothing to say about and the
+  grid draws its own cell. Group and totals rows are untouched — summing an absent row adds
+  nothing — and the override still reaches source rows only. Tests: `packages/ui`
+  "lets a cell override speak for one row and leaves every other row to the formatter"
+  (reverted `DataGrid.tsx`: `expected '' to match /^\$[\d,]+\.\d\d$/`) and `apps/web`
+  "keeps both notes on an ineligible campaign that reported nothing and prints no zero it
+  never measured" (reverted `campaign-workspace.tsx`: `expected 'Synthetic campaign 02Only
+  Sponsored P…' to contain 'No activity in this period'`, with the received text showing the
+  `$0.00 -100.0% $0.00 — 0` row the review described).
+- **Select-all assertion strengthened** (low, `campaign-workspace.test.ts`). `checked ||
+  disabled` was satisfiable by a window of disabled, unchecked boxes. It now names the exact
+  population: every enabled box in the window is checked and the checked count equals the
+  enabled count. Proved against a mutant that disables and unchecks every row checkbox — the
+  new assertion fails at `expected 0 to be greater than 0`, while the old one passed that
+  line and only failed several assertions later.
+- **Escape is now a decision, not an inherited default** (low). The brief's keyboard contract
+  (item 11) makes Escape clear the selection, and on this workspace `Clear selected` has
+  always owned the whole transient set including campaigns no filter shows. New test "clears
+  the whole selection on Escape in the grid, hidden campaigns included" pins exactly that: 12
+  selected, filter narrowed to one row, Escape on that row clears all 12.
+- **Stale pagination wording** (`campaign-workspace.tsx`): the selection note said
+  "Selections outside the current page or filters remain selected" on a surface that no
+  longer has pages; it now reads "Selections hidden by the current filters remain selected".
+  No test or spec asserted the old sentence.
+- **`GridViewport` measured fill** (low, not changed here, deferred to slice 4 with the
+  component). The review is right that `viewportHeight - (rect.top + scrollY) - bottomGap`
+  can only ever resolve to the floor on a page whose grid starts below the fold, so the
+  optimizer grid claims the window only in fullscreen. The fix the review proposes —
+  measuring viewport-relative `rect.top` — only changes anything if the measurement is
+  re-run on scroll, which makes the document's height change as the operator scrolls into
+  the grid and needs checking at real viewport sizes on all four surfaces. Slice 4 reuses
+  this component for recommendations and n-grams; it belongs there, with an e2e that
+  measures the gap below the grid rather than a unit test that cannot see layout.
+
+Outside the owned files, reported and not fixed (unchanged from the list above):
+`apps/web/e2e/optimization-groups.spec.ts` (still red, edits listed above),
+`apps/web/app/optimizer/loading.tsx` (still the shared 84rem `tokens.page` measure while the
+loaded page is full width, so the route flashes a narrow column) and the now-dead
+`.wa-optimizer-campaigns__tablewrap`, `__pagination` and `__empty` rules in
+`apps/web/src/ui/theme.css`.
+
+Evidence on the fixed tree: `pnpm typecheck` 22 of 22, `pnpm lint`, `pnpm hygiene` and
+`git diff --check` clean; `packages/ui` 204 of 204 functional tests; `apps/web` `vitest run`
+673 passed with the one known `verifier-subprocess` load flake, which passes 3 of 3 in
+isolation; `app/optimizer` 27 of 27.
+
 Remaining tables inventory is still due in slice 5's close-out.
