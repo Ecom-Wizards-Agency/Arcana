@@ -250,3 +250,104 @@ ownership registry `apps/web/src/e2e-suite-registry.ts` declares `expectedTests:
 the contract now understates the suite. The owner of `apps/web/src/e2e-suite-registry*.ts`
 should set `auth` to `expectedTests: 5` and move the registry test's `EXPECTED_REGISTRY` entry
 and its conserved total from 75 to 76, as `01f557c` did for the sidebar spec.
+
+### Slice 3: Campaign Optimizer table
+
+The surface in the operator's recording, converted to the Data Grid.
+
+- **No pagination** (`apps/web/app/optimizer/campaign-workspace.tsx`). `CAMPAIGNS_PER_PAGE`,
+  the page state, the page-reset effect and the pager are gone. The grid holds the whole
+  campaign set the loader already returns and the DOM holds one viewport of it.
+- **Click-to-sort on every data column**, shift-click to add a key, through the same
+  `toggleSort` the grid has always used. Default order is spend descending, which is the
+  order the loader's SQL already produced.
+- **Drag-to-group** through the slice-2 `GroupBar`, wired to the workspace's own `groupBy`
+  state; nesting recomputes ACOS from summed bases at each level.
+- **Full width** (`apps/web/app/optimizer/page.tsx`): the page no longer uses the shared
+  84rem `tokens.page` measure. `GridViewport` supplies the flex column and a fullscreen
+  toggle, plus a density select. The measured fill always resolves to its floor here — the
+  table starts below the tile row and the trend chart — so the floor is an explicit 560,
+  and fullscreen is the gesture that gives the table the whole screen.
+- **Selection preserved exactly.** `selectedCampaignIds` is still the whole transient set
+  and still lives in this component: the header checkbox owns the complete *filtered
+  eligible* population rather than the rendered rows, narrowing or widening a filter never
+  touches what is selected, `Clear selected` clears the whole set including hidden rows,
+  the counts and the explicit all-eligible-versus-selected radio pair are unchanged, and
+  the preview scope, idempotency key, polling and observation deadline are untouched. The
+  grid's own Space key routes through `applyGridSelection`, which drops any id whose
+  campaign is not selectable, so the checkbox and the keyboard cannot disagree.
+
+New in `packages/ui`, because a checkbox column is a column on screen and nothing in the
+data: `ColumnKind` gains `control`. A control column carries no `aria-sort`, no tab stop,
+no hover hint, no sort gesture and no drag payload; `GridCell` renders it empty; the totals
+row skips it when placing its population label; and `DataGrid.renderCell` / `renderHeader`
+let the host draw it. Overrides apply to source rows only, so a group row keeps its
+group-header cell and the totals row keeps the formatter.
+
+Two deliberate model decisions:
+
+- Rows carry base sums and `comparison: null`. The campaign loader
+  (`apps/web/app/_lib/optimizer-campaigns.ts`, not owned here) returns prior-window *spend*
+  and no other prior base sum, so a `comparison` row would need five invented zeros. The
+  spend change ships instead as a per-campaign `spend_change` dimension, and a group row
+  shows `—` for it, which is the truth.
+- `currentRows === 0` reads as "No activity in this period" under the campaign name rather
+  than as a zero, keeping the old table's distinction between absent and zero.
+
+Evidence:
+
+- `packages/ui`: 203 of 203 functional tests (`vitest run --exclude src/pipeline.perf.test.ts`),
+  one new — `DataGrid.interaction.test.tsx` "gives a control column host-rendered cells, no
+  sort ordering, and no totals label". Run with the change reverted it fails with
+  `expected 'none' to be null` (the control header still advertised `aria-sort`).
+- `apps/web`: 672 of 672 (`vitest run`, local disposable Postgres 17). `app/optimizer` is 25
+  of 25, seven of them rewritten or new. Two targeted before/after proofs: the new
+  "renders every campaign in one continuous scroll with no pagination control" fails against
+  the pre-slice component with `expected '…' not to contain 'Page 1 of'` (25 rows and a
+  pager); "refuses the grid keyboard a selection an ineligible campaign could never have"
+  fails with `expected '1 campaign selected…' to contain 'No campaigns selected'` when the
+  `selectable` guard in `applyGridSelection` is removed.
+- e2e `auth` suite (`pnpm --filter @wizard-ads/web test:e2e:auth`): 6 of 6, the sixth being
+  the new optimizer walk-through of the recording — full width, no pager, a scroll that
+  reaches the cheapest of forty campaigns, the Spend header's descending/ascending/off
+  cycle, `State` dragged into the group bar and `Bid strategy` nested under it, then the
+  header checkbox taking all thirty eligible campaigns matching a name filter and keeping
+  them when the filter is cleared. Against the pre-slice component it fails immediately on
+  the missing `grid-viewport`. `apps/web/src/e2e-suite-registry.ts` moves `auth` to
+  `expectedTests: 6` and the conserved total from 76 to 77, per the ratified exception.
+- `pnpm typecheck` (22 of 22), `pnpm lint`, `pnpm hygiene` (clean) and `git diff --check`
+  clean. Screenshots at 1440x900 before and after are with the coordinator, untracked.
+
+Performance, same invocation and environment as slices 1 and 2
+(`vitest run src/pipeline.perf.test.ts --maxWorkers=1`, three runs; one-minute load average
+4.4 falling to 4.2, which is higher than the earlier slices' 0.5–2.2):
+
+| Run | Line 158 best-of-5 (budget 125 ms) | Other nine assertions |
+|---|---|---|
+| slice 3, run 1 | 153.3 ms | pass |
+| slice 3, run 2 | 154.8 ms | pass |
+| slice 3, run 3 | 156.0 ms | pass |
+
+Line 158 remains the pre-existing failure inside the slice 1 and 2 range (144.6 to 160.9 ms).
+This slice touched neither `pipeline.ts` nor `filter-options.ts`; the threshold was not changed.
+
+**Required edit outside this package's owned files** (reported, not made):
+`apps/web/e2e/optimization-groups.spec.ts` asserts the pagination this slice removed and now
+fails. Confirmed by running the suite: 1 passed, 1 failed at line 72,
+`expect(page.getByText('1–25 of 56', { exact: true })).toBeVisible()` — element not found.
+Its owner needs four edits in "selects filtered campaigns across pages and polls the exact
+read-only preview scope":
+
+1. line 72 — replace the page-window text with the workspace's count, which now reads
+   `56 of 57 campaigns` (the tenant fixture's own campaign is the 57th):
+   `await expect(page.locator('.wa-optimizer-campaigns__shown')).toHaveText(...)`.
+2. lines 84, 108 and 112 — the three `Next →` clicks have no successor control. Reaching a
+   campaign that is not currently rendered is either a scroll of
+   `page.getByTestId('grid-scroller')` or, more robustly, typing that campaign's name into
+   `Find campaign`; the surrounding assertions about selection surviving a narrowed filter
+   already work that way.
+3. line 72's `1–25` framing in the test name ("across pages") is now "across a filter".
+4. nothing else in that file depends on the table's markup; the checkbox roles, testids and
+   accessible names are unchanged.
+
+Remaining tables inventory is still due in slice 5's close-out.
