@@ -14,7 +14,8 @@
     "./time-machine-writes": "./src/time-machine-writes.ts",
     "./recommendation-revisions": "./src/recommendation-revisions.ts",
     "./mcp-writes": "./src/mcp-writes.ts",
-    "./asset-library": "./src/asset-library.ts"
+    "./asset-library": "./src/asset-library.ts",
+    "./campaign-creation-approval": "./src/campaign-creation-approval.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

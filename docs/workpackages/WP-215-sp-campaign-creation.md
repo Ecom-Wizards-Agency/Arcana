@@ -9,6 +9,22 @@ creation, Amazon Asset Library selection and uploading the operator's own video.
 SP-only release boundary is superseded. SP remains the first vertical implementation;
 SB/SD and asset preparation are required follow-up slices in this package's release.
 
+## Campaign frontend contract scope, 2026-09-06
+
+The [campaign review design](../design/WP-215-CAMPAIGN-REVIEW.md) selects a pure projection
+of already recorded inputs until a real authenticated reader exists. Codex owns the new
+`packages/shared/src/campaign-creation-approval.ts` and test, explicit package subpath, and
+`apps/web/src/campaigns/creation-approval-loader.ts`, its test and
+`creation-approval-fixtures.ts`. Claude owns the future client. No route/page or browser
+registry edit is reserved by this slice.
+
+The authoritative plan remains intact, including all SB/SD payload variants. Current checks
+are dated advisory evidence; missing selected-version assets and unknown admission cannot
+appear as ready or never approved. Saved guardrail/provenance metadata is currently absent
+and shown as such. There is no executable confirmation action in this rendering foundation.
+Shared schemas land first; projection/fixtures follow. Persistence, actual read authorization,
+approval/status routes, browser confirmation and live checks remain required delivery work.
+
 ## Latest observation implementation, 2026-09-06
 
 The [SP observation design](../design/WP-215-SP-OBSERVATION.md) compares three independent

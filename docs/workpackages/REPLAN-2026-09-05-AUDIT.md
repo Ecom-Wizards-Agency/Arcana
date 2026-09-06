@@ -4,6 +4,31 @@
 
 ### Latest preparation checkpoint
 
+**Campaign review shared prerequisite:** three independent candidates were compared in
+`_local/campaign-approval-design/`. The selected design is a pure projection of an already
+loaded snapshot, avoiding an artificial database reader while campaign persistence is absent.
+The new shared contract retains canonical plan payloads, exact node/check and asset coverage,
+source timestamps, scope, and distinct none/unavailable/recorded admission. It validates full
+receipt and execution joins before a future browser projection strips worker artifacts.
+Guardrails, provenance and the frozen profile label are explicitly not recorded by current
+plans. No `canApprove` flag, generated approval, executable action URL or provider call is added.
+Shared validation and web projection do not prove actual database membership or snapshot isolation.
+The web consumer and fixtures follow the shared contract commit; real reader/routes remain pending.
+
+Review corrected four evidence problems: legacy asset scope was unverifiable, a video could
+receive image metadata and remain current, a new check could lend freshness to old asset
+processing evidence, and library metadata could carry an unsupported moderation badge.
+Legacy asset observations now require a new scoped plan; exact purpose/type and observation
+event binding govern freshness; library moderation is always unknown. Five initial test cases
+failed, including one malformed legacy fixture which was corrected to its historical purpose.
+Private probes independently reproduced and rechecked the scope/type cases. A final timestamp
+test accepts equivalent UTC spellings without conflating sub-millisecond events.
+**228 shared tests**, **22 workspace typechecks** and focused lint pass. Evidence under
+`_local/campaign-approval-design/`: `review-regressions-before.log`, `shared-tests-final.log`
+(the legacy fixture failure), `shared-tests-rechecked.log`, `workspace-typecheck.log`,
+`source-authority-review-results-fixed.json` and `presentation-implementation-review.md`.
+No real reader, UI submission, deployment or provider eligibility is proven by these tests.
+
 **SP exact creation observation consumer implemented:** `observeNode` on the existing inert
 adapter validates the plan, approval receipt, observation job, historical admission and exact
 recompiled request before token/provider I/O. It performs one exact-ID list request for any of
