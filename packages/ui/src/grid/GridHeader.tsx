@@ -17,12 +17,18 @@
  * Headers are in the tab order. Enter and Space sort exactly as a click does,
  * with Shift adding a key, so `aria-sort` is reachable by the people it is
  * announced to. Keys on the pin button or the resize handle stay theirs.
+ *
+ * A control column (a selection checkbox, a row action) is none of that: it has
+ * no value, so it carries no `aria-sort`, no sort gesture, no hover hint and no
+ * drag payload, and its host renders the header content through `renderHeader`.
+ * Advertising an ordering a column cannot produce is the bug this prevents.
  */
 import { useCallback, useState } from 'react';
 import type { ReactNode } from 'react';
 import { flexRender } from '@tanstack/react-table';
 import type { Column } from '@tanstack/react-table';
 import type { GroupedRow } from '../aggregate.js';
+import { isSortableColumn } from '../columns.js';
 import type { GridColumn } from '../columns.js';
 import { formatValue } from '../format.js';
 import type { FormatContext } from '../format.js';
@@ -56,6 +62,8 @@ export interface GridHeaderProps {
   onWidthChange?: ((columnId: string, width: number) => void) | undefined;
   onPinChange?: ((columnId: string, pinned: boolean) => void) | undefined;
   onReorder?: ((columnId: string, beforeColumnId: string | null) => void) | undefined;
+  /** Header content by column id, for the control columns the host owns. */
+  renderHeader?: Readonly<Record<string, () => ReactNode>> | undefined;
   environment: GridCellEnvironment;
 }
 
@@ -69,6 +77,7 @@ export function GridHeader({
   onWidthChange,
   onPinChange,
   onReorder,
+  renderHeader,
   environment,
 }: GridHeaderProps): ReactNode {
   const [dragging, setDragging] = useState<string | null>(null);
@@ -97,36 +106,47 @@ export function GridHeader({
     <div style={headerRow} role="row">
       {leafColumns.map((column) => {
         const definition = columns.find((candidate) => candidate.id === column.id);
-        const rule = sort.find((entry) => entry.columnId === column.id);
+        const sortable = definition === undefined || isSortableColumn(definition);
+        const rule = sortable ? sort.find((entry) => entry.columnId === column.id) : undefined;
         const isPinned = column.getIsPinned() === 'left';
+        const custom = renderHeader?.[column.id];
         return (
           <div
             key={column.id}
             role="columnheader"
             aria-label={definition?.header ?? column.id}
-            aria-sort={rule === undefined ? 'none' : rule.direction === 'asc' ? 'ascending' : 'descending'}
+            {...(sortable
+              ? {
+                  'aria-sort': (rule === undefined
+                    ? 'none'
+                    : rule.direction === 'asc'
+                      ? 'ascending'
+                      : 'descending') as 'none' | 'ascending' | 'descending',
+                  tabIndex: 0,
+                  onClick: (event: React.MouseEvent) => handleHeaderClick(column.id, event),
+                  onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) =>
+                    handleHeaderKeyDown(column.id, event),
+                  draggable: true,
+                  onDragStart: (event: React.DragEvent) => {
+                    writeDragPayload(event.dataTransfer, COLUMN_DRAG_TYPE, column.id);
+                    if (definition?.kind === 'dimension') {
+                      writeDragPayload(event.dataTransfer, DIMENSION_DRAG_TYPE, column.id);
+                    }
+                    setDragging(column.id);
+                  },
+                  onDragEnd: () => setDragging(null),
+                  onDragOver: (event: React.DragEvent) => {
+                    if (onReorder !== undefined) event.preventDefault();
+                  },
+                  onDrop: () => {
+                    if (dragging !== null && dragging !== column.id) onReorder?.(dragging, column.id);
+                    setDragging(null);
+                  },
+                }
+              : {})}
             title={definition?.description}
-            tabIndex={0}
-            onClick={(event) => handleHeaderClick(column.id, event)}
-            onKeyDown={(event) => handleHeaderKeyDown(column.id, event)}
             onMouseEnter={() => setHovered(column.id)}
             onMouseLeave={() => setHovered((current) => (current === column.id ? null : current))}
-            draggable
-            onDragStart={(event) => {
-              writeDragPayload(event.dataTransfer, COLUMN_DRAG_TYPE, column.id);
-              if (definition?.kind === 'dimension') {
-                writeDragPayload(event.dataTransfer, DIMENSION_DRAG_TYPE, column.id);
-              }
-              setDragging(column.id);
-            }}
-            onDragEnd={() => setDragging(null)}
-            onDragOver={(event) => {
-              if (onReorder !== undefined) event.preventDefault();
-            }}
-            onDrop={() => {
-              if (dragging !== null && dragging !== column.id) onReorder?.(dragging, column.id);
-              setDragging(null);
-            }}
             style={headerCellStyle(
               column.getSize(),
               definition,
@@ -134,7 +154,9 @@ export function GridHeader({
             )}
           >
             <span style={headerStackStyle(definition)}>
-              <span style={headerLabel}>{flexRender(column.columnDef.header, {} as never)}</span>
+              <span style={headerLabel}>
+                {custom === undefined ? flexRender(column.columnDef.header, {} as never) : custom()}
+              </span>
               {rule === undefined || definition?.kind !== 'metric' || totalsRow === null ? null : (
                 <span
                   data-testid={`sorted-column-aggregate-${column.id}`}
@@ -144,7 +166,7 @@ export function GridHeader({
                 </span>
               )}
             </span>
-            {rule === undefined ? (
+            {!sortable ? null : rule === undefined ? (
               hovered === column.id ? (
                 // The affordance that says "this sorts": shown on hover only,
                 // so a resting header row stays a row of names.

@@ -51,8 +51,25 @@ export const ENTITY_LABELS: Record<EntityLevel, string> = {
   placements: 'Placements',
 };
 
-export type ColumnKind = 'dimension' | 'metric';
+/**
+ * What a column *is*, which decides what may be done to it.
+ *
+ * `control` is the third kind because a selection checkbox and a row action are
+ * columns on screen and nothing at all in the data: they have no value to sort
+ * by, group on, total or export. Making that a kind rather than a flag is what
+ * stops a selection header from ever advertising `aria-sort` -- the header
+ * cannot offer an ordering it has no accessor for.
+ */
+export type ColumnKind = 'dimension' | 'metric' | 'control';
 export type FilterKind = 'numeric' | 'text' | 'categorical';
+
+/**
+ * Whether a header may sort. Control columns carry no value, so they never do;
+ * every other column does.
+ */
+export function isSortableColumn(column: GridColumn): boolean {
+  return column.kind !== 'control';
+}
 
 export interface GridColumn {
   id: string;

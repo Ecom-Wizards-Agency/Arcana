@@ -252,6 +252,8 @@ export function headerCellStyle(
   return {
     ...headerCell,
     width,
+    // A control header does not sort, so it must not offer a sort cursor.
+    ...(definition?.kind === 'control' ? { cursor: 'default' } : {}),
     justifyContent: definition?.align === 'right' ? 'flex-end' : 'flex-start',
     ...sticky(pinned, 3, tokens.color.surfaceAlt),
   };

@@ -13,6 +13,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { DataGrid } from './DataGrid.js';
 import type { DataGridProps } from './DataGrid.js';
 import { columnsFor } from './columns.js';
+import type { GridColumn } from './columns.js';
 import { syntheticSearchTermRows } from './fixtures.js';
 import { COLUMN_DRAG_TYPE, DIMENSION_DRAG_TYPE } from './grouping.js';
 import { buildGridModel } from './pipeline.js';
@@ -301,6 +302,57 @@ describe('DataGrid header affordances', () => {
     // The pin button lives inside the header; its Enter is a click on it, not a sort.
     fireEvent.keyDown(screen.getByRole('button', { name: 'Pin ACOS' }), { key: 'Enter' });
     expect(onSortChange).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives a control column host-rendered cells, no sort ordering, and no totals label', () => {
+    const onSortChange = vi.fn();
+    const control: GridColumn = {
+      id: 'select',
+      header: 'Select',
+      kind: 'control',
+      scale: 'text',
+      align: 'left',
+      width: 44,
+    };
+    const rows = syntheticSearchTermRows(6, { seed: 20260906 });
+    const model = buildGridModel(rows, { sort: [{ columnId: 'spend', direction: 'desc' }] });
+    render(
+      <DataGrid
+        model={model}
+        columns={[control, ...visible]}
+        currencyCode="USD"
+        sort={[{ columnId: 'spend', direction: 'desc' }]}
+        onSortChange={onSortChange}
+        height={VIEWPORT.height}
+        initialRect={VIEWPORT}
+        renderHeader={{ select: () => <input aria-label="Select all rows" type="checkbox" /> }}
+        renderCell={{
+          select: (row) => <input aria-label={`Select ${row.id}`} type="checkbox" />,
+        }}
+      />,
+    );
+
+    // The header is the host's, and it offers no ordering: no aria-sort, no
+    // tab stop, no hover hint, and a click sorts nothing.
+    const header = screen.getByRole('columnheader', { name: 'Select' });
+    expect(header.getAttribute('aria-sort')).toBeNull();
+    expect(header.getAttribute('tabindex')).toBeNull();
+    expect(within(header).getByLabelText('Select all rows')).toBeTruthy();
+    fireEvent.mouseEnter(header);
+    expect(within(header).queryByTestId('sort-hint-select')).toBeNull();
+    fireEvent.click(header);
+    fireEvent.keyDown(header, { key: 'Enter' });
+    expect(onSortChange).not.toHaveBeenCalled();
+
+    // Every source row carries the host's control, and the totals row names
+    // its population in the first column that has data, not under a checkbox.
+    expect(screen.getAllByRole('checkbox', { name: /^Select st-/ })).toHaveLength(6);
+    const totals = screen.getAllByRole('row')
+      .find((row) => row.textContent?.includes('Total · 6 rows'));
+    expect(totals).toBeTruthy();
+    const totalCells = totals === undefined ? [] : within(totals).getAllByRole('cell');
+    expect(totalCells[0]?.textContent).toBe('');
+    expect(totalCells[1]?.textContent).toBe('Total · 6 rows');
   });
 
   it('shows a sort hint on hover for an unsorted header and the direction when sorted', () => {

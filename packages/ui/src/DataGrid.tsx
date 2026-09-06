@@ -33,6 +33,16 @@
  * Escape clears it, and Left/Right collapse and expand a group. Selection is
  * the caller's state (`selectedRowIds` / `onSelectionChange`) so a bulk action
  * bar and this grid can never disagree about what is selected.
+ *
+ * ## Host-rendered cells
+ *
+ * `renderCell` and `renderHeader` are how a workspace puts a checkbox, a link
+ * or a decision button in a column without this package learning about
+ * campaigns, proposals or n-grams. They are keyed by column id and apply to
+ * source rows only: a group row keeps the group-header cell, and the totals row
+ * keeps the formatter, so an override can never make a cell and its total
+ * disagree. A column that exists only to hold one is `kind: 'control'`, which
+ * is also what takes its header out of the sort contract.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
@@ -93,6 +103,13 @@ export interface DataGridProps {
   rowHeight?: number;
   /** Test seam: react-virtual measures a real element, jsdom has none. */
   initialRect?: { width: number; height: number };
+  /**
+   * Cell content by column id, for source rows only. Use it for controls the
+   * grid cannot know about; leave a value column to the formatter.
+   */
+  renderCell?: Readonly<Record<string, (row: GridRow) => ReactNode>>;
+  /** Header content by column id. Pairs with `renderCell` for control columns. */
+  renderHeader?: Readonly<Record<string, () => ReactNode>>;
   /** Shown when a filter matched nothing. Not the same as having no rows at all. */
   emptyMessage?: string;
   /** Shown when the period itself produced no rows. */
@@ -119,6 +136,8 @@ export function DataGrid({
   density = DEFAULT_DENSITY,
   rowHeight,
   initialRect,
+  renderCell,
+  renderHeader,
   emptyMessage = 'No rows match this filter.',
   noDataMessage = 'Nothing was reported at this level for this period. Amazon omits zero-impression rows, so this is either a period with no activity or a report that has not loaded — the freshness banner says which.',
 }: DataGridProps): ReactNode {
@@ -210,15 +229,23 @@ export function DataGrid({
 
   const columnDefs = useMemo<ColumnDef<GridRow, unknown>[]>(
     () =>
-      columns.map((column) =>
-        helper.accessor((row) => resolveField(row, column.id), {
+      columns.map((column) => {
+        const override = renderCell?.[column.id];
+        return helper.accessor((row) => resolveField(row, column.id), {
           id: column.id,
           header: column.header,
           size: column.width,
-          cell: (info) => <GridCell row={info.row.original} column={column} {...environment} />,
-        }),
-      ) as ColumnDef<GridRow, unknown>[],
-    [columns, environment],
+          cell: (info) => {
+            const row = info.row.original;
+            // A group row is an aggregate of many source rows; a checkbox or a
+            // link on one would have to pick a member arbitrarily, so the
+            // override is offered source rows only.
+            if (override !== undefined && !isGroupedRow(row)) return override(row);
+            return <GridCell row={row} column={column} {...environment} />;
+          },
+        });
+      }) as ColumnDef<GridRow, unknown>[],
+    [columns, environment, renderCell],
   );
 
   const pinnedIds = useMemo(
@@ -412,6 +439,7 @@ export function DataGrid({
             onWidthChange={onWidthChange}
             onPinChange={onPinChange}
             onReorder={onReorder}
+            renderHeader={renderHeader}
             environment={environment}
           />
 

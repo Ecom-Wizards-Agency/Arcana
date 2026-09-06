@@ -3,7 +3,9 @@
 /**
  * One cell.
  *
- * Four shapes, in precedence order: a group-header cell (the collapse toggle,
+ * A control column is empty here by construction; its host supplies the
+ * checkbox or action through `DataGrid`'s `renderCell`, and only for source
+ * rows. Otherwise four shapes, in precedence order: a group-header cell (the collapse toggle,
  * the branch marker and the row count), a suggested-bid median over its range,
  * a delta coloured by the metric's `better` direction, and the plain formatted
  * value. The same component renders the totals row and the aggregate beneath a
@@ -43,6 +45,11 @@ export interface GridCellProps extends GridCellEnvironment {
 }
 
 export function GridCell({ row, column, context, collapsedGroupIds, onToggleGroup }: GridCellProps): ReactNode {
+  // A control column has no value anywhere: not on a source row, not on a
+  // group, not in the totals. Formatting its absent field would print `—` in
+  // the totals row under a checkbox, which reads as a figure that failed.
+  if (column.kind === 'control') return null;
+
   const value = resolveField(row, column.id);
   const ref = parseFieldId(column.id);
 

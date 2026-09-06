@@ -3,9 +3,11 @@
 /**
  * The totals row, stuck directly beneath the header.
  *
- * Its first cell names the population the totals describe -- source rows when
- * grouped, shown rows otherwise -- so an operator reading a grouped total is
- * never left guessing whether hierarchy rows were counted. Every other cell is
+ * Its first cell that carries data names the population the totals describe --
+ * source rows when grouped, shown rows otherwise -- so an operator reading a
+ * grouped total is never left guessing whether hierarchy rows were counted. A
+ * control column is skipped for that label: a 44-pixel selection column would
+ * clip "Total · 1,204 rows" to "Tot". Every other cell is
  * the totals row through `GridCell`, so ratios come out of `metrics.ts` and are
  * recomputed from summed bases here as everywhere.
  */
@@ -37,12 +39,15 @@ export function GridTotals({
   locale,
   environment,
 }: GridTotalsProps): ReactNode {
+  const labelColumnId = leafColumns.find(
+    (column) => columns.find((candidate) => candidate.id === column.id)?.kind !== 'control',
+  )?.id;
   return (
     <div style={totalsRow} role="row">
       {leafColumns.map((column) => {
         const definition = columns.find((candidate) => candidate.id === column.id);
         const isPinned = column.getIsPinned() === 'left';
-        const isFirst = column === leafColumns[0];
+        const isFirst = column.id === labelColumnId;
         return (
           <div
             key={column.id}
