@@ -111,9 +111,22 @@ identity and moderation repairs are implemented in source. Nine regressions fail
 initial repair; review then reproduced three more failures covering terminal dispositions and
 delayed reads. All 199 shared tests and 22 workspace typechecks now pass. The first typecheck
 found a tuple-union `includes` narrowing error; using the existing predicate style corrected it.
-The inert observation adapter and matcher remain the next implementation step. Regressions cover
+The inert observation adapter and matcher are implemented. Prerequisite regressions cover
 parent refresh/conflict after admission, conflict before admission, non-advancing history,
-late response reconciliation, exact identity and latest-only counts. The consumer then requires
+late response reconciliation, exact identity and latest-only counts. The consumer passes
 all nine endpoint/settings tests, partial pages, malformed/numeric IDs, precise money, mutable
-inputs, after-expiry reads and no create retry. Neither this design nor the local frontend demo
-claims those pending consumer or live workflows are complete.
+inputs, after-expiry reads and no create retry. All 652 Ads API tests, 22 workspace typechecks
+and focused lint pass. Protocol review reproduced malformed predicates being observed and
+invalid added controls being classified as conflicts; eight assertions failed before repair.
+Distinct positive/negative predicate domains and bounds, exact placement integer/range checks
+and conservative optional controls correct those cases. The independent reviewer rechecked
+the corrected surface. A separate authority review found no material bypass in its bounded probes.
+
+A partially understood row remains pending even when another field differs; per-field
+diagnostics are a future audit concern. The private JSON parser is shared with the existing
+create decoder without broadening package exports. The original request is recompiled in
+committed-evidence mode without deleting an intent or fabricating pending dispatch.
+
+Read-attempt audit evidence, durable claim/evidence transactions, runtime credential provenance,
+ledger/executor integration and live workflows remain pending. Neither this source slice nor
+the local frontend demo claims those release requirements are complete.

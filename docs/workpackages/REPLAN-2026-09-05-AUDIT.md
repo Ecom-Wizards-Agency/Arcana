@@ -4,6 +4,36 @@
 
 ### Latest preparation checkpoint
 
+**SP exact creation observation consumer implemented:** `observeNode` on the existing inert
+adapter validates the plan, approval receipt, observation job, historical admission and exact
+recompiled request before token/provider I/O. It performs one exact-ID list request for any of
+the nine supported SP resources, includes all states and verifies the singleton/count/page
+envelope. Required missing fields, malformed IDs/numbers/JSON and unsupported optional controls
+stay pending. Exact settings, parent identities, inherited versus explicit bids and dates are
+compared without rounding provider numeric tokens. Reads may continue after write expiry;
+unknown moderation/delivery stay unknown. No failed read or absent resource permits recreation.
+
+Independent protocol review reproduced invalid/oversized resolved predicates being observed
+and malformed added controls being called a confirmed conflict. Eight regression assertions
+failed before correction. Positive/negative read predicates now use their distinct pinned enums
+and bounds; placements validate exact integer/range/enum shape before comparison. Unverified
+nonempty shopper controls remain pending. Pending takes precedence for a partially understood
+row even when another field differs; field-level diagnostics are future work. A final date
+regression also verifies removal of an approved end date.
+
+Verification: **652 Ads API tests**, **22 workspace typechecks**, focused lint and the independent
+protocol/authority probes pass. The authority review covered input mutation during authentication,
+parent conflict after child admission, reads after write expiry, cancellation, token timeout and
+one-attempt HTTP refusal. Evidence is under `_local/sp-creation-observation-design/`:
+`protocol-regressions-before.log`, `readback-tests-final.log`, `consumer-workspace-typecheck.log`,
+`consumer-eslint.log`, `protocol-implementation-review.md`, and
+`consumer-authority-review-results.json`. Shared prerequisite CI passed at `444bcbe`, run
+`34030023201`; this is not yet a CI claim for the consumer commit.
+
+The consumer is not registered in a worker. A durable read-attempt audit, atomic claim/evidence
+checks, campaign ledger, runtime credentials provenance, approval/status screens and scoped live
+checks remain required. No new migration, production setting, Amazon call or client edit occurred.
+
 **Creation observation history repaired in source:** three independent candidate designs exposed
 a shared contract bug: a later parent observation invalidated a child admitted under an earlier
 valid observation. Per-node history now advances strictly and latest-only accounting preserves
@@ -25,8 +55,9 @@ All **199 shared tests** and **22 workspace typechecks** pass. The initial typec
 Private evidence under `_local/sp-creation-observation-design/`: `shared-regressions-before.log`,
 `review-regressions-before.log`, `shared-history-tests-final.log`, `workspace-typecheck-final.log`,
 and the three candidate designs. S1's fresh provider-source fetch matches its existing digest.
-The inert observation consumer, read-specific audit evidence, durable ledger and live verification
-remain pending. No production action or frontend client edit occurred.
+At that prerequisite checkpoint the consumer was pending; it is now implemented above.
+Read-specific audit evidence, durable ledger and live verification remain pending.
+No production action or frontend client edit occurred.
 
 **Synthetic frontend preview prepared:** main `9672d93` has a separate clean worktree on
 `wp-213-marketer-preview`. Existing E2E setup runs only against the dedicated loopback

@@ -1,10 +1,12 @@
 /** Inert, worker-only transport. One POST per invocation; durable reservation belongs to the worker. */
 import {
   CampaignCreationProviderResult, CampaignCreationProviderScope, CampaignCreationSha256,
+  CampaignCreationResourceObservation, verifyCampaignCreationObservationArtifacts,
   verifyCampaignCreationProviderCallArtifacts,
   type CampaignCreationPlan, type CampaignCreationAuthorizationReceipt, type CampaignCreationDispatchJob,
   type CampaignCreationExecutionEvidence, type CampaignCreationProviderCallIntent,
   type CampaignCreationSha256Hasher,
+  type CampaignCreationObserveJob,
 } from '@wizard-ads/shared';
 import { TokenProvider } from './auth.js';
 import { createHttpContext } from './context.js';
@@ -12,11 +14,22 @@ import { adsHeaders } from './headers.js';
 import { httpRequestOnce } from './http.js';
 import { SP_WRITE_ENDPOINTS } from './endpoints.js';
 import { hostFor } from './regions.js';
-import { prepareSpCreationCall, type SpCreationCompiledCall } from './sp-creation-codec.js';
+import { prepareSpCreationCall, prepareSpCreationReadback, type SpCreationCompiledCall } from './sp-creation-codec.js';
 import { decodeSpCreationResponse } from './sp-creation-response.js';
+import { decodeSpCreationReadback, spCreationReadbackRequest } from './sp-creation-readback.js';
+import { identity } from './sp-creation-json.js';
 import type { AdsApiClientOptions } from './types.js';
 
 export interface SpCreationAdapter {
+  /** Read the exactly correlated created identity; never searches for or retries an uncertain create. */
+  observeNode(input: {
+    plan: CampaignCreationPlan;
+    authorization: CampaignCreationAuthorizationReceipt;
+    job: CampaignCreationObserveJob;
+    currentEvidence: CampaignCreationExecutionEvidence;
+    nodeId: string;
+    sourceSyncJobId: string;
+  }, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<CampaignCreationResourceObservation>;
   prepareNode(input: {
     plan: CampaignCreationPlan;
     currentEvidence: CampaignCreationExecutionEvidence;
@@ -59,6 +72,58 @@ export function createSpCreationAdapter(
     return call;
   };
   return {
+    async observeNode(input, readOptions = {}) {
+      const denied = () => new Error('SP creation adapter refused invalid observation artifacts');
+      let call: ReturnType<typeof prepareSpCreationReadback>;
+      let verified: ReturnType<typeof verifyCampaignCreationObservationArtifacts>;
+      let startedAt: string;
+      const timeoutMs = readOptions.timeoutMs ?? 35_000;
+      try {
+        if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) throw denied();
+        startedAt = timestamp();
+        call = prepareSpCreationReadback(input, hasher);
+        if (!identity(call.providerEntityId) || JSON.stringify(call.providerScope) !== JSON.stringify(scope)) throw denied();
+        const intent = input.currentEvidence.providerCallIntents.find((candidate) => (
+          candidate.positions.some((position) => position.nodeId === input.nodeId)
+        ));
+        if (intent === undefined) throw denied();
+        const position = call.positions[0];
+        const candidate = CampaignCreationResourceObservation.parse({
+          planId: intent.planId, nodeId: position.nodeId, executionId: intent.executionId,
+          authorizationId: intent.authorizationId, generation: intent.generation,
+          attemptId: intent.attemptId, providerCallId: intent.providerCallId,
+          nodeFingerprint: position.nodeFingerprint, requestDigest: intent.requestDigest,
+          nodeRequestDigest: position.requestDigest, basis: 'provider_result_identity',
+          providerEntityId: call.providerEntityId, observation: 'pending',
+          amazonModerationStatus: 'unknown', deliveryStatus: 'unknown',
+          observedAt: startedAt, sourceSyncJobId: input.sourceSyncJobId,
+        });
+        verified = verifyCampaignCreationObservationArtifacts(input.plan, input.authorization, input.job,
+          input.currentEvidence, candidate, startedAt, hasher);
+      } catch { throw denied(); }
+      const request = spCreationReadbackRequest(call);
+      let observation: CampaignCreationResourceObservation['observation'] = 'pending';
+      try {
+        const headers = adsHeaders((_force, signal) => tokens.getAccessToken(signal), {
+          clientId: options.credentials.clientId, profileId: scope.amazonProfileId,
+          contentType: request.mediaType, accept: request.mediaType,
+          ...(options.userAgent === undefined ? {} : { userAgent: options.userAgent }),
+        });
+        const response = await httpRequestOnce(ctx, { method: 'POST',
+          url: `${hostFor(scope.region)}${request.path}`, body: request.body, headers,
+          timeoutMs, maxResponseBytes: 1_048_576, redirect: 'error',
+          ...(readOptions.signal === undefined ? {} : { signal: readOptions.signal }),
+        });
+        observation = decodeSpCreationReadback(call, response.status, response.body);
+      } catch { /* A failed read is inconclusive; it cannot establish absence. */ }
+      try {
+        const completedAt = timestamp();
+        if (Date.parse(completedAt) < Date.parse(startedAt)) throw denied();
+        return verifyCampaignCreationObservationArtifacts(verified.plan, verified.authorization,
+          verified.job, verified.currentEvidence,
+          { ...verified.observation, observation, observedAt: completedAt }, completedAt, hasher).observation;
+      } catch { throw denied(); }
+    },
     prepareNode(input) {
       try {
         const call = compile(input);

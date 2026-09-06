@@ -59,6 +59,7 @@ function requestItem(
   plan: CampaignCreationPlanV2,
   node: CampaignCreationNodeV2,
   evidence: CampaignCreationExecutionEvidence,
+  committed = false,
 ): { kind: SpWriteKind; item: CreateItem } {
   const nodes = new Map(plan.nodes.map((entry) => [entry.nodeId, entry]));
   const results = new Map(evidence.providerResults.map((entry) => [entry.nodeId, entry]));
@@ -80,8 +81,8 @@ function requestItem(
     }
     const observation = observations.get(nodeId);
     if (result.effect !== 'irreversible_create' || result.outcome !== 'succeeded'
-      || observation?.observation !== 'observed'
-      || observation.providerEntityId !== result.providerEntityId) {
+      || (!committed && (observation?.observation !== 'observed'
+        || observation.providerEntityId !== result.providerEntityId))) {
       return refuse('create_dependency_not_observed');
     }
     return result.providerEntityId;
@@ -197,9 +198,10 @@ function requestItem(
   }
 }
 
-export function prepareSpCreationCall(
+function compileSpCreationCall(
   input: { plan: CampaignCreationPlan; currentEvidence: CampaignCreationExecutionEvidence; nodeId: string },
   hasher: CampaignCreationSha256Hasher,
+  committed: boolean,
 ): SpCreationCompiledCall {
   const plan = requireCampaignCreationDispatchInputs(verifyCampaignCreationPlanFingerprints(input.plan, hasher));
   if (plan.adProduct !== 'SP' || plan.apiDialect !== 'sp_legacy_v3') refuse('unsupported_product_or_dialect');
@@ -208,13 +210,13 @@ export function prepareSpCreationCall(
   if (JSON.stringify(evidence.plan) !== JSON.stringify(plan)) refuse('evidence_plan_mismatch');
   const node = plan.nodes.find((entry) => entry.nodeId === input.nodeId);
   if (node === undefined || node.effect !== 'irreversible_create') refuse('unknown_create_node');
-  if (evidence.providerCallIntents.some((intent) => intent.positions.some((position) => position.nodeId === node.nodeId))
+  if (!committed && (evidence.providerCallIntents.some((intent) => intent.positions.some((position) => position.nodeId === node.nodeId))
     || evidence.providerResults.some((result) => result.nodeId === node.nodeId)
-    || evidence.nonProviderDispositions.find((entry) => entry.nodeId === node.nodeId)?.outcome !== 'pending_dispatch') {
+    || evidence.nonProviderDispositions.find((entry) => entry.nodeId === node.nodeId)?.outcome !== 'pending_dispatch')) {
     refuse('node_not_exclusively_pending_dispatch');
   }
 
-  const { kind, item } = requestItem(plan, node, evidence);
+  const { kind, item } = requestItem(plan, node, evidence, committed);
   const endpoint = SP_WRITE_ENDPOINTS[kind];
   const body = JSON.stringify({ [endpoint.requestKey]: [item] });
   const scope = Object.freeze({ ...plan.providerScope });
@@ -230,4 +232,31 @@ export function prepareSpCreationCall(
     requestDigest: digest(JSON.stringify(['openspell.sp-creation-http-request.v1', ...requestContext, positions, body]), hasher),
     positions,
   });
+}
+
+export function prepareSpCreationCall(
+  input: { plan: CampaignCreationPlan; currentEvidence: CampaignCreationExecutionEvidence; nodeId: string },
+  hasher: CampaignCreationSha256Hasher,
+): SpCreationCompiledCall {
+  return compileSpCreationCall(input, hasher, false);
+}
+
+/** Internal readback preparation: retain committed evidence and match its exact request commitments. */
+export function prepareSpCreationReadback(
+  input: { plan: CampaignCreationPlan; currentEvidence: CampaignCreationExecutionEvidence; nodeId: string },
+  hasher: CampaignCreationSha256Hasher,
+): SpCreationCompiledCall & { providerEntityId: string } {
+  const call = compileSpCreationCall(input, hasher, true);
+  const evidence = CampaignCreationExecutionEvidence.parse(input.currentEvidence);
+  const intent = evidence.providerCallIntents.find((candidate) => (
+    candidate.positions.some((position) => position.nodeId === input.nodeId)
+  ));
+  const result = evidence.providerResults.find((candidate) => candidate.nodeId === input.nodeId);
+  if (intent?.positions.length !== 1 || result?.effect !== 'irreversible_create'
+    || result.outcome !== 'succeeded' || result.providerEntityId === null
+    || intent.requestDigest !== call.requestDigest
+    || JSON.stringify(intent.positions) !== JSON.stringify(call.positions)) {
+    return refuse('readback_request_not_committed');
+  }
+  return Object.freeze({ ...call, providerEntityId: result.providerEntityId });
 }

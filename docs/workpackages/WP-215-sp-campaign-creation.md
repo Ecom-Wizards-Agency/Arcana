@@ -9,10 +9,10 @@ creation, Amazon Asset Library selection and uploading the operator's own video.
 SP-only release boundary is superseded. SP remains the first vertical implementation;
 SB/SD and asset preparation are required follow-up slices in this package's release.
 
-## Latest observation prerequisite, 2026-09-06
+## Latest observation implementation, 2026-09-06
 
 The [SP observation design](../design/WP-215-SP-OBSERVATION.md) compares three independent
-approaches and retains the existing adapter with one planned observation method. Shared
+approaches and retains the existing adapter with one implemented observation method. Shared
 execution evidence now preserves observation history per node, derives latest counts, and
 checks historical child admission against the dependency state at reservation. Later parent
 refreshes/conflicts do not invalidate already admitted children or rewrite terminal refusals
@@ -22,8 +22,20 @@ match the exact succeeded resource; moderation can explicitly remain unknown.
 Nine initial regressions and three review regressions failed before their corrections. All
 199 shared tests and 22 workspace typechecks pass. Delayed reads which would rewrite existing
 admission are refused; durable claim/version checks and read-attempt diagnostics remain future
-store responsibilities. No campaign observation client, executor, schema migration, frontend
-screen or live workflow is activated by this prerequisite. Those remain required delivery work.
+store responsibilities.
+
+`createSpCreationAdapter(...).observeNode` now validates the immutable artifacts and original
+request digest, then reads the exact resource by ID with all states. All nine supported resource
+types compare frozen settings and parent identities, preserve exact numeric tokens and distinguish
+missing/conflicting/inconclusive evidence. A read is allowed after write expiry and never issues
+a create. Moderation/delivery stay unknown. Unverified optional controls keep the whole row
+inconclusive; this also takes precedence over a mismatch in another field.
+
+652 Ads API tests and all 22 workspace typechecks pass. Protocol review corrections enforce
+resolved-predicate domains/bounds and placement enum/integer limits; authority probes verify
+frozen inputs, cancellation, token timeout and parent conflict after admission. The consumer
+remains inert. Durable read-attempt evidence, ledger/executor, approval/status screens and live
+verification remain required; no campaign workflow or schema migration is activated by this slice.
 
 ## Required delivery slices
 
