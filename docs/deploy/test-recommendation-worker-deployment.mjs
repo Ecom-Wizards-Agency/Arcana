@@ -80,6 +80,7 @@ const armedBusyHealth = {
     role: 'evo-recommendation-lane',
     claimProtocol: 'recommendation-fenced-v1',
     jobTypes: ['recommendations.run'],
+    executionVersions: [1, 2],
   },
   authority: {
     protocol: 'fenced', admission: 'scoped', epoch: 3, revisionMatches: true,
@@ -87,6 +88,9 @@ const armedBusyHealth = {
   claimant: { ready: true, inFlight: 1, settlementFailure: false },
 };
 validateRecommendationHealthPayload(armedBusyHealth, revisionA, true);
+assert.throws(() => validateRecommendationHealthPayload({ ...armedBusyHealth,
+  deployment: { ...armedBusyHealth.deployment, executionVersions: [1] },
+}, revisionA, true));
 assert.throws(() => validateRecommendationHealthPayload(armedBusyHealth, revisionA, false));
 const unsafeRuntimeError = new Error('synthetic unresolved custody');
 assert.equal(await runRecommendationWorkerMain({

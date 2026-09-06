@@ -3,12 +3,14 @@ import { RecommendationClaimantCustodyError } from './claimant.js';
 import { recommendationLaneConfigFromEnv } from './config.js';
 import { RecommendationHealthMonitor, listenRecommendationHealth } from './health.js';
 import { createRecommendationLaneRuntime } from './postgres.js';
+import { startRecommendationRuntimeReporting } from './runtime-report.js';
 
 export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const config = recommendationLaneConfigFromEnv(env);
   const runtime = createRecommendationLaneRuntime(config);
   let server: Awaited<ReturnType<typeof listenRecommendationHealth>> | null = null;
   let claimantLoop: Promise<void> | null = null;
+  let runtimeReporting: ReturnType<typeof startRecommendationRuntimeReporting> | null = null;
   try {
     const authority = await runtime.healthDatabase.getAuthority();
     if (
@@ -26,6 +28,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     server = await listenRecommendationHealth(monitor, config.healthHost, config.healthPort);
     if (config.claimArmed) {
       claimantLoop = runtime.claimant.start();
+      runtimeReporting = startRecommendationRuntimeReporting(runtime.healthDatabase, runtime.claimant);
     }
 
     const signal = firstSignal();
@@ -40,6 +43,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
         ]);
     signal.dispose();
     monitor.stop();
+    await runtimeReporting?.stop();
+    runtimeReporting = null;
     const shutdown = await runtime.claimant.shutdown();
     server.close();
     await once(server, 'close');
@@ -55,6 +60,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
     // an unbounded process wait on the still-running database operation.
     if (claimantLoop !== null && shutdown.unresolved === 0) await claimantLoop;
   } finally {
+    await runtimeReporting?.stop();
     if (server?.listening) server.close();
     await runtime.close();
   }

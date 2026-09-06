@@ -82,6 +82,8 @@ export interface ReviewWorkspaceProps {
   counts: Record<string, number>;
   role: string;
   hasStrategySnapshot: boolean;
+  oneTimePreview?: boolean;
+  exportDisabledReason?: string;
   runGroupName?: string | null;
   /**
    * Test seam. The virtualizer measures a real element and jsdom has none, so
@@ -472,7 +474,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
     () => visible.filter((proposal) => selected.has(proposal.id)).map((proposal) => proposal.id),
     [visible, selected],
   );
-  const canExport = can(props.role as OrgRole, 'exportBatches');
+  const canExport = can(props.role as OrgRole, 'exportBatches') && props.exportDisabledReason === undefined;
   const acceptedSelected = useMemo(
     () => visible.filter((proposal) => selected.has(proposal.id) && proposal.status === 'accepted').length,
     [visible, selected],
@@ -871,7 +873,9 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         </div>
       </div>
 
-      {props.hasStrategySnapshot ? null : (
+      {props.oneTimePreview ? (
+        <p style={muted}>This one-time preview uses its confirmed RPC settings. Saved strategy assignments remain unchanged.</p>
+      ) : props.hasStrategySnapshot ? null : (
         <p style={warning} role="status">
           This run stored no strategy snapshot, so every proposal shows as unassigned. The objective
           column is honest about that rather than guessing one.
@@ -1165,7 +1169,8 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
         </section>
       ) : null}
 
-      {canExport ? null : (
+      {props.exportDisabledReason === undefined ? null : <p role="status">{props.exportDisabledReason}</p>}
+      {can(props.role as OrgRole, 'exportBatches') ? null : (
         <p style={muted}>Role {props.role} may review recommendations but not export changes.</p>
       )}
 

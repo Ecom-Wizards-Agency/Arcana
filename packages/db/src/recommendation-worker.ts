@@ -125,6 +125,14 @@ export class RecommendationWorkerDatabase {
     await this.sql.end({ timeout: 5 });
   }
 
+  async reportRuntime(executionVersions: readonly (1 | 2)[], ready: boolean): Promise<void> {
+    await this.sql`
+      select public.report_recommendation_runtime(
+        ${this.identity.workerId}, ${this.identity.revision}, ${executionVersions}::integer[], ${ready}
+      )
+    `;
+  }
+
   async getAuthority(): Promise<RecommendationWorkerAuthority> {
     const rows = await this.sql<RawAuthority[]>`
       select protocol, admission, epoch, authorized_revision
@@ -190,7 +198,7 @@ export class RecommendationWorkerDatabase {
           ${claim.jobId}::uuid, ${claim.workerId}, ${claim.token}::uuid,
           ${this.identity.revision}, ${outcome}::public.sync_job_status,
           ${options.error ?? null},
-          ${options.result === undefined ? null : serializeJson(options.result)}::jsonb,
+          ${options.result === undefined ? null : serializeJson(options.result)}::text::jsonb,
           ${options.retryIn ?? null}::interval
         )
     `;
@@ -256,7 +264,7 @@ export class RecommendationWorkerDatabase {
           ${claim.jobId}::uuid, ${claim.workerId}, ${claim.token}::uuid,
           ${this.identity.revision}, ${scope.orgId}::uuid, ${scope.profileId}::uuid,
           ${scope.runId}::uuid, ${scope.groupId ?? null}::uuid,
-          ${serializeJson(completion)}::jsonb
+          ${serializeJson(completion)}::text::jsonb
         )
     `;
     const row = one(rows, 'recommendation success');

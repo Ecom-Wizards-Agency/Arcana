@@ -81,6 +81,7 @@ describe('recommendation worker health', () => {
           role: 'evo-recommendation-lane',
           claimProtocol: 'recommendation-fenced-v1',
           jobTypes: ['recommendations.run'],
+          executionVersions: [1, 2],
         },
         authority: { protocol: 'fenced', admission: 'scoped', revisionMatches: true },
         claimant: { ready: true, inFlight: 0, settlementFailure: false },

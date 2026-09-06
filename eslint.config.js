@@ -26,6 +26,7 @@ export default tseslint.config(
       '**/.next/**',
       '**/.turbo/**',
       '.vercel/**',
+      '_local/**',
       '**/coverage/**',
       'fixtures/golden/**',
     ],

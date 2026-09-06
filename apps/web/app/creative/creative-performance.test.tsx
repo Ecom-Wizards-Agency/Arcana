@@ -81,6 +81,7 @@ describe('CreativePerformanceExplorer', () => {
     ]) {
       expect(markup).toContain(label);
     }
-    expect(markup).toContain('does not write changes to Amazon');
+    expect(markup).toContain('Current mappings do not prove historical attachment; legacy and incomplete rows stay separate.');
+    expect(markup).toContain('This view never assigns an ad-group total to one creative.');
   });
 });

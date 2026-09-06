@@ -34,13 +34,14 @@ import {
   classifyCampaignCategory,
   resolveGoalLens,
 } from '@wizard-ads/core';
-import type { OptGroupStrategy, TenantStrategy } from '@wizard-ads/shared';
+import type { OneTimeRpcSnapshot, OptGroupStrategy, TenantStrategy } from '@wizard-ads/shared';
 
 /** Where the objective came from. Ordered most to least specific. */
 export type StrategySource =
   | 'campaign_assignment'
   | 'opt_group'
   | 'profile_default'
+  | 'one_time'
   | 'unassigned';
 
 export interface ProposalStrategy {
@@ -154,11 +155,24 @@ export interface ResolveStrategyOptions {
   campaignName: string | null;
   /** `recommendation_runs.strategy_snapshot`, as stored. */
   strategySnapshot: unknown;
+  executionSnapshot?: OneTimeRpcSnapshot;
   assignments?: StrategyAssignments;
 }
 
 /** Resolve the strategy dimension for one proposal. */
 export function resolveProposalStrategy(options: ResolveStrategyOptions): ProposalStrategy {
+  if (options.executionSnapshot !== undefined) {
+    return {
+      optGroup: null,
+      category: classifyCampaignCategory(options.campaignName),
+      objective: 'one-time-rpc',
+      objectiveLabel: 'One-time RPC',
+      source: 'one_time',
+      targetAcos: options.executionSnapshot.configuration.targetAcos,
+      cutOnAcosAlone: null,
+      explanation: 'Calculated with the settings confirmed for this one-time RPC preview and the applicable stock, rank, and observation safeguards.',
+    };
+  }
   const groups = optGroupsOf(options.strategySnapshot);
   const category = classifyCampaignCategory(options.campaignName);
   const assignments = options.assignments ?? NO_ASSIGNMENTS;
@@ -227,6 +241,7 @@ export function resolveExportCaps(snapshot: unknown, optGroup: string | null): E
 
 /** Short form for a table cell: `Rank · scale` / `Discovery · unassigned`. */
 export function strategyLabel(strategy: ProposalStrategy): string {
+  if (strategy.source === 'one_time') return 'One-time RPC';
   const objective = strategy.source === 'unassigned' ? 'unassigned' : strategy.objective;
   return `${strategy.category} · ${objective}`;
 }

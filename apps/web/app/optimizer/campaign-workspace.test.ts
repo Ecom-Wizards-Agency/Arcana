@@ -145,6 +145,24 @@ afterEach(() => {
   delete (document as unknown as Record<string, unknown>)['visibilityState'];
 });
 
+// jsdom has no top-layer dialog implementation; retain the native open state.
+HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
+HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); };
+
+async function confirmPreview(host: HTMLElement, targetAcos = '37'): Promise<void> {
+  if (host.querySelector('dialog') === null) {
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="optimizer-run-preview"]')?.click());
+  }
+  const values: Record<string, string> = { targetAcos, bidFloor: '0.11', bidCeiling: '4.3', bidIncreaseCap: '23', bidDecreaseCap: '41' };
+  for (const [name, value] of Object.entries(values)) {
+    const input = host.querySelector<HTMLInputElement>(`dialog input[name="${name}"]`);
+    if (input === null) throw new Error('Missing one-time settings input');
+    input.value = value;
+  }
+  const form = host.querySelector<HTMLFormElement>('dialog form');
+  await act(async () => { form?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+}
+
 function workspaceProps(
   rows: readonly OptimizerCampaignRow[],
   overrides: Partial<Parameters<typeof CampaignWorkspace>[0]> = {},
@@ -155,6 +173,8 @@ function workspaceProps(
     initialGridRect: VIEWPORT,
     mayRunOptimizer: true,
     previewReady: true,
+    profileToday: '2026-09-01',
+    profileTimezone: 'UTC',
     period: { start: '2026-08-01', end: '2026-08-30' },
     profileId: '00000000-0000-4000-8000-000000000001',
     rows,
@@ -530,6 +550,21 @@ describe('campaign optimizer workspace', () => {
     expect(host.textContent).toContain('Select a smaller campaign set');
   });
 
+  it('opens settings before any request and requires explicit missing values', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const { host } = mount([row(1)]);
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="optimizer-run-preview"]')?.click());
+    expect(host.querySelector('dialog[open]')).not.toBeNull();
+    expect(host.textContent).toContain('Some settings are mixed or missing');
+    expect(host.querySelector<HTMLInputElement>('input[name="targetAcos"]')?.value).toBe('');
+    expect(fetch).not.toHaveBeenCalled();
+    const form = host.querySelector('dialog form');
+    await act(async () => form?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    expect(fetch).not.toHaveBeenCalled();
+    expect(host.querySelector('dialog [role="alert"]')).not.toBeNull();
+  });
+
   it('polls without overlap, refreshes once on success, and exposes every successful child review', async () => {
     vi.useFakeTimers();
     window.history.replaceState({}, '', '/optimizer?profile=00000000-0000-4000-8000-000000000001&from=2026-08-01');
@@ -567,7 +602,7 @@ describe('campaign optimizer workspace', () => {
     vi.stubGlobal('fetch', fetch);
     const { host } = mount([row(1), row(2)]);
     const run = host.querySelector<HTMLButtonElement>('[data-testid="optimizer-run-preview"]');
-    await act(async () => run?.click());
+    await confirmPreview(host);
 
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(window.location.search).toContain('batch=batch-one');
@@ -645,7 +680,7 @@ describe('campaign optimizer workspace', () => {
       }));
     vi.stubGlobal('fetch', fetch);
     const { host } = mount([row(1), row(2)]);
-    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="optimizer-run-preview"]')?.click());
+    await confirmPreview(host);
     await act(async () => vi.advanceTimersByTimeAsync(1_000));
     expect(host.textContent).toContain('temporarily unavailable. Retrying automatically');
     await act(async () => vi.advanceTimersByTimeAsync(2_000));
@@ -713,7 +748,7 @@ describe('campaign optimizer workspace', () => {
       }));
     vi.stubGlobal('fetch', fetch);
     const { host } = mount([row(1)]);
-    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="optimizer-run-preview"]')?.click());
+    await confirmPreview(host);
     await act(async () => vi.advanceTimersByTimeAsync(1_000));
     expect(fetch).toHaveBeenCalledTimes(2);
     await act(async () => vi.advanceTimersByTimeAsync(30_000));
@@ -742,24 +777,27 @@ describe('campaign optimizer workspace', () => {
     );
     vi.stubGlobal('fetch', fetch);
     const { host } = mount([row(1)]);
-    const run = host.querySelector<HTMLButtonElement>('[data-testid="optimizer-run-preview"]');
 
-    await act(async () => run?.click());
-    await act(async () => run?.click());
+    await confirmPreview(host);
+    await confirmPreview(host);
     expect(fetch).toHaveBeenCalledTimes(4);
     const firstBodies = fetch.mock.calls.slice(0, 4).map((call) =>
       JSON.parse((call[1] as RequestInit).body as string) as { clientRequestId: string },
     );
     expect(new Set(firstBodies.map((body) => body.clientRequestId)).size).toBe(1);
 
+    act(() => [...host.querySelectorAll<HTMLButtonElement>('dialog button')].find((button) => button.textContent === 'Cancel')?.click());
     const firstCampaign = host.querySelector<HTMLInputElement>('[data-testid="optimizer-campaign-select"]');
     act(() => firstCampaign?.click());
-    await act(async () => run?.click());
+    await confirmPreview(host);
     const changedBody = JSON.parse((fetch.mock.calls[4]?.[1] as RequestInit).body as string) as {
       clientRequestId: string;
       scope: { mode: string };
     };
     expect(changedBody.scope.mode).toBe('selected');
     expect(changedBody.clientRequestId).not.toBe(firstBodies[0]?.clientRequestId);
+    await confirmPreview(host, '39');
+    const changedSettings = JSON.parse((fetch.mock.calls[6]?.[1] as RequestInit).body as string) as { clientRequestId: string };
+    expect(changedSettings.clientRequestId).not.toBe(changedBody.clientRequestId);
   });
 });

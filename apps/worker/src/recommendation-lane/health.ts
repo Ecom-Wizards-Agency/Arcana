@@ -1,4 +1,5 @@
 import { createServer, type Server } from 'node:http';
+import { RECOMMENDATION_EXECUTION_VERSIONS } from '@wizard-ads/shared';
 import type {
   RecommendationWorkerAuthority,
   RecommendationWorkerDatabase,
@@ -13,6 +14,7 @@ export interface RecommendationWorkerHealth {
     role: 'evo-recommendation-lane';
     claimProtocol: 'recommendation-fenced-v1';
     jobTypes: readonly ['recommendations.run'];
+    executionVersions: typeof RECOMMENDATION_EXECUTION_VERSIONS;
   };
   authority: {
     protocol: 'legacy' | 'fenced';
@@ -77,6 +79,7 @@ export class RecommendationHealthMonitor {
           role: this.config.role,
           claimProtocol: this.config.claimProtocol,
           jobTypes: this.config.jobTypes,
+          executionVersions: RECOMMENDATION_EXECUTION_VERSIONS,
         },
         authority: {
           protocol: this.lastAuthority.protocol,

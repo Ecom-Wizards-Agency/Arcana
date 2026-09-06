@@ -169,7 +169,7 @@ describe.skipIf(!available)('optimizer preview routes', () => {
   beforeAll(async () => {
     database = await createTestDatabase('wp216_web_routes');
     // The legacy schema this brief targets is the complete 46-file set.
-    expect(await migrationFiles()).toHaveLength(46);
+    expect((await migrationFiles()).filter((name) => name <= '20260901060000_recommendation_claim_custody.sql')).toHaveLength(46);
     const [authority] = await database.sql<{ protocol: string; admission: string }[]>`
       select protocol, admission from public.get_recommendation_claim_authority()
     `;

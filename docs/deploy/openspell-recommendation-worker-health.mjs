@@ -49,7 +49,7 @@ async function main() {
 
 export function validateRecommendationHealthPayload(payload, expectedRevision, armed) {
   assertExactKeys(payload, ['authority', 'claimant', 'deployment', 'status']);
-  assertExactKeys(payload.deployment, ['claimProtocol', 'jobTypes', 'revision', 'role']);
+  assertExactKeys(payload.deployment, ['claimProtocol', 'executionVersions', 'jobTypes', 'revision', 'role']);
   assertExactKeys(payload.authority, ['admission', 'epoch', 'protocol', 'revisionMatches']);
   assertExactKeys(payload.claimant, ['inFlight', 'ready', 'settlementFailure']);
   if (payload.status !== (armed ? 'ok' : 'standby')
@@ -57,6 +57,7 @@ export function validateRecommendationHealthPayload(payload, expectedRevision, a
     || payload.deployment.role !== 'evo-recommendation-lane'
     || payload.deployment.claimProtocol !== 'recommendation-fenced-v1'
     || JSON.stringify(payload.deployment.jobTypes) !== '["recommendations.run"]'
+    || JSON.stringify(payload.deployment.executionVersions) !== '[1,2]'
     || !['legacy', 'fenced'].includes(payload.authority.protocol)
     || !['legacy', 'blocked', 'scoped'].includes(payload.authority.admission)
     || !Number.isSafeInteger(payload.authority.epoch) || payload.authority.epoch < 0

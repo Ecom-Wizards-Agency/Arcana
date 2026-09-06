@@ -39,6 +39,7 @@ import {
 import { DEFAULT_VERCEL_CRON_JOB_TYPES } from './deployment-role.js';
 import { PostgresWorkerStore } from './store.js';
 import { SyncWorker } from './worker.js';
+import { freezeOneTimeRpcSnapshot, oneTimeRpcSnapshotFingerprint } from './one-time-preview.js';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const PROFILE_ID = '22222222-2222-4222-8222-222222222222';
@@ -132,6 +133,7 @@ class FakeStore implements RecommendationRunStore {
   expectedGroupIds: Array<string | undefined> = [];
   expectedJobIds: string[] = [];
   loadedGroupIds: Array<string | undefined> = [];
+  loadedOneTimeScopes: RunScope[] = [];
   completed: RunCompletion[] = [];
   failed: Array<{ scope: RunScope; error: string }> = [];
   startResult: StartRunResult = {
@@ -194,6 +196,11 @@ class FakeStore implements RecommendationRunStore {
     return completion.proposals.length;
   }
 
+  async loadOneTimeRecommendationSafety(scope: RunScope) {
+    this.loadedOneTimeScopes.push(scope);
+    return this.groupSafety;
+  }
+
   async failRun(scope: RunScope, error: string) {
     this.failed.push({ scope, error });
     return { decision: 'failed' as const };
@@ -208,6 +215,97 @@ const JOB = {
   lookbackDays: 7,
 };
 const EXECUTION = { jobId: '91919191-9191-4919-8919-919191919191' };
+
+describe('explicit one-time RPC runner', () => {
+  const configuration = {
+    version: 1 as const, method: 'rpc' as const, targetAcos: 0.37,
+    bidFloor: 0.13, bidCeiling: 4.7, bidIncreaseCap: 0.23, bidDecreaseCap: 0.71,
+    window: { start: '2026-08-01', end: '2026-08-26' },
+  };
+  const snapshot = freezeOneTimeRpcSnapshot(configuration, 'UTC', new Date('2026-08-27T12:00:00Z'));
+  const job = {
+    type: 'recommendations.run' as const, orgId: ORG_ID, profileId: PROFILE_ID, runId: RUN_ID,
+    executionVersion: 2 as const, snapshotFingerprint: oneTimeRpcSnapshotFingerprint(snapshot),
+  };
+  function explicitStore() {
+    const inputs = fixtureInputs();
+    inputs.tenantStrategy = null;
+    inputs.profileStrategy = null;
+    const store = new FakeStore(PROFILE, inputs);
+    store.startResult = {
+      alreadySucceeded: false, proposalsCount: 0,
+      strategySnapshot: null, strategyGoal: null, executionSnapshot: snapshot,
+    };
+    return store;
+  }
+
+  it('evaluates unassigned campaigns without saved strategy and retains dates across midnight', async () => {
+    const store = explicitStore();
+    await runRecommendations(store, job, EXECUTION, new Date('2026-09-04T12:00:00Z'));
+    expect(store.completed).toHaveLength(1);
+    expect(store.completed[0]).toMatchObject({
+      window: configuration.window, lookbackDays: 26, strategySnapshot: null,
+      narrative: { oneTimeConfiguration: configuration, diagnostics: { targetsRead: 1, proposed: 1, skippedMissingStrategy: 0 } },
+    });
+    expect(store.completed[0]?.proposals).toHaveLength(1);
+    expect(store.completed[0]?.proposals[0]?.proposedValue).toBe(0.55);
+  });
+
+  it('retains group observation holds while ignoring its saved numeric policy', async () => {
+    const store = explicitStore();
+    const group: ScheduledOptimizationGroup = {
+      version: 2, id: GROUP_ID, orgId: ORG_ID, profileId: PROFILE_ID,
+      name: 'Synthetic group', role: 'rank', targetAcos: 0.91,
+      bidFloor: 5, bidCeiling: 9, bidIncreaseCap: 0, bidDecreaseCap: 0,
+      placementIncreaseCap: 0, placementDecreaseCap: 0, exclusions: [],
+      prioritization: 'growth_first', enabled: true,
+      reviewSchedule: { version: 2, weekdays: ['thursday'] },
+    };
+    store.startResult.groupRun = { group, dueAt: snapshot.admittedAt, scheduleContext: null };
+    await runRecommendations(store, { ...job, groupId: GROUP_ID }, EXECUTION);
+    expect(store.loadedGroupIds).toEqual([]);
+    expect(store.loadedOneTimeScopes).toEqual([{ orgId: ORG_ID, profileId: PROFILE_ID, runId: RUN_ID }]);
+    expect(store.completed[0]?.proposals[0]?.proposedValue).toBe(0.55);
+    store.completed = [];
+    store.groupSafety = { ...store.groupSafety, mayPropose: false, incompleteObservations: 1, reason: 'Observation incomplete.' };
+    await runRecommendations(store, { ...job, groupId: GROUP_ID }, EXECUTION);
+    expect(store.completed[0]?.proposals).toHaveLength(0);
+    expect(store.completed[0]?.narrative.groupSafety?.mayPropose).toBe(false);
+  });
+
+  it('refuses altered snapshot custody and stale profile timezone', async () => {
+    const store = explicitStore();
+    await expect(runRecommendations(store, { ...job, snapshotFingerprint: 'b'.repeat(64) }, EXECUTION)).rejects.toThrow(/integrity/);
+    expect(store.completed).toHaveLength(0);
+    const moved = new FakeStore({ ...PROFILE, timezone: 'America/Los_Angeles' }, store.inputs);
+    moved.startResult = store.startResult;
+    await expect(runRecommendations(moved, job, EXECUTION)).rejects.toThrow(/timezone changed/);
+    expect(moved.completed).toHaveLength(0);
+  });
+
+  it('refuses final bids when a floor or change cap conflicts with confirmed limits', async () => {
+    const store = explicitStore();
+    const impossible = freezeOneTimeRpcSnapshot({ ...configuration, bidCeiling: 0.4, bidDecreaseCap: 0.1 },
+      'UTC', new Date(snapshot.admittedAt));
+    store.startResult.executionSnapshot = impossible;
+    await runRecommendations(store, { ...job, snapshotFingerprint: oneTimeRpcSnapshotFingerprint(impossible) }, EXECUTION);
+    expect(store.completed[0]?.proposals).toHaveLength(0);
+    expect(store.completed[0]?.narrative.diagnostics.declinedReasons).toEqual({ explicit_limits_conflict: 1 });
+  });
+
+  it('retains stock and observed-rank protections', async () => {
+    for (const protection of ['stock', 'rank'] as const) {
+      const store = explicitStore();
+      const target = store.inputs.targets[0];
+      if (!target) throw new Error('Missing synthetic target');
+      if (protection === 'stock') target.stock = { status: 'out_of_stock', asins: [] };
+      else target.organicRank = { status: 'known', currentRank: 8, previousRank: 13 };
+      await runRecommendations(store, job, EXECUTION);
+      expect(store.completed[0]?.proposals).toHaveLength(0);
+      expect(store.completed[0]?.narrative.diagnostics[protection === 'stock' ? 'blockedOutOfStock' : 'suppressed']).toBe(1);
+    }
+  });
+});
 
 describe('recommendation window', () => {
   it('uses the last complete day in the profile timezone', () => {
@@ -948,7 +1046,9 @@ describe.skipIf(!databaseAvailableForLegacyStore)('legacy-mode preview enqueue o
 
   beforeAll(async () => {
     database = await createTestDatabase('wp216_legacy_store');
-    expect(await migrationFiles()).toHaveLength(46);
+    const migrations = await migrationFiles();
+    expect(migrations.filter((name) => name <= '20260901060000_recommendation_claim_custody.sql')).toHaveLength(46);
+    expect(migrations).toContain('20260907000000_one_time_rpc_previews.sql');
     const [authority] = await database.sql<{ protocol: string; admission: string }[]>`
       select protocol, admission from public.get_recommendation_claim_authority()
     `;

@@ -28,6 +28,7 @@
 import { createHash } from 'node:crypto';
 import {
   OptimizationRunScheduleContext,
+  OneTimeRpcSnapshot,
   normalizeOptimizationGroupSnapshot,
   serializeApplyRows,
 } from '@wizard-ads/shared';
@@ -113,6 +114,7 @@ export interface RecommendationRecord {
 }
 
 export interface RecommendationRunSummary {
+  executionSnapshot?: OneTimeRpcSnapshot;
   id: string;
   orgId: string;
   profileId: string;
@@ -229,6 +231,7 @@ function zeroCounts(): Record<RecommendationStatusName, number> {
 }
 
 interface RunRow {
+  execution_snapshot?: unknown;
   id: string;
   org_id: string;
   profile_id: string;
@@ -268,6 +271,7 @@ function toRunSummary(row: RunRow): RecommendationRunSummary {
     throw new Error('recommendation run group snapshot does not match group_id');
   }
   return {
+    ...(row.execution_snapshot == null ? {} : { executionSnapshot: OneTimeRpcSnapshot.parse(row.execution_snapshot) }),
     id: row.id,
     orgId: row.org_id,
     profileId: row.profile_id,
@@ -302,7 +306,7 @@ export async function listRecommendationRuns(
            r.window_start::text as window_start, r.window_end::text as window_end,
            r.engine_version, r.proposals_count, r.created_at, r.finished_at,
            r.group_id, r.group_role::text as group_role, r.group_snapshot, r.due_at,
-           r.schedule_context,
+           r.schedule_context, r.execution_snapshot,
            (
              select jsonb_object_agg(s.status, s.count)
                from (
@@ -331,7 +335,7 @@ export async function getRecommendationRun(
            r.window_start::text as window_start, r.window_end::text as window_end,
            r.engine_version, r.proposals_count, r.created_at, r.finished_at,
            r.group_id, r.group_role::text as group_role, r.group_snapshot, r.due_at,
-           r.schedule_context,
+           r.schedule_context, r.execution_snapshot,
            r.strategy_snapshot,
            (
              select jsonb_object_agg(s.status, s.count)
@@ -580,6 +584,13 @@ export async function exportAcceptedRecommendations(
   if (tag.length === 0) throw new Error('An export needs a batch tag.');
 
   return await handle.sql.begin(async (sql) => {
+    const runs = await sql<{ scope_version: number | null }[]>`
+      select scope_version from public.recommendation_runs
+       where org_id = ${options.orgId} and profile_id = ${options.profileId} and id = ${options.runId}
+       for share
+    `;
+    if (runs.length !== 1) throw new Error('Recommendation run not found.');
+    if (runs[0]?.scope_version === 2) throw new Error('One-time preview export awaits observation support.');
     const ids = options.ids && options.ids.length > 0 ? [...new Set(options.ids)] : null;
     const candidates = await sql<
       {

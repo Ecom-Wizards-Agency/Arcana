@@ -20,6 +20,25 @@ export class OptimizerPreviewHttpError extends Error {
 
 /** Read JSON without first allowing an unbounded request body into memory. */
 export async function readOptimizerPreviewRequest(request: Request): Promise<OptimizerPreviewRequest> {
+  return parseOptimizerPreviewRequest(await readPreviewJson(request));
+}
+
+/** The separate one-time endpoint rejects instructions it cannot understand. */
+export async function readOneTimeRpcPreviewRequest(request: Request): Promise<OneTimeRpcPreviewRequest> {
+  const parsed = OneTimeRpcPreviewRequest.safeParse(await readPreviewJson(request));
+  if (!parsed.success) {
+    const tooLarge = parsed.error.issues.some(
+      (issue) => issue.code === 'too_big' && issue.path.includes('campaignIds'),
+    );
+    throw new OptimizerPreviewHttpError(
+      parsed.error.issues[0]?.message ?? 'Invalid one-time preview settings.',
+      tooLarge ? 413 : 400,
+    );
+  }
+  return parsed.data;
+}
+
+async function readPreviewJson(request: Request): Promise<unknown> {
   const contentLength = request.headers.get('content-length');
   if (contentLength !== null) {
     const declared = Number(contentLength);
@@ -62,7 +81,7 @@ export async function readOptimizerPreviewRequest(request: Request): Promise<Opt
   } catch {
     throw new OptimizerPreviewHttpError('Malformed JSON request');
   }
-  return parseOptimizerPreviewRequest(value);
+  return value;
 }
 
 export function parseOptimizerPreviewRequest(value: unknown): OptimizerPreviewRequest {
@@ -124,3 +143,4 @@ export function optimizerPreviewUuid(value: unknown, field: string): string {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+import { OneTimeRpcPreviewRequest } from '@wizard-ads/shared';

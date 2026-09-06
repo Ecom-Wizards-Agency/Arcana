@@ -435,6 +435,7 @@ describe.skipIf(!available)('exclusive recommendation claim custody', () => {
       'public.get_recommendation_cutover_evidence()',
       'public.get_recommendation_worker_authority()',
       'public.read_recommendation_inputs_fenced(p_job_id uuid, p_worker_id text, p_claim_token uuid, p_revision text, p_org_id uuid, p_profile_id uuid, p_run_id uuid, p_group_id uuid, p_window_start date, p_window_end date)',
+      'public.report_recommendation_runtime(p_worker_id text, p_revision text, p_execution_versions integer[], p_ready boolean)',
       'public.resume_recommendation_jobs_fenced(p_worker_id text, p_revision text)',
       'public.start_recommendation_run_fenced(p_job_id uuid, p_worker_id text, p_claim_token uuid, p_revision text, p_org_id uuid, p_profile_id uuid, p_run_id uuid, p_group_id uuid)',
       'public.succeed_recommendation_run_fenced(p_job_id uuid, p_worker_id text, p_claim_token uuid, p_revision text, p_org_id uuid, p_profile_id uuid, p_run_id uuid, p_group_id uuid, p_completion jsonb)',

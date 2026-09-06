@@ -2,7 +2,7 @@ import {
   PostgresRecommendationRunStore,
   RecommendationPreviewError,
 } from '@wizard-ads/worker';
-import { createDb } from '@wizard-ads/db';
+import { createDb, resolveOneTimePreviewReadiness } from '@wizard-ads/db';
 import {
   errorResponse,
   requestActor,
@@ -38,7 +38,8 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         batchId,
       });
     if (status === null) return Response.json({ error: 'Not found' }, { status: 404 });
-    return Response.json(status);
+    const availability = status.executionSnapshot === undefined ? undefined : await resolveOneTimePreviewReadiness(database);
+    return Response.json({ ...status, ...(availability === undefined ? {} : { availability }) }, { headers: { 'cache-control': 'no-store' } });
   } catch (error) {
     if (error instanceof OptimizerPreviewHttpError) {
       return Response.json({ error: error.message }, { status: error.status });
