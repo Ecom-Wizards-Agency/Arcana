@@ -143,3 +143,83 @@ describe('WP-47B brand contract', () => {
     expect(css).toContain('--wa-focus-contrast: var(--wa-mist)');
   });
 });
+
+/**
+ * The brand mark as shipped assets.
+ *
+ * The mark used to reach a browser as one SVG and nothing else: no PNG for the
+ * tabs and installers that will not read a vector, no Apple touch icon, no
+ * social card. The three rasters are generated from the vector, which stays the
+ * source of truth, so the checks here are about the *shipped* artefacts — a
+ * real PNG, at the size the convention expects, big enough not to be a
+ * placeholder — and about the wiring that makes Next serve them.
+ */
+describe('WP-211 brand icon set', () => {
+  const appDirectory = new URL('../../app/', import.meta.url);
+  const layout = readFileSync(new URL('layout.tsx', appDirectory), 'utf8');
+
+  /** The IHDR chunk, read directly, so no image library is needed to verify one. */
+  function pngHeader(file: string): { signature: boolean; width: number; height: number; bytes: number } {
+    const bytes = readFileSync(new URL(file, appDirectory));
+    return {
+      signature: bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+      width: bytes.readUInt32BE(16),
+      height: bytes.readUInt32BE(20),
+      bytes: bytes.length,
+    };
+  }
+
+  const EXPECTED = [
+    // A favicon large enough that a browser downscales rather than guesses.
+    { file: 'icon.png', width: 512, height: 512 },
+    // Apple's touch-icon size.
+    { file: 'apple-icon.png', width: 180, height: 180 },
+    // The 1.91:1 card every link preview crops to.
+    { file: 'opengraph-image.png', width: 1200, height: 630 },
+  ] as const;
+
+  it('ships each icon as a real PNG at the size its convention expects', () => {
+    const measured = EXPECTED.map(({ file }) => ({ file, ...pngHeader(file) }));
+    // Counted against the list, not "none threw": a missing file is a failure,
+    // and so is a fourth that nobody declared.
+    expect(measured.map(({ file, signature, width, height }) => ({ file, signature, width, height }))).toEqual(
+      EXPECTED.map((expected) => ({ ...expected, signature: true })),
+    );
+    // A 1x1 transparent PNG is ~70 bytes and satisfies every check above.
+    for (const { file, bytes } of measured) expect(bytes, file).toBeGreaterThan(4096);
+  });
+
+  it('names each file exactly as the Next metadata convention does', async () => {
+    // Imported rather than restated: if a Next upgrade renames a convention,
+    // this fails here instead of silently serving no icon.
+    const { STATIC_METADATA_IMAGES } = await import('next/dist/lib/metadata/is-metadata-route.js');
+    const conventions = { 'icon.png': 'icon', 'apple-icon.png': 'apple', 'opengraph-image.png': 'openGraph' } as const;
+    for (const { file } of EXPECTED) {
+      const convention = STATIC_METADATA_IMAGES[conventions[file]];
+      const [name, extension] = [file.slice(0, file.lastIndexOf('.')), file.slice(file.lastIndexOf('.') + 1)];
+      expect(convention?.filename, file).toBe(name);
+      expect(convention?.extensions, file).toContain(extension);
+    }
+  });
+
+  it('references every icon from the metadata block, and the card from neither', () => {
+    // Next merges the collected file-convention icons only when the metadata
+    // object declares no `icons` key at all, so an `icons` block that names one
+    // icon suppresses the rest. Both PNGs have to appear here by name.
+    for (const { file, width } of EXPECTED) {
+      if (file === 'opengraph-image.png') continue;
+      expect(layout, file).toContain(`{ url: '/${file}', type: 'image/png', sizes: '${width}x${width}' }`);
+    }
+    expect(layout).toContain("{ url: '/brand/wizards-ai-icon.svg', type: 'image/svg+xml' }");
+
+    // The card is the mirror image: the static file is adopted *unless*
+    // `openGraph.images` exists, so this absence is what ships the card.
+    expect(layout).not.toMatch(/openGraph:\s*\{[^}]*images/);
+    expect(layout).toMatch(/twitter:\s*\{\s*card: 'summary_large_image'/);
+
+    // The vector the rasters were generated from is still the shipped source.
+    expect(
+      readFileSync(new URL('../../public/brand/wizards-ai-icon.svg', import.meta.url), 'utf8'),
+    ).toContain('viewBox="0 0 378 378"');
+  });
+});
