@@ -1,6 +1,7 @@
 import { requestActor, errorResponse, openWebDatabase, requireOrgMembership } from '../../../../src/server/request-context';
 import { deleteTag, updateTag } from '@wizard-ads/db';
 import type { DeleteTagMode } from '@wizard-ads/db';
+import { parseTagColorPatch } from '../color-input';
 
 export const runtime = 'nodejs';
 type RouteContext = { params: Promise<{ tagId: string }> };
@@ -23,7 +24,7 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Re
       ...(body.parentId === null || typeof body.parentId === 'string'
         ? { parentId: body.parentId }
         : {}),
-      ...(body.color === null || typeof body.color === 'string' ? { color: body.color } : {}),
+      ...parseTagColorPatch(body.color),
     });
     return Response.json({ tag });
   } catch (error) {
