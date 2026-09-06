@@ -2609,6 +2609,12 @@ export function verifyCampaignCreationProviderCallArtifacts(
     || instantMillis(intent.recordedAt) > instantMillis(now)) {
     throw new Error('provider call intent was not recorded during the verified authority window');
   }
+  if (currentEvidence.providerCallIntents.some((priorIntent) => (
+    priorIntent.providerCallId === intent.providerCallId
+      || priorIntent.attemptId === intent.attemptId
+  ))) {
+    throw new Error('provider call intent reuses a reserved call or attempt identity');
+  }
   const nodesById = new Map(verified.plan.nodes.map((node, index) => (
     [node.nodeId, { node, index }] as const
   )));

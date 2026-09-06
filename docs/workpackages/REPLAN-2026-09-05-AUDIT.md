@@ -4,6 +4,15 @@
 
 ### Latest preparation checkpoint
 
+**SP transport design and prerequisite:** three independent designs were synthesized in
+`docs/design/WP-215-SP-TRANSPORT.md` under the authorized implementation plan. The shared intent
+verifier now rejects reused call/attempt identities from a different pending node before I/O;
+all 62 campaign-creation tests and shared typecheck pass. S1 was freshly fetched and its pinned
+raw-byte digest is unchanged. The transport itself is the next source slice, not deployed work.
+CI run `34017391131` passes both jobs at `88ba5d3`. Main remains `9672d93` and is already merged.
+The replan status board now records PRs #144/#145 and the completed first hosted window; stale
+first-window access/approval requests were removed. No new production operation was performed.
+
 **Recovered-history local rehearsal passed:** the dedicated loopback PostgreSQL 17.11 instance
 replayed all **46 exact observed files**, both recorded operational permission repairs, then all
 **ten pinned additions**, each migration in its own transaction. Application migrations ran as

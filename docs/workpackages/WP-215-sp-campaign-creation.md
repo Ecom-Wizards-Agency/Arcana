@@ -118,6 +118,14 @@ lossless ID parser and exact count assertions, and quarantine uncertain creates.
 or an absent observation never authorize another create. Provider-created automatic clauses
 are separate observed resources, not explicit POST-create nodes in these counts.
 
+## SP transport implementation checkpoint
+
+The [transport design](../design/WP-215-SP-TRANSPORT.md) declares the next exact scope and
+preserves the mandatory reservation boundary. Shared verification now refuses reused call or
+attempt IDs across different nodes; all 62 campaign-creation tests and shared typecheck pass.
+The inert adapter, private response decoder and synthetic fixtures/tests follow that shared
+commit. Durable reservation and runtime activation remain pending.
+
 ## Objective
 
 Let the operator take a plan from the Campaign Builder, preview it as an immutable dependency
@@ -131,9 +139,8 @@ the preview says so and a pause proposal is a separate reviewed action.
 - `packages/ads-api/src/sp-creation-codec.ts` and test (new; deterministic request compilation);
 - `packages/ads-api/src/sp-money.ts` and the import-only extraction in `sp-write-codec.ts`;
 - `packages/ads-api/src/sp-creation-adapter.ts` and test (new; maps plan nodes onto the
-  existing `createSpCampaigns`, `createSpAdGroups`, `createSpProductAds`, `createSpKeywords`,
-  `createSpTargets`, `createSpNegativeKeywords`, `createSpNegativeTargets` clients at
-  `packages/ads-api/src/client.ts:551-702`);
+  existing deterministic compiler and `httpRequestOnce`; never the retrying/chunking bulk
+  create clients);
 - `supabase/migrations/<timestamp>_campaign_creation_ledger.sql` (new, additive, five-second
   lock timeout and the advisory DDL lock like every migration since WP-185);
 - `packages/db/src/queries/campaign-creation-persistence.ts` and tests (new);

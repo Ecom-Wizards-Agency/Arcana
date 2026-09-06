@@ -1243,6 +1243,13 @@ describe('versioned campaign creation inputs', () => {
     });
     expect(verifyCampaignCreationProviderCallArtifacts(plan, authorization, job, current, intent,
       '2026-08-30T00:03:00.000Z', sha256).intent).toEqual(intent);
+    // A different pending node must not reuse a completed sibling's identities.
+    const priorIntent = current.providerCallIntents[0]!;
+    for (const field of ['providerCallId', 'attemptId'] as const) {
+      expect(() => verifyCampaignCreationProviderCallArtifacts(plan, authorization, job, current,
+        { ...intent, [field]: priorIntent[field] },
+        '2026-08-30T00:03:00.000Z', sha256)).toThrow(/reuses a reserved/);
+    }
     const waitingForParent = { ...current,
       observations: current.observations.map((value) => value.nodeId === AD_NODE_ID
         ? { ...value, observation: 'pending', providerEntityId: null } : value),
