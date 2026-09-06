@@ -286,6 +286,10 @@ current-source implementation. The 46-file baseline is 672,673 bytes; with the s
 the observed input set is 56 files / 921,245 bytes. Keep both old policies unchanged and review
 the reconciled baseline separately. The audit records exact private evidence and rehearsal
 status. This inventory is not authorization to apply the second window.
+The catalog/permission rehearsal now passes under a non-superuser migration principal, including
+both exact operational repairs and all ten additions. Captured role/grant state is preserved and
+write gates remain closed. Empty synthetic tables do not establish production index-build or
+lock duration; those and managed-platform checks remain required before the hosted window.
 
 The same source branch also carries the five WP-217 migration files, `20260906000000`
 through `20260906040000`, explicitly inventoried in

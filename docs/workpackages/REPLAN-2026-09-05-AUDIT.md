@@ -4,6 +4,33 @@
 
 ### Latest preparation checkpoint
 
+**Recovered-history local rehearsal passed:** the dedicated loopback PostgreSQL 17.11 instance
+replayed all **46 exact observed files**, both recorded operational permission repairs, then all
+**ten pinned additions**, each migration in its own transaction. Application migrations ran as
+`postgres` with NOSUPERUSER/CREATEROLE/CREATEDB/BYPASSRLS. The historical custody migration
+reproduced 18 owner/ACL warnings; the exact operational repair then corrected all eight functions.
+The ten additions produced no warnings.
+
+Postflight exactly matches the ten captured role records and 17 membership edges, retains all
+158 preview SELECT grants, verifies disabled login/bypass/default SELECT, and checks all nine
+new tables for presence, RLS and absence of anonymous or preview authority and authenticated
+writes. New constraints/indexes are valid, the eight fenced functions still permit only the
+worker among application callers, and both write gates remain absent/closed. Codex independently
+checked ordered counts, artifact hashes and all ten additions against current source `0db04d3`,
+then reran postflight against the disposable database.
+
+Evidence directory: `_local/write-window-exact-rehearsal/`; files `RUN.json`, `POSTFLIGHT.json`,
+`REHEARSAL-STATUS.json`, `ARTIFACTS.json` and `ROOT-VERIFICATION.json`. The verified input ledger
+is `f62c9388644580480e2093a649d39e3391f501c907ed4922f5ef981ac9774bf0` for 56 files / 921,245 bytes,
+excluding the separately recorded operational repairs and platform fixture setup. A startup-only
+readiness failure is retained separately; it applied no application schema.
+
+This passes the recovered-history catalog/permission rehearsal. It uses synthetic platform
+auth/Vault/cron and empty application tables; it does not prove managed-platform behavior,
+production data/index duration, contention, provider execution or live UI flows. The old fixed
+policies remain unchanged. Adoption of the reconciled input manifest, source review/merge and
+host-specific pre/post checks still precede a separately authorized production window.
+
 **Main integration verified:** `a78a8b4` records the recommendation view/fixture handoff;
 `2dd1688` merges main `9672d93`, including Claude's table conversion and window record. The
 only merge conflict was the WP-209 brief: both the earlier requirements and Claude's complete

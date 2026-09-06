@@ -23,6 +23,10 @@ authorized login/default-grant restriction. Both were operational changes withou
 entries. The local rehearsal uses recovered SQL and captured role/grant facts; platform fixture
 doubles are not a clone of hosted Supabase. Host-specific pre/post checks and index/lock timing
 remain prerequisites. Evidence and the current rehearsal status are in the replan audit.
+The recovered-history catalog/permission rehearsal has now passed all 46 baseline files, both
+operational repairs and ten additions with no warning in the additions. Independent postflight
+verifies exact captured roles/memberships and retained grants, nine new tables with RLS and
+closed write gates. This resolves local schema/ACL replay, not the remaining hosted checks.
 
 ## Release dependencies
 
