@@ -56,7 +56,7 @@ export default async function ConnectClaudePage(): Promise<ReactNode> {
       />
 
       <div className="wa-stack">
-        <section className="wa-card">
+        {endpoint !== null ? <section className="wa-card">
           <header className="wa-card__head">
             <h2 className="wa-card__title">How it connects</h2>
           </header>
@@ -81,7 +81,7 @@ export default async function ConnectClaudePage(): Promise<ReactNode> {
               OpenSpell currently exposes no Amazon write tools through MCP.
             </p>
           </div>
-        </section>
+        </section> : null}
 
         <ConnectClaudeManager
           keys={keys}

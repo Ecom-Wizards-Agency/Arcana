@@ -6,7 +6,7 @@
  * `WIZARD_ADS_APP_URL` must not reach the result at all.
  */
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_MCP_ENDPOINT, mcpEndpoint, optional, required } from './env';
+import { mcpEndpoint, optional, required } from './env';
 
 /** `NodeJS.ProcessEnv` insists on `NODE_ENV`; nothing here reads it. */
 const env = (values: Record<string, string> = {}): NodeJS.ProcessEnv => ({
@@ -36,18 +36,20 @@ describe('mcpEndpoint', () => {
     expect(endpoint).toBe('https://server-var.example.test/mcp');
   });
 
-  it('uses the exact production endpoint rather than deriving from the app origin', () => {
+  it('leaves an unconfigured installation unavailable without deriving from its app origin', () => {
     const endpoint = mcpEndpoint(env({ WIZARD_ADS_APP_URL: 'https://app.example.test' }));
-    expect(endpoint).toBe('https://mcp.ecomwizards.agency/mcp');
-    expect(endpoint).toBe(DEFAULT_MCP_ENDPOINT);
-    expect(endpoint).not.toContain('app.example.test');
+    expect(endpoint).toBeNull();
   });
 
   it('treats an empty string as unset', () => {
-    expect(mcpEndpoint(env({ NEXT_PUBLIC_MCP_URL: '', WIZARD_ADS_MCP_URL: '' }))).toBe(
-      DEFAULT_MCP_ENDPOINT,
-    );
+    expect(mcpEndpoint(env({ NEXT_PUBLIC_MCP_URL: '  ', WIZARD_ADS_MCP_URL: '' }))).toBeNull();
   });
+
+  it.each(['not a URL', 'javascript:alert(1)', 'https://synthetic:synthetic@example.test/mcp'])(
+    'does not offer an invalid or credential-bearing endpoint: %s', (value) => {
+      expect(mcpEndpoint(env({ WIZARD_ADS_MCP_URL: value }))).toBeNull();
+    },
+  );
 });
 
 describe('required and optional', () => {
