@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./schema": "./src/schema/index.ts",
+    "./operator": "./src/operator.ts",
     "./recommendation-worker": "./src/recommendation-worker.ts",
     "./sp-write-persistence": "./src/sp-write-persistence.ts",
     "./testing": "./src/testing/index.ts",
