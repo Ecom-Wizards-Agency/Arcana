@@ -144,6 +144,31 @@ export const RecommendationsRunJob = z.object({
   groupId: Uuid.optional(),
 });
 
+/**
+ * One-time jobs stay in the existing recommendation custody lane. Deliberately
+ * omit legacy lookbackDays: old workers must reject these fixed-window jobs
+ * before execution instead of stripping the explicit settings reference.
+ */
+export const OneTimeRecommendationsRunJob = z.strictObject({
+  ...jobBase,
+  type: z.literal(JobType.enum['recommendations.run']),
+  executionVersion: z.literal(2),
+  runId: Uuid,
+  groupId: Uuid.optional(),
+  snapshotFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type OneTimeRecommendationsRunJob = z.infer<typeof OneTimeRecommendationsRunJob>;
+
+/** No fallback may erase an unknown or malformed one-time discriminator. */
+export const RecommendationsExecutionJob = z.discriminatedUnion('executionVersion', [
+  RecommendationsRunJob.extend({
+    executionVersion: z.undefined().optional(),
+    snapshotFingerprint: z.never().optional(),
+  }),
+  OneTimeRecommendationsRunJob,
+]);
+export type RecommendationsExecutionJob = z.infer<typeof RecommendationsExecutionJob>;
+
 export const KeepaSyncJob = z.object({
   ...jobBase,
   type: z.literal(JobType.enum['keepa.sync']),
@@ -251,7 +276,7 @@ export const JobPayload = z.discriminatedUnion('type', [
   ReportPollJob,
   ReportFetchJob,
   CrosscheckIngestJob,
-  RecommendationsRunJob,
+  RecommendationsExecutionJob,
   KeepaSyncJob,
   RankSyncJob,
   EconomicsSyncJob,
