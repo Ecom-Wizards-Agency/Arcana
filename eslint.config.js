@@ -11,10 +11,11 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 /** Build a no-restricted-imports rule entry for a set of forbidden workspace packages. */
-const forbid = (pairs) => [
+const forbid = (pairs, includeSubpaths = false) => [
   'error',
   {
     paths: pairs.map(([name, message]) => ({ name, message })),
+    ...(includeSubpaths ? { patterns: pairs.map(([name, message]) => ({ group: [`${name}/*`], message })) } : {}),
   },
 ];
 
@@ -124,6 +125,16 @@ export default tseslint.config(
           'decrypted integration credentials are worker-only; the web app may only store or revoke them.',
         ],
       ]),
+    },
+  },
+  {
+    files: ['apps/mcp/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': forbid([
+        ['@wizard-ads/ads-api', 'MCP submits through the application boundary; Amazon calls belong to the worker.'],
+        ['@wizard-ads/sp-api', 'MCP must not access Amazon provider clients or credentials.'],
+        ['@wizard-ads/db/worker', 'decrypted integration credentials are worker-only.'],
+      ], true),
     },
   },
   {

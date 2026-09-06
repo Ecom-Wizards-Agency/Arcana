@@ -1,5 +1,6 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { ESLint } from 'eslint';
 import { JobPayload, JobType } from '@wizard-ads/shared';
 import { describe, expect, it } from 'vitest';
 import * as rootDatabase from './index.js';
@@ -8,6 +9,26 @@ import * as persistence from './sp-write-persistence.js';
 import * as workerDatabase from './worker.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+// Existing provider readers and their tests are pinned individually. New root imports
+// can expose every provider write method and therefore require explicit review.
+const EXISTING_PROVIDER_ROOT_CONSUMERS = [
+  'apps/web/app/creative/read-only.test.ts',
+  'apps/worker/package.json',
+  'apps/worker/src/ads-api.test.ts',
+  'apps/worker/src/ads-api.ts',
+  'apps/worker/src/parsers.ts',
+  'apps/worker/src/sb-video-ingestion.test.ts',
+  'apps/worker/src/sb-video-ingestion.ts',
+  'apps/worker/src/sb-video-probe.test.ts',
+  'apps/worker/src/sb-video-probe.ts',
+  'apps/worker/src/schedules.test.ts',
+  'apps/worker/src/schedules.ts',
+  'apps/worker/src/store.ts',
+  'apps/worker/src/unified-reporting.test.ts',
+  'apps/worker/src/unified-reporting.ts',
+  'apps/worker/src/worker.integration.test.ts',
+  'apps/worker/src/worker.ts',
+].map((path) => `${REPO_ROOT}${path}`);
 const APPLICATION_CONSUMERS = [
   'apps/mcp/src/writes-http.test.ts',
   'apps/mcp/src/writes.ts',
@@ -15,7 +36,9 @@ const APPLICATION_CONSUMERS = [
   'apps/web/app/api/sp-writes/inverse-preview/route.ts',
   'apps/web/app/api/sp-writes/preview/route.ts',
   'apps/web/app/api/sp-writes/status/route.ts',
+  'apps/web/e2e/support/sp-write-preview.ts',
   'apps/web/src/server/mcp-key-mutations.ts',
+  'apps/web/src/writes/approval-loader.ts',
   'apps/web/src/writes/http.ts',
   'apps/worker/src/sp-write-outbox/loop.test.ts',
   'apps/worker/src/sp-write-outbox/mcp-history.test.ts',
@@ -36,8 +59,9 @@ const INERT_WORKER_MARKERS: Record<string, readonly string[]> = {
   'artifacts.ts': ['sp-write-adapter', '@wizard-ads/db/sp-write-persistence', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence'],
   'providers.ts': ['sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter', '@wizard-ads/db/sp-write-worker'],
   'loop.ts': ['sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence', '@wizard-ads/db/sp-write-persistence', 'createSpWriteOutboxLedger', 'createSpWriteRuntimeLedger', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
-  'loop.test.ts': ['sp_write_', 'sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence', '@wizard-ads/db/sp-write-persistence', 'createSpWriteOutboxLedger', 'createSpWriteRuntimeLedger', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
+  'loop.test.ts': ['sp_write_', 'sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence', '@wizard-ads/db/sp-write-persistence', 'createSpWriteOutboxLedger', 'createSpWriteRuntimeLedger', 'createSpWriteOutboxLoop', 'createSpWriteWorker', '@wizard-ads/db/sp-write-worker'],
   'composition.ts': ['createSpWriteOutboxLoop', 'createSpWriteWorker', '@wizard-ads/db/sp-write-worker'],
+  'composition.test.ts': ['createSpWriteOutboxLoop', 'createSpWriteWorker'],
   'mcp-history.test.ts': ['sp_write_', 'sp-write-adapter', '@wizard-ads/ads-api/sp-write-adapter', 'sp-write-persistence', '@wizard-ads/db/sp-write-persistence', 'createSpWriteOutboxLedger', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
 };
 
@@ -58,6 +82,20 @@ async function sourceFiles(directory: string): Promise<string[]> {
 }
 
 describe('SP write persistence facade blast radius', () => {
+  it('enforces MCP provider import restrictions for root and subpath clients', async () => {
+    const eslint = new ESLint({ cwd: REPO_ROOT });
+    for (const specifier of ['@wizard-ads/ads-api', '@wizard-ads/ads-api/sp-write-adapter',
+      '@wizard-ads/sp-api', '@wizard-ads/sp-api/client', '@wizard-ads/db/worker']) {
+      const [result] = await eslint.lintText(`import * as provider from '${specifier}'; void provider;`, {
+        filePath: 'apps/mcp/src/synthetic-provider-import.ts',
+      });
+      expect(result?.messages.some((message) => message.ruleId === 'no-restricted-imports'), specifier).toBe(true);
+    }
+    const [allowed] = await eslint.lintText("import * as application from '@wizard-ads/db/mcp-writes'; void application;", {
+      filePath: 'apps/mcp/src/synthetic-application-import.ts',
+    });
+    expect(allowed?.messages.filter((message) => message.ruleId === 'no-restricted-imports')).toEqual([]);
+  });
   it('resolves only through the explicit subpath surface', async () => {
     expect(persistence.createSpWriteStagingLedger).toBeTypeOf('function');
     expect(persistence.createSpWriteRuntimeLedger).toBeTypeOf('function');
@@ -178,6 +216,7 @@ describe('SP write persistence facade blast radius', () => {
       'sp-write-adapter',
       '@wizard-ads/db/sp-write-persistence',
       '@wizard-ads/ads-api/sp-write-adapter',
+      '@wizard-ads/ads-api',
       'createSpWriteRuntimeLedger',
       'createSpWriteStagingLedger',
       'createSpWriteOutboxLedger',
@@ -195,6 +234,8 @@ describe('SP write persistence facade blast radius', () => {
     for (const path of operationalFiles) {
       const source = await readFile(path, 'utf8');
       for (const marker of activationMarkers) {
+        if (marker === '@wizard-ads/ads-api'
+          && (!/(['"])@wizard-ads\/ads-api\1/u.test(source) || EXISTING_PROVIDER_ROOT_CONSUMERS.includes(path))) continue;
         if (marker === '@wizard-ads/db/mcp-writes' && MCP_CONSUMERS.includes(path)) continue;
         if (marker === 'registerMcpWriteTools' && [
           `${REPO_ROOT}apps/mcp/src/server.ts`, `${REPO_ROOT}apps/mcp/src/writes.ts`,
@@ -205,6 +246,8 @@ describe('SP write persistence facade blast radius', () => {
         ].includes(path)) continue;
         if (marker === '@wizard-ads/db/sp-write-application' && APPLICATION_CONSUMERS.includes(path)) continue;
         if (marker === 'sp_write_' && [
+          `${REPO_ROOT}apps/web/e2e/support/sp-write-preview.ts`,
+          `${REPO_ROOT}apps/web/src/writes/approval-fixture.integration.test.ts`,
           `${REPO_ROOT}apps/web/src/writes/http.test.ts`,
           `${REPO_ROOT}apps/web/src/recommendations/revisions-http.test.ts`,
           `${REPO_ROOT}apps/web/src/mcp-write-keys-route.test.ts`,

@@ -8041,17 +8041,22 @@ describe('SP write runtime blast radius', () => {
       'apps/web/app/api/sp-writes/inverse-preview/route.ts',
       'apps/web/app/api/sp-writes/preview/route.ts',
       'apps/web/app/api/sp-writes/status/route.ts',
+      'apps/web/e2e/support/sp-write-preview.ts',
       'apps/web/src/server/mcp-key-mutations.ts',
+      'apps/web/src/writes/approval-loader.ts',
       'apps/web/src/writes/http.ts',
       'apps/worker/src/sp-write-outbox/loop.test.ts',
       'apps/worker/src/sp-write-outbox/mcp-history.test.ts',
     ];
-    const inertWorkerImports: Record<string, readonly string[]> = {
+    const inertSourceImports: Record<string, readonly string[]> = {
+      'apps/web/src/writes/approval-fixtures.ts': ['@wizard-ads/shared/sp-writes'],
+      'apps/web/src/writes/approval-fixtures.test.ts': ['@wizard-ads/shared/sp-writes'],
       'apps/worker/src/sp-write-outbox/artifacts.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter'],
       'apps/worker/src/sp-write-outbox/loop.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
       'apps/worker/src/sp-write-outbox/providers.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter', '@wizard-ads/db/sp-write-worker'],
-      'apps/worker/src/sp-write-outbox/loop.test.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
+      'apps/worker/src/sp-write-outbox/loop.test.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter', 'createSpWriteOutboxLoop', 'createSpWriteWorker', '@wizard-ads/db/sp-write-worker'],
       'apps/worker/src/sp-write-outbox/composition.ts': ['createSpWriteOutboxLoop', 'createSpWriteWorker', '@wizard-ads/db/sp-write-worker'],
+      'apps/worker/src/sp-write-outbox/composition.test.ts': ['createSpWriteOutboxLoop', 'createSpWriteWorker'],
       'apps/worker/src/sp-write-outbox/mcp-history.test.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
     };
     const seenApplicationConsumers: string[] = [];
@@ -8085,7 +8090,7 @@ describe('SP write runtime blast radius', () => {
             seenApplicationConsumers.push(path.slice(REPO_ROOT.length));
             continue;
           }
-          if (inertWorkerImports[path.slice(REPO_ROOT.length)]?.includes(token)) continue;
+          if (inertSourceImports[path.slice(REPO_ROOT.length)]?.includes(token)) continue;
           if (source.includes(token)) hits.push(`${path.slice(REPO_ROOT.length)}: ${token}`);
         }
       }
