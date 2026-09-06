@@ -19,6 +19,7 @@
 export const PACKAGE_NAME = '@wizard-ads/db' as const;
 
 export * from './client.js';
+export * from './queries/authenticated-actor.js';
 export * from './schema/index.js';
 export * from './queries/chunk.js';
 export * from './queries/campaign-update.js';
