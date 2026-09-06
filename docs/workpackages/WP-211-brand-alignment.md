@@ -175,3 +175,146 @@ branch this line has already moved to `packages/ui/src/toolbar/styles.ts:84`.
 `packages/ui/src/theme.ts` so both palettes are pinned. WP-211 owns that test file, so it
 was left unpinned rather than landing an assertion that fails until the fallbacks above are
 corrected. Whoever fixes the fallbacks should land the assertion in the same commit.
+
+## Close-out — slice 2 (tag colour contract, icon set)
+
+Landed: required behaviour 4 (tag colour) and 6 (icon set and Open Graph metadata).
+Behaviour 8 is an operator action outside the repository and is still open; the
+`packages/ui` half of behaviour 2 and the title-weight and accent-budget items above
+remain handed off, untouched by this slice.
+
+`packages/ui/**` was not opened. The three handoffs recorded for WP-209's owner in the
+slice 1 close-out stand exactly as written and are unchanged by this slice.
+
+### Behaviour 4 — the tag colour contract
+
+Contract file, declared before editing and landed on its own in `83b1d6a`:
+**`packages/shared/src/tags.ts`**, re-exported from `packages/shared/src/index.ts`.
+Additive; nothing else in `packages/shared` changed.
+
+`TagColor` is `signal | indigo | good | warn | bad` — brand **token names**, not hex. A
+stored `#FD4807` freezes the palette at the moment of the write and cannot follow a brand
+change or a theme; a stored `signal` resolves through `apps/web/app/tags/colors.ts` to
+`var(--wa-signal)` and does both. Grey is deliberately absent: grey is what an uncoloured
+tag already paints.
+
+- **Refusal.** `apps/web/app/api/tags/color-input.ts` parses the field for both routes.
+  `POST /api/tags` and `PATCH /api/tags/[tagId]` answer 400 with a message naming the five
+  options. An update that omits `color` still leaves a stored legacy value alone, so a
+  pre-contract tag can be renamed or moved without being forced to recolour.
+- **Swatches.** The `<input type="color">` in `tag-manager.tsx` is gone. In its place is a
+  `radiogroup` of six controls — the five colours plus "No color" — each with an
+  accessible name. Selection is carried by a 2px `--wa-ring` outline, because a swatch's
+  fill is a fixed brand colour and cannot also encode state.
+- **Legacy rows.** `tagSwatchColor` treats an unrecognised stored value exactly like an
+  absent one and returns `var(--wa-series-3)`. Never throws. The read path is unchanged,
+  so the stored string still round-trips through `GET /api/tags` untouched.
+
+**Proof that the refusal is new** — `apps/web/app/api/tags/color.test.ts`, run from
+`apps/web` with `WIZARD_ADS_TEST_DATABASE_URL` and `DATABASE_URL` pointed at the local
+disposable Postgres 17:
+
+```
+pnpm vitest run app/api/tags/color.test.ts
+```
+
+Before the route change: **3 failed | 4 passed**. The failures are the three that matter —
+`refuses an off-contract colour on create` got 201 where 400 was expected,
+`refuses every off-contract shape a caller can send` returned `[201 x 8]` against
+`[400 x 8]`, and the off-contract PATCH returned 200. After: **7 passed**. The two counting
+assertions are against the input list, not against "nothing threw": eight rejected shapes
+map to eight 400s and zero rows in `public.tags`, and the five accepted colours map to five
+201s whose stored `color` equals the name sent.
+
+### Behaviour 6 — the icon set
+
+`apps/web/public/brand/wizards-ai-icon.svg` is unchanged and remains the source of truth;
+the mark itself was not touched, so `RELEASE_ARTIFACT.brandMark` is untouched too. Three
+PNGs are rasterised from it with the `sharp` already in the workspace (0.35.3, offline,
+`density: 600`): `icon.png` 512x512, `apple-icon.png` 180x180, `opengraph-image.png`
+1200x630 — the square mark centred on Obsidian `#0F1318`. The exact recipe, and why the
+card carries no wordmark, are recorded in `docs/design/DESIGN-SYSTEM.md`; rerunning it and
+comparing decoded pixels against the committed files gives three `pixel-identical` results.
+
+**The trap the build found.** Next's `resolve-metadata.js` merges collected
+file-convention icons only inside an `if (!resolvedMetadata.icons)` guard. The first
+attempt declared `icons.icon` with the SVG alone, on the documented assumption that Next
+prepends the file icons — it does not, and the built HTML head contained one SVG link and
+neither PNG. `openGraph` behaves the other way round: the static card is adopted *unless*
+the object owns an `images` key. So `layout.tsx` now names all three icon URLs explicitly
+and names no Open Graph image, and `design-system.test.ts` pins both the presence and the
+absence, because either mistake is silent.
+
+**Proof.** `apps/web/src/ui/design-system.test.ts` gained three cases. They read each PNG's
+IHDR chunk directly — signature, exact width and height, and a >4KiB floor so a 70-byte
+placeholder cannot pass — check each filename against `STATIC_METADATA_IMAGES` imported
+from Next itself rather than a restated list, and pin the metadata block. Removing the
+three PNGs and adding an `openGraph.images` key gives **2 failed | 9 passed**; restored,
+**11 passed**.
+
+End to end, from `apps/web` with `WIZARD_ADS_APP_URL='https://app.example.test'`:
+
+- `pnpm build` registers `/icon.png`, `/apple-icon.png` and `/opengraph-image.png` in
+  `routes-manifest.json` and emits all three bodies under `.next/server/app/`.
+- The prerendered `settings.html` head carries
+  `<link rel="icon" href="/icon.png" type="image/png" sizes="512x512">`, the SVG link, and
+  `<link rel="apple-touch-icon" href="/apple-icon.png" ... sizes="180x180">`, plus
+  `og:image`/`twitter:image` resolved to an absolute URL with
+  `og:image:width 1200` and `og:image:height 630`.
+- `pnpm start` then serves `/icon.png`, `/apple-icon.png` and `/opengraph-image.png` as
+  `200 image/png` at 512x512, 180x180 and 1200x630, and the SVG still as
+  `200 image/svg+xml`.
+
+`metadataBase` is read from `WIZARD_ADS_APP_URL` when it parses, and omitted otherwise.
+It deliberately does not reuse `authOrigin`, which throws without that variable in
+production: a wrong auth link is a security problem, a missing `og:image` base is not, and
+a metadata resolver that throws would take every page down with it.
+
+### Behaviour 3 — full verification run
+
+From the worktree root unless noted; the test database is the local disposable
+Postgres 17 named in the task, never a hosted service.
+
+| Command | Result |
+|---|---|
+| `pnpm install --frozen-lockfile` | already up to date, 23 projects |
+| `pnpm test` in `apps/web` | **132 files, 682 tests, all passed** |
+| `pnpm test` in `packages/shared` | 5 files, 94 tests, all passed |
+| `pnpm typecheck` | clean |
+| `pnpm lint` | clean |
+| `pnpm build` in `apps/web` | compiled, TypeScript clean, 3 metadata routes emitted |
+| `pnpm hygiene` | clean — 1472 of 1473 tracked files, denylist present with 9 terms |
+| `git diff --check` | clean |
+
+### Deviation — one literal outside the declared file scope
+
+`apps/web/src/tags-route.test.ts:75` seeded its fixture tag with `color: '#2563eb'`, an
+off-palette blue the boundary now refuses, so that suite went red the moment validation
+landed. That file is outside this slice's declared scope and no other worktree is touching
+it. The single literal became `'signal'`; nothing else in the file changed, and the suite
+is green. Reverting the validation instead would have removed the deliverable, and leaving
+the suite red would have broken `pnpm test`.
+
+The one other edit outside the named files is `packages/shared/src/index.ts`, which gained
+`export * from './tags.js';`. The barrel is how every consumer reaches the contract, so
+the contract is not landed without it; the line is additive and shipped in the same commit
+as the contract file.
+
+### Open
+
+- **Behaviour 8** — branding the Supabase magic-link email as OpenSpell is an operator
+  action in the Supabase dashboard, outside this repository. Still open.
+- **No `twitter-image`.** `summary_large_image` reuses the Open Graph card, which is
+  correct at 1200x630. A dedicated `app/twitter-image.png` would be a new file outside the
+  declared scope; it is not needed and is not recommended.
+- **No wordmark on the card.** The product font is Inter, loaded by `next/font` rather
+  than installed, so any text baked into the card would carry whatever font the generating
+  machine had. If a wordmark is wanted, ship an Inter file the generator can read and say
+  so in `DESIGN-SYSTEM.md`; until then `og:title` carries the words.
+- **No contract-level test in `packages/shared`.** `packages/shared/src/tags.ts` is
+  exercised through the API boundary test rather than a suite of its own, because
+  `contracts.test.ts` is outside this slice's declared scope. A `tags.test.ts` alongside
+  the contract would be the natural home for whoever next owns that package.
+- **Legacy colour values are not migrated.** Rows written before the contract keep their
+  arbitrary strings and paint neutral. A backfill mapping the handful of stored hexes onto
+  the nearest `TagColor` would need `packages/db` and a migration, both outside scope.

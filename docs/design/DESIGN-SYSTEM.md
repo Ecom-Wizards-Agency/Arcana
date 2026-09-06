@@ -129,6 +129,77 @@ never in product UI.
 - **Topbar**: brand left; profile switcher; theme toggle; avatar-initials menu (email +
   sign out inside) — no raw email string in the bar.
 
+## Tag colours
+
+A tag's colour is a closed vocabulary, not free text. `TagColor` in
+`packages/shared/src/tags.ts` is `signal | indigo | good | warn | bad`; the manager offers
+those five as swatches plus "no colour", and `apps/web/app/api/tags/**` refuses anything
+else with a 400 that names the vocabulary.
+
+The stored value is a **token name**, not a hex literal. A stored `#FD4807` freezes the
+palette at the moment of the write and cannot follow a brand change or a theme; a stored
+`signal` resolves through `apps/web/app/tags/colors.ts` to `var(--wa-signal)` and does
+both. Grey is deliberately not in the set, because grey is what an uncoloured tag paints.
+
+Reads stay permissive. Rows written before the contract hold whatever the old native
+colour input produced, and `tagSwatchColor` treats an unrecognised value exactly like an
+absent one: the neutral `--wa-series-3` swatch, never an error. A pre-contract tag can
+still be renamed or moved without being forced to recolour, because the update route only
+validates the colour field when the caller sends one.
+
+## Brand mark and the icon set
+
+The mark is `apps/web/public/brand/wizards-ai-icon.svg` and it is the source of truth. It
+is also a pinned release artifact (`apps/web/src/ui/artifact-markers.ts`,
+`apps/web/src/release/candidate-artifacts.ts`), so replacing it means bumping the marker.
+
+Three rasters are generated from it and shipped through Next's metadata file conventions:
+
+| File | Size | Why that size |
+|---|---|---|
+| `apps/web/app/icon.png` | 512x512 | large enough that a browser downscales rather than guesses |
+| `apps/web/app/apple-icon.png` | 180x180 | Apple's touch-icon size |
+| `apps/web/app/opengraph-image.png` | 1200x630 | the 1.91:1 card every link preview crops to |
+
+The Open Graph card is the square mark centred on Obsidian `#0F1318`, the same plane the
+dark theme and the `themeColor` viewport entry use. It carries no wordmark: the product
+font is Inter, loaded by `next/font`, so any text baked in here would come from whatever
+font the generating machine happened to have. The words in a preview come from
+`og:title` and `og:description` instead.
+
+Regenerate after a mark change, from the repository root, using the `sharp` already in the
+workspace (`density: 600`, `fit: 'cover'`; `magick`/`rsvg-convert` are equivalent):
+
+```js
+const mark = 'apps/web/public/brand/wizards-ai-icon.svg';
+const png = { compressionLevel: 9 };
+await sharp(mark, { density: 600 }).resize(512, 512, { fit: 'cover' }).png(png).toFile('apps/web/app/icon.png');
+await sharp(mark, { density: 600 }).resize(180, 180, { fit: 'cover' }).png(png).toFile('apps/web/app/apple-icon.png');
+const centred = await sharp(mark, { density: 600 }).resize(400, 400, { fit: 'cover' }).png().toBuffer();
+await sharp({ create: { width: 1200, height: 630, channels: 4, background: '#0F1318' } })
+  .composite([{ input: centred, top: 115, left: 400 }]).png(png).toFile('apps/web/app/opengraph-image.png');
+```
+
+Verified reproducible: rerunning the block above and comparing decoded pixels against the
+committed files gives three `pixel-identical` results. `compressionLevel: 9` is what makes
+the *bytes* match too; without it the same pixels land in a larger file.
+
+`design-system.test.ts` reads each PNG's IHDR chunk and asserts the signature, the exact
+dimensions and a floor on file size, so a 70-byte placeholder cannot pass.
+
+### The two metadata fields point in opposite directions
+
+Next's `resolve-metadata.js` merges the collected file-convention icons only inside an
+`if (!resolvedMetadata.icons)` guard. An `icons` block naming one icon therefore
+**suppresses** every file-convention icon — the first attempt here declared only the SVG
+and shipped a head with no PNG in it at all. So `layout.tsx` names all three icon URLs
+explicitly.
+
+`openGraph` is the mirror image: the static `opengraph-image.png` is adopted *unless* the
+metadata object owns an `images` key. So `openGraph` deliberately declares none. Both the
+presence and the absence are pinned by `design-system.test.ts`, because either one is a
+silent failure — a correct-looking metadata block that emits no icon or no card.
+
 ## Relationship to the agency brand contract
 
 Two contracts, one brand, different media. They are not in conflict and neither overrides
