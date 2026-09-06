@@ -258,6 +258,21 @@ test('grid carries the performance tiles and trend above the rows, streamed outs
   // the rows nothing: the browser still makes exactly the one row request the
   // boundary is measured on.
   expect(rowRequests).toHaveLength(1);
+
+  // The `GridViewport` measured fill, carried from the slice 3 and slice 4
+  // reviews and measured here at a real viewport size rather than reasoned
+  // about. With the cockpit above it the fill can only resolve to the floor, so
+  // the floor is the decision: the grid keeps a usable height and runs past the
+  // bottom of the window, leaving no screen space unused below it.
+  const fill = await page.evaluate(() => {
+    const element = document.querySelector('[data-testid="grid-viewport"]');
+    if (element === null) return null;
+    const rect = element.getBoundingClientRect();
+    return { height: rect.height, below: window.innerHeight - rect.bottom };
+  });
+  expect(fill).not.toBeNull();
+  expect(fill!.height).toBeGreaterThanOrEqual(560);
+  expect(fill!.below).toBeLessThanOrEqual(0);
 });
 
 /**

@@ -374,6 +374,9 @@ function cachedLayoutFor(
   }
 }
 
+/** The grid's floor once the cockpit is above it. See the `GridViewport` below. */
+const GRID_MIN_HEIGHT = 560;
+
 function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   const router = useRouter();
   const available = useMemo(() => columnsFor(props.entity), [props.entity]);
@@ -616,7 +619,19 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     // WP-06 ships without an inline palette (inputs, selects, toolbar buttons).
     // The grid's own cells need nothing here: `packages/ui` writes
     // `var(--wa-*, <literal>)` and reads the tokens directly.
-    <GridViewport fullscreen={fullscreen} onExitFullscreen={() => setFullscreen(false)}>
+    /*
+     * The measured fill resolves to this floor now that the tile row and the
+     * trend chart sit above the grid: the viewport is already spent by the time
+     * the table starts, exactly as on the optimizer. The floor is therefore the
+     * decision, not the safety net, and fullscreen is the gesture that gives the
+     * table the whole screen. Measured at 1280x720 in `grid.spec.ts`, which
+     * asserts both this height and that no screen space is left unused below it.
+     */
+    <GridViewport
+      fullscreen={fullscreen}
+      onExitFullscreen={() => setFullscreen(false)}
+      minHeight={GRID_MIN_HEIGHT}
+    >
     <div
       data-testid="grid-data-ready"
       data-ready={viewReady ? 'true' : 'false'}
