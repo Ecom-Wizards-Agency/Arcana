@@ -11,12 +11,12 @@ SB/SD and asset preparation are required follow-up slices in this package's rele
 
 ## Campaign frontend contract scope, 2026-09-06
 
-The [campaign review design](../design/WP-215-CAMPAIGN-REVIEW.md) selects a pure projection
-of already recorded inputs until a real authenticated reader exists. Codex owns the new
+The [campaign review design](../design/WP-215-CAMPAIGN-REVIEW.md) began with a pure projection
+of already recorded inputs. The persisted reader below now supplies real owned snapshots. Codex owns the new
 `packages/shared/src/campaign-creation-approval.ts` and test, explicit package subpath, and
 `apps/web/src/campaigns/creation-approval-loader.ts`, its test and
-`creation-approval-fixtures.ts`. Claude owns the future client. No route/page or browser
-registry edit is reserved by this slice.
+`creation-approval-fixtures.ts`. Claude owns the future client. The rendering slice reserved no route/page or browser registry edits; the persistence slice
+below additionally owns its read-only GET, preserving Claude client and page ownership.
 
 The authoritative plan remains intact, including all SB/SD payload variants. Current checks
 are dated advisory evidence; missing selected-version assets and unknown admission cannot
@@ -27,21 +27,29 @@ consumer tests and web typecheck pass. Rendering examples cover SP manual/automa
 with detail-page/Store destinations, and SD image/video, with exact counts, unknown or recorded
 admission, stale checks and selected-asset processing/version failures. They do not cover every
 SB format or partial campaign execution yet. No executable HTTP/confirmation contract is
-invented by the interrupted-read display sequence. Persistence, actual read authorization,
-approval/status routes, browser confirmation and live checks remain required delivery work.
+invented by the interrupted-read display sequence. Persistence and actual read authorization are implemented below. Approval/status routes,
+browser confirmation and live checks remain required delivery work.
 The full consumer checkpoint `127c394` also passes 753 web tests with required disposable
-PostgreSQL, all 22 workspace typechecks and unmodified clean-checkout lint. This does not
-establish persisted campaign reads: the next slice must add actual storage and authorization.
+PostgreSQL, all 22 workspace typechecks and unmodified clean-checkout lint. That checkpoint alone did not establish persisted reads; the implementation below adds storage
+and authorization with its own proofs.
 
 ## Latest observation implementation, 2026-09-06
 
-The next source slice is the [persisted preview design](../design/WP-215-PERSISTED-PREVIEW.md):
+The [persisted preview design](../design/WP-215-PERSISTED-PREVIEW.md) is implemented in source:
 an immutable canonical record and authenticated read-only GET using the existing view. Exact
 scope, current membership and storage integrity are enforced; unavailable eligibility/assets/
-admission are not fabricated. Its shared failure contract lands before the DB consumer.
+admission are not fabricated. Its shared failure contract landed at `a7d27f9` before the DB consumer.
 The new campaign migration `20260906060000_campaign_creation_previews.sql` is reserved for a
-separate reviewed window; it is not added to the five-file or ten-file bundles. Persistence,
-loader and route implementation/tests are pending at this design checkpoint.
+separate reviewed window; it is not added to the five-file or ten-file bundles. The recorder, read-only DB reader, `loadCampaignCreationApproval` and no-store GET are implemented.
+Focused verification passes 33 DB/RLS tests and 25 web tests; five independent authority probes
+also pass. Broad final checks are still being completed. This does not supply a public plan
+generator, approval/dispatch authority, client component or deployed feature.
+The DB slice also reserves `packages/db/src/migrations.test.ts` for its exact new migration
+tail and `packages/db/src/rls.test.ts` to give the new table nonempty
+cross-tenant coverage and reflect its owner/admin-only read policy; no shared seed helper or
+browser test registry change is required.
+`packages/db/src/sp-write-persistence-blast.test.ts` admits only the new HTTP test's
+read-only approval/outbox count assertions; runtime activation restrictions remain intact.
 
 The [SP observation design](../design/WP-215-SP-OBSERVATION.md) compares three independent
 approaches and retains the existing adapter with one implemented observation method. Shared

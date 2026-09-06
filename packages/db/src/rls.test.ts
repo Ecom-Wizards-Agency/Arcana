@@ -7,7 +7,7 @@
  * asserts that the fixture actually put a row in every one of those tables for
  * both orgs: an empty table trivially leaks nothing.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { reviseRecommendation } from './queries/recommendation-revisions.js';
 import { createTestDatabase, databaseAvailable } from './testing/harness.js';
@@ -64,6 +64,13 @@ describe.skipIf(!available)('row level security', () => {
       await reviseRecommendation(database, { orgId, userId }, { requestId: randomUUID(),
         profileId: rec!.profile_id, recommendationId: rec!.id, expectedRevisionId: null,
         proposedValue: '0.8123', note: 'Synthetic RLS revision evidence' });
+      // Storage-policy fixture only; complete artifact validation has its own query suite.
+      const planId = randomUUID();
+      const artifact = JSON.stringify({ id: planId, orgId, profileId: rec!.profile_id });
+      await database.sql`insert into public.campaign_creation_previews
+        (org_id, profile_id, plan_id, artifact_text, artifact, artifact_sha256, recorded_by)
+        values (${orgId}, ${rec!.profile_id}, ${planId}, ${artifact}, ${artifact}::jsonb,
+          ${createHash('sha256').update(artifact).digest('hex')}, ${userId})`;
     }
     tables = await tenantTables(database);
   }, 60_000);
@@ -97,6 +104,7 @@ describe.skipIf(!available)('row level security', () => {
     const adminOnly = new Set([
       'audit_log',
       'org_invitations',
+      'campaign_creation_previews',
     ]);
     // These are proved separately below because authenticated has no relation
     // grant at all, so attempting the generic SELECT would abort the loop.

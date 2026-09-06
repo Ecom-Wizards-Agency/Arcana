@@ -4,15 +4,46 @@
 
 ### Latest preparation checkpoint
 
-**Persisted campaign preview design:** three independent candidates under
-`_local/campaign-preview-store-design/` compared a narrow immutable plan store, a rich frozen
-approval envelope and existing export/write-store reuse. The selected design preserves the
-current view and adds actual recording/owned reads, with SQL storage/tenant guarantees and
-shared semantic verification. It does not invent guardrail/provenance evidence or a current
-marketplace ID absent from profile storage. New migration scope is separate from both fixed
-windows. An additive shared error-code enum lands before its DB/HTTP consumers; implementation
-and local database proofs remain pending at this checkpoint. Exact ownership and limits are
-in `docs/design/WP-215-PERSISTED-PREVIEW.md`.
+**Persisted campaign preview implementation:** shared error contract `a7d27f9` preceded the
+DB and HTTP consumers. The selected design in `docs/design/WP-215-PERSISTED-PREVIEW.md` now
+has immutable canonical storage, an authenticated recorder, repeatable/read-only owned reader,
+server loader and no-store GET. No public generator or recording/approval/dispatch route exists.
+SQL proves byte/identity/tenant integrity; shared schemas validate the complete graph and hashes
+before recording and on every read. Missing current marketplace/checks/assets/admission stay
+unknown. Recorder identity/time are historical storage metadata, not approval provenance.
+
+The new migration `20260906060000_campaign_creation_previews.sql` is separately scoped outside
+both fixed migration windows and has not run on hosted Supabase. Local tests use disposable
+PostgreSQL on port 55439 and preserve `wizard_ads_e2e`. Nineteen query tests plus 14 RLS tests
+pass, as do eight real HTTP tests and 17 existing projector tests. Five independent authority
+probes pass, including waiting for profile/membership changes, direct RPC tenant denial,
+historical user deletion and trigger enforcement independently of ambient ACLs.
+
+Initial synthetic tests failed on null SP placements and the wrong queue table name; both
+fixtures were corrected. Typecheck rejected ES2024-only test barriers under the repository's
+ES2023 library and lint required a type-only import; both were corrected without changing
+compiler/lint rules. The first parallel full DB run had six failing files, including cluster-role
+interference and the stale migration-tail assertion. Serial execution eliminated those races;
+640 tests passed with one remaining source-boundary assertion. It correctly detected the new
+HTTP test's read-only SP approval/outbox count queries. Only that exact test path was declared;
+the corrected five-test boundary suite passes. No runtime activation exemption was added.
+Broad final verification is still being completed; these failed runs are retained, not claimed green.
+
+A separate consumer review found that Zod's strict object parser ignores an own `__proto__`
+query field. This caused extra-field acceptance but no pollution or authority bypass. GET now
+explicitly allowlists its two query keys, with `__proto__` and `constructor` regression cases.
+Evidence is under `_local/campaign-preview-store-design/`: `db-tests-extended.log`,
+`db-tests-all.log`, `db-tests-all-serial.log`, `db-blast-corrected.log`, `web-tests-first.log`
+and `implementation-authority-review.md`. No frontend client or protected Claude file changed.
+
+All 22 workspace typechecks pass. The first broad web run passed 760 of 761 tests but the
+existing 3,597-row grid fixture took 2,818 ms against its 2,000 ms local budget while those
+typechecks ran concurrently. The unchanged grid suite and corrected HTTP query regressions
+then passed all 22 tests without that concurrent load. Grid source, timing thresholds and the
+CI environment were not changed. A final serial DB run followed by a serial web run is in
+progress. `web-tests-all.log`, `web-timing-query-recheck.log` and `workspace-typecheck.log`
+preserve the failure and recheck. The completed consumer review is in
+`implementation-web-review.md`; it found no remaining material issue after the query fix.
 
 **Website release preparation:** clean `wp-213-web-release` at main `9672d93` built successfully.
 Main CI `34015967395` and source CI `34031318586` at `a398827` both passed. The private
@@ -58,7 +89,7 @@ and `WIZARD_ADS_TEST_REQUIRE_DATABASE=1`: **142 files / 753 tests passed**, with
 All 22 workspace typechecks and unmodified clean-checkout lint also pass for `127c394`.
 Evidence: `web-tests-required-db.log`, `consumer-workspace-typecheck.log` and
 `consumer-clean-lint.log` in the same private campaign-review directory. CI `34035368302`
-is running at this checkpoint and is not yet claimed green.
+passed both required jobs for `127c394`; newer persistence source needs its own CI.
 
 **Campaign review shared prerequisite:** three independent candidates were compared in
 `_local/campaign-approval-design/`. The selected design is a pure projection of an already

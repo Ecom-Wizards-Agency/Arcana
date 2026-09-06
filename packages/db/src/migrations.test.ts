@@ -31,7 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260906050000_recommendation_fenced_function_acl.sql');
+    expect(files.at(-1)).toBe('20260906060000_campaign_creation_previews.sql');
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {

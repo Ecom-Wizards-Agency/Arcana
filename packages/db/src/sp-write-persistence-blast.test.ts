@@ -256,6 +256,8 @@ describe('SP write persistence facade blast radius', () => {
           `${REPO_ROOT}apps/web/e2e/support/sp-write-preview.ts`,
           `${REPO_ROOT}apps/web/src/writes/approval-fixture.integration.test.ts`,
           `${REPO_ROOT}apps/web/src/writes/http.test.ts`,
+          // Read-only campaign GET assertions count existing approval/outbox rows; no activation.
+          `${REPO_ROOT}apps/web/src/campaigns/creation-preview-http.test.ts`,
           `${REPO_ROOT}apps/web/src/recommendations/revisions-http.test.ts`,
           `${REPO_ROOT}apps/web/src/mcp-write-keys-route.test.ts`,
           `${REPO_ROOT}apps/mcp/src/writes-http.test.ts`,

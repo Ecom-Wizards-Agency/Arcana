@@ -1,15 +1,17 @@
 import { createHash } from 'node:crypto';
+import { readRecordedCampaignCreationPreview, CampaignCreationPreviewError } from '@wizard-ads/db/campaign-creation-previews';
 import { verifyCampaignCreationPlanFingerprints } from '@wizard-ads/shared';
-import { CampaignCreationApprovalSource, CampaignCreationApprovalScope,
+import { CampaignCreationApprovalRequest, CampaignCreationApprovalSource, CampaignCreationApprovalScope,
   CampaignCreationApprovalView, campaignCreationReviewFreshness } from '@wizard-ads/shared/campaign-creation-approval';
+import { requireCapability } from '../server/org-role';
+import { openWebDatabase, requestActor } from '../server/request-context';
 
 const hasher = { algorithm: 'sha256' as const,
   digest: (input: string) => createHash('sha256').update(input).digest('hex') };
 
 /**
- * Pure server projection, not an authenticated database loader. The future loader
- * must establish membership/capability and read one owned, consistent snapshot.
- * No fallback generator, write method, route or production reader exists here.
+ * Pure projection of a validated snapshot. The authenticated loader below owns
+ * membership/capability and the recorded read; rendering fixtures may call this directly.
  */
 export function projectCampaignCreationApproval(
   expectedScope: CampaignCreationApprovalScope,
@@ -37,5 +39,23 @@ export function projectCampaignCreationApproval(
   } catch {
     // A failed read/validation must not disclose a foreign plan's labels or IDs.
     throw new Error('Campaign review is unavailable');
+  }
+}
+
+/** Reopen one saved plan. Request headers establish identity; loading grants no write authority. */
+export async function loadCampaignCreationApproval(
+  headers: Headers,
+  input: CampaignCreationApprovalRequest,
+): Promise<CampaignCreationApprovalView> {
+  const actor = await requestActor(headers);
+  const request = CampaignCreationApprovalRequest.safeParse(input);
+  if (!request.success) throw new CampaignCreationPreviewError('invalid_request');
+  const database = openWebDatabase();
+  try {
+    await requireCapability(database, actor, 'applyAmazonChanges');
+    const source = await readRecordedCampaignCreationPreview(database, actor, request.data);
+    return projectCampaignCreationApproval({ orgId: actor.orgId, ...request.data }, source);
+  } finally {
+    await database.close();
   }
 }

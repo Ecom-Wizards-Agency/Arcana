@@ -88,7 +88,10 @@ or marketer-release milestone. The operator's autonomous instruction authorizes 
 
 Codex reserves the additive enum in `packages/shared/src/campaign-creation-approval.ts`;
 new `packages/db/src/campaign-creation-previews.ts`, its query/schema modules and query tests,
-package/schema exports; the existing campaign approval loader; and
+package/schema exports, `packages/db/src/migrations.test.ts` for the exact new migration tail,
+`packages/db/src/sp-write-persistence-blast.test.ts` for the exact HTTP count-assertion fixture,
+and `packages/db/src/rls.test.ts` for nonempty coverage of the new
+owner/admin-only table; the existing campaign approval loader; and
 `GET /api/campaign-creation/preview` with focused HTTP tests. Claude client/pages, browser
 registry, HANDOVER/STATUS and the parked supervisor remain untouched.
 
@@ -102,3 +105,22 @@ concurrent retries; actor/scope/role/RLS isolation; membership/profile changes; 
 corruption refusal; actual org cascade and standalone deletion refusal; function/table ACLs;
 unchanged plan/approval/job counts across repeated reads; actual read-only transaction behavior,
 pooled claims cleanup and authenticated no-store GET behavior. Source tests are not live evidence.
+
+## Claude integration
+
+The server loader is `loadCampaignCreationApproval` in
+`apps/web/src/campaigns/creation-approval-loader.ts`. Its arguments are request headers and
+`{ profileId, planId }`; its result is `CampaignCreationApprovalView` from the explicit shared
+`campaign-creation-approval` subpath. Client refreshes may use the same view returned by
+`GET /api/campaign-creation/preview?profileId=...&planId=...`. No POST is exported. Unknown,
+duplicate and missing query fields return 400; signed-out requests return 401; insufficient
+current role returns 403; foreign/missing records share 404; corrupt/unavailable storage returns
+503. Existing authentication challenges retain their code/location. Every response is no-store.
+
+Server-side rendering examples remain in `creation-approval-fixtures.ts`. The real reader
+currently produces the unknown-check/asset/admission case; richer synthetic scenarios illustrate
+the stable view without claiming a real producer for those observations. Use the full frozen
+plan for settings and counts. The current profile label is not a saved approval label. Do not
+render an enabled Amazon confirmation from this response: campaign admission and a genuinely
+frozen approval envelope are still pending. Refresh may retry the GET after a failed read,
+but never call a planner or infer that unknown admission means unapproved.
