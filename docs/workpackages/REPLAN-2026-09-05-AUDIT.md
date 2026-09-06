@@ -4,6 +4,45 @@
 
 ### Latest preparation checkpoint
 
+**Website release preparation:** clean `wp-213-web-release` at main `9672d93` built successfully.
+Main CI `34015967395` and source CI `34031318586` at `a398827` both passed. The private
+`PREPARATION.json` under `_local/wp213-web-candidate/` records 941 deploy paths resolving to 181 distinct
+files, a content manifest following build symlinks, the pinned brand digest, Node 24 runtime,
+300-second cron function and the Ready rollback deployment. The initial manifest counted
+only direct files; it was replaced before authorization with the full symlink-following
+inventory. The manifest digest is `93b83cd11d370c491e0decb86f684c1d824adeae934eff0e0c71dac5e4e4e499`.
+
+Vercel API/CLI downloads returned empty values because both public Supabase settings are
+marked sensitive. This is not evidence of missing runtime configuration: the live login form
+loads. An existing authenticated Supabase CLI session supplied only the verified anonymous
+key/project URL to the build process. No production database credential or secret environment
+file was used. The first build command used the web package working directory and could not
+find root project settings; explicit `--cwd` corrected it. `build-input.json`, `build.log` and
+`build-result.json` record the successful run. Upload/promotion authorization has been requested;
+no candidate, promotion, cron change, migration, worker replacement or Amazon write occurred.
+Browser connection now succeeds, but the selected website browser currently shows sign-in.
+Authenticated candidate/visual verification and post-promotion cron evidence remain pending.
+
+**Campaign review web consumer:** the pure server projector and six format rendering sources
+follow shared commit `abe8530`. Seventeen tests verify exact SP manual/automatic, SB video
+detail/Store and SD image/video resource counts, digest and scope refusal, detached immutable
+reads, selected versions and known/unknown admission. Worker artifacts are removed only after
+the full receipt/execution join is validated. Expired approval remains visible; absent execution
+is never invented as queued. The display-only interrupted-read sequence has no HTTP action.
+Web typecheck and focused lint pass. Two independent consumer reviews found no material defect;
+eight authority probes additionally verify coherent node tampering, foreign receipts, nested
+detachment, private artifact removal and historical rendering. Presentation review corrected
+the count label to explicit planned creates, excluding provider-created SP automatic clauses.
+Evidence includes `consumer-review-results.json` and `web-presentation-review.md` alongside:
+`_local/campaign-approval-design/web-tests-focused.log`, `web-typecheck-final.log`, `web-eslint.log`.
+
+An initial `pnpm test -- ...` command accidentally selected all web tests. Its 26 database
+suites failed at the platform shim's `pg_authid` lock against default local Supabase port 54322;
+the harness drops its randomly named databases after setup failure. No production credentials
+were present. The corrected explicit Vitest command selected only the intended pure suite and
+passed all 17 tests. The failed full run is retained as `web-tests-first.log`; it is not counted
+as broad verification. Future database tests use the dedicated PostgreSQL port 55439 explicitly.
+
 **Campaign review shared prerequisite:** three independent candidates were compared in
 `_local/campaign-approval-design/`. The selected design is a pure projection of an already
 loaded snapshot, avoiding an artificial database reader while campaign persistence is absent.
@@ -13,7 +52,8 @@ receipt and execution joins before a future browser projection strips worker art
 Guardrails, provenance and the frozen profile label are explicitly not recorded by current
 plans. No `canApprove` flag, generated approval, executable action URL or provider call is added.
 Shared validation and web projection do not prove actual database membership or snapshot isolation.
-The web consumer and fixtures follow the shared contract commit; real reader/routes remain pending.
+The web consumer and fixtures now follow that shared contract commit as recorded above;
+real reader/routes remain pending.
 
 Review corrected four evidence problems: legacy asset scope was unverifiable, a video could
 receive image metadata and remain current, a new check could lend freshness to old asset

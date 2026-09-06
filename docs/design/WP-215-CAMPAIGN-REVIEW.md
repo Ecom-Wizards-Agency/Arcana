@@ -78,7 +78,10 @@ guardrail/provenance evidence bound to approval and a fresh authority check.
 
 ## Rendering contract
 
-Counts distinguish campaigns, all new Amazon resources and read checks. Budgets retain
+Counts distinguish campaigns, explicit planned create operations and read checks. SP automatic
+targeting also creates clauses inside Amazon; those are not separate `target.create` requests
+and are excluded from the planned-create count. Do not label that count as every resource
+Amazon will produce. Budgets retain
 their currency and daily/lifetime type. Exact schedules, destination choices, asset
 versions/crops and bid inheritance remain in canonical payloads. SB automatic collection
 means automatic product selection, not automatic campaign targeting.
@@ -87,7 +90,7 @@ Campaigns, ad groups, ads and targets start paused. SD creative records have no 
 state field. Creation cannot be deleted by reverting; pause/archive and launch require
 separate reviewed writes. Asset ACTIVE processing is not creative moderation approval.
 
-Synthetic examples will exercise current/expired/unknown checks, selected asset versions,
+Synthetic examples exercise current/expired/unknown checks, selected asset versions,
 processing with unknown moderation, unavailable/recorded admission and execution accounting. They
 have no real action URL. A component example can render these without Amazon access;
 actual confirmation/browser workflows remain a separate acceptance requirement.
@@ -109,7 +112,12 @@ Four regression assertions exposed the latter cases. The first legacy regression
 itself used a v2 asset purpose; correcting its historical shape made it exercise the intended
 scope check. Private independent probes separately reproduced the legacy leak and verified
 its correction. A further test covers equivalent timestamp spellings and sub-millisecond
-differences. The web projection and fixtures remain the next source slice.
+differences. The web projection and fixtures now follow shared commit `abe8530`, with 17
+consumer tests, web typecheck and focused lint passing. The six rendering formats are SP
+manual/automatic, SB video detail/Store destinations and SD image/video. Further SB variants
+and partial execution fixtures remain later work. Independent consumer review also corrected
+the planned-create count wording above. The fixtures are server-side sources/views which a
+rendering example can pass as serialized props; no production reader imports them.
 
 Verification covers immutable plans, count/identity joins,
 expired and future-dated checks, exact asset version/scope, none versus unknown admission,

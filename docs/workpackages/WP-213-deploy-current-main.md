@@ -9,6 +9,17 @@ them.
 
 ## Readiness check, 2026-09-06
 
+The operator cannot use the loopback preview below. A clean `wp-213-web-release` checkout at
+main `9672d93` now has a successful production-target prebuilt artifact. Main CI `34015967395`
+passed; output checks verify the pinned brand SVG, Node 24 function runtime and 300-second
+cron duration. Only public Supabase browser settings entered the local build. The existing
+production deployment is Ready as the exact rollback anchor. Private preparation evidence is
+in `_local/wp213-web-candidate/`; [the runbook](../deploy/web-vercel.md) records the procedure.
+Web-only candidate/promotion authorization has been requested. Nothing has been uploaded or
+promoted. Browser control now works, but its OpenSpell session needs operator sign-in.
+The existing verifier's cookie-extraction path cannot be used under current browser rules;
+a permitted authenticated verification path remains part of the deployment gate.
+
 Live web remains at `44da7ac`, independently confirmed through public health and Vercel's
 latest production deployment. Main `9672d93` includes the sidebar, brand and table improvements,
 but there is no up-to-date hosted preview. The next frontend review needs a tested candidate;

@@ -22,7 +22,12 @@ The authoritative plan remains intact, including all SB/SD payload variants. Cur
 are dated advisory evidence; missing selected-version assets and unknown admission cannot
 appear as ready or never approved. Saved guardrail/provenance metadata is currently absent
 and shown as such. There is no executable confirmation action in this rendering foundation.
-Shared schemas land first; projection/fixtures follow. Persistence, actual read authorization,
+Shared schemas landed at `abe8530` before the implemented projection/fixtures. Seventeen
+consumer tests and web typecheck pass. Rendering examples cover SP manual/automatic, SB video
+with detail-page/Store destinations, and SD image/video, with exact counts, unknown or recorded
+admission, stale checks and selected-asset processing/version failures. They do not cover every
+SB format or partial campaign execution yet. No executable HTTP/confirmation contract is
+invented by the interrupted-read display sequence. Persistence, actual read authorization,
 approval/status routes, browser confirmation and live checks remain required delivery work.
 
 ## Latest observation implementation, 2026-09-06
