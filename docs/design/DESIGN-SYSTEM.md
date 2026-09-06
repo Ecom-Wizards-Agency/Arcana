@@ -120,7 +120,10 @@ never in product UI.
   dashed; y-gridlines only, 3–5 ticks, 12px tabular ticks; endpoint value labels; trailing
   ~14 unsettled days rendered at 45% opacity with a "settling" legend note. The settling
   band reads `--wa-warn-bg/-border/-text`, so it shades amber and never competes with the
-  orange highlight series.
+  orange highlight series. The **cockpit** chart draws a second settling band
+  (`apps/web/src/ui/cockpit.tsx`, `.wa-cockpit__svg-label--settling`) that still paints
+  from `--wa-accent`; it is the one place the accent is still spent twice in a view, and
+  it is handed off in the WP-211 brief.
 - **Nav active item**: `--wa-indigo-soft` fill + 2px orange left rule; icons inherit text
   color.
 - **Tables**: header Mist caps 11px; row hover `--wa-surface-2`; selected row
@@ -146,6 +149,14 @@ colour input produced, and `tagSwatchColor` treats an unrecognised value exactly
 absent one: the neutral `--wa-series-3` swatch, never an error. A pre-contract tag can
 still be renamed or moved without being forced to recolour, because the update route only
 validates the colour field when the caller sends one.
+
+A swatch has no text, so its two states have to be told apart by drawing alone.
+`tagSwatchStyle` carries **selection** with an inset ring inside the swatch and writes no
+`outline` property at all, at any value: an inline `outline` beats the `:focus-visible`
+rule above, and in the light theme `--wa-focus-contrast` is `transparent`, so suppressing
+the outline would leave a keyboard user with nothing to see. Selection is inside the
+control, focus is the ring outside it. Any future fixed-colour control follows the same
+rule — never write `outline: 'none'` inline.
 
 ## Brand mark and the icon set
 

@@ -204,8 +204,20 @@ tag already paints.
   pre-contract tag can be renamed or moved without being forced to recolour.
 - **Swatches.** The `<input type="color">` in `tag-manager.tsx` is gone. In its place is a
   `radiogroup` of six controls — the five colours plus "No color" — each with an
-  accessible name. Selection is carried by a 2px `--wa-ring` outline, because a swatch's
-  fill is a fixed brand colour and cannot also encode state.
+  accessible name. A swatch's fill is a fixed brand colour and cannot also encode state,
+  so selection is carried by an inset ring drawn inside the swatch
+  (`tagSwatchStyle` in `apps/web/app/tags/colors.ts`), and the object writes no `outline`
+  property at all.
+
+  The first version wrote `outline: selected ? '2px solid var(--wa-ring)' : 'none'`, which
+  was wrong in both directions. An inline declaration beats the stylesheet, so
+  `outline: 'none'` cancelled the global `:focus-visible` rule; the other half of that rule
+  is `box-shadow: 0 0 0 4px var(--wa-focus-contrast)`, and `--wa-focus-contrast` is
+  `transparent` in `:root` — the light theme is the shipped default — so tabbing onto any
+  of the six controls painted nothing whatsoever on a control with no text. The selected
+  swatch had the mirror fault: it carried the ring whether focused or not, so focus and
+  selection were indistinguishable. Selection now lives inside the control and focus is the
+  stylesheet's ring outside it.
 - **Legacy rows.** `tagSwatchColor` treats an unrecognised stored value exactly like an
   absent one and returns `var(--wa-series-3)`. Never throws. The read path is unchanged,
   so the stored string still round-trips through `GET /api/tags` untouched.
@@ -225,6 +237,42 @@ Before the route change: **3 failed | 4 passed**. The failures are the three tha
 assertions are against the input list, not against "nothing threw": eight rejected shapes
 map to eight 400s and zero rows in `public.tags`, and the five accepted colours map to five
 201s whose stored `color` equals the name sent.
+
+### Behaviour 4 — the two guards added after review
+
+Both are in owned files and both were falsified before they were trusted.
+
+| Guard | Falsified by | Result |
+|---|---|---|
+| `apps/web/src/ui/design-system.test.ts` — "WP-211 tag swatch focus" (2 cases): no `outline*` key in either swatch state, selection is an `inset` shadow that is not `--wa-ring`, and the `:focus-visible` rule and the transparent light `--wa-focus-contrast` are both read from `theme.css` | restoring `outline: selected ? '2px solid var(--wa-ring)' : 'none'` in `tagSwatchStyle` | **2 failed \| 11 passed**; with the fix, **13 passed** (`pnpm vitest run src/ui/design-system.test.ts`) |
+| `apps/web/app/api/tags/color.test.ts` — the legacy-row case now also renames the `'#2563eb'` row with a `PATCH` that omits `color`, asserts 200, and re-reads `name, color` from `public.tags` | `parseTagColorPatch` returning `{ color: null }` for `undefined` | **1 failed \| 6 passed** (`color` came back `null`); with the fix, **7 passed** (`pnpm vitest run app/api/tags/color.test.ts`) |
+
+The second one closes a behaviour that was claimed in three places — this close-out,
+`packages/shared/src/tags.ts` and `color-input.ts` — and tested in none: an omitted colour
+on `PATCH` is the only thing that keeps a pre-contract tag renameable, and both
+`parseTagColorPatch` and `updateTag`'s `color = ${existing.color}` had to keep holding for
+it. Nothing was exercising either.
+
+### Handoff — the cockpit settling band still spends the accent
+
+Behaviour 3's warn split reached one of the two settling bands, not both, and this is the
+gap. `apps/web/src/ui/viz.tsx:289-299` was already on `--wa-warn-bg/-border/-text` and
+needed no edit. The **cockpit** chart draws its own band: `cockpit.tsx:837` fills the rect
+with `fill="var(--wa-accent)"` and the label at `cockpit.tsx:843` carries
+`.wa-cockpit__svg-label--settling`, which is `fill: var(--wa-accent-text)` at
+`theme.css:2829`. Both are the primary-action orange in both themes — exactly the accent
+double-duty behaviour 3 exists to remove, and the cockpit view also renders primary
+buttons, so the accent is spent twice there.
+
+The fix is two values: `cockpit.tsx:837` → `var(--wa-warn)` (keeping `opacity="0.06"`, or
+moving to `var(--wa-warn-bg)` without it) and `theme.css:2830` → `var(--wa-warn-text)`.
+`cockpit.tsx` is outside this package's file scope, and `.wa-cockpit__svg-label--settling`
+is a component rule rather than a warn scope, so neither was edited. Owner: the same one as
+the `.wa-tm-guardrails` exception above — whoever next holds `apps/web/src/ui/cockpit.tsx`
+and the `theme.css` component rules. The warn guard in `design-system.test.ts` cannot catch
+this on its own: its rule scan is keyed on `--warn` in the selector, so a `--settling`
+selector is never inspected. `docs/design/DESIGN-SYSTEM.md` now names the exception beside
+the `viz.tsx` band so the document does not overstate the split.
 
 ### Behaviour 6 — the icon set
 
@@ -278,9 +326,9 @@ Postgres 17 named in the task, never a hosted service.
 | Command | Result |
 |---|---|
 | `pnpm install --frozen-lockfile` | already up to date, 23 projects |
-| `pnpm test` in `apps/web` | **132 files, 682 tests, all passed** |
+| `pnpm test` in `apps/web` | **132 files, 684 tests, all passed** (682 before the two swatch-focus cases) |
 | `pnpm test` in `packages/shared` | 5 files, 94 tests, all passed |
-| `pnpm typecheck` | clean |
+| `pnpm turbo run typecheck --force` | 22 of 22 successful, 0 cached — `pnpm typecheck` alone can answer from the Turbo cache and prove nothing |
 | `pnpm lint` | clean |
 | `pnpm build` in `apps/web` | compiled, TypeScript clean, 3 metadata routes emitted |
 | `pnpm hygiene` | clean — 1472 of 1473 tracked files, denylist present with 9 terms |
@@ -318,3 +366,19 @@ as the contract file.
 - **Legacy colour values are not migrated.** Rows written before the contract keep their
   arbitrary strings and paint neutral. A backfill mapping the handful of stored hexes onto
   the nearest `TagColor` would need `packages/db` and a migration, both outside scope.
+- **A legacy row cannot be recoloured from the UI.** The swatch group is on the create form
+  only; the per-row controls in the tag manager are Rename, Move and Delete, and it is the
+  only caller of `/api/tags`. So a pre-contract tag that should carry a brand colour has no
+  in-product remedy today except delete-and-recreate, which loses the tag's assignments.
+  This is not a regression — the old `<input type="color">` was create-only too — but with
+  the neutral fallback it is the part an operator actually hits, and it is the cheaper of
+  the two fixes: a per-row swatch control in `tag-manager.tsx` closes it without a
+  migration, and the `PATCH` route already accepts a colour.
+- **No `favicon.ico`, deliberately.** The set is complete for every target that reads
+  `<link rel="icon">`, which the built head carries for both the 512x512 PNG and the SVG,
+  and that is every modern browser. Because `metadata.icons` is now declared explicitly,
+  Next's `app/favicon.ico` auto-handling is also off, so a bare `/favicon.ico` request
+  404s: crawlers, feed readers and some embedded webviews that probe that path directly get
+  nothing. Nothing user-visible breaks. Adding `apps/web/app/favicon.ico` (48x48
+  multi-size, same source SVG) plus a line in the `design-system.test.ts` PNG check would
+  close it; the file is outside the declared scope of this slice.
