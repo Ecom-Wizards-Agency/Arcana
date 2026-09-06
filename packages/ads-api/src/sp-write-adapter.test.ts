@@ -135,6 +135,21 @@ function intentFor(
   });
 }
 
+function twoKeywordPlan(): SpWritePlanType {
+  const plan = keywordPlan();
+  const next = SpWriteAction.parse({ ...plan.actions[0],
+    actionId: '00000000-0000-4000-8000-000000000015',
+    entity: { keywordId: 'keyword-synthetic-two' },
+    sources: [{ kind: 'apply_row', applyRowId: '00000000-0000-4000-8000-000000000016', changeKey: 'keyword.bid' }],
+  });
+  next.fingerprint = sha256.digest(serializeSpWriteActionFingerprint(next));
+  const base = SpWritePlan.parse({ ...plan, actions: [...plan.actions, next],
+    counts: { ...plan.counts, logicalChanges: 2, providerRows: 2, uniqueEntities: 2,
+      byRoute: { ...plan.counts.byRoute, 'sp.v3.keywords.update': 2 } },
+  });
+  return { ...base, fingerprint: sha256.digest(serializeSpWritePlanFingerprint(base)) };
+}
+
 type ProviderReply = Readonly<{ status: number; body: unknown }>;
 
 function fakeFetch(replies: readonly ProviderReply[]): {
@@ -201,6 +216,90 @@ describe('explicit package boundary', () => {
 });
 
 describe('SP write adapter', () => {
+  it('exhausts post-write pagination before returning a missing position', async () => {
+    const provider = fakeFetch([]);
+    const requests: unknown[] = [];
+    const adapter = adapterWith(async (url, init) => {
+      if (!url.endsWith('/sp/keywords/list')) return provider.fetch(url, init);
+      requests.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify(requests.length === 1
+        ? { keywords: [{ keywordId: 'keyword-synthetic-two', bid: 1.1, state: 'ENABLED' }], totalResults: 1, nextToken: 'synthetic-next' }
+        : { keywords: [], totalResults: 1 }));
+    });
+    const plan = twoKeywordPlan();
+    const call = adapter.preparePlan(plan)[0]!;
+    expect(await adapter.observeAfterWrite({ plan, call })).toMatchObject([
+      null, { actionId: call.positions[1]!.actionId, amazonEntityId: 'keyword-synthetic-two' },
+    ]);
+    expect(requests).toEqual([
+      { maxResults: 100, keywordIdFilter: { include: [KEYWORD_ID, 'keyword-synthetic-two'] },
+        stateFilter: { include: ['ENABLED', 'PAUSED', 'ARCHIVED'] } },
+      { maxResults: 100, keywordIdFilter: { include: [KEYWORD_ID, 'keyword-synthetic-two'] },
+        stateFilter: { include: ['ENABLED', 'PAUSED', 'ARCHIVED'] }, nextToken: 'synthetic-next' },
+    ]);
+    expect(provider.mutationRequests).toHaveLength(0);
+  });
+
+  it.each(['changed_total', 'duplicate', 'truncated', 'failed_page', 'repeated_token'])('refuses %s across post-write pages without returning missing positions', async (fault) => {
+    const provider = fakeFetch([]);
+    let pages = 0;
+    const adapter = adapterWith(async (url, init) => {
+      if (!url.endsWith('/sp/keywords/list')) return provider.fetch(url, init);
+      pages += 1;
+      if (pages === 1) return new Response(JSON.stringify({
+        keywords: [{ keywordId: KEYWORD_ID, bid: 1.1, state: 'ENABLED' }], totalResults: 2, nextToken: 'synthetic-next',
+      }));
+      if (fault === 'failed_page') return new Response('{}', { status: 503 });
+      return new Response(JSON.stringify({
+        keywords: fault === 'truncated' ? [] : [{ keywordId: fault === 'duplicate' ? KEYWORD_ID : 'keyword-synthetic-two', bid: 1.1, state: 'ENABLED' }],
+        totalResults: fault === 'changed_total' ? 1 : 2,
+        ...(fault === 'repeated_token' ? { nextToken: 'synthetic-next' } : {}),
+      }));
+    });
+    const plan = twoKeywordPlan();
+    const call = adapter.preparePlan(plan)[0]!;
+    await expect(adapter.observeAfterWrite({ plan, call })).rejects.toThrow('observation_failed');
+    expect(pages).toBeGreaterThanOrEqual(2);
+    expect(provider.mutationRequests).toHaveLength(0);
+  });
+
+  it('distinguishes a complete post-write absence from the strict predispatch read', async () => {
+    const provider = fakeFetch([]);
+    const bodies: unknown[] = [];
+    const adapter = adapterWith(async (url, init) => {
+      if (url.endsWith('/sp/keywords/list')) {
+        bodies.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ keywords: [], totalResults: 0 }));
+      }
+      return provider.fetch(url, init);
+    });
+    const plan = keywordPlan();
+    const call = adapter.preparePlan(plan)[0]!;
+    await expect(adapter.observeCurrent({ plan, call })).rejects.toThrow('observation_failed');
+    expect(await adapter.observeAfterWrite({ plan, call })).toEqual([null]);
+    expect(bodies[1]).toEqual({ maxResults: 100,
+      keywordIdFilter: { include: [KEYWORD_ID] }, stateFilter: { include: ['ENABLED', 'PAUSED', 'ARCHIVED'] } });
+    expect(provider.mutationRequests).toHaveLength(0);
+  });
+
+  it.each([
+    { keywords: [], totalResults: 1 },
+    { keywords: [], nextToken: 'synthetic-next' },
+    { keywords: [{ keywordId: KEYWORD_ID, state: 'ENABLED' }] },
+    { keywords: [{ keywordId: 'synthetic-extra', bid: 1, state: 'ENABLED' }] },
+    { keywords: [{ keywordId: KEYWORD_ID, bid: 1, state: 'ENABLED' }, { keywordId: KEYWORD_ID, bid: 1, state: 'ENABLED' }] },
+    { keywords: [], nextToken: null },
+    {},
+  ])('refuses incomplete or invalid post-write listing evidence %#', async (body) => {
+    const provider = fakeFetch([]);
+    const adapter = adapterWith(async (url, init) => url.endsWith('/sp/keywords/list')
+      ? new Response(JSON.stringify(body)) : provider.fetch(url, init));
+    const plan = keywordPlan();
+    const call = adapter.preparePlan(plan)[0]!;
+    await expect(adapter.observeAfterWrite({ plan, call })).rejects.toThrow('observation_failed');
+    expect(provider.mutationRequests).toHaveLength(0);
+  });
+
   it('prepares, observes, and closes one indexed 207 with one mutation request', async () => {
     const provider = fakeFetch([{ status: 207, body: {
       keywords: { error: [], success: [{ index: 0, keywordId: KEYWORD_ID }] },

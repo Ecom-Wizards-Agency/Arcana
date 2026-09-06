@@ -26,7 +26,8 @@ export async function reconcileSpWriteObservation(
   const receipt = SpWriteMirrorReceipt.parse(rows[0]!.artifact);
   if (receipt.observationId !== observation.observationId || receipt.observationFingerprint !== observation.fingerprint
     || receipt.executionId !== observation.executionId || receipt.planId !== observation.planId
-    || receipt.actionId !== observation.actionId || receipt.observationOutcome !== observation.outcome) {
+    || receipt.actionId !== observation.actionId || receipt.observationOutcome !== observation.outcome
+    || (receipt.observedState === 'archived') !== (observation.observed?.values.state === 'archived')) {
     throw new Error('SP write mirror receipt identity mismatch');
   }
   return receipt;
@@ -53,6 +54,7 @@ export async function readSpWriteMirrorCounts(
     if (observation === undefined || action === undefined || seen.has(receipt.observationId)
       || receipt.observationFingerprint !== observation.fingerprint || receipt.actionId !== observation.actionId
       || receipt.observationOutcome !== observation.outcome || canonicalInstant(receipt.observedAt) !== canonicalInstant(observation.observedAt)
+      || (receipt.observedState === 'archived') !== (observation.observed?.values.state === 'archived')
       || receipt.orgId !== evidence.plan.orgId || receipt.profileId !== evidence.plan.profileId
       || receipt.executionId !== evidence.authorization.executionId || receipt.planId !== evidence.plan.id
       || action.routeKey !== 'sp.v3.keywords.update'

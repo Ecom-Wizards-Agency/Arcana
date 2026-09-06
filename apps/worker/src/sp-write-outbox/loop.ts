@@ -155,7 +155,7 @@ export function createSpWriteOutboxLoop(dependencies: Dependencies) {
       const call = adapter.preparePlan(evidence.plan, intent.positions.map((position) => position.actionId)).find((candidate) => candidate.routeKey === intent.routeKey
         && JSON.stringify(candidate.positions) === JSON.stringify(intent.positions));
       if (call === undefined) throw new Error('SP write observation call mismatch');
-      const items = await adapter.observeCurrent({ plan: evidence.plan, call }, {
+      const items = await adapter.observeAfterWrite({ plan: evidence.plan, call }, {
         signal: AbortSignal.any([signal, AbortSignal.timeout(OBSERVATION_TIMEOUT_MS)]), timeoutMs: OBSERVATION_TIMEOUT_MS,
       });
       const observedAt = await readSpWriteDatabaseTime(database);

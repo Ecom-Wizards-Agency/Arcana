@@ -38,13 +38,17 @@ create table public.sp_write_mirror_observations (
       'schemaVersion','orgId','profileId','executionId','planId','observationId','observationFingerprint',
       'actionId','amazonEntityId','changeKey','observationOutcome','outcome','before','observed','after',
       'entityChangeId','changeAttribution','observedAt','reconciledAt','bidObservedAt'
-    ]) and
+    ] || case when artifact ? 'observedState' then array['observedState'] else array[]::text[] end) and
     artifact ->> 'schemaVersion' = 'openspell.sp-write-mirror-receipt.v1'
     and artifact ->> 'observationId' = observation_id::text
     and artifact ->> 'orgId' = org_id::text and artifact ->> 'profileId' = profile_id::text
     and artifact ->> 'executionId' = execution_id::text and artifact ->> 'planId' = plan_id::text
     and artifact ->> 'actionId' = action_id::text and artifact ->> 'observationFingerprint' = observation_fingerprint
     and artifact ->> 'outcome' = outcome
+    and (not (artifact ? 'observedState') or (
+      artifact ->> 'observedState' = 'archived' and artifact ->> 'observationOutcome' = 'conflict'
+      and outcome in ('superseded', 'missing')
+    ))
     and (artifact ->> 'entityChangeId') is not distinct from entity_change_id::text
     and (artifact ->> 'changeAttribution') is not distinct from change_attribution
     and (artifact ->> 'reconciledAt')::timestamptz = reconciled_at,
@@ -113,6 +117,7 @@ declare
   v_existing public.sp_write_mirror_observations%rowtype;
   v_expected numeric;
   v_observed numeric;
+  v_archived boolean;
   v_before numeric;
   v_after numeric;
   v_head timestamptz;
@@ -142,15 +147,23 @@ begin
   select * into strict v_action from public.sp_write_plan_actions
     where org_id = v_observation.org_id and profile_id = v_observation.profile_id
       and plan_id = v_observation.plan_id and action_id = v_observation.action_id;
+  v_archived := coalesce(v_observation.observed #>> '{values,state}' = 'archived', false);
   if v_action.route_key <> 'sp.v3.keywords.update'
      or not coalesce(app.sp_write_exact_json_keys(v_action.artifact -> 'changes', array['bid']), false)
      or (v_observation.observed is not null and (
-       not coalesce(app.sp_write_exact_json_keys(v_observation.observed -> 'values', array['bid']), false)
-       or v_observation.observed #>> '{values,bid,currencyCode}' is distinct from v_plan.currency_code
+       not coalesce(case when v_archived then
+         v_observation.outcome = 'conflict' and (
+           app.sp_write_exact_json_keys(v_observation.observed -> 'values', array['state'])
+           or app.sp_write_exact_json_keys(v_observation.observed -> 'values', array['bid','state'])
+         )
+         else app.sp_write_exact_json_keys(v_observation.observed -> 'values', array['bid']) end, false)
+       or ((v_observation.observed -> 'values') ? 'bid'
+         and v_observation.observed #>> '{values,bid,currencyCode}' is distinct from v_plan.currency_code)
      )) then raise exception 'write mirror action unsupported' using errcode = '22023'; end if;
   v_expected := (v_action.artifact #>> '{changes,bid,expected,amount}')::numeric;
   v_observed := (v_observation.observed #>> '{values,bid,amount}')::numeric;
-  if v_expected is null or v_expected < 0 or (v_observation.outcome <> 'missing' and v_observed is null)
+  if v_expected is null or v_expected < 0 or (v_observation.outcome <> 'missing' and v_observed is null
+      and (not v_archived or (v_observation.observed -> 'values') ? 'bid'))
      or v_observed < 0 then raise exception 'write observation value unavailable' using errcode = '22023'; end if;
   if v_observed is not null and v_observed <> v_observed::numeric(12,4) then
     raise exception 'write observation exceeds mirror precision' using errcode = '22023';
@@ -165,7 +178,9 @@ begin
     v_before := v_keyword.bid;
     v_after := v_before;
     v_head := v_keyword.bid_observed_at;
-    if v_observed is null then v_outcome := 'superseded';
+    -- Presence of an archived keyword closes the provider observation as a
+    -- conflict, but cannot promote its bid or replace ordinary state sync.
+    if v_archived or v_observed is null then v_outcome := 'superseded';
     elsif v_before = v_observed then
       v_outcome := 'already_current';
       if v_head is null or v_head < v_observation.observed_at then
@@ -210,6 +225,7 @@ begin
     'observedAt', app.keyword_mirror_instant(v_observation.observed_at), 'reconciledAt', app.keyword_mirror_instant(v_now),
     'bidObservedAt', case when v_head is null then null else app.keyword_mirror_instant(v_head) end
   );
+  if v_archived then v_artifact := v_artifact || jsonb_build_object('observedState', 'archived'); end if;
   insert into public.sp_write_mirror_observations
     (observation_id, org_id, profile_id, execution_id, plan_id, action_id, observation_fingerprint,
      outcome, entity_change_id, change_attribution, artifact, reconciled_at)

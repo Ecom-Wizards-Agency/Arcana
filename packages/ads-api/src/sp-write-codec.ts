@@ -517,10 +517,26 @@ export function buildSpWriteObservationBody(
   });
 }
 
+/** Include every documented live state so an archived entity cannot look absent. */
+export function buildSpWritePostWriteObservationBody(
+  call: SpWriteCompiledCall, nextToken?: string,
+): Readonly<Record<string, unknown>> {
+  return Object.freeze({ ...buildSpWriteObservationBody(call, nextToken),
+    stateFilter: { include: ['ENABLED', 'PAUSED', 'ARCHIVED'] } });
+}
+
 export function parseSpWriteObservationPage(
   raw: unknown,
   call: SpWriteCompiledCall,
 ): SpWriteObservationPage {
+  return parseObservationPage(raw, call, false);
+}
+
+export function parseSpWritePostWriteObservationPage(raw: unknown, call: SpWriteCompiledCall): SpWriteObservationPage {
+  return parseObservationPage(raw, call, true);
+}
+
+function parseObservationPage(raw: unknown, call: SpWriteCompiledCall, allowMissing: boolean): SpWriteObservationPage {
   const source = requiredRecord(raw, 'SP observation response');
   assertOnlyKeys(source, [call.observation.responseKey, 'nextToken', 'totalResults'], 'SP observation response');
   const rawRows = source[call.observation.responseKey];
@@ -534,7 +550,7 @@ export function parseSpWriteObservationPage(
   if (total !== undefined && (!Number.isSafeInteger(total) || (total as number) < 0)) {
     throw new Error('SP observation totalResults is malformed');
   }
-  if (total !== undefined && total !== call.positions.length) {
+  if (total !== undefined && (allowMissing ? (total as number) > call.positions.length : total !== call.positions.length)) {
     throw new Error('SP observation totalResults does not match requested positions');
   }
   return Object.freeze({
@@ -551,6 +567,26 @@ export function parseSpWriteObservationRows(
   if (rawRows.length !== call.positions.length) {
     throw new Error('SP observation entity count does not match requested positions');
   }
+  const parsed = parseObservationRows(call, rawRows, false);
+  return Object.freeze(call.actions.map((action) => {
+    const observed = parsed.get(entityId(action));
+    if (observed === undefined) throw new Error(`SP observation omitted entity: ${entityId(action)}`);
+    return observed;
+  }));
+}
+
+/** Null positions are authoritative absence only after the adapter closes pagination. */
+export function parseSpWritePostWriteObservationRows(
+  call: SpWriteCompiledCall, rawRows: readonly unknown[],
+): readonly (SpWriteObservedAction | null)[] {
+  if (rawRows.length > call.positions.length) throw new Error('SP observation returned more rows than requested positions');
+  const parsed = parseObservationRows(call, rawRows, true);
+  return Object.freeze(call.positions.map((position) => parsed.get(position.amazonEntityId) ?? null));
+}
+
+function parseObservationRows(
+  call: SpWriteCompiledCall, rawRows: readonly unknown[], afterWrite: boolean,
+): ReadonlyMap<string, SpWriteObservedAction> {
   const actionById = new Map(call.actions.map((action) => [entityId(action), action]));
   const seen = new Set<string>();
   const parsed = new Map<string, SpWriteObservedAction>();
@@ -562,14 +598,14 @@ export function parseSpWriteObservationRows(
     if (action === undefined) throw new Error(`SP observation returned an extra entity: ${id}`);
     if (seen.has(id)) throw new Error(`SP observation repeated an entity: ${id}`);
     seen.add(id);
-    parsed.set(id, parseObservedAction(action, row, call.providerScope));
+    if (afterWrite && action.routeKey === 'sp.v3.keywords.update' && row['state'] === 'ARCHIVED') {
+      parsed.set(id, SpWriteObservedAction.parse({ routeKey: action.routeKey, actionId: action.actionId,
+        actionFingerprint: action.fingerprint, amazonEntityId: id,
+        values: { ...(row['bid'] === undefined ? {} : { bid: parseMoney(row['bid'], call.providerScope, 'bid') }), state: 'archived' },
+      }));
+    } else parsed.set(id, parseObservedAction(action, row, call.providerScope));
   });
-
-  return Object.freeze(call.actions.map((action) => {
-    const observed = parsed.get(entityId(action));
-    if (observed === undefined) throw new Error(`SP observation omitted entity: ${entityId(action)}`);
-    return observed;
-  }));
+  return parsed;
 }
 
 function parseObservedAction(
@@ -577,6 +613,8 @@ function parseObservedAction(
   row: Readonly<Record<string, unknown>>,
   scope: SpWriteProviderScope,
 ): SpWriteObservedAction {
+  // Even a bid-only reservation must refuse an archived or unknown-state keyword.
+  if (action.routeKey === 'sp.v3.keywords.update') parseState(row['state']);
   const base = {
     routeKey: action.routeKey,
     actionId: action.actionId,

@@ -19,6 +19,8 @@ import {
   parseSpWrite207,
   parseSpWriteObservationPage,
   parseSpWriteObservationRows,
+  parseSpWritePostWriteObservationPage,
+  parseSpWritePostWriteObservationRows,
   prepareSpWriteCalls,
 } from './sp-write-codec.js';
 
@@ -427,6 +429,34 @@ describe('marketplace money policy', () => {
 });
 
 describe('strict SP observations', () => {
+  it('keeps complete post-write absence in exact request positions and refuses duplicate or extra identities', () => {
+    const call = prepareSpWriteCalls(planFor([
+      moneyAction('sp.v3.keywords.update', '1', '1.1', 'USD', 501),
+      moneyAction('sp.v3.keywords.update', '2', '2.1', 'USD', 502),
+    ]), sha256)[0]!;
+    const secondId = call.positions[1]!.amazonEntityId;
+    const row = { keywordId: secondId, bid: 2, state: 'ENABLED' };
+    expect(parseSpWritePostWriteObservationRows(call, [row])).toMatchObject([
+      null, { actionId: call.positions[1]!.actionId, amazonEntityId: secondId, values: { bid: { amount: '2' } } },
+    ]);
+    expect(() => parseSpWriteObservationRows(call, [row])).toThrow(/count/);
+    expect(() => parseSpWritePostWriteObservationRows(call, [row, row])).toThrow(/repeated/);
+    expect(() => parseSpWritePostWriteObservationRows(call, [{ ...row, keywordId: 'synthetic-extra' }])).toThrow(/extra/);
+    expect(parseSpWritePostWriteObservationPage({ keywords: [], totalResults: 0 }, call).totalResults).toBe(0);
+    expect(() => parseSpWritePostWriteObservationPage({ keywords: [], totalResults: 3 }, call)).toThrow(/positions/);
+  });
+
+  it.each([undefined, 0.7])('retains archived presence with optional explicit bid %s only in post-write reads', (bid) => {
+    const call = prepareSpWriteCalls(planFor([moneyAction('sp.v3.keywords.update', '1', '1.1')]), sha256)[0]!;
+    const row = { keywordId: call.positions[0]!.amazonEntityId, state: 'ARCHIVED', ...(bid === undefined ? {} : { bid }) };
+    const [observed] = parseSpWritePostWriteObservationRows(call, [row]);
+    expect(observed).toMatchObject({ values: { state: 'archived' } });
+    expect(observed?.routeKey === 'sp.v3.keywords.update' ? observed.values.bid : undefined)
+      .toEqual(bid === undefined ? undefined : { amount: '0.7', currencyCode: 'USD' });
+    expect(() => parseSpWriteObservationRows(call, [row])).toThrow(/not mutable/);
+    expect(() => parseSpWritePostWriteObservationRows(call, [{ ...row, state: 'OTHER' }])).toThrow(/not mutable/);
+  });
+
   it('parses a complete campaign bidding state and selected current values', () => {
     const call = prepareSpWriteCalls(planFor([campaignAction()]), sha256)[0]!;
     const observed = parseSpWriteObservationRows(call, [{

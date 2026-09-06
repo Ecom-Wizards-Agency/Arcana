@@ -61,35 +61,49 @@ export function unresolvedActionIds(evidence: SpWriteExecutionEvidence): string[
 /** A successful complete read is required; failed reads never fabricate a missing entity. */
 export function makeObservations(
   evidence: SpWriteExecutionEvidence, claim: SpWriteObserveAndRecoverOutboxClaim,
-  intent: SpWriteProviderCallIntent, result: SpWriteProviderResult, items: readonly SpWriteObservedAction[],
+  intent: SpWriteProviderCallIntent, result: SpWriteProviderResult, items: readonly (SpWriteObservedAction | null)[],
   observedAt: string, settleMs: number,
 ): { observations: SpWriteObservation[]; pending: number } {
   const observations: SpWriteObservation[] = [];
-  const parsedItems = items.map((item) => SpWriteObservedAction.parse(item));
-  const byAction = new Map(parsedItems.map((item) => [item.actionId, item]));
-  if (byAction.size !== items.length || items.length !== intent.positions.length
-    || intent.positions.some((position) => !byAction.has(position.actionId))) throw new Error('SP write observation count mismatch');
+  if (items.length !== intent.positions.length) throw new Error('SP write observation count mismatch');
+  const byAction = new Map<string, SpWriteObservedAction | null>();
+  items.forEach((item, index) => {
+    const position = intent.positions[index]!;
+    const observed = item === null ? null : SpWriteObservedAction.parse(item);
+    if (byAction.has(position.actionId) || (observed !== null && (
+      observed.actionId !== position.actionId || observed.actionFingerprint !== position.actionFingerprint
+      || observed.amazonEntityId !== position.amazonEntityId || observed.routeKey !== intent.routeKey
+    ))) throw new Error('SP write observation position mismatch');
+    byAction.set(position.actionId, observed);
+  });
+  const deadline = Date.parse(result.completedAt) + settleMs;
+  if (!Number.isFinite(deadline) || !Number.isFinite(Date.parse(observedAt))
+    || !Number.isFinite(settleMs) || settleMs < 0) throw new Error('SP write observation window is invalid');
   let pending = 0;
   for (const position of result.positions) {
     if (position.outcome === 'authoritative_rejected'
       || evidence.observations.some((row) => row.intentId === intent.intentId && row.actionId === position.actionId)) continue;
     const action = evidence.plan.actions.find((row) => row.actionId === position.actionId);
-    const observed = byAction.get(position.actionId)!;
+    const observed = byAction.get(position.actionId);
+    const archived = observed?.routeKey === 'sp.v3.keywords.update' && observed.values.state === 'archived';
     if (action?.routeKey !== 'sp.v3.keywords.update' || action.changes.bid === undefined || action.changes.state !== undefined
-      || observed.routeKey !== action.routeKey || observed.actionFingerprint !== action.fingerprint
-      || observed.amazonEntityId !== action.entity.keywordId || observed.values.bid === undefined || observed.values.state !== undefined) {
+      || observed === undefined || (observed !== null && (
+        observed.routeKey !== action.routeKey || observed.actionFingerprint !== action.fingerprint
+        || observed.amazonEntityId !== action.entity.keywordId || (!archived && observed.values.bid === undefined)
+        || (observed.values.state !== undefined && !archived)
+      ))) {
       throw new Error('SP write observation identity or action unsupported');
     }
-    const matches = (side: 'expected' | 'requested') => observed.values.bid?.amount === action.changes.bid?.[side].amount
-      && observed.values.bid?.currencyCode === action.changes.bid?.[side].currencyCode;
-    const requested = matches('requested');
-    if (!requested && Date.parse(observedAt) < Date.parse(result.completedAt) + settleMs) { pending += 1; continue; }
+    const matches = (side: 'expected' | 'requested') => observed?.values.bid?.amount === action.changes.bid?.[side].amount
+      && observed?.values.bid?.currencyCode === action.changes.bid?.[side].currencyCode;
+    const requested = !archived && matches('requested');
+    if (!requested && Date.parse(observedAt) < deadline) { pending += 1; continue; }
     const observation = SpWriteObservation.parse({ ...identity(evidence),
       schemaVersion: 'openspell.sp-write-observation.v1', observationId: randomUUID(),
       intentId: intent.intentId, intentFingerprint: intent.fingerprint, providerCallId: intent.providerCallId,
       requestFingerprint: intent.requestFingerprint, actionId: action.actionId, actionFingerprint: action.fingerprint,
       routeKey: action.routeKey, sourceSyncJobId: claim.sourceSyncJobId, observedAt,
-      outcome: requested ? 'observed_requested'
+      outcome: observed === null ? 'missing' : archived ? 'conflict' : requested ? 'observed_requested'
         : position.outcome === 'ambiguous' && matches('expected') ? 'observed_expected_after_ambiguous' : 'conflict',
       observed, fingerprint: ZERO,
     });

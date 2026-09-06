@@ -29,6 +29,8 @@ describe.skipIf(!available)('inert SP write worker with real ledger and fake HTT
   let dispatchEnabled: boolean;
   let bid: number;
   let providerBids: Map<string, number>;
+  let providerMissing: Set<string>;
+  let providerArchived: Map<string, number | null>;
   let readFailure: boolean;
   let ambiguous: boolean;
   let puts: number;
@@ -81,6 +83,7 @@ describe.skipIf(!available)('inert SP write worker with real ledger and fake HTT
     } });
     dispatchEnabled = true; bid = 0.9; readFailure = false; ambiguous = false; puts = 0; reads = 0; credentialsPrepared = 0;
     providerBids = new Map();
+    providerMissing = new Set(); providerArchived = new Map();
     const clientId = 'synthetic-client'; const secret = ['synthetic', 'secret'].join('-'); const refresh = 'synthetic-refresh';
     adapter = createSpWriteAdapter({ region: 'NA', credentials: { clientId, clientSecret: secret, refreshToken: refresh },
       fetch: async (url, init = {}) => {
@@ -97,12 +100,17 @@ describe.skipIf(!available)('inert SP write worker with real ledger and fake HTT
         reads += 1;
         if (readFailure) return new Response('{}', { status: 200 });
         const body = JSON.parse(String(init.body)) as { keywordIdFilter: { include: string[] } };
-        return new Response(JSON.stringify({ keywords: body.keywordIdFilter.include.map((keywordId) => ({ keywordId, bid: providerBids.get(keywordId) ?? bid, state: 'ENABLED' })) }));
+        return new Response(JSON.stringify({ keywords: body.keywordIdFilter.include.flatMap((keywordId) => {
+          if (providerMissing.has(keywordId)) return [];
+          if (providerArchived.has(keywordId)) return [{ keywordId, state: 'ARCHIVED',
+            ...(providerArchived.get(keywordId) === null ? {} : { bid: providerArchived.get(keywordId) }) }];
+          return [{ keywordId, bid: providerBids.get(keywordId) ?? bid, state: 'ENABLED' }];
+        }) }));
       },
     }, { hasher });
     mirror = vi.fn(async (observation) => {
       const receipt = await reconcileSpWriteObservation(database, observation);
-      expect(['promoted', 'already_current']).toContain(receipt.outcome);
+      expect(['promoted', 'already_current', 'superseded', 'missing']).toContain(receipt.outcome);
       return true;
     });
   }, 60_000);
@@ -518,6 +526,122 @@ describe.skipIf(!available)('inert SP write worker with real ledger and fake HTT
     expect(await worker.tick()).toEqual({ kind: 'fault', attemptedCalls: 0 });
     expect((await detail()).snapshot.accounting).toMatchObject({ observationMissing: 0, pendingObservation: 1 });
     expect(mirror).not.toHaveBeenCalled();
+    expect(puts).toBe(1);
+  });
+
+  it.each(['absent', 'archived'])('refuses a %s keyword before a provider intent or mutation is reserved', async (state) => {
+    if (state === 'absent') providerMissing.add('kw-1');
+    else providerArchived.set('kw-1', null);
+    expect(await loop().tick()).toEqual({ kind: 'fault', attemptedCalls: 0 });
+    expect((await detail()).snapshot.accounting).toMatchObject({ intentCommitted: 0, pendingDispatch: 1, observationMissing: 0 });
+    expect(puts).toBe(0);
+    expect(mirror).not.toHaveBeenCalled();
+  });
+
+  it.each([0.7, null])('records actual archived presence without inventing an explicit bid %s or permitting an inverse', async (archivedBid) => {
+    expect((await loop().tick()).attemptedCalls).toBe(1);
+    providerArchived.set('kw-1', archivedBid);
+    const runtime = createSpWriteRuntimeLedger(database);
+    const [claim] = (await createSpWriteOutboxLedger(database).claimAvailable({
+      claimantId: 'synthetic-archive-observer', kinds: ['observe_and_recover'], limit: 1,
+    })).claims;
+    if (claim?.kind !== 'observe_and_recover') throw new Error('archive observation claim absent');
+    const evidence = await runtime.loadVerifiedExecution(claim);
+    if (evidence === null) throw new Error('archive observation evidence absent');
+    const call = adapter.preparePlan(evidence.plan)[0]!;
+    const items = await adapter.observeAfterWrite({ plan: evidence.plan, call });
+    const intent = evidence.providerCallIntents[0]!;
+    const result = evidence.providerResults[0]!;
+    const at = await readSpWriteDatabaseTime(database);
+    expect(makeObservations(evidence, claim, intent, result, items, at, 120_000)).toEqual({ observations: [], pending: 1 });
+    // This direct ledger fixture has no settle delay; the real restart test below uses 120s.
+    const [observation] = makeObservations(evidence, claim, intent, result, items, at, 0).observations;
+    expect(observation).toMatchObject({ outcome: 'conflict', observed: { values: { state: 'archived' } } });
+    await runtime.appendObservation(observation!);
+    const receipt = await reconcileSpWriteObservation(database, observation!);
+    expect(receipt).toMatchObject({ outcome: 'superseded', observationOutcome: 'conflict', observedState: 'archived',
+      before: { amount: '0.9', currencyCode: 'USD' }, after: { amount: '0.9', currencyCode: 'USD' },
+      observed: archivedBid === null ? null : { amount: '0.7', currencyCode: 'USD' }, entityChangeId: null });
+    expect((await detail()).snapshot.accounting).toMatchObject({ observationConflict: 1, observationMissing: 0, pendingObservation: 0 });
+    await expect(previewSpWriteInverse(database, { orgId, userId: OWNER }, {
+      requestId: randomUUID(), profileId, original: admission.operation,
+    })).rejects.toMatchObject({ code: 'source_changed' });
+
+    const readStartedAt = await readKeywordMirrorStart(database);
+    const [listed] = await database.sql<{ artifact: unknown }[]>`select jsonb_build_object(
+      'entityType', 'keyword', 'profileId', profile_id, 'amazonId', amazon_id, 'adProduct', ad_product,
+      'name', name, 'state', 'archived', 'campaignId', campaign_id, 'adGroupId', ad_group_id,
+      'keywordText', keyword_text, 'matchType', match_type, 'bid', bid
+    ) as artifact from public.keywords where profile_id = ${profileId} and amazon_id = 'kw-1'`;
+    expect(await mergeKeywordMirror(database, { orgId, profileId, adProduct: 'SP', readStartedAt,
+      full: false, rows: [KeywordRow.parse(listed!.artifact)] })).toMatchObject({ listed: 1, upserted: 1 });
+    expect(await reconcileSpWriteObservation(database, observation!)).toEqual(receipt);
+    expect(await database.sql`select state, bid::text from public.keywords where profile_id = ${profileId} and amazon_id = 'kw-1'`)
+      .toEqual([{ state: 'archived', bid: '0.9000' }]);
+    expect(puts).toBe(1);
+  });
+
+  it('settles missing and archived rows in a mixed batch after the durable window across restart, never from a failed read', async () => {
+    const worker = loop();
+    expect((await worker.tick()).attemptedCalls).toBe(1);
+    providerMissing.add('kw-1'); providerArchived.set('kw-2', null);
+    expect(await worker.tick()).toEqual({ kind: 'deferred', attemptedCalls: 0 });
+    expect((await detail()).snapshot.accounting).toMatchObject({ observationMissing: 0, observationConflict: 0, pendingObservation: 2 });
+    expect(mirror).not.toHaveBeenCalled();
+    const [result] = await database.sql<{ completed_at: string }[]>`select result.artifact ->> 'completedAt' as completed_at
+      from public.sp_write_provider_results result join public.sp_write_provider_call_intents intent using (intent_id)
+      where intent.plan_id = ${preview.plan.id}`;
+    worker.stop();
+    const settleAt = Date.parse(result!.completed_at) + 120_000;
+    while (Date.parse(await readSpWriteDatabaseTime(database)) < settleAt) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    const restarted = loop();
+    readFailure = true;
+    expect(await restarted.tick()).toEqual({ kind: 'fault', attemptedCalls: 0 });
+    expect((await detail()).snapshot.accounting).toMatchObject({ observationMissing: 0, observationConflict: 0, pendingObservation: 2 });
+    expect(mirror).not.toHaveBeenCalled();
+    readFailure = false;
+    const [deferred] = await database.sql<{ available_at: string }[]>`
+      select app.sp_write_instant(head.available_at) as available_at from app.sp_write_outbox_delivery_heads head
+      join public.sp_write_outbox source using (outbox_id)
+      where source.plan_id = ${preview.plan.id} and source.kind = 'observe_and_recover'`;
+    const deadline = Date.parse(deferred!.available_at) + 10_000;
+    let closed = false;
+    while (Date.now() < deadline) {
+      const tick = await restarted.tick();
+      if (tick.kind === 'completed') { closed = true; break; }
+      expect(tick.kind).toBe('idle');
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    expect(closed).toBe(true);
+    const status = await detail();
+    expect(status.snapshot.accounting).toMatchObject({ observationMissing: 1, observationConflict: 1, pendingObservation: 0 });
+    expect(status.mirror).toMatchObject({ observations: 2, pending: 0, promoted: 0, superseded: 2 });
+    expect(mirror).toHaveBeenCalledTimes(2);
+    expect(puts).toBe(1);
+    expect(await restarted.tick()).toEqual({ kind: 'idle', attemptedCalls: 0 });
+  }, 180_000);
+
+  it('keeps a later archived sync when an older successful native observation reaches the mirror', async () => {
+    const observation = await unmirroredObservation();
+    expect(observation.outcome).toBe('observed_requested');
+    const readStartedAt = await readKeywordMirrorStart(database);
+    const [listed] = await database.sql<{ artifact: unknown }[]>`select jsonb_build_object(
+      'entityType', 'keyword', 'profileId', profile_id, 'amazonId', amazon_id, 'adProduct', ad_product,
+      'name', name, 'state', 'archived', 'campaignId', campaign_id, 'adGroupId', ad_group_id,
+      'keywordText', keyword_text, 'matchType', match_type, 'bid', bid
+    ) as artifact from public.keywords where profile_id = ${profileId} and amazon_id = 'kw-1'`;
+    expect(await mergeKeywordMirror(database, { orgId, profileId, adProduct: 'SP', readStartedAt,
+      full: false, rows: [KeywordRow.parse(listed!.artifact)] })).toMatchObject({ listed: 1, upserted: 1, bidChanges: 0 });
+    expect(await reconcileSpWriteObservation(database, observation)).toMatchObject({
+      outcome: 'superseded', before: { amount: '0.9' }, after: { amount: '0.9' }, entityChangeId: null,
+    });
+    expect(await database.sql`select state, bid::text from public.keywords where profile_id = ${profileId} and amazon_id = 'kw-1'`)
+      .toEqual([{ state: 'archived', bid: '0.9000' }]);
+    await expect(previewSpWriteInverse(database, { orgId, userId: OWNER }, {
+      requestId: randomUUID(), profileId, original: admission.operation,
+    })).rejects.toMatchObject({ code: 'source_changed' });
     expect(puts).toBe(1);
   });
 
