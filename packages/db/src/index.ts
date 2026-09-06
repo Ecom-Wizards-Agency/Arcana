@@ -21,6 +21,7 @@ export const PACKAGE_NAME = '@wizard-ads/db' as const;
 export * from './client.js';
 export * from './queries/authenticated-actor.js';
 export * from './queries/agency-bootstrap.js';
+export * from './queries/amazon-connection-operations.js';
 export * from './queries/team-invitation-acceptance.js';
 export * from './schema/index.js';
 export * from './queries/chunk.js';
