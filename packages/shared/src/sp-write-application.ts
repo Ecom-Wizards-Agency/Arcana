@@ -6,6 +6,7 @@ import {
   ApproveSpWritePlan,
   SpWriteAuthorizationReceipt,
   SpWriteExecutionSnapshot,
+  SpWriteObservedAction,
   SpWritePlan,
   SpWritePlanBinding,
   spWritePlanBinding,
@@ -82,6 +83,66 @@ export const SpWriteAdmission = z.object({
   approvalRequestId: Uuid,
 }).strict();
 export type SpWriteAdmission = z.infer<typeof SpWriteAdmission>;
+
+/** Identifies evidence that already exists; reading it cannot prepare a new plan. */
+export const SpWriteRecordedPreviewRequest = z.object({ profileId: Uuid, planId: Uuid }).strict();
+export type SpWriteRecordedPreviewRequest = z.infer<typeof SpWriteRecordedPreviewRequest>;
+
+export const SpWritePreviewFreshnessReason = z.enum([
+  'expired', 'profile_changed', 'grant_changed', 'gate_disabled', 'source_changed',
+  'current_value_changed', 'entity_unavailable', 'unsupported_action',
+]);
+export type SpWritePreviewFreshnessReason = z.infer<typeof SpWritePreviewFreshnessReason>;
+
+/** Frozen evidence and current synchronized state are intentionally separate. */
+export const SpWriteRecordedPreview = z.object({
+  preview: SpWritePreview,
+  profile: z.object({ id: Uuid, label: z.string(), currencyCode: z.string().regex(/^[A-Z]{3}$/) }).strict(),
+  currentRows: z.array(z.object({
+    actionId: Uuid,
+    entityName: z.string().nullable(),
+    syncedAt: z.iso.datetime().nullable(),
+    observation: SpWriteObservedAction.nullable(),
+  }).strict()),
+  /** Advisory as of checkedAt; admission and dispatch still recheck authority and state. */
+  freshness: z.object({
+    checkedAt: z.iso.datetime(),
+    status: z.enum(['current', 'stale', 'unavailable']),
+    reasons: z.array(SpWritePreviewFreshnessReason),
+  }).strict(),
+  admission: SpWriteAdmission.nullable(),
+}).strict().superRefine((value, context) => {
+  const plan = value.preview.plan;
+  if (value.profile.id !== plan.profileId
+    || value.profile.currencyCode !== plan.providerScope.currencyCode) {
+    context.addIssue({ code: 'custom', path: ['profile'], message: 'profile differs from the recorded plan' });
+  }
+  const actions = new Map(plan.actions.map((action) => [action.actionId, action]));
+  if (value.currentRows.length !== plan.actions.length
+    || new Set(value.currentRows.map((row) => row.actionId)).size !== plan.actions.length
+    || value.currentRows.some((row) => {
+      const action = actions.get(row.actionId);
+      if (action === undefined) return true;
+      return row.observation !== null && (row.syncedAt === null
+        || row.observation.actionId !== action.actionId
+        || row.observation.actionFingerprint !== action.fingerprint
+        || row.observation.routeKey !== action.routeKey
+        || !Object.values(action.entity).includes(row.observation.amazonEntityId));
+    })) {
+    context.addIssue({ code: 'custom', path: ['currentRows'], message: 'current rows must cover the exact recorded actions' });
+  }
+  const reasons = value.freshness.reasons;
+  const unavailable = reasons.includes('entity_unavailable') || reasons.includes('unsupported_action');
+  if (new Set(reasons).size !== reasons.length
+    || value.freshness.status !== (unavailable ? 'unavailable' : reasons.length > 0 ? 'stale' : 'current')
+    || (value.currentRows.some((row) => row.observation === null) && !unavailable)) {
+    context.addIssue({ code: 'custom', path: ['freshness'], message: 'freshness must agree with its evidence and reasons' });
+  }
+  if (value.admission !== null && value.admission.operation.planId !== plan.id) {
+    context.addIssue({ code: 'custom', path: ['admission'], message: 'admission differs from the recorded plan' });
+  }
+});
+export type SpWriteRecordedPreview = z.infer<typeof SpWriteRecordedPreview>;
 
 export const SpWriteOperationDetail = z.object({
   operation: SpWriteOperationId,

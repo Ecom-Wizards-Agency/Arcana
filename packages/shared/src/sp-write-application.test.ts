@@ -7,7 +7,10 @@ import {
   SpWriteOperationDetail,
   SpWriteOperationId,
   SpWritePreviewRequest,
+  SpWriteRecordedPreview,
+  SpWriteRecordedPreviewRequest,
 } from './sp-write-application.js';
+import { spWritePlanBinding, SpWritePlan } from './sp-writes.js';
 
 const id = (suffix: string) => `00000000-0000-4000-8000-${suffix.padStart(12, '0')}`;
 
@@ -45,7 +48,61 @@ function operationFixture() {
   };
 }
 
+function recordedFixture() {
+  const receipt = operationFixture().receipt;
+  const plan = SpWritePlan.parse({
+    schemaVersion: 'openspell.sp-write-plan.v1', id: id('2'), orgId: id('5'), profileId: id('6'),
+    providerScope: receipt.plan.providerScope, direction: 'inverse',
+    source: { kind: 'inverse_execution', sourceExecutionId: id('1'), sourcePlanId: id('30'), sourcePlanFingerprint: 'b'.repeat(64) },
+    generatedAt: '2026-09-05T12:00:00.000Z', frozenAt: '2026-09-05T12:00:00.000Z', expiresAt: receipt.expiresAt,
+    actions: [{ actionId: id('20'), routeKey: 'sp.v3.keywords.update', entity: { keywordId: 'synthetic-keyword' },
+      sources: [{ kind: 'inverse_action', sourceActionId: id('21'), changeKey: 'keyword.bid' }],
+      changes: { bid: { expected: { amount: '0.9', currencyCode: 'USD' }, requested: { amount: '0.7', currencyCode: 'USD' } } },
+      fingerprint: 'c'.repeat(64) }], counts: receipt.plan.counts, fingerprint: receipt.plan.planFingerprint,
+  });
+  return {
+    preview: { plan, binding: spWritePlanBinding(plan), evidence: null },
+    profile: { id: plan.profileId, label: 'Synthetic profile', currencyCode: 'USD' },
+    currentRows: [{ actionId: id('20'), entityName: 'Synthetic keyword', syncedAt: plan.frozenAt,
+      observation: { actionId: id('20'), actionFingerprint: 'c'.repeat(64), routeKey: 'sp.v3.keywords.update',
+        amazonEntityId: 'synthetic-keyword', values: { bid: { amount: '0.9', currencyCode: 'USD' }, state: 'enabled' } } }],
+    freshness: { checkedAt: plan.frozenAt, status: 'current', reasons: [] }, admission: null,
+  };
+}
+
 describe('write application boundary', () => {
+  it('reads only an exact recorded plan identity without accepting caller authority', () => {
+    const request = { profileId: id('1'), planId: id('2') };
+    expect(SpWriteRecordedPreviewRequest.parse(request)).toEqual(request);
+    expect(SpWriteRecordedPreviewRequest.safeParse({ ...request, orgId: id('3') }).success).toBe(false);
+    expect(SpWriteRecordedPreviewRequest.safeParse({ profileId: id('1'), applyBatchId: id('2') }).success).toBe(false);
+  });
+
+  it('keeps exact decimal frozen values separate from refreshed state, including inverses', () => {
+    const fixture = recordedFixture();
+    fixture.currentRows[0]!.observation.values.bid.amount = '0.900001';
+    const parsed = SpWriteRecordedPreview.parse({ ...fixture,
+      freshness: { ...fixture.freshness, status: 'stale', reasons: ['current_value_changed'] } });
+    expect(parsed.preview.evidence).toBeNull();
+    expect(parsed.preview.plan.actions[0]?.changes).toEqual(fixture.preview.plan.actions[0]?.changes);
+    expect(parsed.currentRows[0]?.observation).toMatchObject({ values: { bid: { amount: '0.900001' } } });
+  });
+
+  it('requires every current row to bind the same action and rejects incomplete or misleading freshness', () => {
+    const fixture = recordedFixture();
+    expect(SpWriteRecordedPreview.safeParse(fixture).success).toBe(true);
+    for (const currentRows of [[], [fixture.currentRows[0], fixture.currentRows[0]],
+      [{ ...fixture.currentRows[0], actionId: id('99') }],
+      [{ ...fixture.currentRows[0], observation: { ...fixture.currentRows[0]!.observation, amazonEntityId: 'wrong-keyword' } }]]) {
+      expect(SpWriteRecordedPreview.safeParse({ ...fixture, currentRows }).success).toBe(false);
+    }
+    expect(SpWriteRecordedPreview.safeParse({ ...fixture, currentRows: [{ ...fixture.currentRows[0], observation: null }] }).success).toBe(false);
+    expect(SpWriteRecordedPreview.safeParse({ ...fixture,
+      freshness: { ...fixture.freshness, status: 'current', reasons: ['expired'] } }).success).toBe(false);
+    expect(SpWriteRecordedPreview.safeParse({ ...fixture, admission: {
+      kind: 'queued', operation: { executionId: id('1'), planId: id('99') }, approvalId: id('3'), approvalRequestId: id('4'),
+    } }).success).toBe(false);
+  });
   it('requires a plan identity even when forward and inverse share an execution cycle', () => {
     const forward = SpWriteOperationId.parse({ executionId: id('1'), planId: id('2') });
     const inverse = SpWriteOperationId.parse({ executionId: id('1'), planId: id('3') });
