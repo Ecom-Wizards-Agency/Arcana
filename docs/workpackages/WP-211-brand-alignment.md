@@ -374,11 +374,11 @@ as the contract file.
   the neutral fallback it is the part an operator actually hits, and it is the cheaper of
   the two fixes: a per-row swatch control in `tag-manager.tsx` closes it without a
   migration, and the `PATCH` route already accepts a colour.
-- **No `favicon.ico`, deliberately.** The set is complete for every target that reads
-  `<link rel="icon">`, which the built head carries for both the 512x512 PNG and the SVG,
-  and that is every modern browser. Because `metadata.icons` is now declared explicitly,
-  Next's `app/favicon.ico` auto-handling is also off, so a bare `/favicon.ico` request
-  404s: crawlers, feed readers and some embedded webviews that probe that path directly get
-  nothing. Nothing user-visible breaks. Adding `apps/web/app/favicon.ico` (48x48
-  multi-size, same source SVG) plus a line in the `design-system.test.ts` PNG check would
-  close it; the file is outside the declared scope of this slice.
+- **`favicon.ico` added.** The set was complete for every target that reads the metadata
+  links, but a bare `/favicon.ico` request still returned 404 for tools that ignore them.
+  `apps/web/app/favicon.ico` is now a 48x48 PNG-compressed single-entry ICO rasterised from
+  the same `apps/web/public/brand/wizards-ai-icon.svg` with the workspace `sharp`, wrapped in
+  a hand-written ICO directory. Validated by unpacking the container: reserved 0, type 1,
+  one entry, 48x48 at 32bpp, PNG signature at the declared offset, declared size ending
+  exactly at end of file. Next serves `app/favicon.ico` at the root automatically, so the
+  layout metadata needs no further entry.
