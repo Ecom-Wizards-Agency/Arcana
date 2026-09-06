@@ -9,6 +9,7 @@
 import { relations } from 'drizzle-orm';
 import {
   boolean,
+  bigint,
   date,
   index,
   jsonb,
@@ -71,6 +72,7 @@ export const adsConnections = pgTable(
     lwaClientId: text('lwa_client_id'),
     /** Points into Supabase Vault. The credential itself is never in a column. */
     vaultSecretId: uuid('vault_secret_id'),
+    credentialGeneration: bigint('credential_generation', { mode: 'bigint' }).notNull().default(0n),
     status: connectionStatus('status').notNull().default('pending'),
     scope: text('scope'),
     connectedBy: uuid('connected_by').references(() => authUsers.id, { onDelete: 'set null' }),

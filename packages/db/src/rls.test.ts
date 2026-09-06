@@ -162,11 +162,10 @@ describe.skipIf(!available)('row level security', () => {
         update public.ad_profiles set target_acos = 0.3 where org_id = ${orgA} returning id
       `;
       expect(updated.length).toBe(1);
-
-      const deleted = await sql`delete from public.ad_profiles where org_id = ${orgA} returning id`;
-      // No error: RLS filters the row out of the delete's scope rather than
-      // raising, which is exactly why a delete test must assert on the count.
-      expect(deleted.length).toBe(0);
+    });
+    await asUser(database, USER_A, async (sql) => {
+      await expect(sql`delete from public.ad_profiles where org_id = ${orgA} returning id`)
+        .rejects.toMatchObject({ code: '42501' });
     });
   });
 
