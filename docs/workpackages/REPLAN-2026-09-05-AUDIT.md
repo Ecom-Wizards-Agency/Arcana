@@ -18,6 +18,10 @@ writes. New constraints/indexes are valid, the eight fenced functions still perm
 worker among application callers, and both write gates remain absent/closed. Codex independently
 checked ordered counts, artifact hashes and all ten additions against current source `0db04d3`,
 then reran postflight against the disposable database.
+Cross-model review found that the durable gate query omitted the native profile-allowlist head.
+The verifier now also asserts that head is empty; its read-only rerun confirms environment,
+profile and MCP authority heads all have zero rows. The postflight and artifact hashes were
+refreshed, with the correction appended to the private trail. No schema was rerun for this check.
 
 Evidence directory: `_local/write-window-exact-rehearsal/`; files `RUN.json`, `POSTFLIGHT.json`,
 `REHEARSAL-STATUS.json`, `ARTIFACTS.json` and `ROOT-VERIFICATION.json`. The verified input ledger
