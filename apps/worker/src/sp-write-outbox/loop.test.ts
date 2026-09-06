@@ -11,7 +11,7 @@ import type { SpWriteAdmission, SpWritePreview } from '@wizard-ads/shared/sp-wri
 import { SpWriteObservation, type SpWritePlan } from '@wizard-ads/shared/sp-writes';
 import { hasher, makeObservations, makeReservationArtifacts, providerKey, remainingAttemptMs } from './artifacts.js';
 import { createSpWriteOutboxLoop } from './loop.js';
-import { createKeywordMirrorCapability } from './composition.js';
+import { createKeywordMirrorCapability, createSpWriteWorker } from './composition.js';
 import { PostgresWorkerStore } from '../store.js';
 import { SyncWorker } from '../worker.js';
 import type { AdsApiClient } from '../ads-api.js';
@@ -201,6 +201,60 @@ describe.skipIf(!available)('inert SP write worker with real ledger and fake HTT
       keywordMirror: { currentBidInputs: 0, staleBidInputs: 1, changes: 0 } } });
     const [state] = await database.sql<{ bid: string }[]>`select bid::text from public.keywords where profile_id = ${profileId} and amazon_id = 'kw-1'`;
     expect(state!.bid).toBe('0.7000');
+  });
+
+  it('preserves a later console bid edit through the same store required by native-write composition', async () => {
+    const store = new PostgresWorkerStore(database, { info: () => {} }, {
+      keywordMirror: createKeywordMirrorCapability(database),
+    });
+    const composed = createSpWriteWorker(store, {
+      claimantId: 'synthetic-coupled-write-worker',
+      policy: () => ({ dispatchEnabled: false, reconcileEnabled: false, profileIds: [profileId] }),
+    }, {});
+    expect(await composed.tick()).toEqual({ kind: 'disabled', attemptedCalls: 0 });
+
+    const native = loop();
+    expect((await native.tick()).attemptedCalls).toBe(1);
+    expect((await native.tick()).kind).toBe('completed');
+    const [before] = await database.sql<{ count: number; observed: boolean }[]>`
+      select (select count(*)::int from public.entity_changes
+        where profile_id = ${profileId} and amazon_id = 'kw-1' and field = 'bid') as count,
+        bid_observed_at is not null as observed
+      from public.keywords where profile_id = ${profileId} and amazon_id = 'kw-1'`;
+    expect(before!.observed).toBe(true);
+
+    // A later ordinary listing sees an edit made outside OpenSpell, after the native bid settled.
+    const readStartedAt = await store.beginEntityRead!();
+    const [listed] = await database.sql<{ artifact: unknown }[]>`select jsonb_build_object(
+      'entityType', 'keyword', 'profileId', profile_id, 'amazonId', amazon_id, 'adProduct', ad_product,
+      'name', name, 'state', state, 'campaignId', campaign_id, 'adGroupId', ad_group_id,
+      'keywordText', keyword_text, 'matchType', match_type, 'bid', 0.8
+    ) as artifact from public.keywords where profile_id = ${profileId} and amazon_id = 'kw-1'`;
+    const row = KeywordRow.parse(listed!.artifact);
+    const profile = await store.profile(profileId);
+    expect(await store.syncEntities(profile, [row], { adProduct: 'SP', readStartedAt }))
+      .toMatchObject({ listed: 1, upserted: 1, duplicates: 0, changes: 1,
+        keywordMirror: { currentBidInputs: 1, staleBidInputs: 0, bidChanges: 1, changes: 1 } });
+    const [mirror] = await database.sql<{ bid: string }[]>`select bid::text from public.keywords
+      where profile_id = ${profileId} and amazon_id = 'kw-1'`;
+    expect(mirror!.bid).toBe('0.8000');
+    const changes = await database.sql<{ id: string; before: unknown; after: unknown; source: string }[]>`
+      select id::text, old_value as before, new_value as after, source
+      from public.entity_changes where profile_id = ${profileId} and amazon_id = 'kw-1' and field = 'bid'
+      order by observed_at, id`;
+    expect(changes).toHaveLength(before!.count + 1);
+    expect(changes.at(-1)).toMatchObject({ before: 0.7, after: 0.8, source: 'sync' });
+    const history = await listTimeline(database, { orgId, profileId });
+    expect(history.some((entry) => entry.id === `change:${changes.at(-1)!.id}`)).toBe(true);
+    expect(history.some((entry) => entry.write?.execution.operation.planId === preview.plan.id)).toBe(true);
+
+    expect(await store.syncEntities(profile, [row], { adProduct: 'SP', readStartedAt: await store.beginEntityRead!() }))
+      .toMatchObject({ listed: 1, upserted: 1, changes: 0, keywordMirror: { bidChanges: 0, changes: 0 } });
+    const [after] = await database.sql<{ count: number }[]>`select count(*)::int as count from public.entity_changes
+      where profile_id = ${profileId} and amazon_id = 'kw-1' and field = 'bid'`;
+    expect(after!.count).toBe(changes.length);
+    composed.stop();
+    native.stop();
   });
 
   it('races mirror receipt creation and refuses unfenced bid writes without leaking transaction context', async () => {

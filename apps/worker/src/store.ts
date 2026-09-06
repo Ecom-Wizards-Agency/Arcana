@@ -286,6 +286,13 @@ export class PostgresWorkerStore implements WorkerStore {
     if (this.keywordMirror) this.beginEntityRead = () => this.keywordMirror!.readStartedAt();
   }
 
+  /** Native writes require this same store to preserve later ordinary bid observations. */
+  assertKeywordMirrorConfigured(): void {
+    if (this.keywordMirror === undefined) {
+      throw new Error('SP write worker requires keyword mirror configuration on its entity-sync store');
+    }
+  }
+
   claim(workerId: string, limit: number, jobTypes?: readonly JobType[]): Promise<ClaimedJob[]> {
     return this.claimProtocol === 'fenced'
       ? claimSyncJobsFenced(this.handle, workerId, limit, jobTypes)

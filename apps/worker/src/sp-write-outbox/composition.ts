@@ -1,6 +1,6 @@
 import type { DbHandle } from '@wizard-ads/db';
 import { mergeKeywordMirror, readKeywordMirrorStart, reconcileSpWriteObservation } from '@wizard-ads/db/sp-write-worker';
-import type { KeywordMirrorCapability } from '../store.js';
+import { PostgresWorkerStore, type KeywordMirrorCapability } from '../store.js';
 import { createSpWriteOutboxLoop } from './loop.js';
 import { createSpWriteProviderPreparation } from './providers.js';
 
@@ -9,12 +9,17 @@ export function createKeywordMirrorCapability(database: DbHandle): KeywordMirror
   return { readStartedAt: () => readKeywordMirrorStart(database), merge: (request) => mergeKeywordMirror(database, request) };
 }
 
-/** Default capabilities, still inert: the activation slice alone registers and ticks this worker. */
+/** The entity-sync store supplies the database; construction never starts the worker. */
 export function createSpWriteWorker(
-  database: DbHandle,
+  store: PostgresWorkerStore,
   options: Pick<Parameters<typeof createSpWriteOutboxLoop>[0], 'claimantId' | 'policy'>,
   env: NodeJS.ProcessEnv = process.env,
 ) {
+  if (!(store instanceof PostgresWorkerStore)) {
+    throw new Error('SP write worker requires its Postgres entity-sync store');
+  }
+  store.assertKeywordMirrorConfigured();
+  const database = store.handle;
   return createSpWriteOutboxLoop({ database, ...options,
     prepareProviders: createSpWriteProviderPreparation(database, env),
     reconcileObservation: async (observation) => {
