@@ -514,4 +514,175 @@ this package's owned files): `.wa-review__lane`, `.wa-review__lane-head`,
 same way the optimizer's `__tablewrap` / `__pagination` / `__empty` rules from slice 3
 are still waiting.
 
-Remaining tables inventory is still due in slice 5's close-out.
+#### Slice 4 review fixes
+
+The slice 4 review returned one high finding, five medium, four low and no scope
+violations. Every one is addressed below, each with the command that proved it: the test
+was run with the change reverted (fails, message quoted) and applied (passes).
+
+- **An optimistic decision is now tagged with the refresh it *asked for*, not the last one
+  that landed** (high, `review.tsx`). The reconciliation counted arriving payloads, so a
+  decision taken at t0 and a decision taken while refresh #1 was still in flight carried
+  the same generation, and payload #1 — which predates the second decision and cannot know
+  about it — retired both. The row the operator had just moved flickered back to the status
+  they had changed, while `decision-result` still reported the move and the tiles ticked
+  back. The clock is now two refs: `requested`, incremented immediately before every
+  `router.refresh()` in both `decide` and `exportBatch`, and `landed`, incremented when the
+  server payload's identity changes. A write records `requested.current` and is retired
+  once `landed` has passed it. Test: `review.test.ts` "does not flicker a second decision
+  back when a slow earlier refresh lands"; with the tag reverted to `landed.current` it
+  fails with `expected 'exported' to be 'accepted'`.
+- **The commit that retires on time rather than on agreement now has a test** (medium,
+  `review.test.ts`). `6ae8e52` shipped with six tests that all passed against the pre-fix
+  component, because the only one naming reconciliation exercised the agreement path the
+  old code also satisfied. New test "retires the optimistic status when the refreshed
+  payload disagrees with it": a concurrent run moved the proposal to `superseded` while
+  this operator was accepting it, and the row and the run tiles follow the server. With the
+  retirement condition reverted to agreement-only it fails with `expected 'accepted' to be
+  'superseded'`.
+- **Scroll survives a decision in the queue's most ordinary workflow** (medium,
+  `packages/ui/src/DataGrid.tsx`, `review.tsx`). Filtering to `Status = proposed` and
+  working down the list is the workflow, and every decision dropped its rows out of the
+  filtered set, changed `model.matched`, and returned the scroller and the roving tab stop
+  to zero — the operator thrown back to the top by their own decision. `DataGrid` gains an
+  optional `filterKey`: a host that can tell "the operator re-asked the question" from
+  "rows left because their data moved" supplies a key that changes only for the former, and
+  the grid uses it in place of the matched count. Sorting and grouping still reset
+  regardless, because those really are a new ordering. The queue's key is its four filter
+  fields. Tests: `DataGrid.interaction.test.tsx` "keeps the scroll when rows leave a set the
+  operator never re-filtered" (reverted: `expected +0 to be 4000`) and `review.test.ts`
+  "keeps the operator in place when a decision drops the row out of their filter" — 400
+  proposals, filtered to `proposed`, scrolled to 4,000 px, one accepted; with `filterKey`
+  removed from the call site it fails with `expected +0 to be 4000`. Both also assert that
+  moving a filter still returns to the top. There is no e2e for this: the browser fixture
+  seeds three proposals (`apps/web/e2e/run.ts`, outside this package's owned files) and
+  three rows cannot scroll, so the deterministic 400-row jsdom test is the artifact.
+- **The grid's own footer no longer prints a truncated queue as its own population**
+  (medium, `packages/ui/src/DataGrid.tsx`, `review.tsx`). `3 of 3 rows` sat directly under
+  the rows — nearer the eye than the truncation notice at the top of the page saying 40.
+  `DataGrid` gains `rowNoun` and `populationNote`, and the queue passes `loaded rows` and,
+  when truncated, `40 in this run`, so the footer reads `3 of 3 loaded rows · 40 in this
+  run` and an untruncated queue still reads `3 of 3 loaded rows`. Tests:
+  `DataGrid.interaction.test.tsx` "counts a capped row set in the host's own words"
+  (reverted: `expected '12 of 12 rows' to be '12 of 12 loaded rows · 40 in this run'`) and
+  `review.test.ts` "qualifies the grid footer count when the queue is a slice of the run".
+  The `packages/ui` revert fails with `expected '12 of 12 rows' to be '12 of 12 loaded rows
+  · 40 in this run'`.
+  `aria-rowcount` is left reporting the loaded set deliberately: it counts the rows this
+  grid holds, including the virtualised ones, and the grid genuinely holds only what the
+  capped query returned. A number describing rows that are not in the grid does not belong
+  in that attribute; the footer and the notice are where the run's size is stated.
+- **The evidence disclosure states the relationship it claims** (medium, `review.tsx`). The
+  per-row toggle carried `aria-expanded` while the panel it opens lives in the stack below
+  the grid, possibly hundreds of virtualised rows away, with no `aria-controls`, no
+  announcement and focus left on the button. Each panel now has a stable id
+  (`evidence-panel-<id>`), is a named `role="group"`, and the toggle points at it with
+  `aria-controls` while it exists — only while it exists, because `aria-controls` pointing
+  at nothing is a broken relationship rather than a weaker one. Opening or closing one
+  announces itself in a polite live region ("Evidence for X opened below the queue");
+  focus deliberately stays on the toggle so the operator keeps their place in the queue.
+  Row control names were also non-unique — one run proposes a bid *and* a budget for one
+  campaign, and `Select <entity>` named both checkboxes identically — so the checkbox and
+  the toggle now carry the field and the scope as well. Test: "names each row control for
+  the proposal it acts on, not just the entity"; with the entity-only name restored it
+  fails with `expected [ Array(2) ] to deeply equal [ …(2) ]`, the received pair being
+  `"Select Synthetic keyword one"` twice.
+- **`GridViewport` measured fill: carried to slice 5, not dropped** (medium). The slice 3
+  review deferred this to slice 4 and the slice 4 close-out failed to mention it, which is
+  the part of the finding that was simply true. It is not fixed here either, and this is
+  why: the expression is `viewportHeight - documentTop - bottomGap` in *document*
+  coordinates, so on any page whose grid starts below the fold it resolves negative and
+  clamps to the floor (420 on this queue). The proposed repair — measure viewport-relative
+  `rect.top` and re-measure on scroll — is a feedback loop in ordinary document flow:
+  scrolling down by *d* reduces `rect.top` by *d*, which grows the grid by *d*, which grows
+  the document by *d*, which allows another *d* of scrolling. Making it converge means the
+  page itself stops scrolling and the grid page becomes a fixed-height app shell, which is a
+  layout change across grid, optimizer, recommendations and n-grams and needs checking at
+  real viewport sizes on all four. Slice 5 is the slice that touches the fourth surface and
+  writes the remaining-table inventory; it takes this, with the e2e that measures the gap
+  below the grid at a real viewport size. Until then fullscreen is the gesture that gives a
+  table the whole screen, as recorded in slice 3.
+- **A group summary can no longer enter the operator's selection** (low, `review.tsx`).
+  `applyGridSelection` took whatever the grid emitted, and the grid's Space handler emits
+  the current row's id for a group row too, so the grid footer read `1 selected` while the
+  workspace read `0 of 2 filtered loaded rows selected` and `Clear selection` was enabled
+  for a selection that did not exist. Incoming ids are now filtered through the proposal
+  map, mirroring the optimizer's slice 3 guard. Test: "refuses the grid keyboard a
+  selection a group summary could never have"; reverted it fails on the grid footer with
+  `expected 'EntityQueueReasonObjectiveScopeFieldC…' not to contain 'selected'`, the
+  received text ending `3 matched source rows of 3 · 1 selected` while `selection-count`
+  reads `0 of 3 filtered loaded rows selected`.
+- **The refusal message names every refused state, and no move is claimed for a row the
+  route did not report moving** (low, `review.tsx`). `DECIDABLE_FROM` is
+  `['proposed','accepted','dismissed']`, so `superseded` is refused as well — and
+  `superseded` is exactly the concurrent-run case the reconciliation exists for. The
+  message now reads "already exported, applied or superseded". Separately,
+  `decideRecommendations` returns a refusal only for ids that still resolve to a row in the
+  org, so an id resolving to nothing was neither updated nor refused and still got a
+  hopeful optimistic status while the message reported a smaller `updated`. The client now
+  writes the optimistic decision only when `offered.length - refused.length === updated`;
+  the refusals themselves are exact — the route read those statuses out of the database —
+  so they are written either way, and anything unaccounted for waits the one refresh.
+  Test: "claims a move only for the rows the route reports moving, and names every
+  refusal"; reverted in two halves, it fails first on the wording
+  (`'… exported or applied cannot be decided again.'`) and then on
+  `expected 'accepted' to be 'proposed'` for the row the route never mentioned.
+- **Every count on the screen is formatted once** (low, `review.tsx`). The queue count, the
+  selection count and the select-all label printed raw integers beside a truncation notice
+  using `toLocaleString`, so at the 20,000-row cap the queue read "20000 of 20000 loaded
+  rows shown" next to "20,000 of the 41,000 proposals". One `int()` helper now formats the
+  run tiles, the queue count, the selection count, the select-all and header-checkbox
+  labels, the decision button labels and every export count. Covered by the existing
+  assertions on those exact strings.
+- **The 390 px queue is usable, and asserted** (low, `review.tsx`,
+  `e2e/recommendations.spec.ts`). `Select` (44 px) plus a pinned `Entity` (260 px) claimed
+  304 of 390 pixels and left the other ten columns 86 to share; the mobile e2e passed while
+  asserting nothing about the grid at all. Below `PINNED_ENTITY_MIN_WIDTH` (640) the
+  identity column scrolls with the rest of the row and only the checkbox stays pinned; the
+  breakpoint is measured in an effect, not guessed, and the server render is the wide case
+  so hydration matches. The existing mobile test now asserts the pinning, that the scroller
+  overflows, and that after scrolling to the far end the `Status` header is wholly on
+  screen and clear of the pinned column — no new test, so the suite registry is unchanged
+  at 33. Proof: with `Entity` forced back to `pinned: true`,
+  `pnpm --filter @wizard-ads/web test:e2e:tags-goto -- --grep mobile` fails at
+  `recommendations.spec.ts:146` with `unexpected value "sticky"`; with the change, the whole
+  suite is 33 of 33. Unit mirror: "stops pinning the identity column when the viewport
+  cannot afford it" (reverted: `expected 'sticky' to be 'relative'`).
+
+Evidence on the fixed tree, with `WIZARD_ADS_TEST_DATABASE_URL` and `DATABASE_URL` both
+pointing at the disposable local Postgres 17:
+
+- `apps/web`: `vitest run` 687 of 687 (was 679; eight new tests in `review.test.ts`, which
+  goes from 6 to 14). `vitest run app/recommendations` 14 of 14.
+- `packages/ui`: `vitest run --exclude src/pipeline.perf.test.ts` 206 of 206 (was 204; two
+  new in `DataGrid.interaction.test.tsx`).
+- e2e `tags-goto` (`pnpm --filter @wizard-ads/web test:e2e:tags-goto`): 33 of 33, the same
+  33 the registry declares — no test was added or removed, so
+  `apps/web/src/e2e-suite-registry.ts` and its test literal are untouched, and
+  `vitest run src/e2e-suite-registry.test.ts` is 4 of 4.
+- e2e `auth` (`pnpm --filter @wizard-ads/web test:e2e:auth`): 6 of 6. These fixes change
+  `packages/ui/src/DataGrid.tsx`, which `/grid` and the optimizer also render through; both
+  omit the new props and get exactly the previous behaviour.
+- `pnpm typecheck` 22 of 22, `pnpm lint`, `pnpm hygiene` and `git diff --check` clean.
+
+Performance, same invocation and environment as slices 1 to 4
+(`vitest run src/pipeline.perf.test.ts --maxWorkers=1`, three runs; one-minute load average
+3.3 to 3.5):
+
+| Run | Line 158 best-of-5 (budget 125 ms) | Other nine assertions |
+|---|---|---|
+| slice 4 fixes, run 1 | 150.8 ms | pass |
+| slice 4 fixes, run 2 | 146.7 ms | pass |
+| slice 4 fixes, run 3 | 149.7 ms | pass |
+
+Line 158 remains the pre-existing failure inside the slice 1–4 range (144.6 to 160.9 ms).
+These fixes touch `DataGrid.tsx` but neither `pipeline.ts` nor `filter-options.ts`; the
+threshold was not changed.
+
+**Still outside this package's owned files, reported and not fixed**: the dead
+`.wa-review__*` and `.wa-optimizer-campaigns__*` rules in `apps/web/src/ui/theme.css`
+listed above, and `apps/web/e2e/optimization-groups.spec.ts` from slice 3. Nothing in these
+fixes adds to either list.
+
+Remaining tables inventory is still due in slice 5's close-out, together with the
+`GridViewport` measured fill carried forward above.
