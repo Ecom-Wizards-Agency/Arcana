@@ -235,25 +235,20 @@ const CreateAdGroupNode = z.object({
 
 const PositiveKeywordMatchType = z.enum(['exact', 'phrase', 'broad']);
 const NegativeKeywordMatchType = z.enum(['negative_exact', 'negative_phrase']);
+// Amazon creates these clauses for an automatic campaign. They are absent from
+// the SP v3 create-target predicate enum; individual overrides require updates.
+const automaticExpressionTypes = new Set(['close_match', 'loose_match', 'substitutes', 'complements']);
 const ProductExpression = z.object({
   type: z.enum([
     'asin_same_as',
     'asin_expanded_from',
     'asin_brand_same_as',
     'asin_category_same_as',
-  ]),
+  ], { error: (issue) => typeof issue.input === 'string' && automaticExpressionTypes.has(issue.input)
+    ? 'Amazon creates automatic targeting clauses; target.create cannot apply per-clause bid or state overrides'
+    : undefined }),
   value: z.string().trim().min(1),
 }).strict();
-const AutomaticExpression = z.object({
-  type: z.enum([
-    'close_match',
-    'loose_match',
-    'substitutes',
-    'complements',
-  ]),
-  value: z.null(),
-}).strict();
-const CampaignCreationExpression = z.union([ProductExpression, AutomaticExpression]);
 
 const KeywordTargetPayload = z.object({
   targetType: z.literal('keyword'),
@@ -291,7 +286,7 @@ const ExpressionTargetPayload = z.object({
   ),
   scope: z.enum(['campaign', 'ad_group']),
   polarity: z.enum(['positive', 'negative']),
-  expression: z.array(CampaignCreationExpression).min(1),
+  expression: z.array(ProductExpression).min(1),
   bid: z.number().finite().nonnegative().nullable(),
   state: z.literal('paused'),
 }).strict().superRefine((value, context) => {
@@ -300,10 +295,6 @@ const ExpressionTargetPayload = z.object({
   }
   if (value.polarity === 'negative' && value.bid !== null) {
     context.addIssue({ code: 'custom', path: ['bid'], message: 'negative targets cannot carry a bid' });
-  }
-  if (value.polarity === 'negative'
-    && value.expression.some((expression) => AutomaticExpression.safeParse(expression).success)) {
-    context.addIssue({ code: 'custom', path: ['expression'], message: 'automatic targeting clauses cannot be negative' });
   }
   if (value.polarity === 'positive' && value.scope !== 'ad_group') {
     context.addIssue({ code: 'custom', path: ['scope'], message: 'positive targets require an ad-group parent' });
@@ -1070,29 +1061,13 @@ export const CampaignCreationPlan = z.object({
         && node.payload.targetType !== 'expression') {
         context.addIssue({ code: 'custom', path: ['nodes', index, 'payload'], message: 'Sponsored Products targets require a keyword or SP expression variant' });
       }
-      if (node.adProduct === 'SP' && node.payload.targetType === 'expression') {
-        const hasAutomaticClause = node.payload.expression.some(
-          (expression) => AutomaticExpression.safeParse(expression).success,
-        );
-        if (parentCampaign?.kind === 'campaign.create'
-          && parentCampaign.payload.settings.product === 'SP'
-          && parentCampaign.payload.settings.targetingType === 'manual'
-          && hasAutomaticClause) {
-          context.addIssue({ code: 'custom', path: ['nodes', index, 'payload', 'expression'], message: 'manual Sponsored Products campaigns cannot create automatic targeting clauses' });
-        }
-      }
       if (node.adProduct === 'SP'
         && parentCampaign?.kind === 'campaign.create'
         && parentCampaign.payload.settings.product === 'SP'
         && parentCampaign.payload.settings.targetingType === 'auto'
         && node.payload.polarity === 'positive') {
-        const automaticOnly = node.payload.targetType === 'expression'
-          && node.payload.expression.every(
-            (expression) => AutomaticExpression.safeParse(expression).success,
-          );
-        if (!automaticOnly) {
-          context.addIssue({ code: 'custom', path: ['nodes', index, 'payload'], message: 'automatic Sponsored Products campaigns cannot create positive manual targets' });
-        }
+        context.addIssue({ code: 'custom', path: ['nodes', index, 'payload'],
+          message: 'automatic Sponsored Products campaigns use Amazon-created targets and cannot create positive targets' });
       }
       if (parentCampaign?.kind === 'campaign.create'
         && parentCampaign.payload.settings.product === 'SB'

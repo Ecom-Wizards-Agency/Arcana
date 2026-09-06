@@ -878,24 +878,56 @@ describe('campaign creation plan', () => {
       : node);
     expect(CampaignCreationPlan.safeParse({ ...plan, nodes: negativeNodes }).success).toBe(true);
 
-    const automaticExpressionNodes = automaticNodes.map((node) => node.kind === 'target.create'
-      ? CampaignCreationNode.parse({
-          ...node,
-          payload: {
-            targetType: 'expression',
-            parent: { source: 'plan_node', kind: 'ad_group', nodeId: AD_GROUP_NODE_ID },
-            scope: 'ad_group',
-            polarity: 'positive',
-            expression: [{ type: 'close_match', value: null }],
-            bid: 1.01,
-            state: 'paused',
-          },
-        })
+    const productTargetNodes = automaticNodes.map((node) => node.kind === 'target.create'
+      ? CampaignCreationNode.parse({ ...node, payload: {
+          targetType: 'expression', parent: { source: 'plan_node', kind: 'ad_group', nodeId: AD_GROUP_NODE_ID },
+          scope: 'ad_group', polarity: 'positive', expression: [{ type: 'asin_same_as', value: 'B000000009' }],
+          bid: 1.01, state: 'paused',
+        } })
       : node);
-    expect(CampaignCreationPlan.safeParse({ ...plan, nodes: automaticExpressionNodes }).success)
-      .toBe(true);
+    expect(CampaignCreationPlan.safeParse({ ...plan, nodes: productTargetNodes }).success).toBe(false);
+  });
 
-    expect(CampaignCreationPlan.safeParse({
+  it.each(['close_match', 'loose_match', 'substitutes', 'complements'])(
+    'refuses the Amazon-created %s clause instead of submitting a target POST or dropping its override', (type) => {
+      const plan = spPlan();
+      const target = plan.nodes.find((node) => node.kind === 'target.create');
+      if (target === undefined) throw new Error('synthetic target missing');
+      for (const bid of [null, 0.42]) {
+        const autoTarget = { ...target, payload: {
+          targetType: 'expression', parent: { source: 'plan_node', kind: 'ad_group', nodeId: AD_GROUP_NODE_ID },
+          scope: 'ad_group', polarity: 'positive', expression: [{ type, value: null }], bid, state: 'paused',
+        } };
+        const nodeResult = CampaignCreationNode.safeParse(autoTarget);
+        expect(nodeResult.success).toBe(false);
+        if (!nodeResult.success) {
+          expect(nodeResult.error.issues.some((issue) => issue.message.includes('Amazon creates automatic targeting clauses'))).toBe(true);
+        }
+        for (const targetingType of ['manual', 'auto']) {
+          const graph = { ...plan, nodes: plan.nodes.map((node) => {
+            if (node.kind === 'target.create') return autoTarget;
+            if (node.kind === 'campaign.create' && node.payload.settings.product === 'SP') {
+              return { ...node, payload: { ...node.payload, settings: { ...node.payload.settings, targetingType } } };
+            }
+            return node;
+          }) };
+          expect(CampaignCreationPlan.safeParse(graph).success).toBe(false);
+          expect(() => serializeCampaignCreationPlanFingerprint(graph as CampaignCreationPlanType)).toThrow();
+          expect(graph.nodes).toHaveLength(plan.counts.totalNodes);
+          expect(autoTarget.payload.bid).toBe(bid);
+        }
+      }
+    },
+  );
+
+  it('creates a paused automatic SP graph with an explicit ad-group default bid and no target POST', () => {
+    const plan = spPlan();
+    const automaticNodes = plan.nodes.map((node) => node.kind === 'campaign.create' && node.payload.settings.product === 'SP'
+      ? CampaignCreationNode.parse({ ...node, payload: {
+          ...node.payload, settings: { ...node.payload.settings, targetingType: 'auto' },
+        } })
+      : node);
+    const automatic = CampaignCreationPlan.parse({
       ...plan,
       nodes: automaticNodes.filter((node) => node.kind !== 'target.create'),
       counts: {
@@ -904,7 +936,18 @@ describe('campaign creation plan', () => {
         irreversibleCreates: plan.counts.irreversibleCreates - 1,
         byKind: { ...plan.counts.byKind, 'target.create': 0 },
       },
-    }).success).toBe(true);
+    });
+    expect(automatic.nodes.map((node) => node.kind)).toEqual([
+      'eligibility.require_product', 'campaign.create', 'ad_group.create', 'ad.create',
+    ]);
+    expect(automatic.nodes.find((node) => node.kind === 'ad_group.create')?.payload).toMatchObject({ defaultBid: 1.01 });
+    expect(automatic.counts).toMatchObject({ totalNodes: 4, readChecks: 1, irreversibleCreates: 3, byKind: { 'target.create': 0 } });
+    expect(automatic.nodes.filter((node) => node.effect === 'irreversible_create')
+      .every((node) => 'state' in node.payload && node.payload.state === 'paused')).toBe(true);
+    const nodes = automatic.nodes.map((node) => ({ ...node, fingerprint: sha256.digest(serializeCampaignCreationNodeFingerprint(node)) }));
+    const fingerprinted = { ...automatic, nodes };
+    fingerprinted.fingerprint = sha256.digest(serializeCampaignCreationPlanFingerprint(fingerprinted));
+    expect(verifyCampaignCreationPlanFingerprints(fingerprinted, sha256)).toEqual(fingerprinted);
   });
 
   it('models current Unified SB manual and automatic collections without invented fields', () => {
