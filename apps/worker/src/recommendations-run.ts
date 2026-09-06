@@ -39,6 +39,9 @@ import {
 import {
   ScheduledOptimizationGroup,
   RecommendationsRunJob,
+  OneTimeRecommendationsRunJob,
+  OneTimeRpcSnapshot,
+  type OneTimeRpcConfiguration,
   TenantStrategy,
   OptimizationRunScheduleContext,
   normalizeOptimizationGroupSnapshot,
@@ -58,6 +61,7 @@ import {
 } from '@wizard-ads/strategy';
 import { profileToday } from './profile-calendar.js';
 import { RECOMMENDATION_CADENCE } from './recommendation-cadence.js';
+import { oneTimeRpcSnapshotFingerprint, oneTimeRpcWindowDays } from './one-time-preview.js';
 
 export const DEFAULT_RECOMMENDATION_LOOKBACK_DAYS = RECOMMENDATION_CADENCE.lookbackDays;
 export const RECOMMENDATIONS_ENGINE_VERSION = 'white-box-v1';
@@ -267,8 +271,9 @@ export interface StartRunResult {
   alreadySucceeded: boolean;
   proposalsCount: number;
   groupRun?: RecommendationGroupRun | null;
-  strategySnapshot: TenantStrategy;
-  strategyGoal: string;
+  strategySnapshot: TenantStrategy | null;
+  strategyGoal: string | null;
+  executionSnapshot?: OneTimeRpcSnapshot | null;
 }
 
 export interface ProposalDiagnostics {
@@ -294,6 +299,7 @@ export interface RecommendationRunNarrative {
   pacing: PacingResult | null;
   diagnostics: ProposalDiagnostics;
   groupSafety: GroupRecommendationSafety | null;
+  oneTimeConfiguration?: OneTimeRpcConfiguration;
 }
 
 /** Shared recommendation plus core-only notes persisted through audit_log. */
@@ -304,7 +310,7 @@ export type AnnotatedRecommendation = Recommendation & {
 export interface RunCompletion extends RunScope {
   lookbackDays: number;
   window: DateWindow;
-  strategySnapshot: TenantStrategy;
+  strategySnapshot: TenantStrategy | null;
   proposals: readonly AnnotatedRecommendation[];
   narrative: RecommendationRunNarrative;
 }
@@ -388,8 +394,12 @@ function executionJobId(execution: RecommendationRunExecutionContext): string {
   return 'claim' in execution ? execution.claim.jobId : execution.jobId;
 }
 
+export type RecommendationExecutionInput =
+  | (Omit<RecommendationsRunJob, 'lookbackDays'> & { lookbackDays?: number; executionVersion?: undefined })
+  | OneTimeRecommendationsRunJob;
+
 export type RecommendationsRun = (
-  payload: Omit<RecommendationsRunJob, 'lookbackDays'> & { lookbackDays?: number },
+  payload: RecommendationExecutionInput,
   execution: RecommendationRunExecutionContext,
 ) => Promise<RecommendationRunResult>;
 
@@ -421,10 +431,11 @@ export function createRecommendationsRunner(
 
 export async function runRecommendations(
   store: RecommendationRunStore,
-  payload: Omit<RecommendationsRunJob, 'lookbackDays'> & { lookbackDays?: number },
+  payload: RecommendationExecutionInput,
   execution: RecommendationRunExecutionContext,
   now = new Date(),
 ): Promise<RecommendationRunResult> {
+  const oneTimeJob = payload.executionVersion === 2 ? OneTimeRecommendationsRunJob.parse(payload) : null;
   const scope: RunScope = {
     orgId: payload.orgId,
     profileId: payload.profileId,
@@ -460,9 +471,23 @@ export async function runRecommendations(
   let window: DateWindow | null = null;
   let successWriteAmbiguous = false;
   try {
-    const lookbackDays = payload.lookbackDays ?? DEFAULT_RECOMMENDATION_LOOKBACK_DAYS;
+    const oneTime = oneTimeJob === null ? null : OneTimeRpcSnapshot.parse(started.executionSnapshot);
+    if (oneTime !== null) {
+      if (started.strategySnapshot !== null || started.strategyGoal !== null ||
+          oneTimeRpcSnapshotFingerprint(oneTime) !== oneTimeJob?.snapshotFingerprint) {
+        throw new RecommendationScopeIntegrityError();
+      }
+    } else if (started.executionSnapshot != null || started.strategySnapshot === null || started.strategyGoal === null) {
+      throw new RecommendationScopeIntegrityError();
+    }
+    const lookbackDays = oneTime === null
+      ? ('lookbackDays' in payload ? payload.lookbackDays : undefined) ?? DEFAULT_RECOMMENDATION_LOOKBACK_DAYS
+      : oneTimeRpcWindowDays(oneTime);
     const profile = await store.loadProfile(scope, execution);
-    window = recommendationWindow(profile.timezone, lookbackDays, now);
+    if (oneTime !== null && profile.timezone !== oneTime.profileTimezone) {
+      throw new RecommendationScopeIntegrityError('The profile timezone changed after this preview was confirmed.');
+    }
+    window = oneTime?.configuration.window ?? recommendationWindow(profile.timezone, lookbackDays, now);
     const inputs = await store.loadInputs(scope, window, execution);
     const groupSafety = started.groupRun === null || started.groupRun === undefined
       ? null
@@ -472,12 +497,12 @@ export async function runRecommendations(
       goal: started.strategyGoal,
     };
 
-    const pacing = computePacing(
+    const pacing = oneTime !== null ? null : computePacing(
       inputs.profileFacts.map((row) => ({ date: row.date, spend: row.cost ?? 0 })),
       window.end,
       profile.monthlyBudget,
       resolveGoalLens(resolved.goal),
-      { pacing: resolved.value.pacing },
+      { pacing: resolved.value?.pacing },
     );
     const rawEntities = rawEntitiesFrom(inputs);
     const qualitative = buildRecommendations(rawEntities, {
@@ -494,6 +519,7 @@ export async function runRecommendations(
       resolvedGoal: resolved.goal,
       pacing,
       group: started.groupRun?.group ?? null,
+      oneTimeConfiguration: oneTime?.configuration ?? null,
     });
     const proposals = groupSafety?.mayPropose === false ? [] : evaluated.proposals;
     const diagnostics = groupSafety?.mayPropose === false
@@ -508,6 +534,7 @@ export async function runRecommendations(
       pacing,
       diagnostics,
       groupSafety,
+      ...(oneTime === null ? {} : { oneTimeConfiguration: oneTime.configuration }),
     };
     let written: number;
     try {
@@ -580,17 +607,19 @@ interface BidProposalInput {
   window: DateWindow;
   profile: RecommendationProfile;
   inputs: RecommendationRunInputs;
-  strategy: TenantStrategy;
-  resolvedGoal: string;
+  strategy: TenantStrategy | null;
+  resolvedGoal: string | null;
   pacing: PacingResult | null;
   group: OptimizationGroupSnapshot | null;
+  oneTimeConfiguration: OneTimeRpcConfiguration | null;
 }
 
 function bidProposals(input: BidProposalInput): {
   proposals: AnnotatedRecommendation[];
   diagnostics: ProposalDiagnostics;
 } {
-  const { scope, window, inputs, strategy, resolvedGoal, pacing, group: runGroup } = input;
+  const { scope, window, inputs, strategy, resolvedGoal, pacing, group: runGroup, oneTimeConfiguration: oneTime } = input;
+  if (oneTime === null && strategy === null) throw new RecommendationScopeIntegrityError();
   const byAdGroup = aggregateBy(inputs.targets, (target) => target.entityRef.adGroupId ?? '');
   const byCampaign = aggregateBy(inputs.targets, (target) => target.entityRef.campaignId ?? '');
   const profileMetrics = profileLevelMetrics(inputs, window);
@@ -626,10 +655,10 @@ function bidProposals(input: BidProposalInput): {
       continue;
     }
 
-    const groupName = runGroup?.name ?? optGroupName(strategy, target.category);
-    const targetAcos = runGroup?.targetAcos ?? (groupName === null ? null : targetAcosFor(strategy, groupName));
-    const caps = runGroup === null
-      ? (groupName === null ? null : changeCapsFor(strategy, groupName))
+    const groupName = oneTime !== null ? 'one-time RPC' : runGroup?.name ?? (strategy === null ? null : optGroupName(strategy, target.category));
+    const targetAcos = oneTime?.targetAcos ?? runGroup?.targetAcos ?? (groupName === null || strategy === null ? null : targetAcosFor(strategy, groupName));
+    const caps = oneTime !== null ? { maxIncrease: oneTime.bidIncreaseCap, maxDecrease: oneTime.bidDecreaseCap } : runGroup === null
+      ? (groupName === null || strategy === null ? null : changeCapsFor(strategy, groupName))
       : {
           maxIncrease: runGroup.bidIncreaseCap,
           maxDecrease: runGroup.bidDecreaseCap,
@@ -642,22 +671,22 @@ function bidProposals(input: BidProposalInput): {
     }
 
     diagnostics.targetsConsidered += 1;
-    const legacyGroup = runGroup === null ? optGroup(strategy, groupName) : null;
+    const legacyGroup = oneTime === null && runGroup === null && strategy !== null ? optGroup(strategy, groupName) : null;
     const currentBid = target.currentBid ?? target.corridor?.bid ?? null;
     const cpc = safeDiv(target.metrics.cost ?? 0, target.metrics.clicks);
-    const manualMaxBid = boundValue(
+    const manualMaxBid = oneTime?.bidCeiling ?? boundValue(
       runGroup === null ? legacyGroup?.bid_ceiling_unit : 'absolute',
       runGroup?.bidCeiling ?? legacyGroup?.bid_ceiling_value,
       target.corridor?.median ?? null,
       cpc,
     );
-    const manualMinBid = boundValue(
+    const manualMinBid = oneTime?.bidFloor ?? boundValue(
       runGroup === null ? legacyGroup?.bid_floor_unit : 'absolute',
       runGroup?.bidFloor ?? legacyGroup?.bid_floor_value,
       target.corridor?.median ?? null,
       cpc,
     );
-    const pacingCondition = toPacingCondition(pacing, resolvedGoal);
+    const pacingCondition = oneTime === null ? toPacingCondition(pacing, resolvedGoal ?? '') : null;
     const outcome = proposeBid({
       runId: scope.runId,
       profileId: scope.profileId,
@@ -684,20 +713,27 @@ function bidProposals(input: BidProposalInput): {
         suggestedBidLow: target.corridor?.low ?? null,
       },
       category: target.category,
-      goal: runGroup === null ? (legacyGroup?.goal_lens ?? resolvedGoal) : goalForGroupRole(runGroup.role),
+      goal: oneTime !== null ? null : runGroup === null ? (legacyGroup?.goal_lens ?? resolvedGoal) : goalForGroupRole(runGroup.role),
       stock: target.stock,
       organicRank: target.organicRank,
       ...(pacingCondition === null ? {} : { pacingCondition }),
     });
 
     if (outcome.kind === 'proposal') {
-      const recommendation = applyNonMechanicalBidAdjustment(
+      const recommendation = oneTime !== null ? outcome.recommendation : applyNonMechanicalBidAdjustment(
         outcome.recommendation,
         runGroup,
-        strategy.bids.mechanical_bid_step,
+        strategy?.bids.mechanical_bid_step,
         manualMinBid,
         manualMaxBid,
       );
+      if (oneTime !== null && !withinOneTimeBidLimits(recommendation.proposedValue, currentBid, oneTime)) {
+        diagnostics.declined += 1;
+        diagnostics.declinedReasons['explicit_limits_conflict'] =
+          (diagnostics.declinedReasons['explicit_limits_conflict'] ?? 0) + 1;
+        example(diagnostics, target, 'declined', 'The calculated bid cannot satisfy all confirmed bid limits.');
+        continue;
+      }
       proposals.push({
         ...recommendation,
         reason: databaseReason(recommendation.reason),
@@ -732,6 +768,14 @@ function bidProposals(input: BidProposalInput): {
     throw new Error(`Counted ${diagnostics.proposed} proposals but composed ${proposals.length}`);
   }
   return { proposals, diagnostics };
+}
+
+function withinOneTimeBidLimits(value: number | string | null, currentBid: number | null, settings: OneTimeRpcConfiguration): boolean {
+  if (typeof value !== 'number') return false;
+  const lower = Math.max(settings.bidFloor, currentBid === null ? 0 : currentBid * (1 - settings.bidDecreaseCap));
+  const upper = Math.min(settings.bidCeiling, currentBid === null ? Infinity : currentBid * (1 + settings.bidIncreaseCap));
+  const precisionTolerance = 1e-10;
+  return Number.isFinite(value) && value + precisionTolerance >= lower && value - precisionTolerance <= upper;
 }
 
 function rawEntitiesFrom(inputs: RecommendationRunInputs): RawEntity[] {
