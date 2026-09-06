@@ -4,6 +4,24 @@
 
 ### Latest preparation checkpoint
 
+**Synthetic frontend preview prepared:** main `9672d93` has a separate clean worktree on
+`wp-213-marketer-preview`. Existing E2E setup runs only against the dedicated loopback
+PostgreSQL test container on port 55439, with mock Amazon hosts and an allowlisted synthetic
+process environment. A private welcome helper on port 3986 issues existing development-only
+test session cookies and links to the real app on port 3987. Both HTTP listeners bind only
+127.0.0.1. No deployed authentication setting or frontend source was changed.
+
+Count assertions verify 30 added campaigns (31 including the tenant fixture), 400 added daily
+facts per SP/SB/SD product and 41 profile fact dates including the base fixture day. Five
+authenticated HTTP page checks return 200 with no application-error marker. The first private
+seed attempt omitted required profile currency, failed, and cleaned up its owned resources;
+the corrected attempt passed. Evidence: `_local/frontend-preview/READY.json`,
+`HTTP-CHECKS.json`, `server.log`, `start.py` and `preview.ts`. This is route/data evidence,
+not rendered browser verification: Chrome control timed out despite installed/enabled
+extension and valid native-host diagnostics. No screenshot or interaction pass is claimed.
+The local preview is available for operator review; production still has the older revision.
+Source CI run `34024384544` passed at `2f60425` before this documentation-only update.
+
 **Live frontend readiness independently checked:** public `/api/healthz` and the authenticated
 Vercel deployment health both return `44da7ac32e5a0503993e567c41aaccffd5c39b06`. Vercel lists the
 latest production deployment at 2026-08-30 16:09:49 UTC, with no newer hosted preview. Main is

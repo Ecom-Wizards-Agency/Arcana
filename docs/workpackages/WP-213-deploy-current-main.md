@@ -81,6 +81,23 @@ activation deliverable in WP-214, not an in-place update hidden inside this web 
    recorded compatible artifact and exclusive job set, prove one complete preview lifecycle.
    Only then record that the optimizer edit and job-creation freeze is lifted.
 
+## Local operator preview, 2026-09-06
+
+A separate `wp-213-marketer-preview` worktree at main `9672d93` now runs the existing E2E
+development setup with mock Amazon hosts, synthetic users and disposable local PostgreSQL
+on port 55439. Welcome: `http://127.0.0.1:3986`; app: `http://127.0.0.1:3987`. Both bind
+127.0.0.1. Private launcher and evidence are under `_local/frontend-preview/` in Codex's
+source checkout. The launcher PID is recorded there; SIGTERM runs the existing cleanup for
+its Next server, mock and owned `wizard_ads_e2e` database. Do not run another E2E suite against
+that same database name while the preview is in use.
+
+There are 31 synthetic campaigns, 1,200 added daily SP/SB/SD facts and 41 aggregate dates
+including the original fixture day. Optimizer, dashboard, grid, recommendations and Time
+Machine pass authenticated HTTP checks. Visual/interaction verification remains pending due
+to a browser-control timeout. This uncommitted local helper is not deployable authentication
+code, a Vercel release candidate, or evidence of live Amazon execution. Production deployment
+and the remaining approval/creation/upload client work retain their acceptance checks above.
+
 ## Authorization
 
 Present one scoped deployment authorization after candidate and rollback preparation. Name
