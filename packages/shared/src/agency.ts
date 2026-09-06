@@ -127,3 +127,24 @@ export const BootstrapDeliveryContext = z.object({
   ownerEmail: z.email(),
 }).strict();
 export type BootstrapDeliveryContext = z.infer<typeof BootstrapDeliveryContext>;
+
+export const TeamInvitationView = z.object({
+  agencyName: z.string(),
+  email: z.email(),
+  role: TeamInvitationRole,
+  state: BootstrapInvitationState,
+}).strict();
+export type TeamInvitationView = z.infer<typeof TeamInvitationView>;
+
+export const TeamAcceptanceReceipt = z.object({
+  orgId: Uuid,
+  invitationId: Uuid,
+  outcome: z.enum(['accepted', 'already_accepted']),
+}).strict();
+export type TeamAcceptanceReceipt = z.infer<typeof TeamAcceptanceReceipt>;
+
+export const TeamInvitationDeliveryContext = z.object({
+  invitationId: Uuid,
+  email: z.email(),
+}).strict();
+export type TeamInvitationDeliveryContext = z.infer<typeof TeamInvitationDeliveryContext>;
