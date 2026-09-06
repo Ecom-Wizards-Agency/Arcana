@@ -9,7 +9,8 @@
  * The client component renders this and computes nothing else. A view model
  * that is assembled inside a component is a view model nothing can test.
  */
-import type { RecommendationRecord } from '@wizard-ads/db';
+import type { RecommendationRecord, RecommendationWindow } from '@wizard-ads/db';
+import { RecommendationPopulation } from '@wizard-ads/shared';
 import { limitReason, provenanceLines, reasonFormula, reasonLabel } from './provenance';
 import type { ProvenanceLine } from './provenance';
 import { resolveProposalStrategy, strategyLabel } from './strategy';
@@ -47,6 +48,16 @@ export interface ProposalView {
   exportable: boolean;
 }
 
+/** A review request must name the exact displayed revision; null means the engine value. */
+export interface ReviewedProposalView extends ProposalView {
+  proposalRevisionId: RecommendationRecord['proposalRevisionId'];
+}
+
+export interface RecommendationReviewData {
+  proposals: ReviewedProposalView[];
+  population: RecommendationPopulation;
+}
+
 const EXPORTABLE_ENTITY_TYPES = new Set(['keyword', 'target', 'campaign', 'ad_group']);
 
 function scalar(value: unknown): string {
@@ -67,7 +78,7 @@ function numeric(value: unknown): number | null {
 export function toProposalView(
   record: RecommendationRecord,
   options: { strategySnapshot: unknown; assignments?: StrategyAssignments },
-): ProposalView {
+): ReviewedProposalView {
   const strategy = resolveProposalStrategy({
     campaignId: record.campaignId,
     campaignName: record.campaignName,
@@ -98,6 +109,7 @@ export function toProposalView(
     field: record.field,
     currentValue: scalar(record.currentValue),
     proposedValue: scalar(record.proposedValue),
+    proposalRevisionId: record.proposalRevisionId,
     delta,
     status: record.status,
     decisionNote: record.decisionNote,
@@ -107,6 +119,19 @@ export function toProposalView(
     provenance: provenanceLines(record.inputs),
     exportable: EXPORTABLE_ENTITY_TYPES.has(record.entityType),
   };
+}
+
+/** Present the rows and counts from the same database statement without inferring totals. */
+export function toRecommendationReview(
+  window: RecommendationWindow,
+  options: Parameters<typeof toProposalView>[1],
+): RecommendationReviewData {
+  const population = RecommendationPopulation.parse(window.population);
+  if (population.loaded !== window.rows.length
+    || new Set(window.rows.map((row) => row.id)).size !== population.loaded) {
+    throw new Error('Recommendation review rows and population do not reconcile');
+  }
+  return { proposals: window.rows.map((row) => toProposalView(row, options)), population };
 }
 
 export interface ReasonGroup {

@@ -106,6 +106,17 @@ Source PR:
 
 Related backend handoff for WP-209, implemented as a separate source commit before its UI:
 
+The PR #144 compatibility follow-up owns only the server view model and its tests at
+`apps/web/src/recommendations/view.ts` and `view.test.ts`, plus new synthetic
+`apps/web/src/recommendations/revision-fixtures.ts` and its test. It carries the already-stored
+revision ID through the view and presents the existing counted `listRecommendationWindow`
+result. Claude owns integration in `app/recommendations/page.tsx`, `review.tsx` and browser tests.
+No optional revision fallback is introduced for the new review contract; the old display-only
+view type remains compatible while the revision-aware return type is explicit.
+See [the PR #144 handoff](HANDOVER-CLAUDE-PR144-2026-09-06.md) for the required client
+corrections, exact server interface and synthetic scenarios. The view/fixture suites pass
+16 tests; client integration and browser verification remain open.
+
 - A declared shared proposal-revision contract, API route and DB query/migration for decimal
   proposed values, prior value, revision identity, optimistic concurrency and audit. An edit
   invalidates stale export/plan/approval identities; export freezes the selected revision.

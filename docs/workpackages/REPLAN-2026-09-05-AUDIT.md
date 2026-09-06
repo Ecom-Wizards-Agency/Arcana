@@ -4,6 +4,39 @@
 
 ### Latest preparation checkpoint
 
+**Table integration follow-up:** PR #144 merged at `5c90c88`, with both CI jobs green;
+PR #145's window record also merged, advancing main to `9672d93`. A source review of table head
+`8c95f77` verified three client issues: omitted revision references in decision/export requests;
+`revision_changed`/`unavailable` refusal reasons installed as optimistic persisted statuses;
+and a hidden explicit selection converted to `ids: null` whole-run export. Codex's narrow
+server patch retains required revision identity and presents the existing same-statement
+counted window. Synthetic scenarios cover edited decimal values, truncated counts, mixed
+refusals and hidden selection. **16 view/fixture tests, web typecheck and focused ESLint pass**
+before the following main integration. Client corrections and browser proof remain Claude-owned
+and pending. The exact interface and failure cases are in
+[the PR #144 handoff](HANDOVER-CLAUDE-PR144-2026-09-06.md).
+
+**Fresh hosted-history reconciliation:** read-only SQL-editor recovery found the missing
+experiments migration: 6,932 bytes, SHA-256
+`f78487d3cd0b8e9e373f50a2078abea2e3bc7d389d06578a8655033ca0e24cdc`, exactly the old pin.
+All 46 old-policy files are now reconstructed. A subsequent independent live ledger inventory
+contains 46 versions through `20260901060000`, but only **36/46** match those historical pins
+under the documented statement-array rendering. Ten differ. Hardening is substantive against
+the old policy: 16,449 pinned bytes versus 42,800 recorded rendered bytes (current source is
+42,822). All ten actual bodies were then recovered through read-only SQL and independently
+checked against the database's byte lengths and SHA-256 digests; none was reconstructed by
+editing current source. Smaller differences still require comparison before classification.
+
+Private reconstruction evidence is in `_local/write-window-baseline-reconstruction/`:
+`HOSTED-EXPERIMENTS-RECOVERY.json`, `HOSTED-LEDGER-DIGESTS-2026-09-06.json` and
+`HOSTED-LEDGER-COMPARISON.json`. The recovered-body directory is
+`_local/hosted-observed-baseline-2026-09-06/`, containing `RECOVERY.json` and ten SQL files.
+The old-policy rehearsal stopped before creating a database or applying SQL. Its bundle wrapper
+correctly refused a source branch that was not clean main. Preserve both fixed policies;
+review a distinct reconciled baseline before production preparation. A local rehearsal against
+the recovered history and two completed operational changes remains pending at this checkpoint.
+No hosted migration or ledger repair was performed during recovery.
+
 **Unused-login restriction completed, 2026-09-06:** the operator asked Codex to continue
 in response to the exact credential-change approval request. A fresh production read confirmed
 LOGIN/BYPASSRLS enabled, zero active sessions, one creator default SELECT rule and 158 existing
@@ -21,8 +54,7 @@ the eight-function ACL repair and this login/default-grant restriction. No migra
 was inserted for either operation.
 
 Both jobs in [CI run 34014347807](https://github.com/Ecom-Wizards-Agency/openspell/actions/runs/34014347807)
-have passed for source `5c8bd01`. PR #144 is open on Claude's table branch; its file scope stays
-with Claude. Codex is reviewing its backend compatibility, without modifying its client files.
+have passed for source `5c8bd01`. PR #144's client file scope stays with Claude.
 
 **Hosted ACL repair completed, 2026-09-06 05:23:54 UTC:** Codex ran the operator's
 exact eight-function revoke block through the linked production Supabase SQL editor.
@@ -142,10 +174,10 @@ existing bundle tests pass, with unchanged original first-window policy. These t
 explicitly synthetic baseline where exact hosted bytes are unavailable; production wrappers
 correctly refuse that substitute. They do not certify a hosted bundle.
 
-**Exact-baseline rehearsal remains blocked:** only 45 of 46 pinned baseline files were recovered
+**Earlier offline baseline checkpoint, superseded by the recovery above:** only 45 of 46 pinned baseline files were recovered
 offline with matching bytes/digests. The missing file is
 `20260814172712_20260814180000_experiments.sql`. Some differences are fetch formatting; the
-hardening migration is a substantive historical difference: the hosted pin matches `5a3ea64`
+hardening migration is a substantive historical difference: the old policy pin matches `5a3ea64`
 (16,449 bytes), while `fb9e693` expanded today's source to 42,822 bytes. The `b5767ab` regression
 therefore proves the current repository's 46-to-56 upgrade, not the exact fetched hosted schema.
 Obtain the actual history, verify every fixed pin and rehearse it before requesting the second

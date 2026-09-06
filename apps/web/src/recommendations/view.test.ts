@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RecommendationRecord } from '@wizard-ads/db';
 import type { RecommendationInputs } from '@wizard-ads/shared';
-import { groupByDecision, groupByReason, reasonCoverage, toProposalView } from './view';
+import { groupByDecision, groupByReason, reasonCoverage, toProposalView, toRecommendationReview } from './view';
 
 const INPUT_KEYS = ['rpc', 'clicks', 'cvrSourceLevel', 'ceilingApplied', 'capClamped', 'window'];
 
@@ -67,6 +67,17 @@ const SNAPSHOT = {
 };
 
 describe('toProposalView', () => {
+  it('retains the exact displayed revision identity and decimal value for review requests', () => {
+    const revisionId = '51515151-5151-4151-8151-515151515151';
+    const view = toProposalView(record('high_acos', {
+      proposalRevisionId: revisionId, proposedValue: '0.7201',
+    }), { strategySnapshot: SNAPSHOT });
+    expect(view.proposalRevisionId).toBe(revisionId);
+    expect(view.proposedValue).toBe('0.7201');
+    expect(toProposalView(record('high_acos'), { strategySnapshot: SNAPSHOT }).proposalRevisionId)
+      .toBeNull();
+  });
+
   it.each(WHITE_BOX_REASONS)('renders every inputs field for %s', (reason) => {
     const view = toProposalView(record(reason), { strategySnapshot: SNAPSHOT });
     expect(view.provenance.map((line) => line.key)).toEqual(INPUT_KEYS);
@@ -121,6 +132,27 @@ describe('toProposalView', () => {
     expect(negative.delta).toBeNull();
     expect(negative.currentValue).toBe('—');
     expect(negative.exportable).toBe(false);
+  });
+});
+
+describe('counted recommendation review', () => {
+  it('preserves truncation and the exact filtered total from the database snapshot', () => {
+    const population = { loaded: 1, total: 2, limit: 1, truncated: true };
+    const review = toRecommendationReview({ rows: [record('high_acos')], population }, {
+      strategySnapshot: SNAPSHOT,
+    });
+    expect(review.population).toEqual(population);
+    expect(review.proposals).toHaveLength(1);
+  });
+
+  it('refuses dropped or duplicated rows instead of presenting misleading counts', () => {
+    const row = record('high_acos');
+    expect(() => toRecommendationReview({ rows: [row],
+      population: { loaded: 2, total: 2, limit: 2, truncated: false },
+    }, { strategySnapshot: SNAPSHOT })).toThrow('do not reconcile');
+    expect(() => toRecommendationReview({ rows: [row, row],
+      population: { loaded: 2, total: 2, limit: 2, truncated: false },
+    }, { strategySnapshot: SNAPSHOT })).toThrow('do not reconcile');
   });
 });
 
