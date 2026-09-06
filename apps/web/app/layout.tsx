@@ -12,11 +12,60 @@ const inter = Inter({
   variable: '--font-inter',
 });
 
+/**
+ * The origin social cards are resolved against, when the deployment declares
+ * one. `authOrigin` deliberately throws without it in production because a
+ * wrong auth link is a security problem; a wrong `og:image` base is not, so
+ * this reads the same variable and stays quiet. Unset, Next falls back to the
+ * deployment URL, which is right everywhere except a custom domain.
+ */
+function socialOrigin(): URL | undefined {
+  const configured = process.env['WIZARD_ADS_APP_URL'];
+  if (configured === undefined || configured === '' || !URL.canParse(configured)) return undefined;
+  return new URL(configured);
+}
+
+const metadataBase = socialOrigin();
+
+/**
+ * `app/icon.png`, `app/apple-icon.png` and `app/opengraph-image.png` are Next
+ * metadata files, rasterised from `public/brand/wizards-ai-icon.svg`, which
+ * stays the source of truth for the mark. The convention gives each one a
+ * route; whether the tag reaches the head is decided here, and the two fields
+ * below behave in opposite ways.
+ *
+ * `icons` must name the icon files, because Next merges the collected
+ * file-convention icons only when this object declares no `icons` at all
+ * (`resolve-metadata.js`, the `if (!resolvedMetadata.icons)` guard). Declaring
+ * the vector alone therefore *suppressed* both PNGs. Listing all three keeps
+ * the SVG for browsers that prefer it and the PNGs for everything else.
+ *
+ * `openGraph` must not name the card, for the mirror-image reason: the static
+ * image is adopted unless this object owns an `images` key, so adding one would
+ * replace a 1200x630 PNG with whatever was named. The absence is load-bearing.
+ */
 export const metadata: Metadata = {
+  ...(metadataBase === undefined ? {} : { metadataBase }),
   title: 'OpenSpell',
   description: 'Amazon Advertising operator workspace',
+  applicationName: 'OpenSpell',
   icons: {
-    icon: '/brand/wizards-ai-icon.svg',
+    icon: [
+      { url: '/icon.png', type: 'image/png', sizes: '512x512' },
+      { url: '/brand/wizards-ai-icon.svg', type: 'image/svg+xml' },
+    ],
+    apple: [{ url: '/apple-icon.png', type: 'image/png', sizes: '180x180' }],
+  },
+  openGraph: {
+    type: 'website',
+    siteName: 'OpenSpell',
+    title: 'OpenSpell',
+    description: 'Amazon Advertising operator workspace',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'OpenSpell',
+    description: 'Amazon Advertising operator workspace',
   },
 };
 

@@ -29,6 +29,7 @@
   --wa-raised: #1C232D;
   --wa-slate: #2A323D;
   --wa-cloud: #F5F6F8;
+  --wa-mistline: #E4E7EC;
   --wa-mist: #9AA5B4;
   --wa-steel: #5B6573;
   --wa-ink: #11151C;
@@ -36,6 +37,7 @@
   --wa-signal: #FD4807;
   --wa-indigo: #3322E0;
   --wa-good: #22C55E;
+  --wa-warn: #F59E0B;
   --wa-bad: #EF4444;
   --wa-series-3: #868A96;
 
@@ -59,8 +61,8 @@
   --wa-text-faint: var(--wa-steel);
   --wa-text-invert: var(--wa-cloud);
 
-  /* Lines and focus. */
-  --wa-border: color-mix(in srgb, var(--wa-ink) 15%, var(--wa-white));
+  /* Lines and focus. Mistline is the brand hairline; strong is for control edges. */
+  --wa-border: var(--wa-mistline);
   --wa-border-strong: color-mix(in srgb, var(--wa-ink) 24%, var(--wa-white));
   --wa-ring: var(--wa-indigo);
   --wa-focus-contrast: transparent;
@@ -82,9 +84,9 @@
   --wa-good-text: color-mix(in srgb, var(--wa-good) 60%, var(--wa-ink));
   --wa-good-bg: color-mix(in srgb, var(--wa-good) 11%, var(--wa-surface));
   --wa-good-border: color-mix(in srgb, var(--wa-good) 42%, var(--wa-surface));
-  --wa-warn-text: var(--wa-accent-text);
-  --wa-warn-bg: color-mix(in srgb, var(--wa-accent) 10%, var(--wa-surface));
-  --wa-warn-border: color-mix(in srgb, var(--wa-accent) 38%, var(--wa-surface));
+  --wa-warn-text: color-mix(in srgb, var(--wa-warn) 55%, var(--wa-ink));
+  --wa-warn-bg: color-mix(in srgb, var(--wa-warn) 12%, var(--wa-surface));
+  --wa-warn-border: color-mix(in srgb, var(--wa-warn) 42%, var(--wa-surface));
   --wa-bad-text: color-mix(in srgb, var(--wa-bad) 80%, var(--wa-ink));
   --wa-bad-bg: color-mix(in srgb, var(--wa-bad) 10%, var(--wa-surface));
   --wa-bad-border: color-mix(in srgb, var(--wa-bad) 38%, var(--wa-surface));
@@ -124,6 +126,22 @@
   --wa-fs-lg: 1.125rem;
   --wa-fs-xl: 1.5rem;
   --wa-fs-2xl: 1.75rem;
+
+  /*
+   * Type weights. One scale for the two surfaces this package owns: the base
+   * `h1` rule above and the inline styles exported from `tokens.ts`, which
+   * used to restate 700 each in their own file. Both now resolve here.
+   *
+   * `.wa-page-title` still restates 640 and `.wa-section-title` 620. Those two
+   * component rules are outside this package's theme.css scope (token block and
+   * warn scopes), so they are an open handoff rather than an edit; see the
+   * WP-211 brief close-out. `--wa-fw-section` already equals the 620 that
+   * `.wa-section-title` restates, so only the page title is still divided.
+   *
+   * Layout margins stay with the consumer; only the scale is shared.
+   */
+  --wa-fw-title: 700;
+  --wa-fw-section: 620;
 
   /* Frame */
   --wa-sidebar-w: 15rem;
@@ -170,9 +188,9 @@
     --wa-good-text: var(--wa-good);
     --wa-good-bg: color-mix(in srgb, var(--wa-good) 12%, var(--wa-surface));
     --wa-good-border: color-mix(in srgb, var(--wa-good) 42%, var(--wa-surface));
-    --wa-warn-text: var(--wa-accent);
-    --wa-warn-bg: color-mix(in srgb, var(--wa-accent) 10%, var(--wa-surface));
-    --wa-warn-border: color-mix(in srgb, var(--wa-accent) 38%, var(--wa-surface));
+    --wa-warn-text: var(--wa-warn);
+    --wa-warn-bg: color-mix(in srgb, var(--wa-warn) 12%, var(--wa-surface));
+    --wa-warn-border: color-mix(in srgb, var(--wa-warn) 42%, var(--wa-surface));
     --wa-bad-text: var(--wa-bad);
     --wa-bad-bg: color-mix(in srgb, var(--wa-bad) 11%, var(--wa-surface));
     --wa-bad-border: color-mix(in srgb, var(--wa-bad) 40%, var(--wa-surface));
@@ -235,9 +253,9 @@
   --wa-good-text: var(--wa-good);
   --wa-good-bg: color-mix(in srgb, var(--wa-good) 12%, var(--wa-surface));
   --wa-good-border: color-mix(in srgb, var(--wa-good) 42%, var(--wa-surface));
-  --wa-warn-text: var(--wa-accent);
-  --wa-warn-bg: color-mix(in srgb, var(--wa-accent) 10%, var(--wa-surface));
-  --wa-warn-border: color-mix(in srgb, var(--wa-accent) 38%, var(--wa-surface));
+  --wa-warn-text: var(--wa-warn);
+  --wa-warn-bg: color-mix(in srgb, var(--wa-warn) 12%, var(--wa-surface));
+  --wa-warn-border: color-mix(in srgb, var(--wa-warn) 42%, var(--wa-surface));
   --wa-bad-text: var(--wa-bad);
   --wa-bad-bg: color-mix(in srgb, var(--wa-bad) 11%, var(--wa-surface));
   --wa-bad-border: color-mix(in srgb, var(--wa-bad) 40%, var(--wa-surface));
@@ -3770,7 +3788,7 @@ button {
 }
 
 .wa-kpi-mini--warn {
-  border-left: 3px solid var(--wa-accent);
+  border-left: 3px solid var(--wa-warn-text);
 }
 
 .wa-opt-groups-layout {

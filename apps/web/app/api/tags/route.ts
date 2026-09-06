@@ -1,5 +1,6 @@
 import { requestActor, errorResponse, openWebDatabase, requireOrgMembership } from '../../../src/server/request-context';
 import { createTag, listTagTree } from '@wizard-ads/db';
+import { parseTagColor } from './color-input';
 
 export const runtime = 'nodejs';
 
@@ -28,7 +29,7 @@ export async function POST(request: Request): Promise<Response> {
     };
     if (typeof body.name !== 'string') throw new Error('name is required');
     const parentId = body.parentId === null || typeof body.parentId === 'string' ? body.parentId : null;
-    const color = body.color === null || typeof body.color === 'string' ? body.color : null;
+    const color = parseTagColor(body.color);
     const tag = await createTag(database, {
       orgId: actor.orgId,
       createdBy: actor.userId,
