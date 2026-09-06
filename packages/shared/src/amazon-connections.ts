@@ -40,6 +40,15 @@ export const AdsProfileDiscoveryResult = z.object({
 });
 export type AdsProfileDiscoveryResult = z.infer<typeof AdsProfileDiscoveryResult>;
 
+/** A fresh database binding governs client-cache reuse across worker processes. */
+export const AdsConnectionCredentialBinding = z.object({
+  orgId: Uuid,
+  connectionId: Uuid,
+  /** PostgreSQL bigint is kept as decimal text, never rounded through Number. */
+  generation: z.string().regex(/^[1-9][0-9]*$/),
+}).strict();
+export type AdsConnectionCredentialBinding = z.infer<typeof AdsConnectionCredentialBinding>;
+
 const Digest = z.string().regex(/^[a-f0-9]{64}$/);
 /** The server supplies installation values. A callback cannot replace them. */
 export const AmazonConnectionBegin = z.object({
@@ -92,7 +101,10 @@ export const AmazonConnectionRegionProgress = z.object({
     || (value.received !== null && value.received !== value.parsed + value.rejected)
     || value.upserted > value.parsed || value.created > value.upserted
     || (value.state === 'completed' && (value.received === null || value.upserted !== value.parsed || value.reason !== null))
-    || (value.state === 'failed' && value.reason === null)) {
+    || (value.state === 'failed' && (value.reason === null || value.upserted !== 0))
+    || (['pending', 'running'].includes(value.state)
+      && (value.received !== null || value.parsed !== 0 || value.rejected !== 0
+        || value.upserted !== 0 || value.created !== 0 || value.reason !== null))) {
     ctx.addIssue({ code: 'custom', message: 'Discovery progress does not reconcile' });
   }
 });

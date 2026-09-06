@@ -19,6 +19,9 @@ describe('Amazon connection counts and custody', () => {
       expect(AmazonConnectionRegionProgress.safeParse({ ...value, ...invalid }).success).toBe(false);
     }
     expect(AmazonConnectionRegionProgress.safeParse({ ...value, state: 'failed', reason: 'persistence_failed', upserted: 0, created: 0 }).success).toBe(true);
+    for (const state of ['pending', 'running']) {
+      expect(AmazonConnectionRegionProgress.safeParse({ ...value, state }).success).toBe(false);
+    }
   });
 
   it('callback submission cannot replace saved organization or installation scope', () => {
