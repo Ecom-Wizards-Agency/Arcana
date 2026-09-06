@@ -46,7 +46,7 @@ describe.skipIf(!available)('membership mutations', () => {
         invitationId: issued.invitation.id,
       }),
     ).toBe(1);
-    expect((await listMembers(database, orgId)).find((row) => row.userId === userId)?.email).toBe(
+    expect((await listMembers(database, { orgId, userId: ownerId })).find((row) => row.userId === userId)?.email).toBe(
       email,
     );
     const audits = await database.sql<{ action: string }[]>`

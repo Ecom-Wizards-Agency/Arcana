@@ -1,5 +1,7 @@
 /** Organisation membership reads and invariant-preserving writes. */
+import { withAuthenticatedActor } from '@wizard-ads/db';
 import type { Sql } from '@wizard-ads/db';
+import { MemberRoleChange, type OrgActor } from '@wizard-ads/shared';
 import { isOrgRole } from '../auth/roles';
 import type { OrgRole } from '../auth/roles';
 
@@ -36,22 +38,20 @@ interface MemberRow {
   updated_at: string;
 }
 
-export async function listMembers(handle: SqlHandle, orgId: string): Promise<MemberRecord[]> {
-  const rows = await handle.sql<MemberRow[]>`
-    select m.user_id, u.email, m.role::text as role,
-           m.created_at::text as created_at, m.updated_at::text as updated_at
-      from public.org_members m
-      join auth.users u on u.id = m.user_id
-     where m.org_id = ${orgId}
-     order by lower(u.email) nulls last, m.created_at
-  `;
-  return rows.map((row) => ({
-    userId: row.user_id,
-    email: row.email,
-    role: isOrgRole(row.role) ? row.role : 'viewer',
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  }));
+export async function listMembers(handle: SqlHandle, actor: OrgActor): Promise<MemberRecord[]> {
+  return withAuthenticatedActor(handle, actor, async (sql) => {
+    const rows = await sql<MemberRow[]>`
+      select user_id, email, role, created_at::text, updated_at::text
+        from app.list_org_members(${actor.orgId}::uuid)
+    `;
+    return rows.map((row) => ({
+      userId: row.user_id,
+      email: row.email,
+      role: isOrgRole(row.role) ? row.role : 'viewer',
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  });
 }
 
 /**
@@ -91,88 +91,30 @@ export async function addMember(handle: SqlHandle, input: AddMemberInput): Promi
   });
 }
 
-/** Change a role unless that would remove the org's final owner. */
+/** Change a role with current actor authority and final-owner protection. */
 export async function updateMemberRole(
   handle: SqlHandle,
   input: MemberChangeInput & { role: OrgRole },
 ): Promise<number> {
-  if (!isOrgRole(input.role)) throw new Error('Unknown organisation role.');
-  return handle.sql.begin(async (sql) => {
-    await sql`
-      select pg_advisory_xact_lock(hashtextextended(${`org-members:${input.orgId}`}, 0))
+  const command = MemberRoleChange.parse({ userId: input.userId, role: input.role });
+  return withAuthenticatedActor(handle, { orgId: input.orgId, userId: input.actorId }, async (sql) => {
+    const [row] = await sql<{ changed: number }[]>`
+      select app.change_org_member_role(
+        ${input.orgId}::uuid, ${command.userId}::uuid, ${command.role}::public.org_role
+      ) as changed
     `;
-    const current = await sql<{ role: string }[]>`
-      select role::text as role from public.org_members
-       where org_id = ${input.orgId} and user_id = ${input.userId}
-       for update
-    `;
-    const oldRole = current[0]?.role;
-    if (oldRole === undefined || oldRole === input.role) return 0;
-    const changed = await sql<{ user_id: string }[]>`
-      update public.org_members set role = ${input.role}
-       where org_id = ${input.orgId}
-         and user_id = ${input.userId}
-         and (
-           role <> 'owner'
-           or ${input.role}::public.org_role = 'owner'
-           or exists (
-             select 1 from public.org_members other
-              where other.org_id = ${input.orgId}
-                and other.user_id <> ${input.userId}
-                and other.role = 'owner'
-           )
-         )
-      returning user_id
-    `;
-    if (changed.length !== 1) return 0;
-    await sql`
-      insert into public.audit_log
-        (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
-      values
-        (${input.orgId}, 'user', ${input.actorId}, 'member.role_changed',
-         'org_member', ${input.userId},
-         jsonb_build_object('from', ${oldRole}::text, 'to', ${input.role}::text), 'web')
-    `;
-    return 1;
+    if (row?.changed !== 0 && row?.changed !== 1) throw new Error('Member change could not be reconciled.');
+    return row.changed;
   });
 }
 
-/** Remove a member unless that row is the org's final owner. */
+/** Remove another member, with ownership and current-role checks inside admission. */
 export async function removeMember(handle: SqlHandle, input: MemberChangeInput): Promise<number> {
-  return handle.sql.begin(async (sql) => {
-    await sql`
-      select pg_advisory_xact_lock(hashtextextended(${`org-members:${input.orgId}`}, 0))
+  return withAuthenticatedActor(handle, { orgId: input.orgId, userId: input.actorId }, async (sql) => {
+    const [row] = await sql<{ changed: number }[]>`
+      select app.remove_org_member(${input.orgId}::uuid, ${input.userId}::uuid) as changed
     `;
-    const current = await sql<{ role: string }[]>`
-      select role::text as role from public.org_members
-       where org_id = ${input.orgId} and user_id = ${input.userId}
-       for update
-    `;
-    const oldRole = current[0]?.role;
-    if (oldRole === undefined) return 0;
-    const changed = await sql<{ user_id: string }[]>`
-      delete from public.org_members
-       where org_id = ${input.orgId}
-         and user_id = ${input.userId}
-         and (
-           role <> 'owner'
-           or exists (
-             select 1 from public.org_members other
-              where other.org_id = ${input.orgId}
-                and other.user_id <> ${input.userId}
-                and other.role = 'owner'
-           )
-         )
-      returning user_id
-    `;
-    if (changed.length !== 1) return 0;
-    await sql`
-      insert into public.audit_log
-        (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
-      values
-        (${input.orgId}, 'user', ${input.actorId}, 'member.removed',
-         'org_member', ${input.userId}, jsonb_build_object('role', ${oldRole}::text), 'web')
-    `;
-    return 1;
+    if (row?.changed !== 0 && row?.changed !== 1) throw new Error('Member change could not be reconciled.');
+    return row.changed;
   });
 }
