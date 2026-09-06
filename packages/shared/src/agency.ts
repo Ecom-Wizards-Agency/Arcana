@@ -104,3 +104,18 @@ export const BootstrapAcceptanceReceipt = z.object({
   outcome: z.enum(['accepted', 'already_accepted']),
 }).strict();
 export type BootstrapAcceptanceReceipt = z.infer<typeof BootstrapAcceptanceReceipt>;
+
+/** Bearer-link inspection reveals only the invitation's recipient and agency. */
+export const BootstrapInvitationView = z.object({
+  agencyName: z.string(),
+  ownerEmail: z.email(),
+  generation: z.number().int().positive(),
+  state: BootstrapInvitationState,
+}).strict();
+export type BootstrapInvitationView = z.infer<typeof BootstrapInvitationView>;
+
+export const BootstrapRevokeCommand = z.object({
+  requestId: Uuid,
+  expectedGeneration: z.number().int().min(1).max(2_147_483_647),
+}).strict();
+export type BootstrapRevokeCommand = z.infer<typeof BootstrapRevokeCommand>;
