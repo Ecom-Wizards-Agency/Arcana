@@ -157,3 +157,43 @@ jobs:
           name: playwright-report
           path: apps/web/node_modules/.cache/playwright/reports
           if-no-files-found: ignore
+
+  auth-acceptance:
+    name: Auth and onboarding acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm --filter @wizard-ads/web exec playwright install --with-deps chromium
+
+      - name: Verify actual Auth, mail and onboarding
+        # The harness owns fresh internal Docker networks and random loopback
+        # ports. It never reads hosted credentials or the other jobs' databases.
+        # Missing Docker, images, Chromium, services or checks fail the job.
+        run: |
+          node --test tools/auth-acceptance/support.test.mjs
+          node tools/auth-acceptance/run.mjs
+
+      - name: Upload sanitized Auth evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auth-acceptance
+          path: node_modules/.cache/auth-acceptance
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
