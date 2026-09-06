@@ -99,11 +99,11 @@ the Advertising API connection.
    queue ownership and database authority before allowing claims. The
    [Vercel cron configuration](apps/web/vercel.json) must agree with the lane handoff;
    staging a worker does not transfer queue ownership.
-5. **Provision an owner and prove the first connection.** Installation needs an
-   operator-controlled organization invitation, verified owner email, password setup
-   and account connection. The current source does not yet provide a complete
-   production first-owner installer. Complete that path and verify exact-organization
-   access before opening an installation to unrelated agencies. Do not substitute a
+5. **Provision an owner and prove the first connection.** Use the
+   [agency operator command](tools/agency-operator/README.md) to issue an independent
+   first-owner invitation. Install its matching Auth template and redirects, verify
+   password setup and exact-organization access, and complete the worker-owned
+   connection workflow before admitting unrelated agencies. Do not substitute a
    development seed or permanent operator membership. For each first sync, reconcile
    profiles discovered, profiles accepted, entities listed/upserted and report rows
    parsed/loaded; show missing or refused rows explicitly.
@@ -117,8 +117,8 @@ web origin and allowed redirects, visible `WIZARD_ADS_REVIEW_LIVE_DATA=1` labeli
 disabled cron. Such a deployment is a review of live data, not a disposable test
 database. Schema and Auth changes must remain compatible with both active releases.
 
-The first-owner installer and worker-owned OAuth exchange above are current installation
-limitations. A checkout, passing tests or deployed login page alone is not a complete
+The worker-owned OAuth exchange above remains an installation limitation. A checkout,
+passing tests or deployed login page alone is not a complete
 self-host installation.
 
 ## Source guides

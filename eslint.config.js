@@ -116,6 +116,8 @@ export default tseslint.config(
     rules: {
       'no-restricted-imports': forbid([
         ['@wizard-ads/ads-api', 'every Amazon API call lives in apps/worker, never in the web app.'],
+        ['@wizard-ads/db/operator', 'installation provisioning is not an application or organization-role capability.'],
+        ['@wizard-ads/agency-operator', 'the installation CLI is not an application dependency.'],
         ['@wizard-ads/sp-api', 'every Amazon API call lives in apps/worker, never in the web app.'],
         ['@wizard-ads/datadive-api', 'every DataDive API call lives in apps/worker, never in the web app.'],
         ['@wizard-ads/mrp-api', 'every MRP MCP call lives in apps/worker, never in the web app.'],
@@ -124,6 +126,15 @@ export default tseslint.config(
           '@wizard-ads/db/worker',
           'decrypted integration credentials are worker-only; the web app may only store or revoke them.',
         ],
+      ]),
+    },
+  },
+  {
+    files: ['apps/mcp/**/*.{ts,tsx}', 'apps/worker/**/*.{ts,tsx}', 'apps/web/app/api/amazon/oauth/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': forbid([
+        ['@wizard-ads/db/operator', 'installation provisioning requires its separate operator command.'],
+        ['@wizard-ads/agency-operator', 'the installation CLI is not an application dependency.'],
       ]),
     },
   },

@@ -11,6 +11,7 @@ import {
 } from '../../../src/data/invitations';
 import type { InvitationRecord } from '../../../src/data/invitations';
 import { listMembers, removeMember, updateMemberRole } from '../../../src/data/members';
+import { deliverTeamInvitation, teamInvitationDeliveryMessage } from '../../../src/invitations/delivery';
 
 export type MemberActionResult =
   | { status: 'idle' }
@@ -53,11 +54,12 @@ export async function createInvite(
       role,
       invitedBy: actor.id,
     });
+    const delivery = await deliverTeamInvitation(handle, { orgId: active.orgId, userId: actor.id }, issued.token);
 
     revalidatePath('/settings/members');
     return {
       status: 'ok',
-      message: `Invitation created for ${issued.invitation.email}.`,
+      message: `Invitation created for ${issued.invitation.email}. ${teamInvitationDeliveryMessage(delivery)}`,
       invitation: issued.invitation,
       inviteUrl: `${appUrl}/invite/${issued.token}`,
     };

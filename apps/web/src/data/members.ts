@@ -17,13 +17,6 @@ export interface MemberRecord {
   updatedAt: string;
 }
 
-export interface AddMemberInput {
-  orgId: string;
-  userId: string;
-  role: OrgRole;
-  invitationId: string;
-}
-
 export interface MemberChangeInput {
   orgId: string;
   userId: string;
@@ -51,43 +44,6 @@ export async function listMembers(handle: SqlHandle, actor: OrgActor): Promise<M
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));
-  });
-}
-
-/**
- * Add membership idempotently, finish a provisional claim, and write the
- * acceptance audit in one transaction. Returns the membership rows inserted.
- */
-export async function addMember(handle: SqlHandle, input: AddMemberInput): Promise<number> {
-  if (!isOrgRole(input.role)) throw new Error('Unknown organisation role.');
-  return handle.sql.begin(async (sql) => {
-    const inserted = await sql<{ user_id: string }[]>`
-      insert into public.org_members (org_id, user_id, role)
-      values (${input.orgId}, ${input.userId}, ${input.role})
-      on conflict (org_id, user_id) do nothing
-      returning user_id
-    `;
-
-    const completed = await sql<{ id: string }[]>`
-      update public.org_invitations
-         set accepted_by = ${input.userId}
-       where id = ${input.invitationId}
-         and org_id = ${input.orgId}
-         and accepted_at is not null
-         and (accepted_by is null or accepted_by = ${input.userId})
-      returning id
-    `;
-    if (completed.length !== 1) throw new Error('The invitation claim could not be completed.');
-
-    await sql`
-      insert into public.audit_log
-        (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
-      values
-        (${input.orgId}, 'user', ${input.userId}, 'invitation.accepted',
-         'org_invitation', ${input.invitationId},
-         jsonb_build_object('role', ${input.role}::text), 'web')
-    `;
-    return inserted.length;
   });
 }
 

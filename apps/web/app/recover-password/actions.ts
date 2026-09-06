@@ -37,10 +37,17 @@ export async function completePasswordRecovery(
     return { status: 'error', message: 'Password recovery is not configured.' };
   }
 
-  const { error } = await (await supabaseServerClient()).auth.updateUser({
-    [PASSWORD_FIELD]: passphrase,
-  });
-  return error
-    ? { status: 'error', message: 'The password could not be replaced. Try again.' }
-    : { status: 'ok', message: 'Password replaced. You can continue to OpenSpell.' };
+  try {
+    const { error } = await (await supabaseServerClient()).auth.updateUser({
+      [PASSWORD_FIELD]: passphrase,
+    });
+    if (!error) return { status: 'ok', message: 'Password saved. You can continue to OpenSpell.' };
+  } catch {
+    // A lost response can follow a committed password change. Never retry here
+    // or expose provider error bodies; ordinary sign-in can reconcile it.
+  }
+  return {
+    status: 'error',
+    message: 'The password change could not be confirmed. Try signing in with the password you chose, or retry.',
+  };
 }

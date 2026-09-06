@@ -227,7 +227,7 @@ async function seed(connectionString: string): Promise<{
     let emailsWritten = 0;
     for (const [key, userId] of identities) {
       const rows = await handle.sql<{ id: string }[]>`
-        update auth.users set email = ${EMAILS[key]} where id = ${userId} returning id
+        update auth.users set email = ${EMAILS[key]},email_confirmed_at=now() where id = ${userId} returning id
       `;
       emailsWritten += rows.length;
     }

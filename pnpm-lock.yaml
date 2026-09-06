@@ -313,6 +313,22 @@ importers:
         specifier: ^22.20.1
         version: 22.20.1
 
+  tools/agency-operator:
+    dependencies:
+      '@supabase/supabase-js':
+        specifier: 2.112.3
+        version: 2.112.3
+      '@wizard-ads/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@wizard-ads/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
+
   tools/crosscheck-cli:
     dependencies:
       '@wizard-ads/core':
