@@ -19,15 +19,20 @@ import { useRouter } from 'next/navigation';
 import type { ReactNode } from 'react';
 import {
   DataGrid,
+  DEFAULT_DENSITY,
   BASE_METRICS,
   GridToolbar,
+  GridViewport,
+  LayoutWriteBuffer,
   LocalViewStore,
   STATE_COLUMN,
   buildGridModelSafely,
   columnsFor,
   defaultVisibleColumns,
   formatInteger,
+  hasCachedLayout,
   newViewId,
+  rowHeightFor,
   toCsv,
 } from '@wizard-ads/ui';
 import type {
@@ -35,6 +40,7 @@ import type {
   FilterSet,
   FreshnessAssessment,
   GridColumn,
+  GridDensity,
   GridRow,
   SavedView,
   SortRule,
@@ -344,21 +350,85 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
   );
 }
 
+/**
+ * The remembered layout, if the store can produce it without waiting.
+ *
+ * A campaign deep link is never restored over: `?campaign=` names the scope the
+ * operator asked for, so it opens on its own defaults exactly as it did before.
+ */
+function cachedLayoutFor(
+  store: ViewStore | null,
+  entity: EntityLevel,
+  campaignId: string | null,
+  available: readonly GridColumn[],
+): SavedView | null {
+  if (campaignId !== null || !hasCachedLayout(store)) return null;
+  try {
+    const layout = store.cachedLayout(entity);
+    return layout === null
+      ? null
+      : withValidGrouping({ ...layout, id: 'default', name: 'Default' }, available);
+  } catch {
+    // Browser storage is a preference cache; a throwing one restores nothing.
+    return null;
+  }
+}
+
+/** The grid's floor once the cockpit is above it. See the `GridViewport` below. */
+const GRID_MIN_HEIGHT = 560;
+
 function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   const router = useRouter();
   const available = useMemo(() => columnsFor(props.entity), [props.entity]);
-  const [view, setView] = useState<SavedView>(() => defaultView(props.entity, props.campaignId));
-  const [saved, setSaved] = useState<readonly SavedView[]>([]);
-  const [restoredScope, setRestoredScope] = useState<{
-    key: string;
-    store: ViewStore | null;
-  } | null>(null);
-  const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
   const [browserStore] = useState(() =>
     typeof window === 'undefined' ? null : new LocalViewStore(window.localStorage),
   );
   const store = props.viewStore === undefined ? browserStore : props.viewStore;
   const scopeKey = `${props.entity}\u0000${props.campaignId ?? ''}`;
+  /**
+   * First paint, before any await.
+   *
+   * This subtree is not part of hydration: it renders only once the client's
+   * own `/api/grid/rows` request has resolved, so the server HTML never
+   * contains a grid whose layout could disagree with the browser's. That is
+   * what makes reading storage in a state initializer safe here, and the read
+   * is guarded on the store advertising `cachedLayout` so a remote or
+   * deliberately asynchronous store keeps the exact behaviour it had.
+   */
+  const [initialRestore] = useState(() => {
+    const cached = cachedLayoutFor(store, props.entity, props.campaignId, available);
+    return {
+      scopeKey,
+      restored: cached !== null,
+      view: cached ?? defaultView(props.entity, props.campaignId),
+    };
+  });
+  const [view, setView] = useState<SavedView>(initialRestore.view);
+  const [saved, setSaved] = useState<readonly SavedView[]>([]);
+  const [restoredScope, setRestoredScope] = useState<{
+    key: string;
+    store: ViewStore | null;
+  } | null>(initialRestore.restored ? { key: initialRestore.scopeKey, store } : null);
+  // The scope and store the last synchronous read answered for, and whether it
+  // produced a layout. The asynchronous restoration must not overwrite a
+  // successful one, because by the time it lands the operator may have moved a
+  // column — but the whole record is stale the moment either half changes, so
+  // it records the scope it was taken in rather than only its successes.
+  const syncRestore = useRef<{ key: string; store: ViewStore | null; restored: boolean }>({
+    key: initialRestore.scopeKey,
+    store,
+    restored: initialRestore.restored,
+  });
+  const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
+  const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
+  const [fullscreen, setFullscreen] = useState(false);
+  const layoutWrites = useMemo(
+    () => (store === null ? null : new LayoutWriteBuffer(store)),
+    [store],
+  );
+  // The last state of a gesture is the one worth keeping, so a scope change or
+  // an unmount writes whatever the debounce is still holding.
+  useEffect(() => () => layoutWrites?.flush(), [layoutWrites]);
   // Readiness belongs to the exact entity/deep-link scope that was restored.
   // Deriving it from the current props prevents one render of stale `true`
   // before an effect can reset a boolean after a client-side route change.
@@ -371,37 +441,75 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       setView(defaultView(props.entity, props.campaignId));
       setSaved([]);
       setSelectedTargetId(null);
+      setSelectedRowIds([]);
       setRestoredScope({ key: scopeKey, store });
       return;
     }
     let cancelled = false;
+
+    // A client-side entity switch or a campaign deep link remounts nothing, so
+    // the synchronous read happens here as well as in the state initializer
+    // above — the operator who moves from campaigns to targets should not wait
+    // either. Every scope change is read again, including a return to a scope
+    // restored earlier: a remembered success from before the deep link says
+    // nothing about the view now on screen, which is the deep link's.
+    let restoredSynchronously =
+      syncRestore.current.restored
+      && syncRestore.current.key === scopeKey
+      && syncRestore.current.store === store;
+    if (syncRestore.current.key !== scopeKey || syncRestore.current.store !== store) {
+      const cached = cachedLayoutFor(store, props.entity, props.campaignId, available);
+      syncRestore.current = { key: scopeKey, store, restored: cached !== null };
+      restoredSynchronously = cached !== null;
+      if (cached !== null) {
+        setView(cached);
+        setSelectedTargetId(null);
+        setSelectedRowIds([]);
+        setRestoredScope({ key: scopeKey, store });
+      }
+    }
+
     void (async () => {
       try {
         const [layout, list] = await Promise.all([
-          store.lastLayout(props.entity),
+          // Nothing to ask for: this scope already has its layout, and asking
+          // again could only produce an answer that arrives after the operator
+          // has started working and overwrites what they did.
+          restoredSynchronously
+            ? Promise.resolve<SavedView | null>(null)
+            : store.lastLayout(props.entity),
           store.list(props.entity),
         ]);
         if (cancelled) return;
-        if (props.campaignId !== null) setView(defaultView(props.entity, props.campaignId));
-        else if (layout !== null) {
-          setView(withValidGrouping({ ...layout, id: 'default', name: 'Default' }, available));
+        if (!restoredSynchronously) {
+          if (props.campaignId !== null) setView(defaultView(props.entity, props.campaignId));
+          else if (layout !== null) {
+            setView(withValidGrouping({ ...layout, id: 'default', name: 'Default' }, available));
+          }
+          else setView(defaultView(props.entity, null));
         }
-        else setView(defaultView(props.entity, null));
         setSaved(list);
       } catch {
         if (cancelled) return;
         // Browser storage is a preference cache. A rejected custom/remote
         // store must not strand the analytical grid behind a permanent loader.
-        setView(defaultView(props.entity, props.campaignId));
+        if (!restoredSynchronously) setView(defaultView(props.entity, props.campaignId));
         setSaved([]);
       }
-      setSelectedTargetId(null);
+      if (!restoredSynchronously) {
+        setSelectedTargetId(null);
+        setSelectedRowIds([]);
+      }
       // This is deliberately later than hydration alone. An interaction that
       // lands after React attaches but before the saved layout resolves can be
       // overwritten by the restoration above just as surely as a pre-hydration
       // interaction can be lost. The restored scope opens only the matching
       // entity/deep-link workspace, never a later render with different props.
-      setRestoredScope({ key: scopeKey, store });
+      setRestoredScope((current) =>
+        current?.key === scopeKey && current.store === store
+          ? current
+          : { key: scopeKey, store },
+      );
     })();
     return () => {
       cancelled = true;
@@ -413,11 +521,15 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       if (!viewReady) return;
       setView((current) => {
         const next = { ...current, ...patch, updatedAt: new Date().toISOString() };
-        void store?.rememberLayout(next);
+        // Debounced: a column resize changes this state on every mouse move and
+        // every write but the last is thrown away by the next one. The buffer
+        // writes the first change of a gesture immediately and collapses the
+        // rest, and flushes when the scope changes or the workspace unmounts.
+        layoutWrites?.remember(next);
         return next;
       });
     },
-    [store, viewReady],
+    [layoutWrites, viewReady],
   );
 
   const { model, filterError } = useMemo(
@@ -433,24 +545,29 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   /**
    * Visible columns, in the operator's order.
    *
-   * When a group-by is active only the group key and the metrics can be shown:
-   * every other dimension was legitimately dropped by the aggregation, and
-   * rendering an empty column with a header is worse than not rendering it.
+   * When a group-by is active the grouping dimensions lead and are pinned, in
+   * hierarchy order, so the tree reads left to right; every other visible
+   * column follows in the operator's order. The non-grouped dimensions render
+   * blank on group rows (the aggregation legitimately dropped them), exactly
+   * as AdLabs' grouped grid does -- and their headers stay on screen, which is
+   * what makes "drop another header to nest" possible at all.
    */
   const visibleColumns = useMemo<GridColumn[]>(() => {
     const byId = new Map(available.map((column) => [column.id, column]));
     const wanted = model.grouped
-      ? [...model.groupBy, ...view.columns.filter((id) => byId.get(id)?.kind === 'metric')]
+      ? [...model.groupBy, ...view.columns.filter((id) => !model.groupBy.includes(id))]
       : view.columns;
     return wanted
       .map((id) => byId.get(id))
       .filter((column): column is GridColumn => column !== undefined)
       .map((column) => {
         const width = view.widths[column.id];
-        const pinned = view.pinned.includes(column.id);
+        const pinned = view.pinned.includes(column.id) || model.groupBy.includes(column.id);
         return { ...column, ...(width === undefined ? {} : { width }), pinned };
       });
   }, [available, model.groupBy, model.grouped, view.columns, view.pinned, view.widths]);
+
+  const density: GridDensity = view.density ?? DEFAULT_DENSITY;
 
   const handleExport = useCallback(() => {
     if (!viewReady) return;
@@ -471,6 +588,14 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       void store.save(toSave).then(() => store.list(props.entity)).then(setSaved);
     },
     [model.groupBy, props.entity, store, view, viewReady],
+  );
+
+  const handleRemoveView = useCallback(
+    (removed: SavedView) => {
+      if (!viewReady || store === null) return;
+      void store.remove(removed.id).then(() => store.list(props.entity)).then(setSaved);
+    },
+    [props.entity, store, viewReady],
   );
 
   const handleReorder = useCallback(
@@ -505,11 +630,24 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     // WP-06 ships without an inline palette (inputs, selects, toolbar buttons).
     // The grid's own cells need nothing here: `packages/ui` writes
     // `var(--wa-*, <literal>)` and reads the tokens directly.
+    /*
+     * The measured fill resolves to this floor now that the tile row and the
+     * trend chart sit above the grid: the viewport is already spent by the time
+     * the table starts, exactly as on the optimizer. The floor is therefore the
+     * decision, not the safety net, and fullscreen is the gesture that gives the
+     * table the whole screen. Measured at 1280x720 in `grid.spec.ts`, which
+     * asserts both this height and that no screen space is left unused below it.
+     */
+    <GridViewport
+      fullscreen={fullscreen}
+      onExitFullscreen={() => setFullscreen(false)}
+      minHeight={GRID_MIN_HEIGHT}
+    >
     <div
       data-testid="grid-data-ready"
       data-ready={viewReady ? 'true' : 'false'}
       aria-busy={!viewReady}
-      style={{ display: 'flex', flexDirection: 'column', gap: tokens.space(3) }}
+      style={{ display: 'flex', flex: '1 1 auto', flexDirection: 'column', gap: tokens.space(3), minHeight: 0 }}
     >
       <div data-testid="grid-toolbar-readiness" aria-busy={!viewReady}>
         {viewReady ? (
@@ -537,6 +675,11 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
             views={saved}
             onApplyView={(applied) => setView(withValidGrouping(applied, available))}
             onSaveView={handleSaveView}
+            onRemoveView={handleRemoveView}
+            density={density}
+            onDensityChange={(next) => update({ density: next })}
+            fullscreen={fullscreen}
+            onFullscreenChange={setFullscreen}
           />
         ) : (
           <p role="status" data-testid="grid-layout-restoring" className="wa-hint">
@@ -588,7 +731,10 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
             })
           }
           onReorder={handleReorder}
-          rowHeight={props.entity === 'targets' ? 42 : 30}
+          density={density}
+          rowHeight={rowHeightFor(density, props.entity === 'targets' ? 2 : 1)}
+          selectedRowIds={selectedRowIds}
+          onSelectionChange={setSelectedRowIds}
           {...(props.entity === 'targets'
             ? {
                 onRowClick: (row: GridRow) => {
@@ -610,6 +756,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
         />
       )}
     </div>
+    </GridViewport>
   );
 }
 

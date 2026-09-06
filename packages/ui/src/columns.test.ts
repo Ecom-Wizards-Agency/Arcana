@@ -46,3 +46,12 @@ describe('filter control metadata', () => {
     }
   });
 });
+
+describe('campaign role column', () => {
+  it('reads as the campaign role while keeping the rpc_category id', () => {
+    const column = columnsFor('targets').find((candidate) => candidate.id === 'rpc_category');
+    expect(column?.header).toBe('Campaign role');
+    expect(column?.description).toContain('campaign');
+    expect(column?.description).not.toContain('RPC');
+  });
+});

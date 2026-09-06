@@ -19,7 +19,7 @@ export const E2E_SUITE_DEFINITIONS = [
       'tags-goto.spec.ts',
       'time-machine.spec.ts',
     ],
-    expectedTests: 32,
+    expectedTests: 33,
   },
   {
     name: 'grid-performance',
@@ -67,7 +67,7 @@ export const E2E_SUITE_DEFINITIONS = [
     config: 'playwright.auth.config.ts',
     project: 'auth',
     expectedSpecFiles: ['dashboard.spec.ts', 'grid.spec.ts'],
-    expectedTests: 4,
+    expectedTests: 7,
   },
   {
     name: 'auth-members',

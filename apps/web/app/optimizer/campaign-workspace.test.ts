@@ -1,9 +1,47 @@
 // @vitest-environment jsdom
+/**
+ * The optimizer campaign table, now rendered through the Data Grid.
+ *
+ * jsdom has no layout engine, so the virtualizer is handed one viewport-sized
+ * box through the component's `initialGridRect` seam and everything downstream
+ * is the production component. `scrollTo`, `scrollHeight` and `ResizeObserver`
+ * are stubbed for the same reason they are in `packages/ui`: without them a
+ * scroll can never move the virtual window, which is the gesture that replaced
+ * pagination and therefore the thing most worth asserting.
+ */
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { OptimizerCampaignRow } from '../../src/optimizer/campaigns';
-import { CampaignWorkspace } from './campaign-workspace';
+import { CampaignWorkspace, toOptimizerGridRows } from './campaign-workspace';
+
+const VIEWPORT = { width: 1400, height: 600 };
+
+class StubResizeObserver {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = StubResizeObserver;
+Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+  configurable: true,
+  get: () => VIEWPORT.width,
+});
+Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+  configurable: true,
+  get: () => VIEWPORT.height,
+});
+Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+  configurable: true,
+  get: () => 10_000_000,
+});
+Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+  configurable: true,
+  value(this: HTMLElement, options: ScrollToOptions | number) {
+    this.scrollTop = typeof options === 'number' ? options : options.top ?? 0;
+    setTimeout(() => this.dispatchEvent(new Event('scroll')), 0);
+  },
+});
 
 const navigation = vi.hoisted(() => ({ refresh: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => navigation }));
@@ -54,6 +92,47 @@ function setSelectValue(select: HTMLSelectElement, value: string): void {
   select.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
+function gridRows(host: HTMLElement): HTMLElement[] {
+  return [...host.querySelectorAll<HTMLElement>('[data-testid="grid-row"]')];
+}
+
+function rowNames(host: HTMLElement): string[] {
+  return gridRows(host).map((element) => {
+    const link = element.querySelector('.wa-optimizer-campaigns__name');
+    return link?.textContent ?? '';
+  });
+}
+
+function header(host: HTMLElement, label: string): HTMLElement {
+  const element = host.querySelector<HTMLElement>(`[role="columnheader"][aria-label="${label}"]`);
+  if (element === null) throw new Error(`no column header labelled '${label}'`);
+  return element;
+}
+
+function scrollGrid(host: HTMLElement, top: number): void {
+  const scroller = host.querySelector<HTMLElement>('[data-testid="grid-scroller"]');
+  if (scroller === null) throw new Error('the grid has no scroller');
+  act(() => {
+    scroller.scrollTop = top;
+    scroller.dispatchEvent(new Event('scroll'));
+  });
+}
+
+function cellText(host: HTMLElement, campaignName: string, headerLabel: string): string {
+  const index = [...host.querySelectorAll('[role="columnheader"]')]
+    .map((element) => element.getAttribute('aria-label') ?? '')
+    .indexOf(headerLabel);
+  if (index < 0) throw new Error(`no column header labelled '${headerLabel}'`);
+  const element = gridRows(host)
+    .find((candidate) => candidate.querySelector('.wa-optimizer-campaigns__name')?.textContent === campaignName);
+  if (element === undefined) throw new Error(`no rendered row for '${campaignName}'`);
+  return [...element.querySelectorAll('[role="cell"]')][index]?.textContent ?? '';
+}
+
+function footerText(host: HTMLElement): string {
+  return host.querySelector('[data-testid="grid-shell"]')?.lastElementChild?.textContent ?? '';
+}
+
 afterEach(() => {
   act(() => {
     for (const root of mounted.splice(0)) root.unmount();
@@ -73,6 +152,7 @@ function workspaceProps(
   return {
     currencyCode: 'USD',
     initialBatchId: null,
+    initialGridRect: VIEWPORT,
     mayRunOptimizer: true,
     previewReady: true,
     period: { start: '2026-08-01', end: '2026-08-30' },
@@ -96,47 +176,94 @@ function mount(
 }
 
 describe('campaign optimizer workspace', () => {
-  it('renders a bounded campaign window and resets to the first page when filtering', () => {
+  it('renders every campaign in one continuous scroll with no pagination control', () => {
     const { host } = mount(Array.from({ length: 56 }, (_, index) => row(index + 1)));
 
-    expect(host.querySelectorAll('tbody tr')).toHaveLength(25);
-    expect(host.textContent).toContain('1–25 of 56');
-    expect(host.textContent).toContain('Page 1 of 3');
+    // No page slice and no pager: the grid holds the whole set and the DOM
+    // holds one viewport of it.
+    expect(host.textContent).not.toContain('Page 1 of');
+    expect([...host.querySelectorAll('button')].map((button) => button.textContent?.trim()))
+      .not.toContain('Next →');
+    expect(footerText(host)).toContain('56 of 56 rows');
+    expect(host.querySelector('.wa-optimizer-campaigns__shown')?.textContent).toBe('56 campaigns');
 
-    const next = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === 'Next →');
-    expect(next).toBeDefined();
-    act(() => next?.click());
-
-    expect(host.querySelectorAll('tbody tr')).toHaveLength(25);
-    expect(host.textContent).toContain('26–50 of 56');
-    expect(host.textContent).toContain('Synthetic campaign 26');
+    // Spend descending is the default order, so campaign 56 leads and the DOM
+    // carries a viewport, not fifty-six rows.
+    const rendered = gridRows(host);
+    expect(rendered.length).toBeGreaterThan(0);
+    expect(rendered.length).toBeLessThan(56);
+    expect(rowNames(host)[0]).toBe('Synthetic campaign 56');
     expect(host.textContent).not.toContain('Synthetic campaign 01');
 
-    act(() => next?.click());
-    expect(host.querySelectorAll('tbody tr')).toHaveLength(6);
-    expect(host.textContent).toContain('51–56 of 56');
-    expect(host.textContent).toContain('Synthetic campaign 56');
-
-    const previous = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === '← Previous');
-    expect(previous).toBeDefined();
-    act(() => previous?.click());
-    expect(host.textContent).toContain('26–50 of 56');
-
-    const search = host.querySelector<HTMLInputElement>('input[aria-label="Find campaign"]');
-    expect(search).not.toBeNull();
-    act(() => {
-      if (search !== null) setInputValue(search, 'campaign 56');
-    });
-
-    expect(host.querySelectorAll('tbody tr')).toHaveLength(1);
-    expect(host.textContent).toContain('1–1 of 1');
-    expect(host.textContent).toContain('Synthetic campaign 56');
-    expect(host.textContent).not.toContain('Page 2 of 3');
+    // Scrolling — not a Next button — reaches the far end of the set.
+    scrollGrid(host, 56 * 42);
+    expect(rowNames(host)).toContain('Synthetic campaign 01');
+    expect(host.textContent).not.toContain('Synthetic campaign 56');
   });
 
-  it('resets paging for group, state, clear, and profile context changes', () => {
+  it('sorts on a header click, adds a second key with shift-click, and offers no ordering on control headers', () => {
+    const { host } = mount(Array.from({ length: 12 }, (_, index) => row(index + 1)));
+    const spend = header(host, 'Spend');
+    expect(spend.getAttribute('aria-sort')).toBe('descending');
+    expect(rowNames(host)[0]).toBe('Synthetic campaign 12');
+
+    act(() => spend.click());
+    expect(spend.getAttribute('aria-sort')).toBe('ascending');
+    expect(rowNames(host)[0]).toBe('Synthetic campaign 01');
+
+    // Shift-click appends rather than replacing: campaign stays ascending and
+    // orders becomes the second key.
+    const orders = header(host, 'Orders');
+    act(() => orders.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })));
+    expect(spend.getAttribute('aria-sort')).toBe('ascending');
+    expect(orders.getAttribute('aria-sort')).toBe('descending');
+
+    // The selection and recommendation columns hold a gesture, not a value.
+    for (const label of ['Select', 'Recommendation']) {
+      const control = header(host, label);
+      expect(control.getAttribute('aria-sort')).toBeNull();
+      expect(control.getAttribute('tabindex')).toBeNull();
+      act(() => control.click());
+      expect(spend.getAttribute('aria-sort')).toBe('ascending');
+    }
+  });
+
+  it('groups on a dimension and nests a second level with ratios recomputed from sums', () => {
+    const rows = Array.from({ length: 12 }, (_, index) => {
+      const position = index + 1;
+      return row(position, {
+        state: position <= 8 ? 'enabled' : 'paused',
+        adProduct: position % 2 === 0 ? 'SP' : 'SB',
+        spend: 10,
+        sales: 40,
+      });
+    });
+    const { host } = mount(rows);
+    const addLevel = host.querySelector<HTMLSelectElement>('select[aria-label="Add grouping level"]');
+    expect(addLevel).not.toBeNull();
+    if (addLevel === null) throw new Error('the group bar has no keyboard path');
+
+    act(() => setSelectValue(addLevel, 'campaign_state'));
+    const tree = host.querySelector('[role="treegrid"]');
+    expect(tree?.getAttribute('aria-label')).toBe('Results grouped by campaign_state');
+    expect(host.querySelectorAll('[data-testid="grid-group-chip"]')).toHaveLength(1);
+    // Two states, each an aggregate of its members: 8 × $10 against 8 × $40.
+    expect(host.querySelectorAll('[role="row"][aria-level="1"]')).toHaveLength(2);
+    // A group row is an aggregate, so it carries no campaign link to click.
+    expect(rowNames(host).every((name) => name === '')).toBe(true);
+    expect(host.textContent).toContain('8 rows');
+
+    act(() => setSelectValue(addLevel, 'ad_product'));
+    expect(host.querySelector('[role="treegrid"]')?.getAttribute('aria-label'))
+      .toBe('Results grouped by campaign_state, ad_product');
+    expect(host.querySelectorAll('[data-testid="grid-group-chip"]')).toHaveLength(2);
+    expect(host.querySelectorAll('[role="row"][aria-level="2"]').length).toBeGreaterThan(0);
+    // 25% at every level, because it is spend/sales at that level and never an
+    // average of the members' own ratios.
+    expect(host.textContent).toContain('25.0%');
+  });
+
+  it('narrows on the group, state and clear-filter controls without touching the whole set', () => {
     const rows = Array.from({ length: 56 }, (_, index) => {
       const position = index + 1;
       return row(position, {
@@ -146,74 +273,36 @@ describe('campaign optimizer workspace', () => {
         state: position <= 40 ? 'enabled' : 'paused',
       });
     });
-    const host = document.createElement('div');
-    document.body.append(host);
-    const root = createRoot(host);
-    mounted.push(root);
-    const render = (
-      profileId: string,
-      campaignRows: readonly OptimizerCampaignRow[] = rows,
-      start = '2026-08-01',
-    ) => createElement(CampaignWorkspace, {
-      currencyCode: 'USD',
-      initialBatchId: null,
-      period: { start, end: '2026-08-30' },
-      profileId,
-      rows: campaignRows,
-      run: null,
-      mayRunOptimizer: true,
-      previewReady: true,
-    });
-
-    act(() => root.render(render('profile-a')));
-    const next = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === 'Next →');
-    act(() => next?.click());
-    act(() => next?.click());
-    expect(host.textContent).toContain('51–56 of 56');
+    const { host } = mount(rows);
+    const shown = () => host.querySelector('.wa-optimizer-campaigns__shown')?.textContent;
+    expect(shown()).toBe('56 campaigns');
 
     const selects = host.querySelectorAll<HTMLSelectElement>('select');
     const group = selects.item(0);
     const state = selects.item(1);
     act(() => setSelectValue(group, 'group-a'));
-    expect(host.textContent).toContain('1–25 of 30');
+    expect(shown()).toBe('30 of 56 campaigns');
+    expect(footerText(host)).toContain('30 of 30 rows');
 
-    act(() => setSelectValue(state, 'enabled'));
-    expect(host.textContent).toContain('1–25 of 30');
+    act(() => setSelectValue(state, 'paused'));
+    expect(shown()).toBe('0 of 56 campaigns');
+    expect(host.textContent).toContain('No campaigns match these filters.');
 
     const clear = [...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.trim() === 'Clear filters');
     expect(clear).toBeDefined();
     act(() => clear?.click());
-    expect(host.textContent).toContain('1–25 of 56');
+    expect(shown()).toBe('56 campaigns');
 
-    act(() => next?.click());
-    act(() => next?.click());
-    expect(host.textContent).toContain('51–56 of 56');
-    act(() => root.render(render('profile-b', rows.slice(0, 30))));
-    expect(host.textContent).toContain('1–25 of 30');
-    expect(host.textContent).toContain('Synthetic campaign 01');
-
-    const nextAfterProfile = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === 'Next →');
-    act(() => nextAfterProfile?.click());
-    expect(host.textContent).toContain('26–30 of 30');
-    act(() => root.render(render('profile-b', rows.slice(0, 30), '2026-08-02')));
-    expect(host.textContent).toContain('1–25 of 30');
-
-    act(() => root.render(render('profile-c')));
-    const nextAfterPeriod = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === 'Next →');
-    act(() => nextAfterPeriod?.click());
-    act(() => nextAfterPeriod?.click());
-    expect(host.textContent).toContain('51–56 of 56');
-    act(() => root.render(render('profile-c', rows.slice(0, 30))));
-    expect(host.textContent).toContain('26–30 of 30');
-    act(() => root.render(render('profile-c')));
-    expect(host.textContent).toContain('26–50 of 56');
+    const search = host.querySelector<HTMLInputElement>('input[aria-label="Find campaign"]');
+    act(() => {
+      if (search !== null) setInputValue(search, 'campaign 56');
+    });
+    expect(shown()).toBe('1 of 56 campaigns');
+    expect(rowNames(host)).toEqual(['Synthetic campaign 56']);
   });
 
-  it('selects every filtered eligible campaign across pages, retains hidden choices, and clears globally', () => {
+  it('selects every filtered eligible campaign, retains hidden choices across a filter, and clears globally', () => {
     const rows = Array.from({ length: 56 }, (_, index) => {
       const position = index + 1;
       return row(position, {
@@ -229,24 +318,34 @@ describe('campaign optimizer workspace', () => {
     const group = host.querySelectorAll<HTMLSelectElement>('select').item(0);
     act(() => setSelectValue(group, 'group-a'));
 
-    const header = host.querySelector<HTMLInputElement>('[data-testid="optimizer-select-filtered"]');
-    expect(header?.getAttribute('aria-label')).toBe('Select all 29 eligible campaigns matching current filters');
-    expect(header?.indeterminate).toBe(false);
-    act(() => header?.click());
-    expect(header?.checked).toBe(true);
+    const filteredHeader = host.querySelector<HTMLInputElement>('[data-testid="optimizer-select-filtered"]');
+    expect(filteredHeader?.getAttribute('aria-label')).toBe('Select all 29 eligible campaigns matching current filters');
+    expect(filteredHeader?.indeterminate).toBe(false);
+    act(() => filteredHeader?.click());
+    expect(filteredHeader?.checked).toBe(true);
     expect(host.querySelector('[data-testid="optimizer-selection-count"]')?.textContent)
       .toContain('29 campaigns selected');
 
-    const next = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === 'Next →');
-    act(() => next?.click());
-    expect(host.textContent).toContain('26–30 of 30');
-    expect([...host.querySelectorAll<HTMLInputElement>('[data-testid="optimizer-campaign-select"]')]
-      .every((checkbox) => checkbox.checked)).toBe(true);
+    // The header owned all twenty-nine filtered eligible campaigns, not the
+    // rows that happened to be rendered: scrolling finds them already checked.
+    scrollGrid(host, 30 * 42);
+    const rendered = [...host.querySelectorAll<HTMLInputElement>('[data-testid="optimizer-campaign-select"]')];
+    // Named exactly, so "every box is disabled and unchecked" cannot pass:
+    // every enabled box in the window is checked, and the checked count is the
+    // enabled count. The one ineligible campaign is the only unchecked box.
+    const enabled = rendered.filter((checkbox) => !checkbox.disabled);
+    expect(enabled.length).toBeGreaterThan(0);
+    expect(enabled.every((checkbox) => checkbox.checked)).toBe(true);
+    expect(rendered.filter((checkbox) => checkbox.checked)).toHaveLength(enabled.length);
 
+    // Widening the filter keeps every hidden choice; the header reports the
+    // partial state of its new, larger population.
     act(() => setSelectValue(group, 'all'));
-    expect(header?.checked).toBe(false);
-    expect(header?.indeterminate).toBe(true);
+    expect(host.querySelector('[data-testid="optimizer-select-filtered"]')?.getAttribute('aria-label'))
+      .toBe('Select all 55 eligible campaigns matching current filters');
+    const wideHeader = host.querySelector<HTMLInputElement>('[data-testid="optimizer-select-filtered"]');
+    expect(wideHeader?.checked).toBe(false);
+    expect(wideHeader?.indeterminate).toBe(true);
 
     act(() => setSelectValue(group, 'unassigned'));
     const firstUnassigned = host.querySelector<HTMLInputElement>('[data-testid="optimizer-campaign-select"]');
@@ -259,7 +358,111 @@ describe('campaign optimizer workspace', () => {
     act(() => clear?.click());
     expect(host.querySelector('[data-testid="optimizer-selection-count"]')?.textContent)
       .toContain('No campaigns selected');
-    expect(firstUnassigned?.checked).toBe(false);
+    expect(host.querySelector<HTMLInputElement>('[data-testid="optimizer-campaign-select"]')?.checked)
+      .toBe(false);
+  });
+
+  it('refuses the grid keyboard a selection an ineligible campaign could never have', () => {
+    const rows = [
+      row(1),
+      row(2, {
+        eligibilityReason: 'Only Sponsored Products campaigns support bid previews.',
+        selectable: false,
+        adProduct: 'SB',
+      }),
+    ];
+    const { host } = mount(rows);
+    const ineligible = gridRows(host).find((element) => element.textContent?.includes('Synthetic campaign 02'));
+    expect(ineligible).toBeDefined();
+    act(() => ineligible?.focus());
+    act(() => { ineligible?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true })); });
+    expect(host.querySelector('[data-testid="optimizer-selection-count"]')?.textContent)
+      .toContain('No campaigns selected');
+
+    const eligible = gridRows(host).find((element) => element.textContent?.includes('Synthetic campaign 01'));
+    expect(eligible).toBeDefined();
+    act(() => eligible?.focus());
+    act(() => { eligible?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true })); });
+    expect(host.querySelector('[data-testid="optimizer-selection-count"]')?.textContent)
+      .toContain('1 campaign selected');
+  });
+
+  it('keeps both notes on an ineligible campaign that reported nothing and prints no zero it never measured', () => {
+    const rows = [
+      row(1),
+      row(2, {
+        adProduct: 'SB',
+        clicks: 0,
+        comparisonRows: 1,
+        comparisonSpend: 12,
+        currentRows: 0,
+        eligibilityReason: 'Only Sponsored Products campaigns support bid previews.',
+        impressions: 0,
+        orders: 0,
+        sales: 0,
+        selectable: false,
+        spend: 0,
+        state: 'paused',
+      }),
+    ];
+    const { host } = mount(rows);
+    const idle = gridRows(host)
+      .find((element) => element.textContent?.includes('Synthetic campaign 02'));
+    expect(idle).toBeDefined();
+
+    // Two independent facts, and this campaign is both: why it cannot be
+    // previewed, and that Amazon reported nothing for it in this period.
+    expect(idle?.textContent).toContain('Only Sponsored Products campaigns support bid previews.');
+    expect(idle?.textContent).toContain('No activity in this period');
+
+    // Absent, not zero: a period that reported no row for a campaign gives it
+    // no figure to show, exactly as the table this replaced showed it.
+    for (const label of ['Spend', 'Spend Δ%', 'Sales', 'ACOS', 'Orders']) {
+      expect(cellText(host, 'Synthetic campaign 02', label)).toBe('—');
+    }
+    expect(idle?.textContent).not.toContain('$0.00');
+
+    // The campaign that did report keeps the grid's own formatting.
+    expect(cellText(host, 'Synthetic campaign 01', 'Spend')).toBe('$1.00');
+  });
+
+  it('clears the whole selection on Escape in the grid, hidden campaigns included', () => {
+    // Deliberate, not inherited: the brief's keyboard contract makes Escape the
+    // keyboard twin of `Clear selected`, and `Clear selected` has always owned
+    // the whole transient set rather than the rows a filter happens to show.
+    const { host } = mount(Array.from({ length: 12 }, (_, index) => row(index + 1)));
+    const filteredHeader = host.querySelector<HTMLInputElement>('[data-testid="optimizer-select-filtered"]');
+    act(() => filteredHeader?.click());
+    expect(host.querySelector('[data-testid="optimizer-selection-count"]')?.textContent)
+      .toContain('12 campaigns selected');
+
+    const search = host.querySelector<HTMLInputElement>('input[aria-label="Find campaign"]');
+    act(() => {
+      if (search !== null) setInputValue(search, 'campaign 12');
+    });
+    expect(rowNames(host)).toEqual(['Synthetic campaign 12']);
+    expect(host.querySelector('[data-testid="optimizer-selection-count"]')?.textContent)
+      .toContain('12 campaigns selected');
+
+    const visible = gridRows(host)[0];
+    act(() => visible?.focus());
+    act(() => { visible?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(host.querySelector('[data-testid="optimizer-selection-count"]')?.textContent)
+      .toContain('No campaigns selected');
+  });
+
+  it('builds grid rows from base sums only, with no invented comparison figures', () => {
+    const built = toOptimizerGridRows(
+      [row(4, { spend: 30, sales: 120, comparisonRows: 1, comparisonSpend: 20 })],
+      'USD',
+    );
+    expect(built).toHaveLength(1);
+    const only = built[0];
+    expect(only?.comparison).toBeNull();
+    expect(only?.totals).toEqual({ impressions: 40, clicks: 4, spend: 30, sales: 120, orders: 1, units: 0 });
+    expect(only?.dimensions['spend_change']).toBeCloseTo(0.5, 10);
+    expect(toOptimizerGridRows([row(4, { comparisonRows: 0 })], 'USD')[0]?.dimensions['spend_change'])
+      .toBeNull();
   });
 
   it('retains selection through period refresh and resets it only when the profile changes', () => {
@@ -318,7 +521,7 @@ describe('campaign optimizer workspace', () => {
     const { host } = mount(
       Array.from({ length: 10_001 }, (_, index) => row(index + 1)),
     );
-    expect(host.getElementsByTagName('tbody').item(0)?.children).toHaveLength(25);
+    expect(footerText(host)).toContain('10,001 of 10,001 rows');
     expect(host.querySelectorAll<HTMLInputElement>('input[name="optimizer-preview-scope"]')
       .item(0).disabled).toBe(true);
     expect(host.querySelector<HTMLButtonElement>('[data-testid="optimizer-run-preview"]')?.disabled)

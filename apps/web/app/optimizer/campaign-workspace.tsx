@@ -1,8 +1,47 @@
 'use client';
 
+/**
+ * The Campaign Optimizer workspace.
+ *
+ * The campaign table is the Data Grid (`@wizard-ads/ui`), not a bespoke
+ * `<table>`: continuous scrolling over the whole campaign set the loader
+ * returns, click-to-sort on every data column, shift-click to add a key, and a
+ * group bar that takes a dragged header and nests a second level with ratios
+ * recomputed from summed bases. There is no page slice; the recon
+ * (`02-data-grid.md` §6) is explicit that paginating a QA surface makes the
+ * workflow it exists for impossible, and 25 rows at a time is what the operator
+ * named first when comparing this page against AdLabs.
+ *
+ * Everything WP-195 built about *scope* is unchanged and is the reason the
+ * selection lives here rather than in the grid: `selectedCampaignIds` is the
+ * whole transient set, filters narrow what is on screen without touching it,
+ * the header checkbox owns the complete filtered eligible population rather
+ * than what happens to be rendered, and the preview scope stays an explicit
+ * choice between all eligible campaigns and the selected ones. The grid paints
+ * that selection and asks to change it; it never owns it.
+ *
+ * Absent is not zero, as in the table this replaced: a campaign Amazon reported
+ * no row for in this period shows `—` for spend, sales, ACOS, orders and the
+ * spend change, and carries a "No activity in this period" note under its name
+ * alongside any reason it cannot be previewed. The two notes are independent
+ * facts and a campaign is often both.
+ */
 import { useRouter } from 'next/navigation';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import {
+  DEFAULT_DENSITY,
+  DENSITY_LABELS,
+  DataGrid,
+  EMPTY_CELL,
+  GRID_DENSITIES,
+  GroupBar,
+  GridViewport,
+  allMetricColumns,
+  buildGridModel,
+  rowHeightFor,
+} from '@wizard-ads/ui';
+import type { GridColumn, GridDensity, GridRow, SortRule } from '@wizard-ads/ui';
 import type {
   OptimizerCampaignRow,
   OptimizerPreviewAccepted,
@@ -19,9 +58,12 @@ import {
   OPTIMIZER_PREVIEW_CAMPAIGN_MAX,
 } from '../../src/optimizer/preview-http';
 
-const CAMPAIGNS_PER_PAGE = 25;
 const POLL_DELAYS_MS = [1_000, 2_000, 5_000] as const;
 const POLL_DEADLINE_MS = 10 * 60 * 1_000;
+
+const SELECT_COLUMN_ID = 'select';
+const RECOMMENDATION_COLUMN_ID = 'recommendation';
+const DEFAULT_SORT: readonly SortRule[] = [{ columnId: 'spend', direction: 'desc' }];
 
 type ScopeMode = 'all' | 'selected';
 
@@ -63,6 +105,122 @@ function reviewHref(profileId: string, runId: string): string {
   return `/recommendations?${new URLSearchParams({ profile: profileId, run: runId }).toString()}`;
 }
 
+const METRIC_COLUMNS = allMetricColumns();
+
+function metricColumn(id: string): GridColumn {
+  const column = METRIC_COLUMNS.find((candidate) => candidate.id === id);
+  if (column === undefined) throw new Error(`the optimizer grid asked for unknown metric '${id}'`);
+  return column;
+}
+
+const dimension = (
+  id: string,
+  header: string,
+  options: Partial<GridColumn> = {},
+): GridColumn => ({ id, header, kind: 'dimension', scale: 'text', align: 'left', width: 160, ...options });
+
+/**
+ * The campaign grid's columns.
+ *
+ * Two are `control`: the selection checkbox and the recommendation link. They
+ * hold a gesture, not a value, so they carry no ordering — the header offers no
+ * `aria-sort` and a click on it does nothing (`packages/ui/src/columns.ts`).
+ *
+ * `spend_change` is a dimension rather than the metric model's
+ * `spend_delta_percent` because the campaign loader returns prior-window
+ * *spend* and nothing else. A `comparison` row would need all six base sums,
+ * and filling the other five with zeros would put a plausible wrong number
+ * (`Sales (prev) $0.00`) on every campaign. Grouped rows drop it and show `—`,
+ * which is the truth: this figure exists per campaign, not per group.
+ */
+export function optimizerCampaignColumns(): GridColumn[] {
+  return [
+    {
+      id: SELECT_COLUMN_ID,
+      header: 'Select',
+      kind: 'control',
+      scale: 'text',
+      align: 'left',
+      width: 44,
+      pinned: true,
+    },
+    dimension('campaign_name', 'Campaign', { width: 300, pinned: true }),
+    dimension('group_name', 'Group', { width: 170, filterKind: 'categorical' }),
+    dimension('campaign_state', 'State', { width: 100, filterKind: 'categorical' }),
+    dimension('ad_product', 'Ad product', { width: 108, filterKind: 'categorical' }),
+    metricColumn('spend'),
+    dimension('spend_change', 'Spend Δ%', {
+      scale: 'percent',
+      align: 'right',
+      width: 104,
+      description:
+        'Change against the comparison window’s spend for this campaign. Per campaign only: '
+        + 'the loader returns prior spend and no other prior base sum, so a group shows no figure.',
+    }),
+    metricColumn('sales'),
+    metricColumn('acos'),
+    metricColumn('orders'),
+    dimension('daily_budget', 'Daily budget', { scale: 'money', align: 'right', width: 118 }),
+    dimension('bidding_strategy', 'Bid strategy', { width: 170, filterKind: 'categorical' }),
+    dimension('start_date', 'Start', { width: 108 }),
+    dimension('last_run_at', 'Last group run', { width: 136 }),
+    {
+      id: RECOMMENDATION_COLUMN_ID,
+      header: 'Recommendation',
+      kind: 'control',
+      scale: 'text',
+      align: 'left',
+      width: 160,
+    },
+  ];
+}
+
+/**
+ * One campaign as a grid row.
+ *
+ * Base sums only, as everywhere in the grid: ACOS is `sum(spend)/sum(sales)`
+ * evaluated at whatever level is on screen, so grouping by state or ad product
+ * cannot average a ratio. `comparison` is null because there is no comparison
+ * base-sum row to carry; see `optimizerCampaignColumns`.
+ */
+export function toOptimizerGridRows(
+  rows: readonly OptimizerCampaignRow[],
+  currencyCode: string,
+): GridRow[] {
+  return rows.map((row) => ({
+    id: row.campaignId,
+    dimensions: {
+      campaign_id: row.campaignId,
+      campaign_name: row.name,
+      campaign_state: titleCase(row.state),
+      ad_product: row.adProduct,
+      group_name: row.groupName,
+      bidding_strategy: row.biddingStrategy === null ? null : titleCase(row.biddingStrategy),
+      start_date: row.startDate,
+      daily_budget: row.dailyBudget,
+      // ISO, so a lexicographic sort is a chronological one; the cell formats it.
+      last_run_at: row.lastRunAt,
+      spend_change: spendChange(row),
+    },
+    totals: {
+      impressions: row.impressions,
+      clicks: row.clicks,
+      spend: row.spend,
+      sales: row.sales,
+      orders: row.orders,
+      units: 0,
+    },
+    comparison: null,
+    currencyCode,
+  }));
+}
+
+/** Relative spend change against the comparison window, or null when there is none. */
+function spendChange(row: OptimizerCampaignRow): number | null {
+  if (row.comparisonRows === 0 || row.comparisonSpend === 0) return null;
+  return (row.spend - row.comparisonSpend) / row.comparisonSpend;
+}
+
 export function CampaignWorkspace({
   rows,
   currencyCode,
@@ -72,6 +230,7 @@ export function CampaignWorkspace({
   mayRunOptimizer,
   previewReady,
   initialBatchId,
+  initialGridRect,
 }: {
   rows: readonly OptimizerCampaignRow[];
   currencyCode: string;
@@ -81,12 +240,20 @@ export function CampaignWorkspace({
   mayRunOptimizer: boolean;
   previewReady: boolean;
   initialBatchId: string | null;
+  /**
+   * Test seam. The virtualizer measures a real element and jsdom has none, so
+   * a unit test hands it one box. Production measures the viewport.
+   */
+  initialGridRect?: { width: number; height: number };
 }): ReactNode {
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [group, setGroup] = useState('all');
   const [state, setState] = useState('all');
-  const [requestedPage, setRequestedPage] = useState(0);
+  const [sort, setSort] = useState<SortRule[]>([...DEFAULT_SORT]);
+  const [groupBy, setGroupBy] = useState<readonly string[]>([]);
+  const [density, setDensity] = useState<GridDensity>(DEFAULT_DENSITY);
+  const [fullscreen, setFullscreen] = useState(false);
   const [selectedCampaignIds, setSelectedCampaignIds] = useState<ReadonlySet<string>>(new Set());
   const [scopeMode, setScopeMode] = useState<ScopeMode>('all');
   const [submitting, setSubmitting] = useState(false);
@@ -100,8 +267,6 @@ export function CampaignWorkspace({
   const submittingRef = useRef(false);
   const uncertainRequest = useRef<UncertainPreviewRequest | null>(null);
   const previousProfile = useRef(profileId);
-  const context = `${profileId}:${period.start}:${period.end}`;
-  const previousContext = useRef(context);
   const filtered = useMemo(
     () => filterOptimizerCampaignRows(rows, { query, group, state }),
     [group, query, rows, state],
@@ -115,10 +280,6 @@ export function CampaignWorkspace({
     && filteredEligibleRows.every((row) => selectedCampaignIds.has(row.campaignId));
   const someFilteredSelected = filteredEligibleRows
     .some((row) => selectedCampaignIds.has(row.campaignId));
-  const pageCount = Math.max(1, Math.ceil(filtered.length / CAMPAIGNS_PER_PAGE));
-  const page = Math.min(requestedPage, pageCount - 1);
-  const pageStart = page * CAMPAIGNS_PER_PAGE;
-  const visibleRows = filtered.slice(pageStart, pageStart + CAMPAIGNS_PER_PAGE);
   const groups = useMemo(
     () => [...new Map(rows.flatMap((row) => row.groupId === null || row.groupName === null
       ? []
@@ -139,15 +300,32 @@ export function CampaignWorkspace({
   const runDisabled = !mayRunOptimizer || !previewReady || submitting || batchActive
     || (scopeMode === 'all' ? allModeInvalid : selectedModeInvalid);
   const batchId = activeBatchId;
+  const selectionLocked = !mayRunOptimizer || batchActive;
 
-  useEffect(() => {
-    if (previousContext.current !== context) {
-      previousContext.current = context;
-      setRequestedPage(0);
-      return;
-    }
-    if (requestedPage >= pageCount) setRequestedPage(pageCount - 1);
-  }, [context, pageCount, requestedPage]);
+  const columns = useMemo(() => optimizerCampaignColumns(), []);
+  const dimensions = useMemo(
+    () => columns.filter((column) => column.kind === 'dimension'),
+    [columns],
+  );
+  const gridRows = useMemo(
+    () => toOptimizerGridRows(filtered, currencyCode),
+    [currencyCode, filtered],
+  );
+  const model = useMemo(
+    () => buildGridModel(gridRows, { sort, groupBy }),
+    [gridRows, groupBy, sort],
+  );
+  const sourceById = useMemo(
+    () => new Map(rows.map((row) => [row.campaignId, row] as const)),
+    [rows],
+  );
+  const selectedRowIds = useMemo(() => [...selectedCampaignIds], [selectedCampaignIds]);
+  // The grid distinguishes "the filter matched nothing" from "the period
+  // produced nothing"; here the filter runs before the grid sees a row, so this
+  // workspace decides which of the two it is and tells the grid once.
+  const emptyGridMessage = rows.length === 0
+    ? 'This profile has no campaigns yet. They arrive with the next entity sync.'
+    : 'No campaigns match these filters.';
 
   useEffect(() => {
     if (previousProfile.current === profileId) return;
@@ -315,34 +493,187 @@ export function CampaignWorkspace({
     };
   }, [batchId, profileId, router]);
 
-  function toggleCampaign(row: OptimizerCampaignRow): void {
-    if (!row.selectable || !mayRunOptimizer || batchActive) return;
-    const next = new Set(selectedCampaignIds);
-    if (next.has(row.campaignId)) next.delete(row.campaignId);
-    else next.add(row.campaignId);
-    setSelectedCampaignIds(next);
+  const toggleCampaign = useCallback((row: OptimizerCampaignRow): void => {
+    if (!row.selectable || selectionLocked) return;
+    setSelectedCampaignIds((current) => {
+      const next = new Set(current);
+      if (next.has(row.campaignId)) next.delete(row.campaignId);
+      else next.add(row.campaignId);
+      return next;
+    });
     setScopeMode('selected');
     setError(null);
-  }
+  }, [selectionLocked]);
 
-  function toggleFilteredCampaigns(): void {
-    if (!mayRunOptimizer || batchActive || filteredEligibleRows.length === 0) return;
-    const next = new Set(selectedCampaignIds);
-    if (allFilteredSelected) {
-      for (const row of filteredEligibleRows) next.delete(row.campaignId);
-    } else {
-      for (const row of filteredEligibleRows) next.add(row.campaignId);
+  const toggleFilteredCampaigns = useCallback((): void => {
+    if (selectionLocked || filteredEligibleRows.length === 0) return;
+    setSelectedCampaignIds((current) => {
+      const next = new Set(current);
+      if (allFilteredSelected) {
+        for (const row of filteredEligibleRows) next.delete(row.campaignId);
+      } else {
+        for (const row of filteredEligibleRows) next.add(row.campaignId);
+      }
+      return next;
+    });
+    setScopeMode('selected');
+    setError(null);
+  }, [allFilteredSelected, filteredEligibleRows, selectionLocked]);
+
+  /**
+   * The grid's own selection keys (Space toggles, Escape clears) come back
+   * here. The grid does not know which campaigns may be previewed, so an
+   * ineligible id is dropped rather than trusted: the checkbox and the keyboard
+   * must never be able to disagree about what the scope contains.
+   */
+  const applyGridSelection = useCallback((rowIds: readonly string[]): void => {
+    if (selectionLocked) return;
+    const next = new Set<string>();
+    for (const id of rowIds) {
+      if (sourceById.get(id)?.selectable === true) next.add(id);
     }
     setSelectedCampaignIds(next);
     setScopeMode('selected');
     setError(null);
-  }
+  }, [selectionLocked, sourceById]);
 
   function clearSelection(): void {
     setSelectedCampaignIds(new Set());
     setScopeMode('selected');
     setError(null);
   }
+
+  const renderHeader = useMemo(
+    () => ({
+      [SELECT_COLUMN_ID]: () => (
+        <input
+          aria-label={`${allFilteredSelected ? 'Deselect' : 'Select'} all ${filteredEligibleRows.length.toLocaleString('en-US')} eligible campaigns matching current filters`}
+          checked={allFilteredSelected}
+          className="wa-checkbox"
+          data-testid="optimizer-select-filtered"
+          disabled={selectionLocked || filteredEligibleRows.length === 0}
+          onChange={toggleFilteredCampaigns}
+          ref={(element) => {
+            if (element !== null) element.indeterminate = !allFilteredSelected && someFilteredSelected;
+          }}
+          type="checkbox"
+        />
+      ),
+    }),
+    [
+      allFilteredSelected,
+      filteredEligibleRows.length,
+      selectionLocked,
+      someFilteredSelected,
+      toggleFilteredCampaigns,
+    ],
+  );
+
+  const renderCell = useMemo(() => {
+    /**
+     * A campaign the period reported no row for has no figure, not a zero.
+     * Amazon omits zero-impression rows, so `$0.00` here would be a
+     * measurement this table never took — the same distinction the old table
+     * kept by printing `—`. Returning `undefined` leaves every other row to
+     * the grid's own formatter, and the group and totals rows are unaffected:
+     * summing an absent row adds nothing either way.
+     */
+    const absentWithoutActivity = (gridRow: GridRow): ReactNode | undefined => {
+      const source = sourceById.get(gridRow.id);
+      if (source === undefined || source.currentRows !== 0) return undefined;
+      return <span className="wa-hint">{EMPTY_CELL}</span>;
+    };
+    return {
+      spend: absentWithoutActivity,
+      spend_change: absentWithoutActivity,
+      sales: absentWithoutActivity,
+      acos: absentWithoutActivity,
+      orders: absentWithoutActivity,
+      [SELECT_COLUMN_ID]: (gridRow: GridRow) => {
+        const source = sourceById.get(gridRow.id);
+        if (source === undefined) return null;
+        return (
+          <input
+            aria-describedby={source.eligibilityReason === null ? undefined : eligibilityId(source.campaignId)}
+            aria-label={`Select ${source.name} for this preview`}
+            checked={selectedCampaignIds.has(source.campaignId)}
+            className="wa-checkbox"
+            data-testid="optimizer-campaign-select"
+            disabled={selectionLocked || !source.selectable}
+            onChange={() => toggleCampaign(source)}
+            type="checkbox"
+          />
+        );
+      },
+      campaign_name: (gridRow: GridRow) => {
+        const source = sourceById.get(gridRow.id);
+        if (source === undefined) return null;
+        return (
+          <span style={{ display: 'block', lineHeight: 1.15 }}>
+            <a
+              className="wa-optimizer-campaigns__name"
+              href={gridHref(profileId, period, source.campaignId)}
+              onClick={(event) => event.stopPropagation()}
+            >
+              {source.name}
+            </a>
+            {source.eligibilityReason === null ? null : (
+              <span
+                className="wa-optimizer-campaigns__ineligible"
+                id={eligibilityId(source.campaignId)}
+                style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                title={source.eligibilityReason}
+              >
+                {source.eligibilityReason}
+              </span>
+            )}
+            {source.currentRows !== 0 ? null : (
+              // Both notes, never one instead of the other: why a campaign
+              // cannot be previewed and whether Amazon reported anything for it
+              // are different facts, and a campaign is often both.
+              <span className="wa-optimizer-campaigns__sub">No activity in this period</span>
+            )}
+          </span>
+        );
+      },
+      group_name: (gridRow: GridRow) => {
+        const source = sourceById.get(gridRow.id);
+        if (source === undefined || source.groupName === null) {
+          return <span className="wa-hint">Unassigned</span>;
+        }
+        return (
+          <span className={`wa-cat wa-cat--${source.groupRole ?? 'unknown'}`}>{source.groupName}</span>
+        );
+      },
+      last_run_at: (gridRow: GridRow) => {
+        const source = sourceById.get(gridRow.id);
+        return <>{source?.lastRunAt == null ? 'Never' : shortDate(source.lastRunAt)}</>;
+      },
+      [RECOMMENDATION_COLUMN_ID]: (gridRow: GridRow) => {
+        const source = sourceById.get(gridRow.id);
+        if (source !== undefined && source.proposals > 0 && run !== null) {
+          return (
+            <a
+              className="wa-badge wa-badge--warn"
+              href={reviewHref(profileId, run.id)}
+              onClick={(event) => event.stopPropagation()}
+            >
+              {source.proposals} to review
+            </a>
+          );
+        }
+        return <span className="wa-hint">{recommendationState(run)}</span>;
+      },
+    };
+  }, [
+    period,
+    profileId,
+    run,
+    selectedCampaignIds,
+    selectionLocked,
+    sourceById,
+    toggleCampaign,
+  ]);
 
   async function runPreview(): Promise<void> {
     if (runDisabled || submittingRef.current) return;
@@ -423,7 +754,7 @@ export function CampaignWorkspace({
           <input
             aria-label="Find campaign"
             className="wa-input wa-input--sm"
-            onChange={(event) => { setQuery(event.target.value); setRequestedPage(0); }}
+            onChange={(event) => setQuery(event.target.value)}
             placeholder="Name or campaign ID"
             type="search"
             value={query}
@@ -431,7 +762,7 @@ export function CampaignWorkspace({
         </label>
         <label className="wa-field">
           <span className="wa-label">Optimization group</span>
-          <select className="wa-select wa-select--sm" onChange={(event) => { setGroup(event.target.value); setRequestedPage(0); }} value={group}>
+          <select className="wa-select wa-select--sm" onChange={(event) => setGroup(event.target.value)} value={group}>
             <option value="all">All groups</option>
             <option value="unassigned">Unassigned</option>
             {groups.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
@@ -439,20 +770,20 @@ export function CampaignWorkspace({
         </label>
         <label className="wa-field">
           <span className="wa-label">Campaign state</span>
-          <select className="wa-select wa-select--sm" onChange={(event) => { setState(event.target.value); setRequestedPage(0); }} value={state}>
+          <select className="wa-select wa-select--sm" onChange={(event) => setState(event.target.value)} value={state}>
             <option value="all">All states</option>
             {states.map((value) => <option key={value} value={value}>{titleCase(value)}</option>)}
           </select>
         </label>
         <span className="wa-optimizer-campaigns__shown" aria-live="polite">
-          {filtered.length === 0
-            ? '0 campaigns'
-            : `${pageStart + 1}–${pageStart + visibleRows.length} of ${filtered.length}`}
+          {filtered.length === rows.length
+            ? `${filtered.length.toLocaleString('en-US')} ${filtered.length === 1 ? 'campaign' : 'campaigns'}`
+            : `${filtered.length.toLocaleString('en-US')} of ${rows.length.toLocaleString('en-US')} campaigns`}
         </span>
         {query === '' && group === 'all' && state === 'all' ? null : (
           <button
             className="wa-btn wa-btn--ghost wa-btn--sm"
-            onClick={() => { setQuery(''); setGroup('all'); setState('all'); setRequestedPage(0); }}
+            onClick={() => { setQuery(''); setGroup('all'); setState('all'); }}
             type="button"
           >
             Clear filters
@@ -514,7 +845,7 @@ export function CampaignWorkspace({
         <p className="wa-optimizer-preview__selection" data-testid="optimizer-selection-count" aria-live="polite">
           {selectedCampaignIds.size === 0
             ? 'No campaigns selected.'
-            : `${selectedCampaignIds.size.toLocaleString('en-US')} ${selectedCampaignIds.size === 1 ? 'campaign' : 'campaigns'} selected. Selections outside the current page or filters remain selected.`}
+            : `${selectedCampaignIds.size.toLocaleString('en-US')} ${selectedCampaignIds.size === 1 ? 'campaign' : 'campaigns'} selected. Selections hidden by the current filters remain selected.`}
         </p>
         {!mayRunOptimizer ? (
           <p className="wa-optimizer-preview__permission">Your role can view previews but cannot queue one.</p>
@@ -548,136 +879,63 @@ export function CampaignWorkspace({
         </div>
       ) : null}
 
-      {filtered.length === 0 ? (
-        <div className="wa-optimizer-campaigns__empty">
-          <strong>No campaigns match these filters.</strong>
-          <button className="wa-btn wa-btn--ghost wa-btn--sm" onClick={() => { setQuery(''); setGroup('all'); setState('all'); setRequestedPage(0); }} type="button">
-            Clear filters
+      <div aria-busy={batchActive} className="wa-optimizer-campaigns__grid">
+      {/*
+        * The measured fill always resolves to the floor on this page: the table
+        * sits below the tile row and the trend chart, so the viewport is already
+        * spent by the time the grid starts. The floor is therefore a real
+        * decision rather than a safety net, and fullscreen is the gesture that
+        * gives the table the whole screen.
+        */}
+      <GridViewport
+        fullscreen={fullscreen}
+        onExitFullscreen={() => setFullscreen(false)}
+        minHeight={560}
+      >
+        <div style={{ alignItems: 'center', display: 'flex', gap: '0.5rem' }}>
+          <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+            <GroupBar dimensions={dimensions} groupBy={model.groupBy} onChange={setGroupBy} />
+          </div>
+          <select
+            aria-label="Row density"
+            className="wa-select wa-select--sm"
+            onChange={(event) => setDensity(event.target.value as GridDensity)}
+            style={{ flex: '0 0 auto', width: 'auto' }}
+            value={density}
+          >
+            {GRID_DENSITIES.map((value) => (
+              <option key={value} value={value}>{DENSITY_LABELS[value]}</option>
+            ))}
+          </select>
+          <button
+            aria-pressed={fullscreen}
+            className="wa-btn wa-btn--ghost wa-btn--sm"
+            onClick={() => setFullscreen((current) => !current)}
+            style={{ flex: '0 0 auto', whiteSpace: 'nowrap' }}
+            type="button"
+          >
+            {fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
           </button>
         </div>
-      ) : (
-        <div className="wa-tablewrap wa-optimizer-campaigns__tablewrap">
-          <table className="wa-table wa-table--dense wa-table--numeric" aria-busy={batchActive}>
-            <thead>
-              <tr>
-                <th scope="col" className="wa-optimizer-campaigns__select">
-                  <input
-                    aria-label={`${allFilteredSelected ? 'Deselect' : 'Select'} all ${filteredEligibleRows.length.toLocaleString('en-US')} eligible campaigns matching current filters`}
-                    checked={allFilteredSelected}
-                    className="wa-checkbox"
-                    data-testid="optimizer-select-filtered"
-                    disabled={!mayRunOptimizer || batchActive || filteredEligibleRows.length === 0}
-                    onChange={toggleFilteredCampaigns}
-                    ref={(element) => {
-                      if (element !== null) element.indeterminate = !allFilteredSelected && someFilteredSelected;
-                    }}
-                    type="checkbox"
-                  />
-                </th>
-                <th scope="col">Campaign</th>
-                <th scope="col">Group</th>
-                <th scope="col">State</th>
-                <th scope="col">Ad product</th>
-                <th scope="col">Spend</th>
-                <th scope="col">Ad sales</th>
-                <th scope="col">ACOS</th>
-                <th scope="col">Orders</th>
-                <th scope="col">Daily budget</th>
-                <th scope="col">Last group run</th>
-                <th scope="col">Recommendation</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleRows.map((row) => {
-                const reasonId = `optimizer-campaign-${row.campaignId}-eligibility`;
-                return (
-                  <tr key={row.campaignId}>
-                    <td className="wa-optimizer-campaigns__select">
-                      <input
-                        aria-describedby={row.eligibilityReason === null ? undefined : reasonId}
-                        aria-label={`Select ${row.name} for this preview`}
-                        checked={selectedCampaignIds.has(row.campaignId)}
-                        className="wa-checkbox"
-                        data-testid="optimizer-campaign-select"
-                        disabled={!mayRunOptimizer || batchActive || !row.selectable}
-                        onChange={() => toggleCampaign(row)}
-                        type="checkbox"
-                      />
-                    </td>
-                    <td>
-                      <a
-                        className="wa-optimizer-campaigns__name"
-                        href={gridHref(profileId, period, row.campaignId)}
-                      >
-                        {row.name}
-                      </a>
-                      <span className="wa-optimizer-campaigns__sub">
-                        {row.biddingStrategy === null ? 'Bid strategy unavailable' : titleCase(row.biddingStrategy)}
-                        {row.startDate === null ? '' : ` · started ${row.startDate}`}
-                      </span>
-                      {row.eligibilityReason === null ? null : (
-                        <span className="wa-optimizer-campaigns__ineligible" id={reasonId}>
-                          {row.eligibilityReason}
-                        </span>
-                      )}
-                    </td>
-                    <td>
-                      {row.groupName === null ? (
-                        <span className="wa-hint">Unassigned</span>
-                      ) : (
-                        <span className={`wa-cat wa-cat--${row.groupRole ?? 'unknown'}`}>{row.groupName}</span>
-                      )}
-                    </td>
-                    <td><span className="wa-badge">{titleCase(row.state)}</span></td>
-                    <td>{row.adProduct}</td>
-                    <td>
-                      {row.currentRows === 0 ? <span className="wa-hint">No activity</span> : money(row.spend, currencyCode)}
-                      {row.currentRows === 0 ? null : <SpendDelta current={row.spend} prior={row.comparisonRows === 0 ? null : row.comparisonSpend} />}
-                    </td>
-                    <td>{row.currentRows === 0 ? '—' : money(row.sales, currencyCode)}</td>
-                    <td>{row.currentRows === 0 || row.sales === 0 ? '—' : `${((row.spend / row.sales) * 100).toFixed(1)}%`}</td>
-                    <td>{row.currentRows === 0 ? '—' : row.orders.toLocaleString('en-US')}</td>
-                    <td>{row.dailyBudget === null ? '—' : money(row.dailyBudget, currencyCode)}</td>
-                    <td>{row.lastRunAt === null ? 'Never' : shortDate(row.lastRunAt)}</td>
-                    <td>
-                      {row.proposals > 0 && run !== null ? (
-                        <a className="wa-badge wa-badge--warn" href={reviewHref(profileId, run.id)}>
-                          {row.proposals} to review
-                        </a>
-                      ) : (
-                        <span className="wa-hint">{recommendationState(run)}</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {pageCount > 1 ? (
-            <nav className="wa-optimizer-campaigns__pagination" aria-label="Campaign pages">
-              <span>Page {page + 1} of {pageCount}</span>
-              <div className="wa-row">
-                <button
-                  className="wa-btn wa-btn--ghost wa-btn--sm"
-                  disabled={page === 0}
-                  onClick={() => setRequestedPage(Math.max(0, page - 1))}
-                  type="button"
-                >
-                  ← Previous
-                </button>
-                <button
-                  className="wa-btn wa-btn--ghost wa-btn--sm"
-                  disabled={page >= pageCount - 1}
-                  onClick={() => setRequestedPage(Math.min(pageCount - 1, page + 1))}
-                  type="button"
-                >
-                  Next →
-                </button>
-              </div>
-            </nav>
-          ) : null}
-        </div>
-      )}
+
+        <DataGrid
+          model={model}
+          columns={columns}
+          currencyCode={currencyCode}
+          sort={sort}
+          onSortChange={setSort}
+          selectedRowIds={selectedRowIds}
+          onSelectionChange={applyGridSelection}
+          renderCell={renderCell}
+          renderHeader={renderHeader}
+          density={density}
+          rowHeight={rowHeightFor(density, 2)}
+          {...(initialGridRect === undefined ? {} : { initialRect: initialGridRect })}
+          emptyMessage={emptyGridMessage}
+          noDataMessage={emptyGridMessage}
+        />
+      </GridViewport>
+      </div>
     </section>
   );
 }
@@ -782,12 +1040,6 @@ function previewAnnouncement(status: OptimizerPreviewBatchStatus): string {
     : `Preview completed with ${status.proposalsCount.toLocaleString('en-US')} ${status.proposalsCount === 1 ? 'recommendation' : 'recommendations'} to review.`;
 }
 
-function SpendDelta({ current, prior }: { current: number; prior: number | null }): ReactNode {
-  if (prior === null || prior === 0) return <span className="wa-optimizer-campaigns__sub">No comparison</span>;
-  const delta = (current - prior) / prior;
-  return <span className="wa-optimizer-campaigns__sub">{delta >= 0 ? '↑' : '↓'} {Math.abs(delta * 100).toFixed(1)}%</span>;
-}
-
 function recommendationState(run: { status: string } | null): string {
   if (run === null) return 'Not run';
   if (run.status === 'queued' || run.status === 'running') return 'Pending';
@@ -795,12 +1047,9 @@ function recommendationState(run: { status: string } | null): string {
   return 'No change';
 }
 
-function money(value: number, currencyCode: string): string {
-  return value.toLocaleString('en-US', {
-    currency: currencyCode,
-    maximumFractionDigits: value >= 100 ? 0 : 2,
-    style: 'currency',
-  });
+/** The id the ineligibility note carries so its checkbox can describe itself. */
+function eligibilityId(campaignId: string): string {
+  return `optimizer-campaign-${campaignId}-eligibility`;
 }
 
 function shortDate(value: string): string {

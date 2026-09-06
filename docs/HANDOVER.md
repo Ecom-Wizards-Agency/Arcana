@@ -207,6 +207,57 @@ replace or rebase live work, and close branches that are proven superseded.
 
 ## Hosted migration gates
 
+**The five-file window was executed on 2026-09-06 and the hosted ledger is now 46 versions.**
+Terminal version `20260901060000`; observed ledger digest
+`baef4df400ed7a045395322667e1d3ac61fa27075b2d36bb855071a6bfe20458`, equal to the pinned
+46-file value. The apply took 11 seconds. Everything below this paragraph describing a
+41-version ledger is the state before that window and is kept for provenance only.
+
+Procedure actually followed, matching `docs/deploy/hosted-migration-attended-window.md`: fetched
+history into a private workdir outside the repository (41 versions, every one local and remote);
+staged the five repository files by hand and confirmed each against its pinned digest; dry run
+offered exactly those five and nothing else; recorded worker and scheduler state; stopped the
+integration worker, paused the two producer `pg_cron` jobs by command fingerprint, and the
+operator paused the Vercel cron; frozen preflight; apply; postflight; restored the two cron jobs
+to their exact recorded schedule and command, restarted the worker (`NRestarts=0`, queue
+unchanged), and the operator restored the Vercel cron.
+
+Postflight state: both authorities read `legacy`, so nothing was activated; both recommendation
+roles exist with zero unsafe attributes; `sync_jobs.claim_token` present; 31 `sp_write_*` tables;
+both new foreign keys validated against existing rows; zero running claims.
+
+Two preflight checks were waived with evidence. `catalog.relevant_item_count` observed 1012
+against an expected 983, and its derived `catalog.relevant_sha256` differed with it. A clean
+41-file database was built and compared category by category: columns, indexes, constraints,
+policies, relations, routines and triggers matched exactly, and all 29 extra items were grants.
+They come from a `wizard_preview` login role that no migration creates and two `anon` function
+grants. None of the five files references either and none would abort on them, so the difference
+was recorded as explained rather than treated as drift. The per-file `baseline` digests in the
+bundle policy are also unusable as a fetch check: they mix repository bytes with CLI-reconstructed
+bytes, while the authoritative ledger digest matched. Correct the runbook's step 2 accordingly.
+
+Postflight found one real defect: `20260901060000` left Supabase's default `EXECUTE` grants to
+`PUBLIC`, `anon` and `authenticated` on eight `SECURITY DEFINER` recommendation functions, and
+granted only three of the eleven worker executes the evidence script expects. Live severity was
+low because each function refuses at its first guard while the authority is `legacy`. The owning
+role is deliberately un-assumable, so the repair needed a higher-privileged session. The
+write-path owner repaired it the same day and it was independently re-verified here: all eight
+now deny `PUBLIC`, `anon`, `authenticated` and `service_role` and grant only
+`openspell_recommendation_worker`, and prefix-46 rose from 104 to 107 of 109. A source fix so a
+fresh database does not reproduce the gap belongs with that owner.
+
+`wizard_preview` remains unexplained and open. It can log in, has a non-expiring password,
+bypasses row-level security, and held read access to 127 tables before this window. It is not the
+privilege test's fixture, which is created unable to log in with a single column-level grant. A
+default-privileges rule owned by `postgres` grants it `SELECT` on every new table in `public`, so
+it picked up 29 of the 31 new write-ledger tables during this window and now holds 158 grants: it
+extends itself with every future migration. Nothing uses it. A connection census during the window
+showed only `wizard_worker`, `supabase_admin`, `postgres`, `authenticator` and `pgbouncer`; the
+Vercel project has no separate preview database variable and no host runtime references it. The
+reversible close is to drop the default rule and remove `LOGIN` and `BYPASSRLS` while keeping the
+existing grants, then drop the grants and the role once nothing breaks.
+
+
 The last authenticated Supabase CLI 2.116.0 verification, on 2026-09-01, found 41 versions in the
 isolated fetched-history workdir through
 `20260901010000_authenticated_relation_privilege_hardening.sql`. It includes the four earlier

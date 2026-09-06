@@ -14,31 +14,70 @@
  *   `pipeline.ts`            decides which rows exist and in what order
  *   `@tanstack/react-table`  holds the column model, sizing and pinning state
  *   `@tanstack/react-virtual`decides which of those rows reach the DOM
- *   this file                renders, and owns the drag/resize/pin gestures
+ *   this file                owns collapse state, keyboard focus, the table and the virtualizer
+ *   `grid/GridHeader.tsx`    renders headers and owns sort/drag/resize/pin gestures
+ *   `grid/GridTotals.tsx`    renders the sticky totals row
+ *   `grid/GridBody.tsx`      renders the virtualised rows and the empty state
+ *   `grid/GridCell.tsx`      formats one cell, the same way in every row
+ *   `grid/GridViewport.tsx`  the flex column that lets the grid fill the viewport
  *
  * Note what TanStack Table is deliberately *not* doing: filtering, sorting or
  * grouping. Its grouped row model averages what it aggregates, which is exactly
  * the failure `metrics.ts` exists to prevent, so the row model here is `core`
  * only and the rows arrive already shaped.
+ *
+ * ## Keyboard
+ *
+ * Rows are a roving tab stop: one row is in the tab order, the arrow keys move
+ * it, Home and End jump, Enter is the row click, Space toggles selection,
+ * Escape clears it, and Left/Right collapse and expand a group. Selection is
+ * the caller's state (`selectedRowIds` / `onSelectionChange`) so a bulk action
+ * bar and this grid can never disagree about what is selected.
+ *
+ * ## Host-rendered cells
+ *
+ * `renderCell` and `renderHeader` are how a workspace puts a checkbox, a link
+ * or a decision button in a column without this package learning about
+ * campaigns, proposals or n-grams. They are keyed by column id and apply to
+ * source rows only: a group row keeps the group-header cell, and the totals row
+ * keeps the formatter, so an override can never make a cell and its total
+ * disagree. A column that exists only to hold one is `kind: 'control'`, which
+ * is also what takes its header out of the sort contract. An override that
+ * returns `undefined` for a row defers to the grid's own cell, so a host can
+ * speak for the one row whose figure is absent and leave the rest formatted
+ * here instead of reimplementing money, ratios and the empty marker.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
-import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from '@tanstack/react-table';
+import type { KeyboardEvent, ReactNode } from 'react';
+import { createColumnHelper, getCoreRowModel, useReactTable } from '@tanstack/react-table';
 import type { ColumnDef } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { GridColumn } from './columns.js';
 import { isGroupedRow } from './aggregate.js';
 import type { GroupedRow } from './aggregate.js';
-import { formatDelta, formatInteger, formatValue } from './format.js';
+import { DEFAULT_DENSITY, rowHeightFor } from './density.js';
+import type { GridDensity } from './density.js';
+import { formatInteger } from './format.js';
 import type { FormatContext } from './format.js';
-import { metricSpec } from './metrics.js';
 import type { GridModel } from './pipeline.js';
 import type { GridRow } from './rows.js';
-import { parseFieldId, resolveField } from './rows.js';
+import { resolveField } from './rows.js';
 import type { SortRule } from './sort.js';
-import { toggleSort } from './sort.js';
-import { DEFAULT_OVERSCAN, DEFAULT_ROW_HEIGHT } from './virtual.js';
-import { deltaColor, tokens } from './theme.js';
+import { DEFAULT_OVERSCAN } from './virtual.js';
+import { GridBody } from './grid/GridBody.js';
+import { GridCell } from './grid/GridCell.js';
+import type { GridCellEnvironment } from './grid/GridCell.js';
+import { GridHeader } from './grid/GridHeader.js';
+import { GridTotals } from './grid/GridTotals.js';
+import {
+  footer,
+  footerNote,
+  footerSelection,
+  scroller,
+  scrollerFill,
+  shell,
+  shellFill,
+} from './grid/styles.js';
 
 export interface DataGridProps {
   model: GridModel;
@@ -53,89 +92,72 @@ export interface DataGridProps {
   onPinChange?: (columnId: string, pinned: boolean) => void;
   onReorder?: (columnId: string, beforeColumnId: string | null) => void;
   onRowClick?: (row: GridRow) => void;
-  /** Selected row ids are presentation state; selection interaction stays with the caller. */
+  /** Selected row ids are the caller's state; the grid paints them and asks to change them. */
   selectedRowIds?: readonly string[];
-  /** Viewport height in pixels. The grid scrolls inside it; the page does not. */
-  height?: number;
+  /** Omit and Space does nothing: a grid without a selection consumer has no selection. */
+  onSelectionChange?: (rowIds: string[]) => void;
+  /**
+   * Viewport height in pixels. Omit it and the grid fills the flex column it
+   * sits in (see `GridViewport`), which is how a workspace fills the screen.
+   */
+  height?: number | undefined;
+  /** Row density. Decides the row height unless `rowHeight` overrides it. */
+  density?: GridDensity;
   rowHeight?: number;
   /** Test seam: react-virtual measures a real element, jsdom has none. */
   initialRect?: { width: number; height: number };
+  /**
+   * Cell content by column id, for source rows only. Use it for controls the
+   * grid cannot know about; leave a value column to the formatter.
+   *
+   * Return `undefined` for a row the override has nothing to say about and the
+   * grid draws its own cell, so a host can mark one row's figure absent — an
+   * entity the period reported nothing for is not an entity that measured zero
+   * — without reimplementing the formatter or the ratio rule. `null` still
+   * means "draw nothing here".
+   */
+  renderCell?: Readonly<Record<string, (row: GridRow) => ReactNode | undefined>>;
+  /** Header content by column id. Pairs with `renderCell` for control columns. */
+  renderHeader?: Readonly<Record<string, () => ReactNode>>;
   /** Shown when a filter matched nothing. Not the same as having no rows at all. */
   emptyMessage?: string;
   /** Shown when the period itself produced no rows. */
   noDataMessage?: string;
+  /**
+   * What one row is, in the footer's own count. Default `rows`.
+   *
+   * A grid holding a capped slice of a larger population is not showing
+   * "rows", it is showing *loaded* rows, and the footer is the count sitting
+   * directly under the table — closer to the operator's eye than any notice
+   * the page prints above it. A host that had to cap its query says so here so
+   * the two numbers cannot be read as contradicting each other.
+   */
+  rowNoun?: string;
+  /**
+   * A qualifier printed after the footer counts, for a grid whose rows are not
+   * the whole population: `40 in this run`. Only the host that issued the
+   * capped query knows this; the grid can only count what it was handed.
+   */
+  populationNote?: string;
+  /**
+   * What "the operator changed what is shown" means to this host, in place of
+   * the matched row count.
+   *
+   * The grid returns to the top when the ordering changes, and it infers that
+   * from `model.matched` because a filter is normally the only thing that
+   * moves it. On a decision queue it is not: taking a proposal drops it out of
+   * a `Status = proposed` filter, `matched` falls, and the operator working
+   * down the list is thrown back to row zero by their own decision. A host
+   * that knows which changes are the operator re-asking the question — and
+   * which are rows leaving because their data moved — passes a key that
+   * changes only for the former. Sorting and grouping still reset regardless:
+   * those really are a new ordering.
+   */
+  filterKey?: string;
 }
 
 const helper = createColumnHelper<GridRow>();
 const EMPTY_COLLAPSED_GROUPS: ReadonlySet<string> = new Set();
-
-interface CellProps {
-  row: GridRow;
-  column: GridColumn;
-  context: FormatContext;
-  collapsedGroupIds: ReadonlySet<string>;
-  onToggleGroup: (groupId: string) => void;
-}
-
-function Cell({ row, column, context, collapsedGroupIds, onToggleGroup }: CellProps): ReactNode {
-  const value = resolveField(row, column.id);
-  const ref = parseFieldId(column.id);
-
-  if (isGroupedRow(row) && row.groupDepth >= 0 && column.kind === 'dimension') {
-    if (row.groupColumnId !== column.id) return null;
-    const collapsed = collapsedGroupIds.has(row.id);
-    return (
-      <span data-testid={`group-level-${row.groupDepth + 1}`} style={groupCell}>
-        {row.isLeafGroup ? (
-          <span aria-hidden style={groupLeafMarker}>•</span>
-        ) : (
-          <button
-            type="button"
-            aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${column.header} ${formatValue(value, column.scale, context)}`}
-            aria-expanded={!collapsed}
-            onClick={(event) => {
-              event.stopPropagation();
-              onToggleGroup(row.id);
-            }}
-            style={groupToggle}
-          >
-            <span aria-hidden>{collapsed ? '▸' : '▾'}</span>
-          </button>
-        )}
-        {row.groupDepth === 0 ? null : <span aria-hidden style={groupBranch}>↳</span>}
-        <span style={groupValue}>{formatValue(value, column.scale, context)}</span>
-        <span style={groupCount}>{formatInteger(row.groupSize, context.locale)} rows</span>
-      </span>
-    );
-  }
-
-  if (column.cell === 'suggested_bid') {
-    const low = resolveField(row, 'suggested_bid_low');
-    const high = resolveField(row, 'suggested_bid_high');
-    return (
-      <span data-testid="suggested-bid-cell" style={twoLineCell}>
-        <span>{formatValue(value, column.scale, context)}</span>
-        {value === null ? null : (
-          <span style={cellSubline}>
-            {formatValue(low, column.scale, context)} – {formatValue(high, column.scale, context)}
-          </span>
-        )}
-      </span>
-    );
-  }
-
-  if (ref !== null && (ref.part === 'delta_absolute' || ref.part === 'delta_percent')) {
-    const spec = metricSpec(ref.metric);
-    const numeric = typeof value === 'number' ? value : null;
-    return (
-      <span style={{ color: deltaColor(numeric, spec?.better ?? null) }}>
-        {formatDelta(numeric, column.scale, context)}
-      </span>
-    );
-  }
-
-  return <>{formatValue(value, column.scale, context)}</>;
-}
 
 export function DataGrid({
   model,
@@ -149,14 +171,21 @@ export function DataGrid({
   onReorder,
   onRowClick,
   selectedRowIds = [],
-  height = 620,
-  rowHeight = DEFAULT_ROW_HEIGHT,
+  onSelectionChange,
+  height,
+  density = DEFAULT_DENSITY,
+  rowHeight,
   initialRect,
+  renderCell,
+  renderHeader,
   emptyMessage = 'No rows match this filter.',
   noDataMessage = 'Nothing was reported at this level for this period. Amazon omits zero-impression rows, so this is either a period with no activity or a report that has not loaded — the freshness banner says which.',
+  rowNoun = 'rows',
+  populationNote,
+  filterKey,
 }: DataGridProps): ReactNode {
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const [dragging, setDragging] = useState<string | null>(null);
+  const resolvedRowHeight = rowHeight ?? rowHeightFor(density);
   const groupingKey = model.groupBy.join('\u0000');
   const [collapseState, setCollapseState] = useState<{
     groupingKey: string;
@@ -199,17 +228,25 @@ export function DataGrid({
     });
   }, [collapsibleGroupIds, groupingKey]);
 
-  const toggleGroup = useCallback((groupId: string) => {
+  const setGroupCollapsed = useCallback((groupId: string, collapsed: boolean | 'toggle') => {
     setCollapseState((current) => {
       const ids = current.groupingKey === groupingKey
         ? current.ids
         : EMPTY_COLLAPSED_GROUPS;
+      const has = ids.has(groupId);
+      const want = collapsed === 'toggle' ? !has : collapsed;
+      if (want === has) return current.groupingKey === groupingKey ? current : { groupingKey, ids };
       const next = new Set(ids);
-      if (next.has(groupId)) next.delete(groupId);
-      else next.add(groupId);
+      if (want) next.add(groupId);
+      else next.delete(groupId);
       return { groupingKey, ids: next };
     });
   }, [groupingKey]);
+
+  const toggleGroup = useCallback(
+    (groupId: string) => setGroupCollapsed(groupId, 'toggle'),
+    [setGroupCollapsed],
+  );
 
   const visibleRows = useMemo(() => {
     if (!model.grouped || collapsedGroupIds.size === 0) return model.rows;
@@ -228,25 +265,35 @@ export function DataGrid({
     return visible;
   }, [collapsedGroupIds, model.grouped, model.rows]);
 
+  const environment = useMemo<GridCellEnvironment>(
+    () => ({ context: formatContext, collapsedGroupIds, onToggleGroup: toggleGroup }),
+    [collapsedGroupIds, formatContext, toggleGroup],
+  );
+
   const columnDefs = useMemo<ColumnDef<GridRow, unknown>[]>(
     () =>
-      columns.map((column) =>
-        helper.accessor((row) => resolveField(row, column.id), {
+      columns.map((column) => {
+        const override = renderCell?.[column.id];
+        return helper.accessor((row) => resolveField(row, column.id), {
           id: column.id,
           header: column.header,
           size: column.width,
-          cell: (info) => (
-            <Cell
-              row={info.row.original}
-              column={column}
-              context={formatContext}
-              collapsedGroupIds={collapsedGroupIds}
-              onToggleGroup={toggleGroup}
-            />
-          ),
-        }),
-      ) as ColumnDef<GridRow, unknown>[],
-    [collapsedGroupIds, columns, formatContext, toggleGroup],
+          cell: (info) => {
+            const row = info.row.original;
+            // A group row is an aggregate of many source rows; a checkbox or a
+            // link on one would have to pick a member arbitrarily, so the
+            // override is offered source rows only.
+            if (override !== undefined && !isGroupedRow(row)) {
+              // `undefined` is "not mine, draw yours": an override that speaks
+              // for some rows only never has to reimplement the formatter.
+              const rendered = override(row);
+              if (rendered !== undefined) return rendered;
+            }
+            return <GridCell row={row} column={column} {...environment} />;
+          },
+        });
+      }) as ColumnDef<GridRow, unknown>[],
+    [columns, environment, renderCell],
   );
 
   const pinnedIds = useMemo(
@@ -269,7 +316,7 @@ export function DataGrid({
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => rowHeight,
+    estimateSize: () => resolvedRowHeight,
     overscan: DEFAULT_OVERSCAN,
     ...(initialRect === undefined ? {} : { initialRect }),
   });
@@ -279,249 +326,205 @@ export function DataGrid({
   const paddingBottom =
     items.length > 0 ? virtualizer.getTotalSize() - (items[items.length - 1]?.end ?? 0) : 0;
 
-  const handleHeaderClick = useCallback(
-    (columnId: string, event: React.MouseEvent) => {
-      onSortChange(toggleSort(sort, columnId, event.shiftKey));
-    },
-    [onSortChange, sort],
-  );
-
   /**
    * Re-sorting or re-filtering returns you to the top.
    *
    * Sorting by spend descending and staying at row 12,000 shows you an
    * arbitrary slice of the answer you just asked for. The scroll offset is only
    * meaningful relative to an ordering, so when the ordering changes the offset
-   * stops meaning anything.
+   * stops meaning anything -- and so does the row that held the tab stop.
+   *
+   * `filterKey` is how a host says which row-set changes are the operator
+   * re-asking the question. Without one the matched count stands in for that,
+   * which is right for a metric grid and wrong for a queue whose rows leave
+   * the filtered set because the operator just decided them.
    */
-  const orderKey = `${sort.map((rule) => `${rule.columnId}:${rule.direction}`).join(',')}|${model.matched}|${model.groupBy.join(',')}`;
+  const orderKey = `${sort.map((rule) => `${rule.columnId}:${rule.direction}`).join(',')}|${filterKey ?? model.matched}|${model.groupBy.join(',')}`;
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [focusWithin, setFocusWithin] = useState(false);
+  const pendingFocus = useRef<number | null>(null);
   useEffect(() => {
     const element = scrollRef.current;
     if (element !== null) element.scrollTop = 0;
+    setActiveIndex(0);
   }, [orderKey]);
+
+  // A collapse can remove the active row from the visible set; clamp rather
+  // than leaving the tab stop on a row that no longer exists.
+  const clampedActive = rows.length === 0 ? 0 : Math.min(activeIndex, rows.length - 1);
+
+  const moveActive = useCallback(
+    (index: number) => {
+      if (rows.length === 0) return;
+      const next = Math.max(0, Math.min(rows.length - 1, index));
+      setActiveIndex(next);
+      pendingFocus.current = next;
+      virtualizer.scrollToIndex(next, { align: 'auto' });
+    },
+    [rows.length, virtualizer],
+  );
+
+  // Focus follows the tab stop once the virtualizer has put the row in the
+  // DOM, which may be a render or two after the key press for a distant row.
+  useEffect(() => {
+    const target = pendingFocus.current;
+    const element = scrollRef.current;
+    if (target === null || element === null) return;
+    const row = element.querySelector<HTMLElement>(`[data-row-index="${target}"]`);
+    if (row === null) return;
+    pendingFocus.current = null;
+    row.focus({ preventScroll: true });
+  });
+
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      if (rows.length === 0) return;
+      const target = event.target as HTMLElement;
+      // Only a row is a grid key target. A key pressed on anything else inside
+      // the scroller -- a header's pin button, a group toggle, a future inline
+      // editor -- belongs to that control; Enter on "Pin Spend" must pin, not
+      // open the active row.
+      if (target.getAttribute('role') !== 'row') return;
+      const current = rows[clampedActive];
+      switch (event.key) {
+        case 'ArrowDown':
+          event.preventDefault();
+          moveActive(clampedActive + 1);
+          return;
+        case 'ArrowUp':
+          event.preventDefault();
+          moveActive(clampedActive - 1);
+          return;
+        case 'PageDown':
+          event.preventDefault();
+          moveActive(clampedActive + pageSize(scrollRef.current, resolvedRowHeight));
+          return;
+        case 'PageUp':
+          event.preventDefault();
+          moveActive(clampedActive - pageSize(scrollRef.current, resolvedRowHeight));
+          return;
+        case 'Home':
+          event.preventDefault();
+          moveActive(0);
+          return;
+        case 'End':
+          event.preventDefault();
+          moveActive(rows.length - 1);
+          return;
+        case 'Enter':
+          if (current !== undefined && onRowClick !== undefined) {
+            event.preventDefault();
+            onRowClick(current.original);
+          }
+          return;
+        case ' ':
+          if (current !== undefined && onSelectionChange !== undefined) {
+            event.preventDefault();
+            onSelectionChange(
+              selected.has(current.id)
+                ? selectedRowIds.filter((id) => id !== current.id)
+                : [...selectedRowIds, current.id],
+            );
+          }
+          return;
+        case 'Escape':
+          if (onSelectionChange !== undefined && selectedRowIds.length > 0) {
+            event.preventDefault();
+            onSelectionChange([]);
+          }
+          return;
+        case 'ArrowRight':
+        case 'ArrowLeft': {
+          if (current === undefined) return;
+          const original = current.original;
+          if (!isGroupedRow(original) || original.isLeafGroup) return;
+          event.preventDefault();
+          setGroupCollapsed(original.id, event.key === 'ArrowLeft');
+          return;
+        }
+        default:
+          return;
+      }
+    },
+    [
+      clampedActive,
+      moveActive,
+      onRowClick,
+      onSelectionChange,
+      resolvedRowHeight,
+      rows,
+      selected,
+      selectedRowIds,
+      setGroupCollapsed,
+    ],
+  );
 
   const leafColumns = table.getVisibleLeafColumns();
   const totalWidth = leafColumns.reduce((sum, column) => sum + column.getSize(), 0);
   const totalsRow = model.totalsRow;
+  const fill = height === undefined;
 
   return (
-    <div style={shell}>
+    <div style={fill ? shellFill : shell} data-testid="grid-shell" data-density={density}>
       <div
         ref={scrollRef}
         className="wa-grid-scroller"
-        style={{ ...scroller, height }}
+        style={fill ? scrollerFill : { ...scroller, height }}
         data-testid="grid-scroller"
         role={model.grouped ? 'treegrid' : 'grid'}
         aria-label={model.grouped ? `Results grouped by ${model.groupBy.join(', ')}` : 'Results'}
         aria-rowcount={model.shown + (totalsRow === null ? 1 : 2)}
+        aria-multiselectable={onSelectionChange === undefined ? undefined : true}
+        onKeyDown={handleKeyDown}
+        onFocus={() => setFocusWithin(true)}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusWithin(false);
+        }}
       >
         <div style={{ width: totalWidth, minWidth: '100%' }}>
-          <div style={headerRow} role="row">
-            {leafColumns.map((column) => {
-              const definition = columns.find((candidate) => candidate.id === column.id);
-              const rule = sort.find((entry) => entry.columnId === column.id);
-              const isPinned = column.getIsPinned() === 'left';
-              return (
-                <div
-                  key={column.id}
-                  role="columnheader"
-                  aria-label={definition?.header ?? column.id}
-                  aria-sort={rule === undefined ? 'none' : rule.direction === 'asc' ? 'ascending' : 'descending'}
-                  title={definition?.description}
-                  onClick={(event) => handleHeaderClick(column.id, event)}
-                  draggable={onReorder !== undefined}
-                  onDragStart={() => setDragging(column.id)}
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={() => {
-                    if (dragging !== null && dragging !== column.id) onReorder?.(dragging, column.id);
-                    setDragging(null);
-                  }}
-                  style={{
-                    ...headerCell,
-                    width: column.getSize(),
-                    justifyContent: definition?.align === 'right' ? 'flex-end' : 'flex-start',
-                    ...(isPinned
-                      ? { position: 'sticky', left: column.getStart('left'), zIndex: 3, background: tokens.color.surfaceAlt }
-                      : {}),
-                  }}
-                >
-                  <span
-                    style={{
-                      ...headerStack,
-                      alignItems: definition?.align === 'right' ? 'flex-end' : 'flex-start',
-                    }}
-                  >
-                    <span style={headerLabel}>{flexRender(column.columnDef.header, {} as never)}</span>
-                    {rule === undefined || definition?.kind !== 'metric' || totalsRow === null ? null : (
-                      <span
-                        data-testid={`sorted-column-aggregate-${column.id}`}
-                        style={headerAggregate}
-                      >
-                        <Cell
-                          row={totalsRow}
-                          column={definition}
-                          context={formatContext}
-                          collapsedGroupIds={collapsedGroupIds}
-                          onToggleGroup={toggleGroup}
-                        />
-                      </span>
-                    )}
-                  </span>
-                  {rule === undefined ? null : (
-                    // aria-sort already tells a screen reader the direction;
-                    // the glyph would only make the header's name read "Spend▼".
-                    <span aria-hidden style={sortMark}>
-                      {rule.direction === 'asc' ? '▲' : '▼'}
-                      {sort.length > 1 ? sort.indexOf(rule) + 1 : ''}
-                    </span>
-                  )}
-                  {onPinChange === undefined ? null : (
-                    <button
-                      type="button"
-                      aria-label={isPinned ? `Unpin ${definition?.header ?? column.id}` : `Pin ${definition?.header ?? column.id}`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onPinChange(column.id, !isPinned);
-                      }}
-                      style={{ ...pinButton, opacity: isPinned ? 1 : 0.25 }}
-                    >
-                      ⌷
-                    </button>
-                  )}
-                  {onWidthChange === undefined ? null : (
-                    <span
-                      role="separator"
-                      aria-label={`Resize ${definition?.header ?? column.id}`}
-                      onClick={(event) => event.stopPropagation()}
-                      onDoubleClick={(event) => {
-                        event.stopPropagation();
-                        onWidthChange(column.id, autoFitWidth(definition, model, formatContext));
-                      }}
-                      onMouseDown={(event) => {
-                        event.stopPropagation();
-                        startResize(event, column.getSize(), (width) => onWidthChange(column.id, width));
-                      }}
-                      style={resizeHandle}
-                    />
-                  )}
-                </div>
-              );
-            })}
-          </div>
+          <GridHeader
+            leafColumns={leafColumns}
+            columns={columns}
+            model={model}
+            totalsRow={totalsRow}
+            sort={sort}
+            onSortChange={onSortChange}
+            onWidthChange={onWidthChange}
+            onPinChange={onPinChange}
+            onReorder={onReorder}
+            renderHeader={renderHeader}
+            environment={environment}
+          />
 
           {totalsRow === null ? null : (
-            <div style={{ ...bodyRow, ...totalsRowStyle }} role="row">
-              {leafColumns.map((column) => {
-                const definition = columns.find((candidate) => candidate.id === column.id);
-                const isPinned = column.getIsPinned() === 'left';
-                const isFirst = column === leafColumns[0];
-                return (
-                  <div
-                    key={column.id}
-                    role="cell"
-                    style={{
-                      ...bodyCell,
-                      width: column.getSize(),
-                      textAlign: definition?.align ?? 'left',
-                      fontWeight: 600,
-                      ...(isPinned
-                        ? { position: 'sticky', left: column.getStart('left'), zIndex: 2, background: tokens.color.surfaceAlt }
-                        : {}),
-                    }}
-                  >
-                    {isFirst ? (
-                      model.grouped
-                        ? `Total · ${formatInteger(model.matched, locale)} source row${model.matched === 1 ? '' : 's'}`
-                        : `Total · ${formatInteger(model.shown, locale)} row${model.shown === 1 ? '' : 's'}`
-                    ) : definition === undefined ? null : (
-                      <Cell
-                        row={totalsRow}
-                        column={definition}
-                        context={formatContext}
-                        collapsedGroupIds={collapsedGroupIds}
-                        onToggleGroup={toggleGroup}
-                      />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            <GridTotals
+              leafColumns={leafColumns}
+              columns={columns}
+              model={model}
+              row={totalsRow}
+              locale={locale}
+              environment={environment}
+            />
           )}
 
-          {rows.length === 0 ? (
-            <div style={emptyState}>{model.total === 0 ? noDataMessage : emptyMessage}</div>
-          ) : (
-            <div style={{ paddingTop, paddingBottom }}>
-              {items.map((item) => {
-                const row = rows[item.index];
-                if (row === undefined) return null;
-                const isSelected = selected.has(row.id);
-                const groupedRow = isGroupedRow(row.original) && row.original.groupDepth >= 0
-                  ? row.original
-                  : null;
-                return (
-                  <div
-                    key={row.id}
-                    role="row"
-                    aria-selected={isSelected}
-                    {...(groupedRow !== null && !groupedRow.isLeafGroup
-                      ? { 'aria-expanded': !collapsedGroupIds.has(groupedRow.id) }
-                      : {})}
-                    {...(groupedRow === null
-                      ? {}
-                      : {
-                          'aria-level': groupedRow.groupDepth + 1,
-                          'aria-label': groupRowLabel(groupedRow, columns, formatContext),
-                          'data-group-level': String(groupedRow.groupDepth + 1),
-                        })}
-                    data-testid="grid-row"
-                    onClick={() => onRowClick?.(row.original)}
-                    style={{
-                      ...bodyRow,
-                      height: item.size,
-                      cursor: onRowClick === undefined ? 'default' : 'pointer',
-                      background: isSelected
-                        ? tokens.color.indigoSoft
-                        : groupedRow !== null && !groupedRow.isLeafGroup
-                          ? tokens.color.surfaceAlt
-                          : item.index % 2 === 0
-                            ? tokens.color.surface
-                            : tokens.color.surfaceAlt,
-                      ...(groupedRow?.groupDepth === 0
-                        ? { borderTop: `1px solid ${tokens.color.borderStrong}` }
-                        : {}),
-                    }}
-                  >
-                    {row.getVisibleCells().map((cell) => {
-                      const definition = columns.find((candidate) => candidate.id === cell.column.id);
-                      const isPinned = cell.column.getIsPinned() === 'left';
-                      return (
-                        <div
-                          key={cell.id}
-                          role="cell"
-                          style={{
-                            ...bodyCell,
-                            width: cell.column.getSize(),
-                            textAlign: definition?.align ?? 'left',
-                            ...(isPinned
-                              ? {
-                                  position: 'sticky',
-                                  left: cell.column.getStart('left'),
-                                  zIndex: 1,
-                                  background: 'inherit',
-                                }
-                              : {}),
-                          }}
-                        >
-                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          <GridBody
+            rows={rows}
+            items={items}
+            paddingTop={paddingTop}
+            paddingBottom={paddingBottom}
+            columns={columns}
+            model={model}
+            context={formatContext}
+            density={density}
+            selected={selected}
+            collapsedGroupIds={collapsedGroupIds}
+            activeIndex={clampedActive}
+            focusWithin={focusWithin}
+            onActivate={setActiveIndex}
+            onRowClick={onRowClick}
+            emptyMessage={emptyMessage}
+            noDataMessage={noDataMessage}
+          />
         </div>
       </div>
 
@@ -529,10 +532,17 @@ export function DataGrid({
         <span>
           {model.grouped
             ? `${visibleRows.length === model.shown ? formatInteger(model.shown, locale) : `${formatInteger(visibleRows.length, locale)} visible of ${formatInteger(model.shown, locale)}`} hierarchy rows · ${formatInteger(model.exported, locale)} deepest groups · ${formatInteger(model.matched, locale)} matched source rows of ${formatInteger(model.total, locale)}`
-            : `${formatInteger(model.shown, locale)} of ${formatInteger(model.total, locale)} rows`}
+            : `${formatInteger(model.shown, locale)} of ${formatInteger(model.total, locale)} ${rowNoun}`}
+          {populationNote === undefined ? null : ` · ${populationNote}`}
+          {selected.size === 0 ? null : (
+            <>
+              {' · '}
+              <span style={footerSelection}>{formatInteger(selected.size, locale)} selected</span>
+            </>
+          )}
         </span>
         {model.grouped ? (
-          <span style={{ color: tokens.color.textMuted }}>
+          <span style={footerNote}>
             Ratio metrics recomputed from summed bases, never averaged.
           </span>
         ) : null}
@@ -541,229 +551,8 @@ export function DataGrid({
   );
 }
 
-function groupRowLabel(
-  row: GroupedRow,
-  columns: readonly GridColumn[],
-  context: FormatContext,
-): string {
-  const column = columns.find((candidate) => candidate.id === row.groupColumnId);
-  const label = column?.header ?? row.groupColumnId;
-  const value = formatValue(resolveField(row, row.groupColumnId), column?.scale ?? 'text', context);
-  return `Grouping level ${row.groupDepth + 1} of ${row.groupBy.length}: ${label} ${value}; ${formatInteger(row.groupSize, context.locale)} source rows`;
+/** Rows per PageUp/PageDown: one viewport, less one row of overlap. */
+function pageSize(element: HTMLElement | null, rowHeight: number): number {
+  if (element === null) return 10;
+  return Math.max(1, Math.floor(element.clientHeight / Math.max(1, rowHeight)) - 1);
 }
-
-/**
- * Double-click auto-fit, copied from AdLabs' own walkthrough. Width is measured
- * from the widest rendered string rather than from the data, because that is
- * what the operator can see.
- */
-function autoFitWidth(
-  column: GridColumn | undefined,
-  model: GridModel,
-  context: FormatContext,
-): number {
-  if (column === undefined) return 120;
-  let widest = column.header.length;
-  const sample = model.rows.slice(0, 200);
-  for (const row of sample) {
-    const text = formatValue(resolveField(row, column.id), column.scale, context);
-    if (text.length > widest) widest = text.length;
-  }
-  return Math.min(480, Math.max(72, widest * 8 + 28));
-}
-
-function startResize(
-  event: React.MouseEvent,
-  startWidth: number,
-  commit: (width: number) => void,
-): void {
-  const startX = event.clientX;
-  const onMove = (move: MouseEvent): void => {
-    commit(Math.max(56, startWidth + move.clientX - startX));
-  };
-  const onUp = (): void => {
-    window.removeEventListener('mousemove', onMove);
-    window.removeEventListener('mouseup', onUp);
-  };
-  window.addEventListener('mousemove', onMove);
-  window.addEventListener('mouseup', onUp);
-}
-
-const shell: CSSProperties = {
-  border: `1px solid ${tokens.color.border}`,
-  borderRadius: tokens.radius.md,
-  fontFamily: tokens.font.sans,
-  fontSize: tokens.font.size.base,
-  overflow: 'hidden',
-};
-
-const scroller: CSSProperties = { overflow: 'auto', position: 'relative' };
-
-/**
- * The header's height is fixed rather than derived from its padding, because
- * the totals row sticks directly beneath it and `top` has to be exactly the
- * header's height. Deriving one from the other in CSS is not possible, and
- * guessing it puts the totals row over the first data row -- which is what
- * happened before this was pinned.
- */
-const HEADER_HEIGHT = 44;
-
-const headerRow: CSSProperties = {
-  background: tokens.color.surfaceAlt,
-  borderBottom: `1px solid ${tokens.color.borderStrong}`,
-  boxSizing: 'border-box',
-  display: 'flex',
-  height: HEADER_HEIGHT,
-  position: 'sticky',
-  top: 0,
-  zIndex: 4,
-};
-
-const headerCell: CSSProperties = {
-  alignItems: 'center',
-  boxSizing: 'border-box',
-  cursor: 'pointer',
-  display: 'flex',
-  fontSize: tokens.font.size.eyebrow,
-  fontWeight: 600,
-  gap: tokens.space(1),
-  padding: `${tokens.space(1.5)} ${tokens.space(2)}`,
-  position: 'relative',
-  userSelect: 'none',
-  whiteSpace: 'nowrap',
-  letterSpacing: '0.06em',
-  textTransform: 'uppercase',
-};
-
-const headerLabel: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis' };
-
-const headerStack: CSSProperties = {
-  display: 'flex',
-  flex: '1 1 auto',
-  flexDirection: 'column',
-  lineHeight: 1.1,
-  minWidth: 0,
-  overflow: 'hidden',
-};
-
-const headerAggregate: CSSProperties = {
-  color: tokens.color.textMuted,
-  fontSize: tokens.font.size.xs,
-  fontWeight: 500,
-  marginTop: '0.125rem',
-};
-
-const sortMark: CSSProperties = { color: tokens.color.accent, fontSize: '0.625rem' };
-
-const pinButton: CSSProperties = {
-  background: 'none',
-  border: 'none',
-  color: tokens.color.textMuted,
-  cursor: 'pointer',
-  fontSize: '0.625rem',
-  padding: 0,
-};
-
-const resizeHandle: CSSProperties = {
-  cursor: 'col-resize',
-  height: '100%',
-  position: 'absolute',
-  right: 0,
-  top: 0,
-  width: '5px',
-};
-
-const bodyRow: CSSProperties = {
-  borderBottom: `1px solid ${tokens.color.border}`,
-  display: 'flex',
-};
-
-const totalsRowStyle: CSSProperties = {
-  background: tokens.color.accentSoft,
-  borderBottom: `1px solid ${tokens.color.borderStrong}`,
-  position: 'sticky',
-  top: HEADER_HEIGHT,
-  zIndex: 3,
-};
-
-const bodyCell: CSSProperties = {
-  boxSizing: 'border-box',
-  fontVariantNumeric: 'tabular-nums',
-  fontSize: tokens.font.size.sm,
-  overflow: 'hidden',
-  padding: `${tokens.space(1)} ${tokens.space(2)}`,
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-};
-
-const twoLineCell: CSSProperties = {
-  display: 'inline-flex',
-  flexDirection: 'column',
-  lineHeight: 1.05,
-};
-
-const cellSubline: CSSProperties = {
-  color: tokens.color.textMuted,
-  fontSize: tokens.font.size.xs,
-  marginTop: '0.125rem',
-};
-
-const groupCell: CSSProperties = {
-  alignItems: 'center',
-  display: 'inline-flex',
-  gap: tokens.space(1),
-  maxWidth: '100%',
-};
-
-const groupBranch: CSSProperties = {
-  color: tokens.color.textMuted,
-  flex: '0 0 auto',
-};
-
-const groupToggle: CSSProperties = {
-  alignItems: 'center',
-  background: 'none',
-  border: 'none',
-  color: tokens.color.textMuted,
-  cursor: 'pointer',
-  display: 'inline-flex',
-  flex: '0 0 auto',
-  justifyContent: 'center',
-  padding: tokens.space(0.5),
-};
-
-const groupLeafMarker: CSSProperties = {
-  color: tokens.color.textMuted,
-  flex: '0 0 auto',
-  textAlign: 'center',
-  width: tokens.space(2),
-};
-
-const groupValue: CSSProperties = {
-  fontWeight: 600,
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-};
-
-const groupCount: CSSProperties = {
-  color: tokens.color.textMuted,
-  flex: '0 0 auto',
-  fontSize: tokens.font.size.xs,
-};
-
-const emptyState: CSSProperties = {
-  color: tokens.color.textMuted,
-  padding: tokens.space(8),
-  textAlign: 'center',
-};
-
-const footer: CSSProperties = {
-  alignItems: 'center',
-  borderTop: `1px solid ${tokens.color.border}`,
-  color: tokens.color.text,
-  display: 'flex',
-  fontSize: tokens.font.size.sm,
-  gap: tokens.space(3),
-  justifyContent: 'space-between',
-  padding: `${tokens.space(1.5)} ${tokens.space(3)}`,
-};
