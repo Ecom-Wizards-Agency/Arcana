@@ -1,6 +1,8 @@
 # WP-215 — SP, SB and SD campaign creation via API
 
-Owner: implementer. Starts only after WP-214 has proven one live write and its inverse.
+Owner: Codex for contracts, server and worker; Claude for client components. Source contracts,
+provider research and synthetic verification may proceed alongside WP-214. Activation of
+campaign creation follows WP-214's verified live write and inverse.
 
 Operator decision, 2026-09-06: D7 now requires direct SP, all supported SB formats and SD
 creation, Amazon Asset Library selection and uploading the operator's own video. The old
@@ -11,7 +13,8 @@ SB/SD and asset preparation are required follow-up slices in this package's rele
 
 1. Verify the per-profile format, objective, targeting and destination capability matrix from
    pinned Amazon contracts and an authorized read-only probe. Cover SP automatic/manual,
-   SB manual/automatic collections, Store Spotlight and video with product-page/Store
+   SB classic and manual/automatic collections, Store Spotlight, video and Brand Gallery
+   with their supported product-page/Store
    destinations, and SD image/video. Unverified combinations stay explicit blockers.
 2. Implement the SP frozen-plan ledger, adapter, executor and approval/status contract below.
 3. Implement profile-scoped Asset Library search/read and own-video preparation. Stage uploads
@@ -31,6 +34,38 @@ Each slice declares exact files before editing. Further migrations have their ow
 scope and rehearsal; they do not join either existing hosted window without authorization.
 The final release requires creation and observation in Amazon for every supported format,
 including library selection and own-video upload. A generated export is not acceptance evidence.
+
+## Current Amazon contract corrections, 2026-09-06
+
+The [verified capability matrix](WP-215-AMAZON-CAPABILITIES-2026-09-06.md) records exact primary
+sources and raw-byte digests. It distinguishes documented APIs from profile eligibility and
+live behavior. These corrections precede executor implementation:
+
+- SP automatic targeting clauses are created by Amazon. Never POST `target.create` for those
+  four predicates. Observe them after creating the parent ad group; any bid/state override is
+  a separately approved mutation against the observed IDs. Initial creation uses the frozen
+  ad-group default bid. Reject an unsupported override rather than dropping it from the plan.
+- Classic product collection and Brand Gallery are distinct SB formats missing from the current
+  schema. Brand Gallery requires the documented reserve-share-of-voice capability; its booking
+  and spend commitment need an exact approved recipe. An enum does not establish eligibility.
+- SD creatives bind to an ad group, with explicit image/video properties and versioned assets.
+  SD advertised-product reports contain ad IDs, not asset IDs. Attribution needs temporally
+  valid observed relationships; a multi-asset creative cannot award the same totals to every file.
+- Asset upload, registration, processing and creative moderation are separate operations/states.
+  Current OpenAPI spells the upload request field `fileName`; the differing guide example remains
+  an activation check. A registration response alone does not make a video eligible for a campaign.
+
+The first corrective contract slice owns `packages/shared/src/campaign-creation.ts` and its
+test only. It rejects unsupported SP automatic create nodes without rewriting recorded plans.
+Broader SB/SD variants and their consumers follow as separately verified slices.
+
+The next Asset Library source slice owns `packages/shared/src/asset-library.ts` and test,
+then `packages/ads-api/src/asset-library.ts` and test, with explicit `./asset-library`
+package exports. It reuses the existing HTTP/auth transport through an inert factory.
+Shared contracts are verified and committed before the client. Registration makes one
+attempt and preserves uncertain outcomes; reads verify selected identity/version. This
+slice supplies metadata preparation only. Private Storage authorization, binary transfer,
+durable upload recovery and the picker/upload screens remain separate pending work.
 
 ## Objective
 
@@ -91,7 +126,7 @@ export-capable; direct creation belongs to the application and worker, not the p
    the plan; an HTTP success without an entity-level id is not creation evidence.
 6. Resync: observe parents between stages and perform final scoped entity synchronization.
    Show created and observed separately; end-only synchronization cannot satisfy dependency gates.
-7. Campaigns are created paused unless the plan says otherwise, matching `packages/campaigns`.
+7. Campaigns are created paused. Launch requires a separate approved state change.
 8. Tests: fake provider proving ordering, write-ahead evidence, delayed parent observation,
    ambiguous create recovery without redispatch, partial failure, closed gates and count
    reconciliation; Playwright for freeze, preview and confirmation.

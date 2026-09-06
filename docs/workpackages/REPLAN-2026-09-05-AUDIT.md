@@ -30,10 +30,33 @@ with the operator's private denylist present. None of these results proves a ren
 screen or a deployed marketer release; those remain pending Claude integration and activation.
 
 `918f7a5` adds read-only archived-keyword observation support without widening mutable states.
-All 36 focused write/mirror contract tests pass. Adapter, observation loop and unhosted mirror
-RPC consumers are still being implemented and tested; no activation is authorized here.
+Consumers are committed at `9ed8e6d`. All 36 focused contracts, 352 Ads API tests, 28 DB
+mirror/approval/history tests, 12 MCP history tests and 26 loop tests pass. A final added
+archived-sync regression also passes; the loop file now has 27 tests. The real-clock test
+survives restart, refuses to infer absence from a failed read after the deadline, then records
+one missing and one archived/conflicting row with no repeated mutation. It adds roughly
+150 seconds to that suite. The still-unhosted `20260905030000` now accepts the explicit
+archived receipt without inventing a bid or promoting stale mirror state.
 
-Verified repairs in the current working tree:
+Claude's Time Machine label must distinguish an archived receipt from a newer local bid;
+WP-214 specifies `observedState: 'archived'` and the required retained-bid wording. The client
+presentation has not been changed here.
+
+`b5767ab` adds a real 46-to-56 upgrade regression with existing synthetic data. It proves
+the current review RPC fails with `42883` before the second window, applies exactly ten files
+with separate commits, preserves the old proposal/bid, refuses direct authenticated UPDATE,
+and successfully revises/accepts through the new RPC afterward. No dispatch plan, approval,
+request or profile/environment gate is created. The test and DB typecheck/lint pass.
+Initial test setup incorrectly depended on a fixture-only auth helper, then misspelled the
+gate table; both test errors were corrected. This is local schema evidence, not a hosted
+dry run, lock-duration measurement or authorization.
+
+The root combined check passed workspace typecheck, then stopped at lint: 180 errors came
+from existing gitignored exploratory scripts and one from the new approval-retry regression's
+missing synthetic error cause. The latter is fixed in `b5767ab`; a clean source checkout is
+being prepared for unmodified lint and CI-equivalent serial tests. No lint rule was relaxed.
+
+Verified repairs committed in this source branch:
 
 - Revision deletion: the new regression failed with `23503` before the fix. Cascading only
   the recommendation-parent FK and allowing immutable DELETE only after organization removal
@@ -53,8 +76,22 @@ Verified repairs in the current working tree:
 These checks used disposable databases in a dedicated local PostgreSQL 17 container on
 loopback port 55439. The existing local Supabase role could connect but lacked `pg_authid`
 access required by the migration test platform. Its permissions were not changed. DB/worker
-typechecks and focused lint passed for the completed repairs; the new reader, web fixtures,
-Time Machine date fix and terminal-observation work remain in progress.
+typechecks and focused lint passed for the completed repairs. The reader, web fixtures and
+Time Machine date fix and terminal-observation consumers are committed as recorded above.
+
+The [Amazon capability matrix](WP-215-AMAZON-CAPABILITIES-2026-09-06.md) verifies the current public
+SP, SB, SD and Asset Library contracts without account access. It corrects three material plan
+assumptions: Amazon creates SP automatic clauses itself; all SB types includes classic product
+collection and Brand Gallery/RSOV; SD creative endpoints and ad-level reports are documented.
+Asset-level performance remains unproven without temporally valid joins. Profile eligibility,
+upload field spelling behavior and provider observation latency remain live-unverified.
+WP-215 now permits contract/client source work in parallel with WP-214 while retaining the
+live write/inverse prerequisite for creation activation. Its initial corrective contract slice
+rejects impossible automatic target creates at `15e45e6`. Its 31 contract tests and the
+existing 741 pure campaign tests pass; both package typechecks and focused lint pass.
+Valid fingerprint serialization is unchanged; an invalid automatic-target create plan must
+be regenerated, never silently rewritten. The workbook planner is a separate contract and
+does not yet have a direct-create conversion; it must not silently discard clause overrides.
 
 The operator accepted the marketer-release plan, including direct SP/SB/SD campaign
 creation, Asset Library selection, own-video upload and frontend ownership by Claude.

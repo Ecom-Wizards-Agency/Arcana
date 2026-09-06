@@ -135,6 +135,20 @@ reviewed contract/persistence slice before dependent source.
 
 ## Read first
 
+Terminal observation correction, 2026-09-06: `9ed8e6d` now settles confirmed absence after
+the durable two-minute observation window and records archived presence as a conflict. A
+failed or incomplete listing remains unresolved. The mirror receipt may carry
+`observedState: 'archived'`; Claude's Time Machine presentation must label that case as
+archived with the last known local bid retained. The current generic "Newer local value
+retained" label is not accurate for that receipt. No inverse is offered for missing/conflicting
+observations. The explicit keyword state filter includes enabled, paused and archived.
+
+Second-window rehearsal source owns `packages/db/src/sp-write-upgrade-window.test.ts` and
+an isolated write-window policy/entrypoint/test under `tools/hosted-migration-bundle/src/`.
+These extend the retained verification aid with a separate 46-to-56 policy. The existing
+41-to-46 policy, CLI behavior, parked supervisor branch and protected workflow are unchanged.
+This is migration preparation, not authorization to apply either window.
+
 1. `AGENTS.md` "Amazon write contract", all ten rules.
 2. `packages/shared/src/sp-writes.ts`: `SpWritePlan`, `ApproveSpWritePlan` at line 936,
    `SpCanonicalDecimal` at line 26.
