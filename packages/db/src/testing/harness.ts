@@ -47,23 +47,29 @@ export async function migrationFiles(): Promise<string[]> {
 }
 
 /**
- * Is a Postgres reachable? Used to skip the database suites rather than fail
- * them on a machine with no database, so `pnpm check` stays honest in CI while
- * the suite still runs everywhere it can.
+ * Local database suites may skip when PostgreSQL is unavailable. CI sets
+ * WIZARD_ADS_TEST_REQUIRE_DATABASE=1 so missing database evidence fails the job.
  */
 export async function databaseAvailable(): Promise<boolean> {
-  const sql = postgres(adminConnectionString(), {
-    max: 1,
-    connect_timeout: 3,
-    onnotice: () => {},
-  });
+  const required = process.env['WIZARD_ADS_TEST_REQUIRE_DATABASE'] === '1';
+  let sql: ReturnType<typeof postgres> | undefined;
   try {
+    sql = postgres(adminConnectionString(), {
+      max: 1,
+      connect_timeout: 3,
+      onnotice: () => {},
+    });
     await sql`select 1`;
     return true;
   } catch {
+    if (required) {
+      // Driver errors, including initialization errors, can contain credentials.
+      // Do not retain their message or cause in CI's public failure output.
+      throw new Error('Required test database is unavailable. Check WIZARD_ADS_TEST_DATABASE_URL or DATABASE_URL.');
+    }
     return false;
   } finally {
-    await sql.end({ timeout: 1 }).catch(() => {});
+    await sql?.end({ timeout: 1 }).catch(() => {});
   }
 }
 
