@@ -13,7 +13,8 @@
     "./sp-write-mirror": "./src/sp-write-mirror.ts",
     "./time-machine-writes": "./src/time-machine-writes.ts",
     "./recommendation-revisions": "./src/recommendation-revisions.ts",
-    "./mcp-writes": "./src/mcp-writes.ts"
+    "./mcp-writes": "./src/mcp-writes.ts",
+    "./asset-library": "./src/asset-library.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
