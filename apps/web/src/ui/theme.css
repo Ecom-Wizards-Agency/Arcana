@@ -128,12 +128,19 @@
   --wa-fs-2xl: 1.75rem;
 
   /*
-   * Type weights. One scale: the class primitives below and the inline styles
-   * in `tokens.ts` both resolve here, so a title cannot be 640 in one screen
-   * and 700 in the next depending on which surface the screen was written
-   * against. Layout margins stay with the consumer; only the scale is shared.
+   * Type weights. One scale for the two surfaces this package owns: the base
+   * `h1` rule above and the inline styles exported from `tokens.ts`, which
+   * used to restate 700 each in their own file. Both now resolve here.
+   *
+   * `.wa-page-title` still restates 640 and `.wa-section-title` 620. Those two
+   * component rules are outside this package's theme.css scope (token block and
+   * warn scopes), so they are an open handoff rather than an edit; see the
+   * WP-211 brief close-out. `--wa-fw-section` already equals the 620 that
+   * `.wa-section-title` restates, so only the page title is still divided.
+   *
+   * Layout margins stay with the consumer; only the scale is shared.
    */
-  --wa-fw-title: 640;
+  --wa-fw-title: 700;
   --wa-fw-section: 620;
 
   /* Frame */
@@ -1583,7 +1590,7 @@ button {
 
 .wa-page-title {
   font-size: var(--wa-fs-xl);
-  font-weight: var(--wa-fw-title);
+  font-weight: 640;
   letter-spacing: -0.02em;
   margin: 0;
 }
@@ -1596,7 +1603,7 @@ button {
 
 .wa-section-title {
   font-size: var(--wa-fs-md);
-  font-weight: var(--wa-fw-section);
+  font-weight: 620;
   margin: 1.75rem 0 0.625rem;
 }
 

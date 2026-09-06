@@ -98,17 +98,38 @@ describe('WP-47B brand contract', () => {
     expect(contrast(BRAND_TOKENS['--wa-warn'], BRAND_TOKENS['--wa-carbon'])).toBeGreaterThanOrEqual(4.5);
   });
 
-  it('runs one type scale across the class primitives and the inline styles', () => {
-    expect(css.match(/--wa-fw-title: 640;/g)).toHaveLength(1);
-    expect(css.match(/--wa-fw-section: 620;/g)).toHaveLength(1);
+  it('declares each title weight once and keeps the base h1 and the inline styles on it', () => {
+    const titleWeight = /--wa-fw-title: (\d+);/.exec(css)?.[1];
+    const sectionWeight = /--wa-fw-section: (\d+);/.exec(css)?.[1];
+    expect(titleWeight).toBe('700');
+    expect(sectionWeight).toBe('620');
+    expect(css.match(/--wa-fw-title:/g)).toHaveLength(1);
+    expect(css.match(/--wa-fw-section:/g)).toHaveLength(1);
 
-    // No weight is restated: the classes and `tokens.ts` both read the token.
-    expect(css).toContain('.wa-page-title {\n  font-size: var(--wa-fs-xl);\n  font-weight: var(--wa-fw-title);');
-    expect(css).toContain('.wa-section-title {\n  font-size: var(--wa-fs-md);\n  font-weight: var(--wa-fw-section);');
+    // The element default and the token are the same weight, so an `<h1>` with no
+    // class and an `<h1 style={heading}>` cannot disagree. Read from the token so
+    // moving the token without moving the base rule fails here.
+    expect(css).toContain(`h1 {\n  font-size: var(--wa-fs-xl);\n  font-weight: ${titleWeight};`);
+
+    // `tokens.ts` restates neither weight; both read the custom property.
     expect(tokensSource).toContain("title: 'var(--wa-fw-title)'");
     expect(tokensSource).toContain("section: 'var(--wa-fw-section)'");
     expect(tokensSource).toMatch(/export const heading: CSSProperties = \{[^}]*fontWeight: weight\.title,/);
     expect(tokensSource).toMatch(/export const subheading: CSSProperties = \{[^}]*fontWeight: weight\.section,/);
+    // No title-level weight literal survives anywhere in the module.
+    expect(tokensSource).not.toMatch(/fontWeight: (?:620|640|700)\b/);
+  });
+
+  it('pins the two title weights theme.css still restates, so the handoff cannot drift', () => {
+    // `.wa-page-title` and `.wa-section-title` are component rules, outside this
+    // package's theme.css scope (token block and warn scopes), so they still carry
+    // literals. `.wa-section-title` already agrees with `--wa-fw-section`;
+    // `.wa-page-title` does not, and closing that is the handoff recorded in the
+    // WP-211 brief close-out. Both are pinned here so no third weight appears and
+    // so the gap has to be closed deliberately.
+    expect(css).toContain('.wa-page-title {\n  font-size: var(--wa-fs-xl);\n  font-weight: 640;');
+    expect(css).toContain('.wa-section-title {\n  font-size: var(--wa-fs-md);\n  font-weight: 620;');
+    expect(/--wa-fw-section: (\d+);/.exec(css)?.[1]).toBe('620');
   });
 
   it('keeps chart marks at 3:1 in light and dark, outlining dark indigo', () => {
