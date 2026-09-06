@@ -166,5 +166,16 @@ describe.skipIf(!available)('tag colour at the API boundary', () => {
     // The stored value survives the read untouched; the swatch is neutral.
     expect(row?.color).toBe('#2563eb');
     expect(tagSwatchColor(row?.color ?? null)).toBe('var(--wa-series-3)');
+
+    // And the row stays *usable*: a rename omits `color`, which must leave the
+    // legacy value alone rather than clearing it. Without this the only way to
+    // rename a pre-contract tag would be to recolour it, and an operator who
+    // renamed one would silently lose its colour on the way through.
+    const renamed = await patch(legacy?.id ?? '', { name: 'Legacy renamed' });
+    expect(renamed.status).toBe(200);
+    const [after] = await database.sql<{ name: string; color: string | null }[]>`
+      select name, color from public.tags where id = ${legacy?.id ?? null}
+    `;
+    expect(after).toEqual({ name: 'Legacy renamed', color: '#2563eb' });
   });
 });
