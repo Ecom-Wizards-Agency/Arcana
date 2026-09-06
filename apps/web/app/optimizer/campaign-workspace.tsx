@@ -19,6 +19,12 @@
  * than what happens to be rendered, and the preview scope stays an explicit
  * choice between all eligible campaigns and the selected ones. The grid paints
  * that selection and asks to change it; it never owns it.
+ *
+ * Absent is not zero, as in the table this replaced: a campaign Amazon reported
+ * no row for in this period shows `—` for spend, sales, ACOS, orders and the
+ * spend change, and carries a "No activity in this period" note under its name
+ * alongside any reason it cannot be previewed. The two notes are independent
+ * facts and a campaign is often both.
  */
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -27,6 +33,7 @@ import {
   DEFAULT_DENSITY,
   DENSITY_LABELS,
   DataGrid,
+  EMPTY_CELL,
   GRID_DENSITIES,
   GroupBar,
   GridViewport,
@@ -562,8 +569,26 @@ export function CampaignWorkspace({
     ],
   );
 
-  const renderCell = useMemo(
-    () => ({
+  const renderCell = useMemo(() => {
+    /**
+     * A campaign the period reported no row for has no figure, not a zero.
+     * Amazon omits zero-impression rows, so `$0.00` here would be a
+     * measurement this table never took — the same distinction the old table
+     * kept by printing `—`. Returning `undefined` leaves every other row to
+     * the grid's own formatter, and the group and totals rows are unaffected:
+     * summing an absent row adds nothing either way.
+     */
+    const absentWithoutActivity = (gridRow: GridRow): ReactNode | undefined => {
+      const source = sourceById.get(gridRow.id);
+      if (source === undefined || source.currentRows !== 0) return undefined;
+      return <span className="wa-hint">{EMPTY_CELL}</span>;
+    };
+    return {
+      spend: absentWithoutActivity,
+      spend_change: absentWithoutActivity,
+      sales: absentWithoutActivity,
+      acos: absentWithoutActivity,
+      orders: absentWithoutActivity,
       [SELECT_COLUMN_ID]: (gridRow: GridRow) => {
         const source = sourceById.get(gridRow.id);
         if (source === undefined) return null;
@@ -592,7 +617,7 @@ export function CampaignWorkspace({
             >
               {source.name}
             </a>
-            {source.eligibilityReason !== null ? (
+            {source.eligibilityReason === null ? null : (
               <span
                 className="wa-optimizer-campaigns__ineligible"
                 id={eligibilityId(source.campaignId)}
@@ -601,11 +626,13 @@ export function CampaignWorkspace({
               >
                 {source.eligibilityReason}
               </span>
-            ) : source.currentRows === 0 ? (
-              // Not a zero: Amazon omits zero-impression rows, so this campaign
-              // reported nothing in the window rather than reporting nothing sold.
+            )}
+            {source.currentRows !== 0 ? null : (
+              // Both notes, never one instead of the other: why a campaign
+              // cannot be previewed and whether Amazon reported anything for it
+              // are different facts, and a campaign is often both.
               <span className="wa-optimizer-campaigns__sub">No activity in this period</span>
-            ) : null}
+            )}
           </span>
         );
       },
@@ -637,17 +664,16 @@ export function CampaignWorkspace({
         }
         return <span className="wa-hint">{recommendationState(run)}</span>;
       },
-    }),
-    [
-      period,
-      profileId,
-      run,
-      selectedCampaignIds,
-      selectionLocked,
-      sourceById,
-      toggleCampaign,
-    ],
-  );
+    };
+  }, [
+    period,
+    profileId,
+    run,
+    selectedCampaignIds,
+    selectionLocked,
+    sourceById,
+    toggleCampaign,
+  ]);
 
   async function runPreview(): Promise<void> {
     if (runDisabled || submittingRef.current) return;
@@ -819,7 +845,7 @@ export function CampaignWorkspace({
         <p className="wa-optimizer-preview__selection" data-testid="optimizer-selection-count" aria-live="polite">
           {selectedCampaignIds.size === 0
             ? 'No campaigns selected.'
-            : `${selectedCampaignIds.size.toLocaleString('en-US')} ${selectedCampaignIds.size === 1 ? 'campaign' : 'campaigns'} selected. Selections outside the current page or filters remain selected.`}
+            : `${selectedCampaignIds.size.toLocaleString('en-US')} ${selectedCampaignIds.size === 1 ? 'campaign' : 'campaigns'} selected. Selections hidden by the current filters remain selected.`}
         </p>
         {!mayRunOptimizer ? (
           <p className="wa-optimizer-preview__permission">Your role can view previews but cannot queue one.</p>

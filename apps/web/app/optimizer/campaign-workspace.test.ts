@@ -118,6 +118,17 @@ function scrollGrid(host: HTMLElement, top: number): void {
   });
 }
 
+function cellText(host: HTMLElement, campaignName: string, headerLabel: string): string {
+  const index = [...host.querySelectorAll('[role="columnheader"]')]
+    .map((element) => element.getAttribute('aria-label') ?? '')
+    .indexOf(headerLabel);
+  if (index < 0) throw new Error(`no column header labelled '${headerLabel}'`);
+  const element = gridRows(host)
+    .find((candidate) => candidate.querySelector('.wa-optimizer-campaigns__name')?.textContent === campaignName);
+  if (element === undefined) throw new Error(`no rendered row for '${campaignName}'`);
+  return [...element.querySelectorAll('[role="cell"]')][index]?.textContent ?? '';
+}
+
 function footerText(host: HTMLElement): string {
   return host.querySelector('[data-testid="grid-shell"]')?.lastElementChild?.textContent ?? '';
 }
@@ -319,8 +330,13 @@ describe('campaign optimizer workspace', () => {
     // rows that happened to be rendered: scrolling finds them already checked.
     scrollGrid(host, 30 * 42);
     const rendered = [...host.querySelectorAll<HTMLInputElement>('[data-testid="optimizer-campaign-select"]')];
-    expect(rendered.length).toBeGreaterThan(0);
-    expect(rendered.every((checkbox) => checkbox.checked || checkbox.disabled)).toBe(true);
+    // Named exactly, so "every box is disabled and unchecked" cannot pass:
+    // every enabled box in the window is checked, and the checked count is the
+    // enabled count. The one ineligible campaign is the only unchecked box.
+    const enabled = rendered.filter((checkbox) => !checkbox.disabled);
+    expect(enabled.length).toBeGreaterThan(0);
+    expect(enabled.every((checkbox) => checkbox.checked)).toBe(true);
+    expect(rendered.filter((checkbox) => checkbox.checked)).toHaveLength(enabled.length);
 
     // Widening the filter keeps every hidden choice; the header reports the
     // partial state of its new, larger population.
@@ -369,6 +385,70 @@ describe('campaign optimizer workspace', () => {
     act(() => { eligible?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true })); });
     expect(host.querySelector('[data-testid="optimizer-selection-count"]')?.textContent)
       .toContain('1 campaign selected');
+  });
+
+  it('keeps both notes on an ineligible campaign that reported nothing and prints no zero it never measured', () => {
+    const rows = [
+      row(1),
+      row(2, {
+        adProduct: 'SB',
+        clicks: 0,
+        comparisonRows: 1,
+        comparisonSpend: 12,
+        currentRows: 0,
+        eligibilityReason: 'Only Sponsored Products campaigns support bid previews.',
+        impressions: 0,
+        orders: 0,
+        sales: 0,
+        selectable: false,
+        spend: 0,
+        state: 'paused',
+      }),
+    ];
+    const { host } = mount(rows);
+    const idle = gridRows(host)
+      .find((element) => element.textContent?.includes('Synthetic campaign 02'));
+    expect(idle).toBeDefined();
+
+    // Two independent facts, and this campaign is both: why it cannot be
+    // previewed, and that Amazon reported nothing for it in this period.
+    expect(idle?.textContent).toContain('Only Sponsored Products campaigns support bid previews.');
+    expect(idle?.textContent).toContain('No activity in this period');
+
+    // Absent, not zero: a period that reported no row for a campaign gives it
+    // no figure to show, exactly as the table this replaced showed it.
+    for (const label of ['Spend', 'Spend Δ%', 'Sales', 'ACOS', 'Orders']) {
+      expect(cellText(host, 'Synthetic campaign 02', label)).toBe('—');
+    }
+    expect(idle?.textContent).not.toContain('$0.00');
+
+    // The campaign that did report keeps the grid's own formatting.
+    expect(cellText(host, 'Synthetic campaign 01', 'Spend')).toBe('$1.00');
+  });
+
+  it('clears the whole selection on Escape in the grid, hidden campaigns included', () => {
+    // Deliberate, not inherited: the brief's keyboard contract makes Escape the
+    // keyboard twin of `Clear selected`, and `Clear selected` has always owned
+    // the whole transient set rather than the rows a filter happens to show.
+    const { host } = mount(Array.from({ length: 12 }, (_, index) => row(index + 1)));
+    const filteredHeader = host.querySelector<HTMLInputElement>('[data-testid="optimizer-select-filtered"]');
+    act(() => filteredHeader?.click());
+    expect(host.querySelector('[data-testid="optimizer-selection-count"]')?.textContent)
+      .toContain('12 campaigns selected');
+
+    const search = host.querySelector<HTMLInputElement>('input[aria-label="Find campaign"]');
+    act(() => {
+      if (search !== null) setInputValue(search, 'campaign 12');
+    });
+    expect(rowNames(host)).toEqual(['Synthetic campaign 12']);
+    expect(host.querySelector('[data-testid="optimizer-selection-count"]')?.textContent)
+      .toContain('12 campaigns selected');
+
+    const visible = gridRows(host)[0];
+    act(() => visible?.focus());
+    act(() => { visible?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(host.querySelector('[data-testid="optimizer-selection-count"]')?.textContent)
+      .toContain('No campaigns selected');
   });
 
   it('builds grid rows from base sums only, with no invented comparison figures', () => {
