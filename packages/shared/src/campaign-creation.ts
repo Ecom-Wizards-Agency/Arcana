@@ -12,7 +12,10 @@ import {
   Uuid,
 } from './primitives.js';
 
-export const CampaignCreationSchemaVersion = z.literal('openspell.campaign-creation-plan.v1');
+export const CampaignCreationSchemaVersion = z.enum([
+  'openspell.campaign-creation-plan.v1',
+  'openspell.campaign-creation-plan.v2',
+]);
 export type CampaignCreationSchemaVersion = z.infer<typeof CampaignCreationSchemaVersion>;
 
 export const CampaignCreationSha256 = z.string().regex(/^[a-f0-9]{64}$/);
@@ -523,7 +526,7 @@ const CreateCreativeNode = z.object({
   }).strict(),
 }).strict();
 
-export const CampaignCreationNode = z.discriminatedUnion('kind', [
+export const CampaignCreationNodeV1 = z.discriminatedUnion('kind', [
   RequireProductNode,
   RequireBrandNode,
   RequireStoreNode,
@@ -534,6 +537,240 @@ export const CampaignCreationNode = z.discriminatedUnion('kind', [
   CreateAdNode,
   CreateCreativeNode,
 ]);
+export type CampaignCreationNodeV1 = z.infer<typeof CampaignCreationNodeV1>;
+
+// Versioned nodes carry their version explicitly. Absence belongs exclusively to
+// the historical v1 reader; serialization never infers a version from payload fields.
+export const CampaignCreationNodeVersionV2 = z.literal('openspell.campaign-creation-node.v2');
+const versionedNode = { schemaVersion: CampaignCreationNodeVersionV2 };
+
+export const SponsoredBrandsCreationFormatV2 = z.enum([
+  ...SponsoredBrandsCreationFormat.options,
+  'product_collection_classic',
+  'brand_gallery',
+]);
+export type SponsoredBrandsCreationFormatV2 = z.infer<typeof SponsoredBrandsCreationFormatV2>;
+
+const SbMarketplace = z.enum([
+  'AE', 'AU', 'BE', 'BR', 'CA', 'DE', 'EG', 'ES', 'FR', 'GB', 'IE', 'IN',
+  'IT', 'JP', 'MX', 'NL', 'PL', 'SA', 'SE', 'SG', 'TR', 'US', 'ZA',
+]);
+
+const CampaignSettingsV2 = z.discriminatedUnion('product', [
+  CampaignSettings.options[0],
+  z.object({
+    product: z.literal('SB'),
+    targetingType: z.literal('manual'),
+    format: SponsoredBrandsCreationFormatV2,
+    brand: plannedResourceRef('brand'),
+    costType: z.enum(['CPC', 'CPM', 'FIXED_PRICE', 'VCPM']),
+    marketplaceScope: z.literal('SINGLE_MARKETPLACE'),
+    marketplace: SbMarketplace,
+    optimizations: z.object({
+      goalSettings: z.object({
+        kpi: z.enum(['CLICKS', 'TOP_OF_SEARCH_IMPRESSION_SHARE']),
+      }).strict(),
+      bidSettings: z.object({
+        bidStrategy: z.enum(['MANUAL', 'SALES_UP_AND_DOWN']),
+      }).strict(),
+    }).strict(),
+    purchasing: z.discriminatedUnion('type', [
+      z.object({ type: z.literal('auction') }).strict(),
+      z.object({
+        type: z.literal('reserved_share_of_voice'),
+        targetedPGDealId: AmazonId,
+      }).strict(),
+    ]),
+  }).strict(),
+  CampaignSettings.options[2].extend({ costType: z.enum(['cpc', 'vcpm']) }),
+]);
+
+const CampaignScheduleV2 = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('calendar_dates'),
+    startDate: CampaignCreationIsoDate,
+    endDate: CampaignCreationIsoDate.nullable(),
+  }).strict(),
+  z.object({
+    type: z.literal('instants'),
+    startDateTime: z.iso.datetime({ offset: true }),
+    endDateTime: z.iso.datetime({ offset: true }).nullable(),
+  }).strict(),
+]);
+
+const CreateCampaignNodeV2 = z.object({
+  ...createNodeBase,
+  ...versionedNode,
+  kind: z.literal('campaign.create'),
+  payload: CreateCampaignNode.shape.payload.omit({ startDate: true, endDate: true }).extend({
+    schedule: CampaignScheduleV2,
+    settings: CampaignSettingsV2,
+  }),
+}).strict().superRefine((node, context) => {
+  const { settings, schedule, budget } = node.payload;
+  if ((settings.product === 'SB') !== (schedule.type === 'instants')) {
+    context.addIssue({ code: 'custom', path: ['payload', 'schedule'], message: 'SB requires explicit provider instants; SP and SD require calendar dates' });
+  }
+  if (settings.product !== 'SB' && budget.type !== 'daily') {
+    context.addIssue({ code: 'custom', path: ['payload', 'budget', 'type'], message: 'SP and SD campaign creation require a daily budget' });
+  }
+  if (settings.product === 'SB' && settings.format === 'brand_gallery'
+    && settings.purchasing.type !== 'reserved_share_of_voice') {
+    context.addIssue({ code: 'custom', path: ['payload', 'settings', 'purchasing'], message: 'Brand Gallery requires an explicit reserve-share-of-voice deal; its purchase authority is a separate prerequisite' });
+  }
+});
+
+const CreateAdGroupNodeV2 = CreateAdGroupNode.extend({
+  ...versionedNode,
+  payload: CreateAdGroupNode.shape.payload.extend({
+    settings: z.discriminatedUnion('product', [
+      z.object({ product: z.literal('SP') }).strict(),
+      z.object({ product: z.literal('SB') }).strict(),
+      z.object({
+        product: z.literal('SD'),
+        creativeType: z.enum(['IMAGE', 'VIDEO']),
+        bidOptimization: z.enum(['clicks', 'conversions', 'reach']),
+      }).strict(),
+    ]),
+  }),
+}).superRefine((node, context) => {
+  if (node.payload.settings.product !== node.adProduct) {
+    context.addIssue({ code: 'custom', path: ['payload', 'settings'], message: 'ad-group settings differ from the node product' });
+  }
+  if ((node.adProduct === 'SB') !== (node.payload.defaultBid === null)) {
+    context.addIssue({ code: 'custom', path: ['payload', 'defaultBid'], message: 'SP and SD require an explicit numeric default bid; SB ad groups do not accept a default bid' });
+  }
+});
+
+const ImageCrop = z.object({
+  top: z.number().int().nonnegative(),
+  left: z.number().int().nonnegative(),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+}).strict();
+
+const SbImage = z.object({
+  asset: plannedResourceRef('asset'),
+  formatProperties: z.array(ImageCrop).max(10),
+}).strict();
+
+const ClassicCollectionLandingPage = z.discriminatedUnion('type', [
+  StoreLandingPage,
+  z.object({
+    type: z.literal('asin_list'),
+    products: z.array(plannedResourceRef('product')).min(1).max(100),
+  }).strict(),
+  // The worker must establish vendor eligibility; this field cannot grant it.
+  z.object({ type: z.literal('custom_url'), url: z.url({ protocol: /^https$/ }) }).strict(),
+]);
+
+const BrandGalleryCard = z.object({
+  customImage: SbImage,
+  headline: z.string().trim().min(1).max(128),
+  landingPage: StoreLandingPage,
+}).strict();
+
+const AdPayloadV2 = z.discriminatedUnion('format', [
+  AdPayload.options[0],
+  AdPayload.options[1],
+  AdPayload.options[2],
+  AdPayload.options[5],
+  AdPayload.options[4].extend({
+    landingPage: SponsoredBrandsVideoLandingPage,
+    enableCreativeAutoTranslation: z.boolean(),
+  }),
+  AdPayload.options[3].extend({ enableCreativeAutoTranslation: z.boolean() }),
+  z.object({
+    ...sponsoredBrandsAdBase,
+    format: z.literal('sb_product_collection_classic'),
+    brand: plannedResourceRef('brand'),
+    brandLogos: z.array(SbImage).min(1).max(2),
+    customImages: z.array(SbImage).min(1).max(5),
+    headline: z.string().trim().min(1).max(128),
+    products: z.array(plannedResourceRef('product')).max(3),
+    landingPage: ClassicCollectionLandingPage,
+    enableCreativeAutoTranslation: z.boolean(),
+  }).strict(),
+  z.object({
+    ...sponsoredBrandsAdBase,
+    format: z.literal('sb_brand_gallery'),
+    brand: plannedResourceRef('brand'),
+    brandLogo: SbImage,
+    customImage: SbImage,
+    headline: z.string().trim().min(1).max(128),
+    landingPage: StoreLandingPage,
+    cards: z.array(BrandGalleryCard).min(3).max(5),
+    enableCreativeAutoTranslation: z.boolean(),
+  }).strict(),
+]);
+
+const SdImage = z.object({
+  asset: plannedResourceRef('asset'),
+  croppingCoordinates: ImageCrop.nullable(),
+}).strict();
+const SdImages = z.discriminatedUnion('representation', [
+  z.object({
+    representation: z.literal('rectangle_and_square'),
+    rectCustomImage: SdImage,
+    squareCustomImage: SdImage,
+  }).strict(),
+  z.object({
+    representation: z.literal('aspect_images'),
+    squareImages: z.array(SdImage),
+    horizontalImages: z.array(SdImage),
+    verticalImages: z.array(SdImage),
+  }).strict().superRefine((images, context) => {
+    if (images.squareImages.length + images.horizontalImages.length + images.verticalImages.length === 0) {
+      context.addIssue({ code: 'custom', message: 'image creative requires at least one selected image' });
+    }
+  }),
+]);
+const SdVideos = z.discriminatedUnion('representation', [
+  z.object({
+    representation: z.literal('single_video'),
+    video: plannedResourceRef('asset'),
+  }).strict(),
+  z.object({
+    representation: z.literal('aspect_videos'),
+    squareVideos: z.array(plannedResourceRef('asset')).max(1),
+    horizontalVideos: z.array(plannedResourceRef('asset')).max(1),
+    verticalVideos: z.array(plannedResourceRef('asset')).max(1),
+  }).strict().superRefine((videos, context) => {
+    if (videos.squareVideos.length + videos.horizontalVideos.length + videos.verticalVideos.length === 0) {
+      context.addIssue({ code: 'custom', message: 'video creative requires at least one selected video' });
+    }
+  }),
+]);
+const sdCreativeBase = {
+  adGroup: plannedResourceRef('ad_group'),
+  headline: z.string().trim().min(1).max(50).nullable(),
+  brandLogo: SdImage.nullable(),
+  consentToTranslate: z.boolean(),
+};
+const CreateCreativeNodeV2 = z.object({
+  ...createNodeBase,
+  ...versionedNode,
+  kind: z.literal('creative.create'),
+  payload: z.discriminatedUnion('format', [
+    z.object({ ...sdCreativeBase, format: z.literal('sd_image'), images: SdImages }).strict(),
+    z.object({ ...sdCreativeBase, format: z.literal('sd_video'), videos: SdVideos }).strict(),
+  ]),
+}).strict();
+
+export const CampaignCreationNodeV2 = z.discriminatedUnion('kind', [
+  RequireProductNode.extend(versionedNode),
+  RequireBrandNode.extend(versionedNode),
+  RequireStoreNode.extend(versionedNode),
+  RequireAssetNode.extend(versionedNode),
+  CreateCampaignNodeV2,
+  CreateAdGroupNodeV2,
+  CreateTargetNode.extend(versionedNode),
+  CreateAdNode.extend({ ...versionedNode, payload: AdPayloadV2 }),
+  CreateCreativeNodeV2,
+]);
+export type CampaignCreationNodeV2 = z.infer<typeof CampaignCreationNodeV2>;
+
+export const CampaignCreationNode = z.union([CampaignCreationNodeV1, CampaignCreationNodeV2]);
 export type CampaignCreationNode = z.infer<typeof CampaignCreationNode>;
 
 const count = z.number().int().nonnegative();
@@ -627,6 +864,17 @@ function expectedRequirementProviderEntityId(node: CampaignCreationNode): string
   }
 }
 
+function sdImageSelections(images: z.infer<typeof SdImages>): z.infer<typeof SdImage>[] {
+  return images.representation === 'rectangle_and_square'
+    ? [images.rectCustomImage, images.squareCustomImage]
+    : [...images.squareImages, ...images.horizontalImages, ...images.verticalImages];
+}
+
+function sdVideoSelections(videos: z.infer<typeof SdVideos>): CampaignCreationResourceRef[] {
+  return videos.representation === 'single_video' ? [videos.video]
+    : [...videos.squareVideos, ...videos.horizontalVideos, ...videos.verticalVideos];
+}
+
 function nodeReferences(node: CampaignCreationNode): CampaignCreationResourceRef[] {
   switch (node.kind) {
     case 'eligibility.require_product':
@@ -640,8 +888,16 @@ function nodeReferences(node: CampaignCreationNode): CampaignCreationResourceRef
       return [node.payload.campaign];
     case 'target.create':
       return [node.payload.parent];
-    case 'creative.create':
-      return [node.payload.ad, ...node.payload.assets];
+    case 'creative.create': {
+      const payload = node.payload;
+      if (payload.format === 'sd_custom') return [payload.ad, ...payload.assets];
+      return [payload.adGroup,
+        ...(payload.brandLogo === null ? [] : [payload.brandLogo.asset]),
+        ...(payload.format === 'sd_image'
+          ? sdImageSelections(payload.images).map((image) => image.asset)
+          : sdVideoSelections(payload.videos)),
+      ];
+    }
     case 'ad.create': {
       const payload = node.payload;
       switch (payload.format) {
@@ -683,6 +939,18 @@ function nodeReferences(node: CampaignCreationNode): CampaignCreationResourceRef
             payload.landingPage.store,
             payload.logoAsset,
             ...payload.cards.flatMap((card) => [card.landingPage.store, card.product]),
+          ];
+        case 'sb_product_collection_classic':
+          return [payload.adGroup, payload.brand, ...payload.products,
+            ...payload.brandLogos.map((image) => image.asset),
+            ...payload.customImages.map((image) => image.asset),
+            ...(payload.landingPage.type === 'store' ? [payload.landingPage.store]
+              : payload.landingPage.type === 'asin_list' ? payload.landingPage.products : []),
+          ];
+        case 'sb_brand_gallery':
+          return [payload.adGroup, payload.brand, payload.brandLogo.asset,
+            payload.customImage.asset, payload.landingPage.store,
+            ...payload.cards.flatMap((card) => [card.customImage.asset, card.landingPage.store]),
           ];
       }
     }
@@ -772,7 +1040,7 @@ export function orderCampaignCreationNodes(
   return ordered;
 }
 
-export const CampaignCreationPlan = z.object({
+const CampaignCreationPlanShape = z.object({
   schemaVersion: CampaignCreationSchemaVersion,
   id: CampaignCreationUuid,
   orgId: CampaignCreationUuid,
@@ -787,7 +1055,12 @@ export const CampaignCreationPlan = z.object({
   counts: CampaignCreationPlanCounts,
   fingerprint: CampaignCreationSha256,
   noRollbackAcknowledgement: CampaignCreationNoRollbackAcknowledgement,
-}).strict().superRefine((plan, context) => {
+}).strict();
+
+function validateCampaignCreationPlan(
+  plan: z.infer<typeof CampaignCreationPlanShape>,
+  context: z.RefinementCtx,
+): void {
   if (!expectedDialectProduct(plan.apiDialect, plan.adProduct)) {
     context.addIssue({ code: 'custom', path: ['apiDialect'], message: 'API dialect does not support this ad product' });
   }
@@ -804,6 +1077,7 @@ export const CampaignCreationPlan = z.object({
 
   const requirementOwners = new Map<string, string>();
   const automaticCollectionAdGroupOwners = new Map<string, string>();
+  const displayCreativeAdGroupOwners = new Map<string, string>();
   for (const [index, node] of plan.nodes.entries()) {
     const identity = requirementIdentityKey(node);
     if (identity === undefined) continue;
@@ -842,9 +1116,25 @@ export const CampaignCreationPlan = z.object({
       && node.payload.settings.targetingType !== 'manual') {
       context.addIssue({ code: 'custom', path: ['nodes', index, 'payload', 'settings', 'targetingType'], message: 'Sponsored Brands creation uses manual keyword or product targeting' });
     }
-    if (node.kind === 'campaign.create' && node.payload.endDate !== null
-      && node.payload.endDate < node.payload.startDate) {
-      context.addIssue({ code: 'custom', path: ['nodes', index, 'payload', 'endDate'], message: 'campaign end date cannot precede its start date' });
+    if (node.kind === 'campaign.create') {
+      const schedule = 'schedule' in node.payload ? node.payload.schedule
+        : { type: 'calendar_dates' as const, startDate: node.payload.startDate, endDate: node.payload.endDate };
+      const start = schedule.type === 'instants' ? Date.parse(schedule.startDateTime) : schedule.startDate;
+      const end = schedule.type === 'instants'
+        ? schedule.endDateTime === null ? null : Date.parse(schedule.endDateTime)
+        : schedule.endDate;
+      if (end !== null && end < start) {
+        context.addIssue({ code: 'custom', path: ['nodes', index, 'payload'], message: 'campaign end date cannot precede its start date' });
+      }
+    }
+    if (node.kind === 'ad_group.create' && 'settings' in node.payload
+      && node.payload.settings.product === 'SD') {
+      const campaign = campaignForParent(node.payload.campaign, byId);
+      if (campaign?.kind === 'campaign.create' && campaign.payload.settings.product === 'SD'
+        && 'costType' in campaign.payload.settings
+        && ((campaign.payload.settings.costType === 'vcpm') !== (node.payload.settings.bidOptimization === 'reach'))) {
+        context.addIssue({ code: 'custom', path: ['nodes', index, 'payload', 'settings'], message: 'SD reach optimization requires vCPM; clicks and conversions require CPC' });
+      }
     }
     if (node.kind === 'ad.create') {
       const productForFormat = node.payload.format.startsWith('sp_')
@@ -908,6 +1198,20 @@ export const CampaignCreationPlan = z.object({
         });
       }
       return requirement;
+    };
+
+    const requireStorePage = (landingPage: z.infer<typeof StoreLandingPage>): void => {
+      const store = requireCheckedResource(landingPage.store, 'store');
+      if (landingPage.pageId !== null && store?.kind === 'eligibility.require_store'
+        && !store.payload.pageIds.includes(landingPage.pageId)) {
+        context.addIssue({ code: 'custom', path: ['nodes', index, 'payload'], message: 'landing page is absent from the checked Store' });
+      }
+    };
+
+    const requireUniqueReferences = (references: CampaignCreationResourceRef[], field: string): void => {
+      if (new Set(references.map(referenceKey)).size !== references.length) {
+        context.addIssue({ code: 'custom', path: ['nodes', index, 'payload', field], message: `${field} references must be unique` });
+      }
     };
 
     if (node.kind === 'campaign.create' && node.payload.settings.product === 'SB') {
@@ -1037,6 +1341,36 @@ export const CampaignCreationPlan = z.object({
           });
           break;
         }
+        case 'sb_product_collection_classic': {
+          requireCampaignBrand(payload.brand);
+          requireUniqueReferences(payload.products, 'products');
+          requireUniqueReferences(payload.brandLogos.map((image) => image.asset), 'brandLogos');
+          requireUniqueReferences(payload.customImages.map((image) => image.asset), 'customImages');
+          payload.products.forEach((product) => requireCheckedResource(product, 'product'));
+          payload.brandLogos.forEach((image) => requireCheckedResource(image.asset, 'asset', 'logo'));
+          payload.customImages.forEach((image) => requireCheckedResource(image.asset, 'asset', 'image'));
+          if (payload.landingPage.type === 'store') requireStorePage(payload.landingPage);
+          if (payload.landingPage.type === 'asin_list') {
+            requireUniqueReferences(payload.landingPage.products, 'landingPage');
+            payload.landingPage.products.forEach((product) => requireCheckedResource(product, 'product'));
+          }
+          break;
+        }
+        case 'sb_brand_gallery': {
+          requireCampaignBrand(payload.brand);
+          requireCheckedResource(payload.brandLogo.asset, 'asset', 'logo');
+          requireCheckedResource(payload.customImage.asset, 'asset', 'image');
+          requireStorePage(payload.landingPage);
+          payload.cards.forEach((card) => {
+            requireCheckedResource(card.customImage.asset, 'asset', 'image');
+            requireStorePage(card.landingPage);
+            if (card.landingPage.pageId === null
+              || referenceKey(card.landingPage.store) !== referenceKey(payload.landingPage.store)) {
+              context.addIssue({ code: 'custom', path: ['nodes', index, 'payload', 'cards'], message: 'Brand Gallery cards require pages in the checked campaign Store' });
+            }
+          });
+          break;
+        }
       }
     }
 
@@ -1085,11 +1419,41 @@ export const CampaignCreationPlan = z.object({
     }
 
     if (node.kind === 'creative.create') {
-      const assetKeys = node.payload.assets.map(referenceKey);
-      if (new Set(assetKeys).size !== assetKeys.length) {
-        context.addIssue({ code: 'custom', path: ['nodes', index, 'payload', 'assets'], message: 'custom creative assets must be unique' });
+      const payload = node.payload;
+      if (payload.format === 'sd_custom') {
+        const assetKeys = payload.assets.map(referenceKey);
+        if (new Set(assetKeys).size !== assetKeys.length) {
+          context.addIssue({ code: 'custom', path: ['nodes', index, 'payload', 'assets'], message: 'custom creative assets must be unique' });
+        }
+        payload.assets.forEach((asset) => requireCheckedResource(asset, 'asset', 'display_creative'));
+      } else {
+        const adGroupKey = referenceKey(payload.adGroup);
+        if (displayCreativeAdGroupOwners.has(adGroupKey)) {
+          context.addIssue({ code: 'custom', path: ['nodes', index, 'payload', 'adGroup'], message: 'SD permits one creative per ad group' });
+        }
+        displayCreativeAdGroupOwners.set(adGroupKey, node.nodeId);
+        const adGroup = byId.get(payload.adGroup.nodeId);
+        const expectedCreativeType = payload.format === 'sd_image' ? 'IMAGE' : 'VIDEO';
+        if (adGroup?.kind !== 'ad_group.create' || !('settings' in adGroup.payload)
+          || adGroup.payload.settings.product !== 'SD'
+          || adGroup.payload.settings.creativeType !== expectedCreativeType) {
+          context.addIssue({ code: 'custom', path: ['nodes', index, 'payload'], message: 'SD creative type must match its ad group' });
+        }
+        if (payload.brandLogo !== null) requireCheckedResource(payload.brandLogo.asset, 'asset', 'logo');
+        if (payload.format === 'sd_image') {
+          sdImageSelections(payload.images).forEach((image) => requireCheckedResource(image.asset, 'asset', 'image'));
+          if (payload.images.representation === 'rectangle_and_square'
+            && referenceKey(payload.images.rectCustomImage.asset) !== referenceKey(payload.images.squareCustomImage.asset)) {
+            context.addIssue({ code: 'custom', path: ['nodes', index, 'payload', 'images'], message: 'SD rectangle and square images must use the same checked asset ID and version' });
+          }
+        } else {
+          sdVideoSelections(payload.videos).forEach((asset) => requireCheckedResource(asset, 'asset', 'video'));
+          if (!plan.nodes.some((ad) => ad.kind === 'ad.create' && ad.payload.format === 'sd_product_ad'
+            && referenceKey(ad.payload.adGroup) === adGroupKey && node.dependsOn.includes(ad.nodeId))) {
+            context.addIssue({ code: 'custom', path: ['nodes', index, 'dependsOn'], message: 'SD video requires an ASIN/SKU product ad in its ad group as an observed dependency' });
+          }
+        }
       }
-      node.payload.assets.forEach((asset) => requireCheckedResource(asset, 'asset', 'display_creative'));
     }
   }
 
@@ -1119,14 +1483,50 @@ export const CampaignCreationPlan = z.object({
   if (plan.counts.byKind['campaign.create'] === 0) {
     context.addIssue({ code: 'custom', path: ['counts', 'byKind', 'campaign.create'], message: 'a creation plan must create at least one campaign' });
   }
-});
+}
+
+export const CampaignCreationPlanV1 = CampaignCreationPlanShape.extend({
+  schemaVersion: z.literal('openspell.campaign-creation-plan.v1'),
+  nodes: z.array(CampaignCreationNodeV1).min(1),
+}).superRefine(validateCampaignCreationPlan);
+export type CampaignCreationPlanV1 = z.infer<typeof CampaignCreationPlanV1>;
+
+export const CampaignCreationPlanV2 = CampaignCreationPlanShape.extend({
+  schemaVersion: z.literal('openspell.campaign-creation-plan.v2'),
+  nodes: z.array(CampaignCreationNodeV2).min(1),
+}).superRefine(validateCampaignCreationPlan);
+export type CampaignCreationPlanV2 = z.infer<typeof CampaignCreationPlanV2>;
+
+export const CampaignCreationPlan = z.discriminatedUnion('schemaVersion', [
+  CampaignCreationPlanV1,
+  CampaignCreationPlanV2,
+]);
 export type CampaignCreationPlan = z.infer<typeof CampaignCreationPlan>;
+
+/**
+ * Check creation inputs at new dispatch, without rewriting historical plans.
+ * This does not establish provider-recipe support, current profile eligibility,
+ * asset eligibility, or reservation purchase authority. Those runtime checks
+ * remain mandatory in addition to receipt, gate and dependency verification.
+ */
+export function requireCampaignCreationDispatchInputs(rawPlan: unknown): CampaignCreationPlan {
+  const plan = CampaignCreationPlan.parse(rawPlan);
+  if (plan.schemaVersion === 'openspell.campaign-creation-plan.v1') {
+    if (plan.adProduct !== 'SP') {
+      throw new Error('historical SB and SD plans omit required creation inputs; record and approve a v2 plan');
+    }
+    if (plan.nodes.some((node) => node.kind === 'ad_group.create' && node.payload.defaultBid === null)) {
+      throw new Error('Sponsored Products dispatch requires an explicit numeric ad-group default bid');
+    }
+  }
+  return plan;
+}
 
 /** Canonical node preimage. Hash with SHA-256 in a Node-capable boundary. */
 export function serializeCampaignCreationNodeFingerprint(rawNode: CampaignCreationNode): string {
   const node = CampaignCreationNode.parse(rawNode);
   return JSON.stringify([
-    'openspell.campaign-creation-node.v1',
+    'schemaVersion' in node ? node.schemaVersion : 'openspell.campaign-creation-node.v1',
     node.nodeId,
     node.kind,
     node.adProduct,
@@ -2141,6 +2541,7 @@ export function verifyCampaignCreationProviderCallArtifacts(
   if (verified.job.type !== 'campaign_creation.dispatch') {
     throw new Error('provider calls require a campaign creation dispatch job');
   }
+  requireCampaignCreationDispatchInputs(verified.plan);
   const now = z.iso.datetime().parse(rawNow);
   const currentEvidence = verifyCampaignCreationCurrentEvidence(
     rawCurrentEvidence,

@@ -9,8 +9,13 @@ import {
   CampaignCreationExecutionEvidence,
   CampaignCreationExecutionSnapshot,
   CampaignCreationJobPayload,
-  CampaignCreationNode,
-  CampaignCreationPlan,
+  CampaignCreationNodeV1 as CampaignCreationNode,
+  CampaignCreationPlanV1 as CampaignCreationPlan,
+  CampaignCreationNode as RecordedCampaignCreationNode,
+  CampaignCreationPlan as RecordedCampaignCreationPlan,
+  CampaignCreationNodeV2,
+  CampaignCreationPlanV2,
+  SponsoredBrandsCreationFormatV2,
   CampaignCreationProviderResult,
   CampaignCreationResourceObservation,
   JobPayload,
@@ -22,8 +27,9 @@ import {
   verifyCampaignCreationObservationArtifacts,
   verifyCampaignCreationPlanFingerprints,
   verifyCampaignCreationProviderCallArtifacts,
-  type CampaignCreationNode as CampaignCreationNodeType,
-  type CampaignCreationPlan as CampaignCreationPlanType,
+  requireCampaignCreationDispatchInputs,
+  type CampaignCreationNodeV1 as CampaignCreationNodeType,
+  type CampaignCreationPlanV1 as CampaignCreationPlanType,
 } from './index.js';
 
 const ORG_ID = '00000000-0000-4000-8000-000000000001';
@@ -507,7 +513,7 @@ function sbProductVideoPlan(): CampaignCreationPlanType {
   });
 }
 
-function completedSpExecutionEvidence(plan: CampaignCreationPlanType = spPlan()) {
+function completedSpExecutionEvidence(plan: CampaignCreationPlanType | CampaignCreationPlanV2 = spPlan()) {
   const providerResults = plan.nodes.map((node, index) => ({
     effect: node.effect,
     planId: plan.id,
@@ -676,7 +682,559 @@ function failedCampaignExecutionEvidence() {
   };
 }
 
+const NODE_VERSION_V2 = 'openspell.campaign-creation-node.v2' as const;
+const PLAN_VERSION_V2 = 'openspell.campaign-creation-plan.v2' as const;
+const IMAGE_NODE_ID = '00000000-0000-4000-8000-000000000030';
+const VIDEO_NODE_ID = '00000000-0000-4000-8000-000000000031';
+const CREATIVE_NODE_ID = '00000000-0000-4000-8000-000000000032';
+
+function ref(kind: 'asset' | 'product' | 'ad_group' | 'store', nodeId: string) {
+  return { source: 'plan_node', kind, nodeId } as const;
+}
+
+function v2PlanWithNodes(
+  source: CampaignCreationPlanType | CampaignCreationPlanV2,
+  rawNodes: unknown[],
+): CampaignCreationPlanV2 {
+  const nodes = orderCampaignCreationNodes(rawNodes.map((node) => CampaignCreationNodeV2.parse(node)));
+  const byKind = { ...source.counts.byKind };
+  for (const key of Object.keys(byKind) as (keyof typeof byKind)[]) {
+    byKind[key] = nodes.filter((node) => node.kind === key).length;
+  }
+  const readChecks = nodes.filter((node) => node.effect === 'read_check').length;
+  return CampaignCreationPlanV2.parse({
+    ...source,
+    schemaVersion: PLAN_VERSION_V2,
+    nodes,
+    counts: { totalNodes: nodes.length, readChecks, irreversibleCreates: nodes.length - readChecks, byKind },
+  });
+}
+
+// Test fixture construction only: production must collect and review these
+// explicit inputs, never silently upgrade an operator's recorded v1 artifact.
+function v2Fixture(source: CampaignCreationPlanType): CampaignCreationPlanV2 {
+  return v2PlanWithNodes(source, source.nodes.map((node) => {
+    const common = { ...node, schemaVersion: NODE_VERSION_V2 };
+    if (node.kind === 'campaign.create') {
+      const { startDate, endDate, settings, ...payload } = node.payload;
+      return { ...common, payload: {
+        ...payload,
+        schedule: settings.product === 'SB'
+          ? { type: 'instants', startDateTime: '2026-08-31T07:00:00.000Z', endDateTime: null }
+          : { type: 'calendar_dates', startDate, endDate },
+        settings: settings.product === 'SB' ? {
+          ...settings, costType: 'CPC', marketplaceScope: 'SINGLE_MARKETPLACE', marketplace: 'US',
+          optimizations: { goalSettings: { kpi: 'CLICKS' }, bidSettings: { bidStrategy: 'MANUAL' } },
+          purchasing: { type: 'auction' },
+        } : settings.product === 'SD' ? { ...settings, costType: 'cpc' } : settings,
+      } };
+    }
+    if (node.kind === 'ad_group.create') {
+      return { ...common, payload: { ...node.payload, settings: node.adProduct === 'SD'
+        ? { product: 'SD', creativeType: 'IMAGE', bidOptimization: 'clicks' }
+        : { product: node.adProduct } } };
+    }
+    if (node.kind === 'ad.create' && node.payload.format === 'sb_store_spotlight') {
+      return { ...common, payload: { ...node.payload, enableCreativeAutoTranslation: false } };
+    }
+    return common;
+  }));
+}
+
+function v2AssetNode(adProduct: 'SB' | 'SD', purpose: 'image' | 'video'): CampaignCreationNodeV2 {
+  return CampaignCreationNodeV2.parse({
+    schemaVersion: NODE_VERSION_V2,
+    nodeId: purpose === 'image' ? IMAGE_NODE_ID : VIDEO_NODE_ID,
+    kind: 'asset.require_existing',
+    adProduct,
+    apiDialect: adProduct === 'SB' ? 'unified_ads_v1' : 'sd_legacy',
+    dependsOn: [], fingerprint: sha('9'), effect: 'read_check', rollback: 'not_applicable',
+    payload: { assetId: `SYNTHETIC-${purpose}-ASSET`, version: '3', purpose },
+  });
+}
+
+function v2SbPlan(format: SponsoredBrandsCreationFormatV2): CampaignCreationPlanV2 {
+  const source = v2Fixture(sbStoreSpotlightPlan());
+  const needsImage = format === 'product_collection_classic' || format === 'brand_gallery';
+  const nodes: unknown[] = source.nodes.map((node) => {
+    if (node.kind === 'campaign.create' && node.payload.settings.product === 'SB') {
+      return { ...node, payload: { ...node.payload, settings: {
+        ...node.payload.settings, format,
+        purchasing: format === 'brand_gallery'
+          ? { type: 'reserved_share_of_voice', targetedPGDealId: 'SYNTHETIC-DEAL' }
+          : { type: 'auction' },
+      } } };
+    }
+    if (node.kind !== 'ad.create' || node.payload.format !== 'sb_store_spotlight') return node;
+    const { name, state, adGroup, brand, logoAsset, headline, landingPage, cards } = node.payload;
+    const base = { name, state, adGroup, brand };
+    const products = cards.map((card) => card.product);
+    const image = { asset: ref('asset', IMAGE_NODE_ID), formatProperties: [] };
+    const logo = { asset: logoAsset, formatProperties: [] };
+    let payload: unknown;
+    switch (format) {
+      case 'store_spotlight': return node;
+      case 'product_collection_manual':
+        payload = { ...base, format: `sb_${format}`, products, logoAsset, title: null, landingPage };
+        break;
+      case 'product_collection_automatic':
+        payload = { ...base, format: `sb_${format}`, logoAsset, productExclusions: [] };
+        break;
+      case 'product_video':
+        payload = { ...base, format: `sb_${format}`, products, logoAsset, headline, landingPage,
+          enableCreativeAutoTranslation: false, videoAsset: ref('asset', VIDEO_NODE_ID) };
+        break;
+      case 'product_collection_classic':
+        payload = { ...base, format: `sb_${format}`, products, brandLogos: [logo], customImages: [image],
+          headline, landingPage, enableCreativeAutoTranslation: false };
+        break;
+      case 'brand_gallery':
+        payload = { ...base, format: `sb_${format}`, brandLogo: logo, customImage: image,
+          headline, landingPage, enableCreativeAutoTranslation: false,
+          cards: cards.map((card) => ({ headline: card.headline, landingPage: card.landingPage, customImage: image })) };
+        break;
+    }
+    return { ...node, payload, dependsOn: [...node.dependsOn,
+      ...(needsImage ? [IMAGE_NODE_ID] : []), ...(format === 'product_video' ? [VIDEO_NODE_ID] : [])].sort() };
+  });
+  if (needsImage) nodes.push(v2AssetNode('SB', 'image'));
+  if (format === 'product_video') nodes.push(v2AssetNode('SB', 'video'));
+  return v2PlanWithNodes(source, nodes);
+}
+
+function v2SdPlan(format: 'sd_image' | 'sd_video'): CampaignCreationPlanV2 {
+  const legacy = spPlan();
+  const source = { ...legacy, adProduct: 'SD' as const, apiDialect: 'sd_legacy' as const };
+  const nodes: unknown[] = legacy.nodes.map((node) => {
+    const common = { ...node, schemaVersion: NODE_VERSION_V2, adProduct: 'SD', apiDialect: 'sd_legacy' };
+    switch (node.kind) {
+      case 'campaign.create': {
+        const { startDate, endDate, ...payload } = node.payload;
+        return { ...common, payload: { ...payload,
+          schedule: { type: 'calendar_dates', startDate, endDate },
+          settings: { product: 'SD', tactic: 'contextual', costType: 'cpc' } } };
+      }
+      case 'ad_group.create':
+        return { ...common, payload: { ...node.payload, settings: { product: 'SD',
+          creativeType: format === 'sd_image' ? 'IMAGE' : 'VIDEO', bidOptimization: 'clicks' } } };
+      case 'ad.create':
+        return { ...common, payload: { ...node.payload, format: 'sd_product_ad' } };
+      case 'target.create':
+        return { ...common, payload: { targetType: 'sd_product', parent: ref('ad_group', AD_GROUP_NODE_ID),
+          polarity: 'positive', bid: 1.01, state: 'paused', asin: 'B000000000' } };
+      default: return common;
+    }
+  });
+  const purpose = format === 'sd_image' ? 'image' : 'video';
+  const mediaId = purpose === 'image' ? IMAGE_NODE_ID : VIDEO_NODE_ID;
+  nodes.push(v2AssetNode('SD', purpose), {
+    schemaVersion: NODE_VERSION_V2, nodeId: CREATIVE_NODE_ID, kind: 'creative.create',
+    adProduct: 'SD', apiDialect: 'sd_legacy', dependsOn: [AD_GROUP_NODE_ID, AD_NODE_ID, mediaId].sort(),
+    fingerprint: sha('8'), effect: 'irreversible_create', rollback: 'none',
+    payload: { format, adGroup: ref('ad_group', AD_GROUP_NODE_ID), headline: null,
+      brandLogo: null, consentToTranslate: false,
+      ...(format === 'sd_image' ? { images: { representation: 'rectangle_and_square',
+        rectCustomImage: { asset: ref('asset', mediaId), croppingCoordinates: { top: 0, left: 0, width: 1200, height: 628 } },
+        squareCustomImage: { asset: ref('asset', mediaId), croppingCoordinates: { top: 0, left: 0, width: 628, height: 628 } },
+      } } : { videos: { representation: 'single_video', video: ref('asset', mediaId) } }),
+    },
+  });
+  return v2PlanWithNodes(source, nodes);
+}
+
+function fingerprintedV2(plan: CampaignCreationPlanV2): CampaignCreationPlanV2 {
+  const nodes = plan.nodes.map((node) => ({ ...node,
+    fingerprint: sha256.digest(serializeCampaignCreationNodeFingerprint(node)) }));
+  const prepared = CampaignCreationPlanV2.parse({ ...plan, nodes });
+  return CampaignCreationPlanV2.parse({ ...prepared,
+    fingerprint: sha256.digest(serializeCampaignCreationPlanFingerprint(prepared)) });
+}
+
+function v2Node<K extends CampaignCreationNodeV2['kind']>(plan: CampaignCreationPlanV2, kind: K) {
+  const node = plan.nodes.find((candidate) => candidate.kind === kind);
+  if (node === undefined) throw new Error(`synthetic ${kind} missing`);
+  return node as Extract<CampaignCreationNodeV2, { kind: K }>;
+}
+
+function authorityFor(plan: CampaignCreationPlanType | CampaignCreationPlanV2) {
+  const authorization = CampaignCreationAuthorizationReceipt.parse({
+    authorizationId: AUTHORIZATION_ID, executionId: EXECUTION_ID, generation: GENERATION_ID,
+    schemaVersion: plan.schemaVersion, planId: plan.id, planFingerprint: plan.fingerprint,
+    orgId: plan.orgId, profileId: plan.profileId, marketplaceId: plan.marketplaceId,
+    adProduct: plan.adProduct, apiDialect: plan.apiDialect, expiresAt: plan.expiresAt,
+    expectedCounts: plan.counts, noRollbackAcknowledgement: plan.noRollbackAcknowledgement,
+    confirmationVersion: 'openspell.campaign-creation.no-delete-rollback.v1',
+    approvedBy: '00000000-0000-4000-8000-000000000009', approvedAt: '2026-08-30T00:01:15.000Z',
+    gateSnapshotDigest: sha('d'),
+  });
+  const job = { type: 'campaign_creation.dispatch' as const, orgId: plan.orgId, profileId: plan.profileId,
+    planId: plan.id, planFingerprint: plan.fingerprint, executionId: EXECUTION_ID,
+    authorizationId: AUTHORIZATION_ID, generation: GENERATION_ID };
+  return { authorization, job };
+}
+
+describe('versioned campaign creation inputs', () => {
+  it.each(SponsoredBrandsCreationFormatV2.options)('records the distinct SB %s graph without claiming eligibility', (format) => {
+    const plan = fingerprintedV2(v2SbPlan(format));
+    expect(RecordedCampaignCreationPlan.parse(JSON.parse(JSON.stringify(plan)))).toEqual(plan);
+    expect(verifyCampaignCreationPlanFingerprints(plan, sha256)).toEqual(plan);
+    expect(requireCampaignCreationDispatchInputs(plan)).toEqual(plan);
+    expect(plan).not.toHaveProperty('eligible');
+    expect(plan.counts.irreversibleCreates).toBe(3);
+    expect(plan.counts.byKind['creative.create']).toBe(0);
+    expect(plan.counts.totalNodes).toBe(plan.nodes.length);
+    expect(CampaignCreationExecutionEvidence.parse(completedSpExecutionEvidence(plan)).snapshot.status).toBe('succeeded');
+  });
+
+  it.each(['sd_image', 'sd_video'] as const)('records %s against its ad group with exact asset versions and create counts', (format) => {
+    const plan = fingerprintedV2(v2SdPlan(format));
+    expect(verifyCampaignCreationPlanFingerprints(plan, sha256)).toEqual(plan);
+    expect(plan.counts).toMatchObject({ totalNodes: 7, readChecks: 2, irreversibleCreates: 5 });
+    const creative = v2Node(plan, 'creative.create');
+    expect(creative.payload).toHaveProperty('adGroup', ref('ad_group', AD_GROUP_NODE_ID));
+    expect(creative.payload).not.toHaveProperty('ad');
+    expect(creative.payload).not.toHaveProperty('state');
+    expect(plan.nodes.at(-1)?.nodeId).toBe(creative.nodeId);
+    expect(CampaignCreationExecutionEvidence.parse(completedSpExecutionEvidence(plan)).snapshot.status).toBe('succeeded');
+  });
+
+  it('requires explicit node versions and refuses a mixed plan without upgrading historical nodes', () => {
+    const historical = spPlan();
+    const current = v2Fixture(historical);
+    const oldNode = historical.nodes[0];
+    const newNode = current.nodes[0];
+    if (oldNode === undefined || newNode === undefined) throw new Error('synthetic node missing');
+    expect(RecordedCampaignCreationNode.parse(oldNode)).not.toHaveProperty('schemaVersion');
+    expect(RecordedCampaignCreationNode.parse(newNode)).toHaveProperty('schemaVersion', NODE_VERSION_V2);
+    expect(CampaignCreationNodeV2.safeParse(oldNode).success).toBe(false);
+    expect(RecordedCampaignCreationNode.safeParse({ ...newNode, schemaVersion: 'unsupported' }).success).toBe(false);
+    expect(serializeCampaignCreationNodeFingerprint(oldNode)).not.toBe(serializeCampaignCreationNodeFingerprint(newNode));
+    expect(RecordedCampaignCreationPlan.safeParse({ ...current, nodes: [oldNode, ...current.nodes.slice(1)] }).success).toBe(false);
+    expect(RecordedCampaignCreationPlan.safeParse({ ...historical, nodes: [newNode, ...historical.nodes.slice(1)] }).success).toBe(false);
+  });
+
+  it('preserves SP automatic targeting safety and requires reviewed default bids', () => {
+    const plan = v2Fixture(spPlan());
+    v2Node(plan, 'ad_group.create').payload.defaultBid = null;
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    expect(() => requireCampaignCreationDispatchInputs(plan)).toThrow();
+    const old = spPlan();
+    const oldGroup = old.nodes.find((node) => node.kind === 'ad_group.create');
+    if (oldGroup?.kind !== 'ad_group.create') throw new Error('synthetic ad group missing');
+    oldGroup.payload.defaultBid = null;
+    expect(RecordedCampaignCreationPlan.parse(old)).toEqual(old);
+    expect(() => requireCampaignCreationDispatchInputs(old)).toThrow(/explicit numeric/);
+    expect(CampaignCreationExecutionEvidence.parse(completedSpExecutionEvidence(old)).snapshot.status).toBe('succeeded');
+
+    const automatic = v2Fixture(spPlan());
+    const settings = v2Node(automatic, 'campaign.create').payload.settings;
+    if (settings.product !== 'SP') throw new Error('synthetic SP settings missing');
+    settings.targetingType = 'auto';
+    expect(CampaignCreationPlanV2.safeParse(automatic).success).toBe(false);
+    const valid = v2PlanWithNodes(automatic, automatic.nodes.filter((node) => node.kind !== 'target.create'));
+    expect(valid.counts.byKind['target.create']).toBe(0);
+    expect(requireCampaignCreationDispatchInputs(valid)).toEqual(valid);
+    const target = v2Node(v2Fixture(spPlan()), 'target.create');
+    expect(CampaignCreationNodeV2.safeParse({ ...target, payload: {
+      targetType: 'expression', parent: ref('ad_group', AD_GROUP_NODE_ID), scope: 'ad_group',
+      polarity: 'positive', bid: 1, state: 'paused', expression: [{ type: 'close_match', value: null }],
+    } }).success).toBe(false);
+  });
+
+  it.each(['costType', 'optimizations', 'marketplace', 'purchasing'] as const)('refuses an SB plan missing explicit %s', (field) => {
+    const plan = v2SbPlan('product_collection_classic');
+    const settings = v2Node(plan, 'campaign.create').payload.settings;
+    Reflect.deleteProperty(settings, field);
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    expect(() => requireCampaignCreationDispatchInputs(plan)).toThrow();
+  });
+
+  it('uses create KPI fields and explicit instants instead of accepting a read-only goal or date default', () => {
+    const plan = v2SbPlan('product_video');
+    const campaign = v2Node(plan, 'campaign.create');
+    const settings = campaign.payload.settings;
+    if (settings.product !== 'SB') throw new Error('synthetic SB settings missing');
+    Reflect.deleteProperty(settings.optimizations.goalSettings, 'kpi');
+    Reflect.set(settings.optimizations.goalSettings, 'goal', 'PAGE_VISITS');
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    const corrected = v2SbPlan('product_video');
+    v2Node(corrected, 'campaign.create').payload.schedule = {
+      type: 'calendar_dates', startDate: '2026-08-31', endDate: null,
+    };
+    expect(CampaignCreationPlanV2.safeParse(corrected).success).toBe(false);
+    const reverse = v2SbPlan('product_video');
+    v2Node(reverse, 'campaign.create').payload.schedule = {
+      type: 'instants', startDateTime: '2026-08-31T12:00:00+01:00', endDateTime: '2026-08-31T11:30:00+02:00',
+    };
+    expect(CampaignCreationPlanV2.safeParse(reverse).success).toBe(false);
+  });
+
+  it('enforces classic collection cardinalities and keeps landing-page products separate', () => {
+    const plan = v2SbPlan('product_collection_classic');
+    const ad = v2Node(plan, 'ad.create');
+    if (ad.payload.format !== 'sb_product_collection_classic') throw new Error('synthetic classic collection missing');
+    const product = ad.payload.products[0];
+    if (product === undefined) throw new Error('synthetic product missing');
+    ad.payload.landingPage = { type: 'asin_list', products: [product] };
+    ad.payload.products = [];
+    expect(CampaignCreationPlanV2.parse(plan)).toEqual(plan);
+    ad.payload.landingPage.products = [];
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    ad.payload.landingPage = { type: 'custom_url', url: 'https://example.com/synthetic-collection' };
+    expect(CampaignCreationPlanV2.parse(plan)).toEqual(plan);
+    // This is only a valid request shape; vendor eligibility still needs a live preflight.
+    ad.payload.products = [product, product, product, product];
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    ad.payload.products = [];
+    ad.payload.brandLogos = [];
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+  });
+
+  it('requires Gallery reservation identity and image cards rather than Spotlight product cards', () => {
+    const plan = v2SbPlan('brand_gallery');
+    const ad = v2Node(plan, 'ad.create');
+    const settings = v2Node(plan, 'campaign.create').payload.settings;
+    if (ad.payload.format !== 'sb_brand_gallery' || settings.product !== 'SB') throw new Error('synthetic Gallery missing');
+    settings.purchasing = { type: 'auction' };
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    settings.purchasing = { type: 'reserved_share_of_voice', targetedPGDealId: 'SYNTHETIC-DEAL' };
+    const card = ad.payload.cards[0];
+    if (card === undefined) throw new Error('synthetic card missing');
+    Reflect.set(card, 'product', ref('product', PRODUCT_NODE_ID));
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    Reflect.deleteProperty(card, 'product');
+    card.landingPage.pageId = 'UNCHECKED-PAGE';
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    card.landingPage.pageId = 'PAGE-1';
+    ad.payload.cards = [card, card];
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    ad.payload.cards = [card, card, card, card, card, card];
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+  });
+
+  it('rejects a Gallery card that crosses into another checked Store', () => {
+    const plan = v2SbPlan('brand_gallery');
+    const ad = v2Node(plan, 'ad.create');
+    const originalStore = v2Node(plan, 'eligibility.require_store');
+    if (ad.payload.format !== 'sb_brand_gallery') throw new Error('synthetic Gallery missing');
+    const card = ad.payload.cards[0];
+    if (card === undefined) throw new Error('synthetic Gallery card missing');
+    card.landingPage = { type: 'store', pageId: 'OTHER-PAGE', store: ref('store', GENERATION_ID) };
+    ad.dependsOn = [...ad.dependsOn, GENERATION_ID].sort();
+    expect(() => v2PlanWithNodes(plan, [...plan.nodes, { ...originalStore, nodeId: GENERATION_ID,
+      payload: { storeId: 'OTHER-SYNTHETIC-STORE', pageIds: ['OTHER-PAGE'] } }])).toThrow(/checked campaign Store/);
+  });
+
+  it('rejects SD defaulting, incompatible optimization and mismatched creative types', () => {
+    const plan = v2SdPlan('sd_video');
+    const group = v2Node(plan, 'ad_group.create');
+    const campaign = v2Node(plan, 'campaign.create');
+    if (group.payload.settings.product !== 'SD' || campaign.payload.settings.product !== 'SD') throw new Error('synthetic SD settings missing');
+    group.payload.settings.bidOptimization = 'reach';
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    campaign.payload.settings.costType = 'vcpm';
+    expect(CampaignCreationPlanV2.parse(plan)).toEqual(plan);
+    group.payload.settings.creativeType = 'IMAGE';
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    Reflect.deleteProperty(group.payload.settings, 'creativeType');
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+  });
+
+  it('rejects duplicate SD creatives, an ad parent and fabricated creative state', () => {
+    const plan = v2SdPlan('sd_image');
+    const creative = v2Node(plan, 'creative.create');
+    expect(() => v2PlanWithNodes(plan, [...plan.nodes, { ...creative, nodeId: GENERATION_ID }])).toThrow(/one creative/);
+    expect(CampaignCreationNodeV2.safeParse({ ...creative,
+      payload: { ...creative.payload, adGroup: { source: 'plan_node', kind: 'ad', nodeId: AD_NODE_ID } },
+    }).success).toBe(false);
+    expect(CampaignCreationNodeV2.safeParse({ ...creative, payload: { ...creative.payload, state: 'paused' } }).success).toBe(false);
+  });
+
+  it('validates SD image crop identity, image purpose and explicit aspect-image selections', () => {
+    const plan = v2SdPlan('sd_image');
+    const creative = v2Node(plan, 'creative.create');
+    if (creative.payload.format !== 'sd_image' || creative.payload.images.representation !== 'rectangle_and_square') throw new Error('synthetic images missing');
+    const secondImage = { ...v2AssetNode('SD', 'image'), nodeId: GENERATION_ID,
+      payload: { assetId: 'SECOND-SYNTHETIC-IMAGE', version: '8', purpose: 'image' } };
+    creative.payload.images.squareCustomImage.asset = ref('asset', GENERATION_ID);
+    creative.dependsOn = [...creative.dependsOn, GENERATION_ID].sort();
+    expect(() => v2PlanWithNodes(plan, [...plan.nodes, secondImage])).toThrow(/same checked asset/);
+    const image = { asset: ref('asset', IMAGE_NODE_ID), croppingCoordinates: null };
+    creative.payload.images = { representation: 'aspect_images', horizontalImages: [image], squareImages: [], verticalImages: [] };
+    creative.dependsOn = creative.dependsOn.filter((id) => id !== GENERATION_ID);
+    expect(CampaignCreationPlanV2.parse(plan)).toEqual(plan);
+    creative.payload.images.horizontalImages = [];
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    creative.payload.images.horizontalImages = [image];
+    const asset = plan.nodes.find((node) => node.nodeId === IMAGE_NODE_ID);
+    if (asset?.kind !== 'asset.require_existing') throw new Error('synthetic image missing');
+    asset.payload.purpose = 'video';
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+  });
+
+  it('distinguishes SD single-video from aspect arrays and requires a product ad', () => {
+    const plan = v2SdPlan('sd_video');
+    const creative = v2Node(plan, 'creative.create');
+    if (creative.payload.format !== 'sd_video') throw new Error('synthetic video missing');
+    creative.payload.videos = { representation: 'aspect_videos', squareVideos: [], horizontalVideos: [],
+      verticalVideos: [ref('asset', VIDEO_NODE_ID)] };
+    expect(CampaignCreationPlanV2.parse(plan)).toEqual(plan);
+    Reflect.set(creative.payload.videos, 'video', ref('asset', VIDEO_NODE_ID));
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    Reflect.deleteProperty(creative.payload.videos, 'video');
+    creative.payload.videos.verticalVideos = [ref('asset', VIDEO_NODE_ID), ref('asset', VIDEO_NODE_ID)];
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    creative.payload.videos.verticalVideos = [];
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    creative.payload.videos.verticalVideos = [ref('asset', VIDEO_NODE_ID)];
+    creative.payload.headline = 'x'.repeat(51);
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    creative.payload.headline = null;
+    creative.dependsOn = creative.dependsOn.filter((id) => id !== AD_NODE_ID);
+    expect(CampaignCreationPlanV2.safeParse(plan).success).toBe(false);
+    expect(() => v2PlanWithNodes(plan, plan.nodes.filter((node) => node.nodeId !== AD_NODE_ID))).toThrow(/product ad/);
+  });
+
+  it('binds cost, objective, destination, crop, asset version and deal changes to approval', () => {
+    const plan = fingerprintedV2(v2SbPlan('brand_gallery'));
+    const { authorization, job } = authorityFor(plan);
+    expect(verifyCampaignCreationJobArtifacts(plan, authorization, job, '2026-08-30T00:03:00.000Z', sha256).plan).toEqual(plan);
+    expect(() => verifyCampaignCreationJobArtifacts(plan,
+      { ...authorization, schemaVersion: 'openspell.campaign-creation-plan.v1' }, job,
+      '2026-08-30T00:03:00.000Z', sha256)).toThrow(/receipt does not match/);
+    const mutations: ((changed: CampaignCreationPlanV2) => void)[] = [
+      (changed) => { const settings = v2Node(changed, 'campaign.create').payload.settings;
+        if (settings.product === 'SB') settings.costType = 'FIXED_PRICE'; },
+      (changed) => { const settings = v2Node(changed, 'campaign.create').payload.settings;
+        if (settings.product === 'SB') settings.optimizations.goalSettings.kpi = 'TOP_OF_SEARCH_IMPRESSION_SHARE'; },
+      (changed) => { const settings = v2Node(changed, 'campaign.create').payload.settings;
+        if (settings.product === 'SB' && settings.purchasing.type === 'reserved_share_of_voice') settings.purchasing.targetedPGDealId = 'CHANGED-SYNTHETIC-DEAL'; },
+      (changed) => { const payload = v2Node(changed, 'ad.create').payload;
+        if (payload.format === 'sb_brand_gallery') payload.landingPage.pageId = 'PAGE-1'; },
+      (changed) => { const payload = v2Node(changed, 'ad.create').payload;
+        if (payload.format === 'sb_brand_gallery') payload.customImage.formatProperties = [{ top: 0, left: 0, width: 1200, height: 628 }]; },
+      (changed) => { const asset = changed.nodes.find((node) => node.nodeId === IMAGE_NODE_ID);
+        if (asset?.kind === 'asset.require_existing') asset.payload.version = '4'; },
+    ];
+    for (const mutate of mutations) {
+      const changed = structuredClone(plan);
+      mutate(changed);
+      expect(() => verifyCampaignCreationPlanFingerprints(changed, sha256)).toThrow(/fingerprint does not match/);
+      const freshlyHashed = fingerprintedV2(changed);
+      expect(() => verifyCampaignCreationJobArtifacts(freshlyHashed, authorization, job,
+        '2026-08-30T00:03:00.000Z', sha256)).toThrow(/receipt does not match/);
+    }
+  });
+
+  it('checks v2 provider intents against observed parents and prevents duplicate creation after uncertainty', () => {
+    const plan = fingerprintedV2(v2SdPlan('sd_video'));
+    const { authorization, job } = authorityFor(plan);
+    const completed = CampaignCreationExecutionEvidence.parse(completedSpExecutionEvidence(plan));
+    const intent = completed.providerCallIntents.find((call) => call.positions.some((position) => position.nodeId === CREATIVE_NODE_ID));
+    const observation = completed.observations.find((value) => value.nodeId === CREATIVE_NODE_ID);
+    if (intent === undefined || observation === undefined) throw new Error('synthetic creative evidence missing');
+    const current = CampaignCreationExecutionEvidence.parse({
+      ...completed,
+      providerCallIntents: completed.providerCallIntents.filter((call) => call.providerCallId !== intent.providerCallId),
+      providerResults: completed.providerResults.filter((result) => result.nodeId !== CREATIVE_NODE_ID),
+      observations: completed.observations.filter((value) => value.nodeId !== CREATIVE_NODE_ID),
+      nonProviderDispositions: [{ planId: plan.id, nodeId: CREATIVE_NODE_ID, executionId: EXECUTION_ID,
+        nodeFingerprint: v2Node(plan, 'creative.create').fingerprint, outcome: 'pending_dispatch', sanitizedReason: null }],
+      snapshot: { status: 'running', accounting: { ...completed.snapshot.accounting,
+        pendingDispatch: 1, attempted: 4, succeeded: 4, observed: 4 } },
+    });
+    expect(verifyCampaignCreationProviderCallArtifacts(plan, authorization, job, current, intent,
+      '2026-08-30T00:03:00.000Z', sha256).intent).toEqual(intent);
+    const waitingForParent = { ...current,
+      observations: current.observations.map((value) => value.nodeId === AD_NODE_ID
+        ? { ...value, observation: 'pending', providerEntityId: null } : value),
+      snapshot: { status: 'running', accounting: { ...current.snapshot.accounting,
+        observed: 3, pendingObservation: 1 } },
+    };
+    expect(() => verifyCampaignCreationProviderCallArtifacts(plan, authorization, job, waitingForParent,
+      intent, '2026-08-30T00:03:00.000Z', sha256)).toThrow(/dependency that is not satisfied/);
+
+    const uncertain = CampaignCreationExecutionEvidence.parse({
+      ...completed,
+      providerResults: completed.providerResults.map((result) => result.nodeId === CREATIVE_NODE_ID
+        ? { ...result, outcome: 'ambiguous', providerEntityId: null } : result),
+      observations: completed.observations.map((value) => value.nodeId === CREATIVE_NODE_ID
+        ? { ...value, basis: 'intent_reconciliation', observation: 'pending', providerEntityId: null } : value),
+      snapshot: { status: 'awaiting_observation', accounting: { ...completed.snapshot.accounting,
+        succeeded: 4, ambiguous: 1, observed: 4, pendingObservation: 1 } },
+    });
+    expect(() => verifyCampaignCreationProviderCallArtifacts(plan, authorization, job, uncertain,
+      { ...intent, providerCallId: CALL_ID, attemptId: ATTEMPT_ID },
+      '2026-08-30T00:03:00.000Z', sha256)).toThrow(/not exclusively pending dispatch/);
+    expect(CampaignCreationExecutionEvidence.safeParse({ ...completed,
+      providerResults: completed.providerResults.map((result) => result.nodeId === VIDEO_NODE_ID
+        ? { ...result, providerEntityVersion: 'OTHER-SYNTHETIC-VERSION' } : result),
+    }).success).toBe(false);
+  });
+
+  it('refuses new v1 SB dispatch while preserving its fingerprinted history and observations', () => {
+    const base = sbStoreSpotlightPlan();
+    const hashedNodes = CampaignCreationPlan.parse({ ...base, nodes: base.nodes.map((node) => ({ ...node,
+      fingerprint: sha256.digest(serializeCampaignCreationNodeFingerprint(node)) })) });
+    const plan = CampaignCreationPlan.parse({ ...hashedNodes,
+      fingerprint: sha256.digest(serializeCampaignCreationPlanFingerprint(hashedNodes)) });
+    const { authorization, job } = authorityFor(plan);
+    const completed = CampaignCreationExecutionEvidence.parse(completedSpExecutionEvidence(plan));
+    const observation = completed.observations[0];
+    if (observation === undefined) throw new Error('synthetic observation missing');
+    expect(verifyCampaignCreationPlanFingerprints(plan, sha256)).toEqual(plan);
+    expect(() => verifyCampaignCreationProviderCallArtifacts(plan, authorization, job, completed,
+      completed.providerCallIntents[0], '2026-08-30T00:03:00.000Z', sha256)).toThrow(/omit required creation inputs/);
+    expect(verifyCampaignCreationObservationArtifacts(plan, authorization,
+      { ...job, type: 'campaign_creation.observe', attempt: 1 }, completed,
+      observation, '2026-08-30T00:03:00.000Z', sha256).observation).toEqual(observation);
+  });
+});
+
 describe('campaign creation plan', () => {
+  it('preserves fixed v1 fingerprint goldens', () => {
+    const plans = [spPlan(), sbStoreSpotlightPlan(), sbProductVideoPlan()];
+    expect(plans.map((plan) => ({
+      nodes: plan.nodes.map((node) => sha256.digest(serializeCampaignCreationNodeFingerprint(node))),
+      plan: sha256.digest(serializeCampaignCreationPlanFingerprint(plan)),
+    }))).toEqual([
+      {
+        nodes: [
+          '81f87253f50e8082110e6438345e1b7480ff27958cb9ed71eb720743daa65250',
+          '62c0269d8115eb61a6311a4419a6f053e1837b138cb9a3284ce3f77a4e380c60',
+          '11fcf3e7142965259865ad0d71e110f0eb4c83997724e4fe1677ca833d60bbb5',
+          '58a5944bd99f3e1f065eb25d87220f07cac2dda98b930061281f01ae6a498d7e',
+          '877db34e38a3375b7eb46de570f20bea84aa081c59bfe3dda29f2e083a2927da',
+        ],
+        plan: 'f7a54d658a611be10cbae29bbaaf619974029d703144964eddd6e9b1344698af',
+      },
+      {
+        nodes: [
+          '6facffd058fcc8048a08c3f16d5921c3953720c586efa2a6225c310fa5c2ad7d',
+          '06532f43110d8c4ce8a54864b3073ebfd72f5912dc2fa6a71bbd9cd5c2739985',
+          'f5482ed711d0ab628cb59190ee049d839b0f7beca2cb3376ceebbe78ff7e817a',
+          '27e42cc7ec533dd6a97bb3695df26b5f56160f2445cd2ef067f805167b81496a',
+          'a2957420b255faa74dcd00a2f6831d679e3305b9c285bcb4ace71131747dd732',
+          'cfcb192e25a4714defeda5b9f9ca6febea149859394fb54e731bf4f9c876c008',
+          '2f19461c4af5d4aecfe2a836f8ff594dbf6662855ddbee24f294fc7e4716d185',
+          'b6ca7214de2e1920f1aa2eb47e3f365fa2df645065f5abc145621f764a711dfd',
+          '73667f7ca06edd8eb81aa2655b4437024e25668cf8a9c20f8dbbf7ad71e3c104',
+        ],
+        plan: '6024da352ffb1730141daf6ff967bd4b34ae2ec114dddf5c6f5512b3c88bb842',
+      },
+      {
+        nodes: [
+          '270b156e5e44cc543b480b59ac486a39bfb739ab116e4b85447df07a646e06a0',
+          '87b66fc5437813365f92a9086edc6cac27fcf970bdef9a0df88e12c7b72dd6c5',
+          '4114f6d77df0d96653d1e98b3eceac8f5276d72d42afa006668b44d818a1f318',
+          'be5ae93a05fda4f5549b8d8068c877b7e7910216b2e9a89e39699bc056736064',
+          '9aae22aafc636f4f2ef46eddef146368ed9dda9f9eca0edfd05b7024cf0989df',
+        ],
+        plan: 'e2b449ebab761b78a953b21459cee7176a4863f1cd6bb41e6f6887521bd90525',
+      },
+    ]);
+    plans.forEach((plan) => expect(RecordedCampaignCreationPlan.parse(plan)).toEqual(plan));
+  });
   it('round-trips a deterministic paused Sponsored Products dependency graph', () => {
     const plan = spPlan();
     expect(CampaignCreationPlan.parse(JSON.parse(JSON.stringify(plan)))).toEqual(plan);
