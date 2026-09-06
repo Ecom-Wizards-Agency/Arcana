@@ -826,9 +826,11 @@ improvement in this suite**, and the reason is worth stating rather than hiding:
 the fifth "before" run *failed the suite at 2,020.9 ms on the unchanged tree*
 (one-minute load average 4.5), so this measurement is dominated by the dev
 server and the 1.29 MB row payload, not by the layout gate. It also cannot show
-the synchronous-cache benefit at all: the suite opens a fresh browser context
-with no remembered layout, so `cachedLayout` returns null there and the code path
-under test never fires. The deterministic artifacts for that path are the two
+the synchronous-cache benefit at all: the measured navigation is preceded by a
+warm-up `goto` of the same route in the same context, and neither that warm-up
+nor anything else in the fixture ever writes a layout (only an operator gesture
+does), so `cachedLayout` returns null there and the code path under test never
+fires. The deterministic artifacts for that path are the two
 jsdom tests above — the gate is not rendered, and `lastLayout` is not called.
 Initial document 80,764 → 81,513 bytes (the suspended cockpit's shell), one row
 request, 3,597 rows, exports identical in both.
@@ -904,15 +906,15 @@ conversion introduced no CSS of its own.
 With `WIZARD_ADS_TEST_DATABASE_URL` and `DATABASE_URL` both on the disposable
 local Postgres 17:
 
-- `pnpm typecheck` 22 of 22, `pnpm lint`, `pnpm hygiene` (1,489 of 1,490 tracked
+- `pnpm typecheck` 22 of 22, `pnpm lint`, `pnpm hygiene` (1,490 of 1,491 tracked
   files, clean) and `git diff --check` clean.
 - `packages/ui`: `vitest run --exclude src/pipeline.perf.test.ts` 210 of 210 (was
   206; four new in `views.test.ts`).
 - `apps/web`: `vitest run` 692 of 692 functional tests with the one known
   `verifier-subprocess` load flake, which passes 3 of 3 in isolation — the same
-  flake slice 3 recorded. `vitest run app/grid` 17 of 17, `app/ngrams` 3 of 3,
-  `app/optimizer` 29 of 29 including the new loading-width test,
-  `src/e2e-suite-registry.test.ts` 4 of 4.
+  flake slice 3 recorded. `vitest run app/grid` 18 of 18 (17 before the review
+  fix below), `app/ngrams` 3 of 3, `app/optimizer` 28 of 28 including the new
+  loading-width test, `src/e2e-suite-registry.test.ts` 4 of 4.
 - e2e `auth` 7 of 7, `tags-goto` 33 of 33, `optimization-groups` 2 of 2,
   `grid-performance` 1 of 1.
 
@@ -931,3 +933,51 @@ Line 158 remains the pre-existing failure inside the slice 1–4 range (144.6 to
 `views.ts` and touched neither `pipeline.ts` nor `filter-options.ts`; the
 threshold was not changed. Resolving that baseline is still open for whoever
 touches the pipeline.
+
+#### Slice 5 review fixes
+
+The slice 5 review returned one high finding, two low and no scope violations.
+
+- **Returning from a campaign deep link re-reads the cache instead of keeping the
+  campaign's view** (high, `apps/web/app/grid/grid-client.tsx`). The ref that
+  remembers which scope a synchronous read has answered for held only the last
+  *successful* key, and nothing reset it. `gridRowsRequestUrl` does not include
+  the campaign, so a `?campaign=` deep link changes no row scope and remounts
+  nothing: campaigns → campaigns-for-one-campaign → campaigns came back to a key
+  the ref still matched, so the effect skipped both the synchronous re-read and
+  the asynchronous `lastLayout` restore and marked the grid ready while it was
+  still showing the deep link's view — including its `CAMPAIGN_ID` filter, which
+  made an unscoped grid silently show one campaign's rows. In production the
+  `key=` on `GridWorkspace` in `app/grid/page.tsx` masked it; nothing inside the
+  client depended on that key. The ref now records the scope key, the store and
+  whether that read produced a layout, and any change to either half forces a
+  fresh `cachedLayoutFor` — which also closes the same hole for a store swapped
+  under an unchanged scope. Test: `grid-client.test.ts` "re-reads the cache when
+  a campaign deep link is dropped, and keeps no filter from it" drives
+  `campaignId` null → `c-1` → null against a store that can answer
+  synchronously; before the fix it failed with `expected <button …
+  aria-label="Remove filter CAMPAIGN_ID"> to be null`, and it asserts the
+  remembered sort returns and the store is asked asynchronously exactly once
+  (`npx vitest run app/grid/grid-client.test.ts` from `apps/web`).
+- **Three close-out figures corrected** (low, this brief). `app/optimizer` is 28
+  of 28, not 29 of 29; `pnpm hygiene` scans 1,490 of 1,491 tracked files, not
+  1,489 of 1,490; and the `grid-performance` fixture does not open a fresh
+  browser context — it performs a warm-up navigation of the same route in the
+  same context. The conclusion that fixture supports is unchanged, because
+  nothing in it ever writes a layout, so `cachedLayout` returns null on the
+  measured navigation either way.
+- **No timing evidence for the synchronous path** (low, accepted as an open
+  item). The recorded before/after medians measure a fixture in which the new
+  path never fires; the deterministic artifacts remain the jsdom tests. Seeding
+  a remembered layout into the context before the measured navigation would time
+  it, and belongs to whoever next owns `apps/web/e2e/grid-performance.spec.ts`,
+  which is outside this package's declared file scope.
+
+Re-run on the fixed tree: `turbo run typecheck --filter=@wizard-ads/web
+--filter=@wizard-ads/ui` 14 of 14, `pnpm lint`, `pnpm hygiene` clean,
+`apps/web` `vitest run` 694 of 694 (the `verifier-subprocess` flake did not fire
+this time), `packages/ui` `vitest run --exclude src/pipeline.perf.test.ts` 210 of
+210, e2e `auth` 7 of 7 and `grid-performance` 1 of 1 at `usableMs` 1,541.6 with
+the same 81,513-byte initial document and one row request.
+`src/pipeline.perf.test.ts` line 158 still fails at 151.2 ms against its 125 ms
+local budget; the threshold was not touched.
