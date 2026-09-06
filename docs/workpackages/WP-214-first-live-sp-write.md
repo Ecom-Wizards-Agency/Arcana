@@ -149,6 +149,12 @@ These extend the retained verification aid with a separate 46-to-56 policy. The 
 41-to-46 policy, CLI behavior, parked supervisor branch and protected workflow are unchanged.
 This is migration preparation, not authorization to apply either window.
 
+The operator's subsequent hosted ACL-repair task also owns additive migration
+`20260906050000_recommendation_fenced_function_acl.sql`,
+`packages/db/src/recommendation-fenced-acl.test.ts` and the migration inventory test.
+It preserves the historical claim-custody migration and all fixed bundle pins. See
+[the completed operational repair and source handoff](WP-196-ACL-REPAIR-2026-09-06.md).
+
 1. `AGENTS.md` "Amazon write contract", all ten rules.
 2. `packages/shared/src/sp-writes.ts`: `SpWritePlan`, `ApproveSpWritePlan` at line 936,
    `SpCanonicalDecimal` at line 26.
@@ -250,7 +256,8 @@ Each begins with `set local lock_timeout = '5s'` and the shared transaction-scop
 DDL lock. These unhosted files are corrected before their first application; applied migration
 bytes remain immutable. The second window is not purely additive behavior: it renames and
 revokes functions and permissions. Rehearse index-build duration, lock acquisition and the
-versioned application functions against the first window's resulting 46-file prefix. The
+versioned application functions against the first window's resulting 46-file prefix plus
+the verified operational ACL repair described above. The
 reviewed bundle policy must pin all 56 files with exact bytes and digests. Rehearsal
 must cover the stricter approval behavior and mirror triggers as well as creation of new
 objects. The first four precede any web revision containing the native Time Machine
@@ -268,6 +275,12 @@ through `20260906040000`, explicitly inventoried in
 The reviewed deployment bundle must account for those additional dependencies even if
 MCP exposure stays off; the key-management and filtered history/export consumers already
 require their earlier source migrations. This does not expand Claude's WP-207 window.
+
+The separately scoped corrective migration `20260906050000_recommendation_fenced_function_acl.sql`
+is not an eleventh entry in that fixed bundle. Its SQL has already repaired the hosted ACLs,
+without changing the hosted migration ledger. Pin it as supplemental rehearsal evidence;
+review its later idempotent migration application separately. Never run an unrestricted
+`db push` that silently includes it alongside the authorized ten files.
 
 15. Seed one environment gate version plus head and one profile grant version plus head for the
     single profile with the template SQL, run by the authorized executor using the migration-

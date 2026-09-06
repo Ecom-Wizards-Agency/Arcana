@@ -4,11 +4,80 @@
 
 ### Latest preparation checkpoint
 
+**Hosted ACL repair completed, 2026-09-06 05:23:54 UTC:** Codex ran the operator's
+exact eight-function revoke block through the linked production Supabase SQL editor.
+It reported success, but independent ACL reads showed no changes: the managed `postgres`
+session had neither inherited nor SET authority over the executor-owned functions. All
+eight functions also lacked an explicit worker grant; effective worker access came from PUBLIC.
+The operator then explicitly authorized the corrected repair.
+
+The tested transaction temporarily acquired SET authority through the existing ADMIN-only
+edge, assumed the executor, granted EXECUTE to the worker and revoked all function privileges
+from PUBLIC, anon, authenticated and service_role. It restored the original membership graph
+and checked all eight signatures, owners, function bodies, direct grants and effective privileges
+before committing. Independent subsequent queries confirmed **8/8 worker grants**, **0/8 ambient
+execute grants**, and the original two ADMIN=true / INHERIT=false / SET=false edges, with no
+temporary edge remaining. The unknown database login was not altered. No sudo was needed.
+Private evidence: `_local/recommendation-acl-hosted-2026-09-06.json` records the ineffective
+first attempt; `_local/recommendation-acl-hosted-2026-09-06-repaired.json` records the correction.
+
+The additive source repair is `20260906050000_recommendation_fenced_function_acl.sql`, with
+five-second lock timeout and the existing advisory DDL lock. Historical `20260901060000` and
+the fixed first-window/ten-file write-window policies remain unchanged. The repair SQL was
+applied operationally; **no Supabase migration-ledger version was inserted**. Its later migration
+application is idempotent and needs a separately reviewed scope. Full fresh replay now has
+57 source migrations. The second-window rehearsal must start from the fetched 46-file schema
+plus this verified ACL repair, while keeping its ten additions explicit. See
+[the repair handoff](WP-196-ACL-REPAIR-2026-09-06.md).
+
+Four focused regressions pass against a separate disposable loopback PostgreSQL 17 instance:
+non-superuser repair, missing ADMIN refusal, idempotence and complete rollback after a failed
+postflight. They inspect exact ACL rows and real RPC permission failures. The first test run
+incorrectly used SET ROLE to impersonate the worker; the existing guard correctly requires
+session identity. The corrected test uses SET SESSION AUTHORIZATION and reaches the existing
+authority guard. All **39 custody/migration regressions**, DB typecheck and focused ESLint pass.
+Typecheck initially found an optional notice message; the callback now retains an explicit
+placeholder so every notice still fails the test. No runtime permission check was relaxed.
+
+The first full DB run passed 621/622 tests and exposed one source-convention failure: the
+migration safety gate forbids anonymous DO blocks and requires the advisory lock immediately
+after `lock_timeout`. The executed operational repair was atomic and had both locks, but its
+source wrapper did not match that migration contract. The additive migration now uses invoker
+helpers created and dropped inside the transaction, with the exact required lock prefix.
+All **28 focused ACL/lock tests** pass. The non-superuser fixture now models the migration
+principal's app-schema creation permission and asserts that no helper survives. The operational
+SQL remains preserved in private evidence; it was not rerun merely to match this source wrapper.
+The final full DB rerun passes **66 files / 622 tests** with the database required, logged in
+`_local/recommendation-acl-db-package-tests-final.log`. The existing 46-to-56 repository
+upgrade test also passes; it remains distinct from the pending exact hosted-history rehearsal.
+
+**Unknown-login read-only follow-up:** the operator relayed Claude's discovery of a creator
+default grant. Codex independently verified LOGIN and BYPASSRLS enabled, no validity deadline,
+zero current connections at the check, one postgres/public default SELECT grant, and an
+ADMIN-only operator membership. No production change to this login was authorized or applied.
+The proposed closure removes that default SELECT grant and sets NOLOGIN/NOBYPASSRLS; existing
+table grants and the role remain. Its separate authorization is still required.
+The second read counted 158 existing public SELECT grants and confirmed that the current
+administrator has the authority needed for the proposed closure. A synthetic transactional
+rehearsal verifies disabled login/bypass, retained old SELECT and no SELECT on a new table;
+all test objects were rolled back. The guarded production script is prepared only at
+`_local/unknown-preview-role-closure-2026-09-06.sql`.
+
+**Cron restored, 2026-09-06 05:11:08 UTC:** the operator relayed Claude's completed-window,
+database-cron and worker checks and explicitly requested immediate restoration. Codex enabled
+Vercel cron, independently verified `disabledAt=null` and identical schedule definitions, and
+recorded a **36.34-minute** pause. Evidence: `_local/vercel-cron-window-2026-09-06-restored.json`.
+The optimizer-edit/recommendation-creation freeze remains in place until the compatible deploy.
+
+Before the ACL source addition, clean `6472d30` passed all **21 serial non-UI package tasks**
+and both jobs in [CI run 34012964187](https://github.com/Ecom-Wizards-Agency/openspell/actions/runs/34012964187).
+Those results do not certify the later repair commit; its focused checks are recorded above.
+
 **Authorized cron pause, 2026-09-06 04:34:48 UTC:** the operator asked Codex to pause
 Vercel cron for Claude's migration window, targeting 30 minutes and at most 60 minutes.
 The authenticated Vercel CLI read the linked project's identity and enabled state, patched
 only cron enablement to false, then independently read back a non-null `disabledAt` and
-identical schedule definitions. The operator later extended the target by 20 minutes: restoration is now 05:24 UTC, with the
+identical schedule definitions. The operator later extended the target by 20 minutes: the planned restoration was 05:24 UTC, with the
 60-minute boundary at 05:34 UTC (12:24 and 12:34 Bangkok). No automatic restart was scheduled because WP-207
 requires postflight and worker restoration first. Private before/after evidence is in
 `_local/vercel-cron-window-2026-09-06-before.json` and
