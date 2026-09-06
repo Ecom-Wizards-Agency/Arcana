@@ -41,8 +41,8 @@ scope, current membership and storage integrity are enforced; unavailable eligib
 admission are not fabricated. Its shared failure contract landed at `a7d27f9` before the DB consumer.
 The new campaign migration `20260906060000_campaign_creation_previews.sql` is reserved for a
 separate reviewed window; it is not added to the five-file or ten-file bundles. The recorder, read-only DB reader, `loadCampaignCreationApproval` and no-store GET are implemented.
-Focused verification passes 33 DB/RLS tests and 25 web tests; five independent authority probes
-also pass. Broad final checks are still being completed. This does not supply a public plan
+Source `3340f73` passes all 641 DB tests and 761 web tests in final serial runs against the
+required disposable database. Five independent authority probes, all 22 workspace typechecks, clean-checkout lint and hygiene also pass. This does not supply a public plan
 generator, approval/dispatch authority, client component or deployed feature.
 The DB slice also reserves `packages/db/src/migrations.test.ts` for its exact new migration
 tail and `packages/db/src/rls.test.ts` to give the new table nonempty

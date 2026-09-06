@@ -27,7 +27,7 @@ interference and the stale migration-tail assertion. Serial execution eliminated
 640 tests passed with one remaining source-boundary assertion. It correctly detected the new
 HTTP test's read-only SP approval/outbox count queries. Only that exact test path was declared;
 the corrected five-test boundary suite passes. No runtime activation exemption was added.
-Broad final verification is still being completed; these failed runs are retained, not claimed green.
+The final verification below supersedes these failed attempts; their logs are retained.
 
 A separate consumer review found that Zod's strict object parser ignores an own `__proto__`
 query field. This caused extra-field acceptance but no pollution or authority bypass. GET now
@@ -40,10 +40,15 @@ All 22 workspace typechecks pass. The first broad web run passed 760 of 761 test
 existing 3,597-row grid fixture took 2,818 ms against its 2,000 ms local budget while those
 typechecks ran concurrently. The unchanged grid suite and corrected HTTP query regressions
 then passed all 22 tests without that concurrent load. Grid source, timing thresholds and the
-CI environment were not changed. A final serial DB run followed by a serial web run is in
-progress. `web-tests-all.log`, `web-timing-query-recheck.log` and `workspace-typecheck.log`
+CI environment were not changed. The final sequential runs at source `3340f73` pass
+**67 DB files / 641 tests** and **143 web files / 761 tests**, with no skips and the database
+required. Full unmodified lint also passes in the clean verification checkout. `web-tests-all.log`, `web-timing-query-recheck.log` and `workspace-typecheck.log`
 preserve the failure and recheck. The completed consumer review is in
 `implementation-web-review.md`; it found no remaining material issue after the query fix.
+Final logs: `db-tests-final.log`, `web-tests-final.log`, `clean-checkout-lint.log` and
+`hygiene-final.log` in the same private directory. `workspace-typecheck-final.log` confirms
+all 22 workspace typechecks against `3340f73`. These checks do not establish deployment
+or live Amazon behavior. The newer source still needs its own CI.
 
 **Website release preparation:** clean `wp-213-web-release` at main `9672d93` built successfully.
 Main CI `34015967395` and source CI `34031318586` at `a398827` both passed. The private
