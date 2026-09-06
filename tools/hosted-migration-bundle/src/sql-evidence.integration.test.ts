@@ -11,11 +11,11 @@ import { HOSTED_MIGRATION_BUNDLE_POLICY } from './policy.js';
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const EVIDENCE_ROOT = join(REPO_ROOT, 'tools', 'hosted-migration-bundle', 'sql');
 const SHIM = join(REPO_ROOT, 'supabase', 'tests', 'supabase-platform-shim.sql');
-const EXACT_HISTORY_WORKDIR = process.env['WP197_EXACT_HISTORY_WORKDIR'];
-const ADMIN_URL =
-  process.env['WIZARD_ADS_TEST_DATABASE_URL'] ??
-  process.env['DATABASE_URL'] ??
-  'postgres://postgres:postgres@127.0.0.1:54322/postgres';
+const COMMITTED_HISTORY = join(REPO_ROOT, 'tools', 'hosted-migration-bundle', 'fixtures', 'history-v1');
+const EXACT_HISTORY_WORKDIR = process.env['WP197_EXACT_HISTORY_WORKDIR'] ?? COMMITTED_HISTORY;
+// Never fall back to another suite's cluster: role catalog evidence requires
+// a fresh service, and dropping the test database does not remove those roles.
+const ADMIN_URL = process.env['WP197_EXACT_HISTORY_DATABASE_URL'] ?? '';
 
 interface EvidenceRow {
   readonly pass: boolean;
@@ -82,12 +82,18 @@ async function readEvidence(
 }
 
 async function databaseAvailable(): Promise<boolean> {
-  if (EXACT_HISTORY_WORKDIR === undefined) return false;
+  const required = process.env['CI'] === 'true' || process.env['CI'] === '1';
+  const unavailable = () => new Error('Migration evidence tests require a fresh disposable PostgreSQL cluster in CI. Configure WP197_EXACT_HISTORY_DATABASE_URL.');
+  if (ADMIN_URL === '') {
+    if (required) throw unavailable();
+    return false;
+  }
   const sql = postgres(ADMIN_URL, { max: 1, connect_timeout: 3, onnotice: () => {} });
   try {
     await sql`select 1`;
     return true;
   } catch {
+    if (required) throw unavailable();
     return false;
   } finally {
     await sql.end({ timeout: 1 }).catch(() => undefined);
@@ -95,6 +101,20 @@ async function databaseAvailable(): Promise<boolean> {
 }
 
 const available = await databaseAvailable();
+
+describe('committed migration history fixture', () => {
+  it('contains every exact baseline file and no uncounted SQL input', async () => {
+    const directory = join(COMMITTED_HISTORY, 'supabase', 'migrations');
+    const names = (await readdir(directory)).sort();
+    expect(names).toEqual(HOSTED_MIGRATION_BUNDLE_POLICY.baseline.map((entry) => entry.filename));
+    for (const entry of HOSTED_MIGRATION_BUNDLE_POLICY.baseline) {
+      const bytes = await readFile(join(directory, entry.filename));
+      expect({ byteCount: bytes.byteLength, sha256: sha256(bytes) }).toEqual({
+        byteCount: entry.byteCount, sha256: entry.sha256,
+      });
+    }
+  });
+});
 
 describe.skipIf(!available)('exact hosted migration SQL evidence', () => {
   const prefixes: PrefixObservation[] = [];
@@ -140,7 +160,7 @@ describe.skipIf(!available)('exact hosted migration SQL evidence', () => {
   }
 
   beforeAll(async () => {
-    const historyRoot = EXACT_HISTORY_WORKDIR!;
+    const historyRoot = EXACT_HISTORY_WORKDIR;
     let phase = 'create disposable database';
     try {
     const adminSql = postgres(ADMIN_URL, { max: 1, onnotice: () => {} });

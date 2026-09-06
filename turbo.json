@@ -23,7 +23,7 @@
     },
     "test": {
       "dependsOn": ["^build"],
-      "env": ["WIZARD_ADS_TEST_DATABASE_URL"]
+      "env": ["WIZARD_ADS_TEST_DATABASE_URL", "WP197_EXACT_HISTORY_DATABASE_URL"]
     },
     "lint": {}
   }

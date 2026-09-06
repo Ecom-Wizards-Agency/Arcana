@@ -47,12 +47,11 @@ export async function migrationFiles(): Promise<string[]> {
 }
 
 /**
- * Is a Postgres reachable? Used to skip the database suites rather than fail
- * them on a machine with no database, so `pnpm check` stays honest in CI while
- * the suite still runs everywhere it can.
+ * Local checkouts without PostgreSQL may skip DB suites. CI must execute them:
+ * losing its disposable service is a failed check, never a passing empty suite.
  */
-export async function databaseAvailable(): Promise<boolean> {
-  const sql = postgres(adminConnectionString(), {
+export async function databaseAvailable(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  const sql = postgres(adminConnectionString(env), {
     max: 1,
     connect_timeout: 3,
     onnotice: () => {},
@@ -61,6 +60,9 @@ export async function databaseAvailable(): Promise<boolean> {
     await sql`select 1`;
     return true;
   } catch {
+    if (env['CI'] === 'true' || env['CI'] === '1') {
+      throw new Error('Database tests are required in CI. Start the disposable PostgreSQL service and configure WIZARD_ADS_TEST_DATABASE_URL.');
+    }
     return false;
   } finally {
     await sql.end({ timeout: 1 }).catch(() => {});
