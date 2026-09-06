@@ -63,3 +63,16 @@ export const RecommendationPreviewBatchStatus = z.object({
   }
 });
 export type RecommendationPreviewBatchStatus = z.infer<typeof RecommendationPreviewBatchStatus>;
+
+/** Compiled execution support; deployment configuration cannot claim extra formats. */
+export const RECOMMENDATION_EXECUTION_VERSIONS = [1, 2] as const;
+export const OneTimePreviewUnavailableReason = z.enum([
+  'misconfigured', 'worker_not_activated', 'admission_paused', 'revision_mismatch',
+  'worker_unavailable', 'execution_unsupported', 'authority_unavailable',
+]);
+export type OneTimePreviewUnavailableReason = z.infer<typeof OneTimePreviewUnavailableReason>;
+export const OneTimePreviewReadiness = z.discriminatedUnion('ready', [
+  z.object({ ready: z.literal(true), mode: z.literal('fenced') }),
+  z.object({ ready: z.literal(false), reason: OneTimePreviewUnavailableReason }),
+]);
+export type OneTimePreviewReadiness = z.infer<typeof OneTimePreviewReadiness>;
