@@ -9,7 +9,7 @@
  *
  * ## The four-column metric model
  *
- * Recon (`02-data-grid.md` §2) : every metric ships as four columns.
+ * Recon (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/02-data-grid.md` §2) : every metric ships as four columns.
  *
  *   acos                  selected period
  *   acos_comparison       the comparison period

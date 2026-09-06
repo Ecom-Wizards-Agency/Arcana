@@ -4,7 +4,7 @@
  * The sidebar's navigation: one direct home link, three task groups, and quiet
  * utility links above the icon-rail collapse toggle.
  *
- * The shape is the recon's (`tools/recon/01-navigation-map.md`): the incumbent's
+ * The shape is the recon's (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/01-navigation-map.md`): the incumbent's
  * nav is a projection of the entity hierarchy into named groups, which is why an
  * operator can guess where anything lives. Ours is the same idea over our own
  * routes — and it fixes the finding that indicted theirs, that a whole working

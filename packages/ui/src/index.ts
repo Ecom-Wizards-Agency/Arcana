@@ -11,7 +11,7 @@
  * there is no code path that could do otherwise, because no row anywhere in
  * this package carries an ACOS to add up. That is the single most common source
  * of quietly wrong numbers in ads tooling, and the recon
- * (`tools/recon/02-data-grid.md` §4) names it as the one thing the incumbent
+ * (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/02-data-grid.md` §4) names it as the one thing the incumbent
  * got right by making the correct path the only path.
  *
  * Everything here is presentational or pure. No I/O, no database, no Amazon

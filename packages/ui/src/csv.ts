@@ -3,7 +3,7 @@
  *
  * Export is a terminal operation on the same pipeline the grid rendered, not a
  * separate "download this table" action bolted onto the side (recon
- * `02-data-grid.md` §7). So it takes a `GridModel` -- the thing already
+ * `https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/02-data-grid.md` §7). So it takes a `GridModel` -- the thing already
  * filtered, grouped and sorted -- and cannot disagree with what is on screen.
  *
  * Values are exported **raw**, not formatted: `0.243`, not `24.3%`, and

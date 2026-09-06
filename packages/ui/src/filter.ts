@@ -1,7 +1,7 @@
 /**
  * The filter DSL.
  *
- * Grammar is the recon's, verbatim (`02-data-grid.md` §3), because one filter
+ * Grammar is the recon's, verbatim (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/02-data-grid.md` §3), because one filter
  * vocabulary shared by grid, dashboard widget, saved view and deep link is the
  * strongest single design decision in the product we are cloning:
  *

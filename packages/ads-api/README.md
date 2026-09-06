@@ -6,12 +6,15 @@ hosts, throttle-aware retry, and one parser per report schema.
 
 A pure client: no database, no filesystem, no scheduling. Every Amazon call in
 the system happens in `apps/worker`, which is the only package allowed to import
-this one. `apps/web` may import the LWA code exchange and the profile fetch for
-its OAuth callback, and nothing else; `eslint.config.js` enforces that.
+this one at product runtime. Web and MCP validate, preview and enqueue through
+application contracts; they do not call Amazon or receive Amazon credentials.
+[AGENTS.md](../../AGENTS.md) governs this boundary. A legacy caller in source is
+not an exception to that rule.
 
-Ported from `amazon-agent`'s `SPAdsApiDataSource` and `ads-auth/exchange_token.py`,
-which are read-only ground truth. The two gaps those files document — the
-campaign-name join and budget usage — are closed here.
+The package's [public exports](src/index.ts), [client](src/client.ts),
+[endpoint definitions](src/endpoints.ts) and synthetic tests are the maintained
+usage reference. Upstream reference code is specification only, never a runtime
+or installation dependency.
 
 ## What the worker gets
 
@@ -60,8 +63,10 @@ response index. It automatically splits lists at 100 items. It retries writes
 only when Amazon explicitly returns 429; transport failures and 5xx responses
 are ambiguous and are never resent. HTTP 425 becomes `DuplicateWriteError`.
 
-Sponsored Brands v4 media/creative methods are typed interface stubs only and
-throw `AdsApiNotImplementedError` without making an HTTP request.
+Legacy Sponsored Brands media/creative methods are implemented in the client.
+Their `/media/upload`, `/media/describe` and `/sb/v4/creatives` seams do not
+provide a complete current Asset Library registration or campaign-creation workflow.
+Do not treat a callable method as a release enablement or live-verification claim.
 
 ## Retry, and who owns what
 
@@ -84,37 +89,75 @@ Sponsored Display are documentation-derived and unverified live; every call
 takes a `columns` override so an operator can correct a rejected column set
 without a code change.
 
-## Live smoke test
+## Capability and version boundaries
+
+Keep four questions separate when adding or documenting a capability: whether the
+provider exposes it, whether this package implements the exact protocol, whether
+the worker/application provide an authorized workflow, and whether that complete
+path has authoritative provider evidence. Unit fixtures prove protocol behavior;
+they do not prove a profile's current availability or a hosted release's readiness.
+
+| Source surface | Client contract | Limit |
+| --- | --- | --- |
+| [Profiles and LWA](src/auth.ts) | Regional discovery and credential exchange/refresh helpers | Credentials remain worker-owned; an account grant is not write approval. |
+| [Entity endpoints](src/endpoints.ts) | Legacy SP entity graph; SB and SD campaign/ad-group listing | Preserve each endpoint's dialect and pagination; deeper SB/SD resources are not implied. |
+| [Reporting v3](src/reports.ts) | Typed report specifications and parsers | Supported columns, attribution window and grain must match the actual report. |
+| [Unified Reporting](src/unified-reporting.ts) | Create/retrieve protocol and counted outcomes | Separate from Unified campaign management and from canonical report promotion. |
+| [Budget usage](src/budgets.ts) | Product-specific SP/SB/SD endpoints with counted indexed results | Client support is not application pacing integration or proven provider availability. |
+| [SP writes](src/writes.ts) | Counted create/update/archive responses | Application authority, persistence, conflict checks and observation are worker responsibilities. |
+| [SB ad/asset probe](src/sb-ad-assets.ts) | Narrow observed ad-to-asset data and search responses | Page-scoped evidence does not prove a complete asset catalog or eligibility. |
+| [Legacy SB media](src/sb-media.ts) | Media and creative resource helpers | Does not implement the Asset Library upload/register sequence or full SB creation. |
+
+Unified campaign management and Unified Reporting are different APIs. The client
+contains Unified Reporting code; that does not provide Unified SP/SB creation.
+Choose a proven dialect for each resource before compiling an immutable plan and
+never switch dialect after an ambiguous provider outcome. Reporting promotion,
+restarts, freshness and source parity belong in the worker/data path.
+
+Amazon Asset ID is the root creative identity. Preserve its exact version lineage:
+Asset Library `version`, registration `versionId` and creative input `assetVersion`
+are distinct field names. Names and headlines are display metadata, not join keys.
+Do not assign an ad group's totals to a guessed asset or present generic `ACTIVE`
+status as proof of program/marketplace eligibility, moderation approval or delivery.
+Missing, partial, rejected and pending states remain visible and fail closed.
+
+Product eligibility, brands/Stores, Asset Library registration/moderation and ad
+delivery need their own proven provider contracts before being offered in a creation
+workflow. SP-API retail/Brand Analytics data cannot be reconstructed from advertising
+reports. Marketing Stream needs separate delivery infrastructure, subscription
+binding and counted provider-to-ledger translation; an HTTP client alone does not
+provide it.
+
+## Tests and operator smoke tools
 
 ```bash
-cp _local/ads-api.config.TEMPLATE.json _local/ads-api.config.json   # then fill it in
-cd packages/ads-api && pnpm smoke
+pnpm --filter @wizard-ads/ads-api typecheck
+pnpm --filter @wizard-ads/ads-api test
 ```
 
-Read-only, but it creates exactly one report, which costs quota. It prints
-profile counts, the request/poll/download cycle, rows downloaded against rows
-parsed against rows skipped, byte counts either side of decompression, and the
-campaign-name join coverage. It never prints a credential.
-
-The fixture suite proves the client agrees with what Amazon documents; the smoke
-test proves Amazon agrees with the client. Report completion, report download
-and the whole Exports contract have never been confirmed against a live account.
-
-### Operator-only write smoke
-
-Writes are OFF by default. Only an operator working against a disposable
-sandbox campaign may add a `writes` object to the gitignored config and pass the
-explicit flag:
+The package's smoke tool consumes an operator-owned config shaped by
+[ads-api.config.TEMPLATE.json](../../_local/ads-api.config.TEMPLATE.json). A read
+smoke creates a report and consumes provider quota; it is an explicit live operator
+action, not a CI test. This legacy script reads credential values from its config
+file; it does not fetch or inject secrets itself. Supply an external, access-restricted
+runtime secret file through the approved secret manager, never a real credential
+file inside the checkout. The explicit config argument overrides its historical
+`_local/ads-api.config.json` default. Its output never prints credentials.
 
 ```bash
-pnpm smoke --writes
-pnpm smoke path/to/sandbox-config.json --writes
+pnpm --filter @wizard-ads/ads-api smoke "$smoke_config_path"
 ```
 
-The `writes` object uses resource keys `campaigns`, `adGroups`, `keywords`,
-`targets`, `negativeKeywords`, `campaignNegativeKeywords`, `negativeTargets`,
-`campaignNegativeTargets`, and `productAds`. Each may contain `create`,
-`update`, and `archive` arrays; `campaigns` may additionally contain a
-`placement` array. Omitted or empty arrays make no call. Passing `--writes`
-with no configured mutation fails closed. Never point this mode at a live
-serving campaign. CI and the default `pnpm smoke` command cannot enter it.
+Review profile counts, report request/poll/download identity, downloaded/parsed/
+skipped rows, decompression byte counts and campaign-name join coverage. A successful
+command alone does not prove complete ingestion or production readiness.
+
+The historical CLI also exposes `--writes` and a `writes` configuration with
+`campaigns`, `adGroups`, `keywords`, `targets`, `negativeKeywords`,
+`campaignNegativeKeywords`, `negativeTargets`, `campaignNegativeTargets` and
+`productAds`. Each supports `create`, `update` and `archive` arrays; campaigns also
+have `placement`. Empty arrays make no call, and `--writes` with no mutation fails.
+Those flags are not an authorization mechanism. Do not use the raw-client smoke as
+a shortcut around the worker-only immutable preview, explicit scoped authority,
+idempotent execution, audit and observation requirements in
+[AGENTS.md](../../AGENTS.md). Live write proof must use that guarded path.

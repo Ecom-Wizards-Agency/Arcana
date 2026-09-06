@@ -1,23 +1,18 @@
-# Project skills
+# Repository coding skills
 
-Repo-scoped skills. They load only when an agent is working in this repository, which is the point:
-they are TypeScript rules and would be noise in the vaults or the Amazon operator repo.
+These skills provide TypeScript guidance for agents reading or editing this source
+tree. Repository authority, file scope and public hygiene remain governed by
+[AGENTS.md](../../AGENTS.md).
 
-## Vendored
+The two skills are vendored from
+[pstack](https://github.com/cursor/plugins/tree/main/pstack) v0.14.2 by Lauren Tan
+("poteto"), MIT licensed, vendored 24.08.2026. Preserve their upstream attribution
+when updating them.
 
-Both are from [pstack](https://github.com/cursor/plugins/tree/main/pstack) v0.14.2 by Lauren Tan
-("poteto"), MIT licensed, vendored 24.08.2026.
+| Local skill | Upstream | Local adjustment |
+| --- | --- | --- |
+| [typescript-best-practices](typescript-best-practices/SKILL.md) | [Upstream skill](https://github.com/cursor/plugins/tree/main/pstack/skills/typescript-best-practices) | Removed `disable-model-invocation: true`; otherwise unchanged. |
+| [principle-type-system-discipline](principle-type-system-discipline/SKILL.md) | [Upstream skill](https://github.com/cursor/plugins/tree/main/pstack/skills/principle-type-system-discipline) | Removed `disable-model-invocation: true`; otherwise unchanged. |
 
-| Skill | Upstream | Local changes |
-|---|---|---|
-| `typescript-best-practices` | [`skills/typescript-best-practices`](https://github.com/cursor/plugins/tree/main/pstack/skills/typescript-best-practices) | Removed `disable-model-invocation: true`. Nothing else. |
-| `principle-type-system-discipline` | [`skills/principle-type-system-discipline`](https://github.com/cursor/plugins/tree/main/pstack/skills/principle-type-system-discipline) | Removed `disable-model-invocation: true`. Nothing else. |
-
-These two are the rare case where losing `disable-model-invocation` is a feature rather than a
-problem. `Use when reading or editing any .ts or .tsx file` is exactly when they should fire, so
-auto-invocation is the wanted behavior.
-
-The engineering capability pack is installed globally from `company-ai-skills/skills/`:
-`software-architecture`, `software-change-impact`, `reflect`, `why-rationale-research`,
-`unslop`, `show-me-your-work`, and `company-skill-maintenance`. The audit behind the selection is in the personal vault at
-`Learning/tools/pstack-skill-audit.md`.
+Automatic invocation is intentional for `.ts` and `.tsx` work. Keep referenced skill
+resources beside the vendored files so a public checkout is sufficient to read them.

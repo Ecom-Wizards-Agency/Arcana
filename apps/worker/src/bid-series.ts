@@ -2,7 +2,7 @@
  * The bid-corridor sync (WP-28).
  *
  * Amazon publishes a suggested-bid low/median/high per target per day. The
- * corridor chart (`tools/recon/04-optimizer.md` §3) draws that band with the
+ * corridor chart (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/04-optimizer.md` §3) draws that band with the
  * target's bid, its realized CPC and its max-potential CPC plotted inside it —
  * so this is a **sync-and-store** job, not an algorithm one: it reads the
  * suggested bids through the WP-27 endpoints, composes the max-potential CPC

@@ -3,7 +3,7 @@
 /**
  * The group bar: the drop zone above the grid that reads "drag a column header
  * here to group", copied from the AdLabs chrome the operator compared against
- * (`02-data-grid.md` §0, item 5).
+ * (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/02-data-grid.md` §0, item 5).
  *
  * Three gestures, all reducing to list edits in `grouping.ts`:
  *

@@ -2,7 +2,7 @@
  * Accept, dismiss or re-open proposals — one, or a filtered set in bulk.
  *
  * Bulk is the point. The recon calls bulk edit over a filtered preview "the
- * single most valuable interaction in the product" (`04-optimizer.md` §3), so
+ * single most valuable interaction in the product" (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/04-optimizer.md` §3), so
  * the client sends the ids its current filter resolved to and this route takes
  * them as one decision with one note. The note is mandatory on a dismissal and
  * recorded either way; `decideRecommendations` refuses an empty one.

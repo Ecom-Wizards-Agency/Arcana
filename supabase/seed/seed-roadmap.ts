@@ -44,7 +44,7 @@ export const ROADMAP_ITEMS: readonly RoadmapSeedItem[] = [
     body:
       'Value: answer audience and path-to-purchase questions that standard ads reports cannot. ' +
       'Prerequisite: eligible accounts, approved query templates, storage, and privacy review. ' +
-      'Deferred because: those account and data-governance prerequisites are not yet verified. See docs/workpackages/WP-16-amc.md.',
+      'Unavailable until the required account permissions and data-governance settings are verified.',
   },
   {
     title: 'SQP Query Intelligence from SP-API Brand Analytics',

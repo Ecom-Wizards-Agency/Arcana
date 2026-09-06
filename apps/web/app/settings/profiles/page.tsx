@@ -10,7 +10,7 @@
  * role cannot use are not rendered, and the server actions behind them check the
  * same capability table anyway.
  *
- * Layout follows the recon's admin screens (`09-settings-and-admin.md`): a
+ * Layout follows the recon's admin screens (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/09-settings-and-admin.md`): a
  * result count you can trust above a filter bar, then one table with a sticky
  * header, then an empty state that names the next action rather than shrugging.
  */

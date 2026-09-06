@@ -3,7 +3,7 @@
  * 41-version schema, then the forward upgrade through the canonical 44-file
  * prefix, on a disposable database.
  *
- * Finding F1 in `docs/workpackages/REPLAN-2026-09-05.md`: the hosted ledger
+ * Finding F1 in `https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/docs/workpackages/REPLAN-2026-09-05.md`: the hosted ledger
  * stops at `20260901010000`, where `claim_sync_jobs` still returns rows
  * without `claim_token`. The shared parser in `packages/db` fails closed on
  * that row shape *after* the claim UPDATE has committed, so every tick strands

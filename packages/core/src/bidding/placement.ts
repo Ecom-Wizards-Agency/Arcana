@@ -148,7 +148,7 @@ export interface MaxPotentialCpc {
 /**
  * Compose the plottable max-potential CPC: the most a single click can cost.
  *
- * The corridor chart (`tools/recon/04-optimizer.md` §3) draws this as `Max CPC`,
+ * The corridor chart (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/04-optimizer.md` §3) draws this as `Max CPC`,
  * with the placement and dayparting/audience modifiers nested underneath as its
  * components. A click lands on one placement, so the placement modifiers are
  * mutually exclusive and the maximum of them binds; the remaining modifiers

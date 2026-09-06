@@ -7,7 +7,7 @@
  * data-confidence hierarchy supplied the CVR, which ceiling bound the result
  * and whether a change cap clamped it.
  *
- * Two shapes are cloned from the recon (`tools/recon/04-optimizer.md` §3), and
+ * Two shapes are cloned from the recon (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/04-optimizer.md` §3), and
  * both matter:
  *
  * - **Change reason and limit reason are separate facts.** "This bid went up

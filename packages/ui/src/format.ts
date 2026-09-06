@@ -2,7 +2,7 @@
  * Value formatting.
  *
  * Scale comes from the column, never from the value or the name -- the recon's
- * `is_percent_scale` lesson (`03-dashboards.md` §3): "carrying scale as data
+ * `is_percent_scale` lesson (`https://github.com/Ecom-Wizards-Agency/openspell/blob/1ca9bd7c253e2a3f6b8c8b5848ee7bfad695781f/tools/recon/03-dashboards.md` §3): "carrying scale as data
  * rather than inferring it from a suffix is how you stop a dashboard from
  * showing 2430%".
  *
