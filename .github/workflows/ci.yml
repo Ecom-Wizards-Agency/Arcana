@@ -51,6 +51,12 @@ jobs:
       - name: Verify Evo report-worker deployment
         run: bash docs/deploy/test-report-worker-evo-systemd.sh
 
+      - name: Verify MCP deployment
+        run: bash docs/deploy/test-mcp-evo-systemd.sh
+
+      - name: Verify recommendation-worker deployment
+        run: node docs/deploy/test-recommendation-worker-deployment.mjs
+
       - name: Typecheck
         run: pnpm run typecheck
 
@@ -75,6 +81,9 @@ jobs:
 
       - name: Hygiene (public-repo gate)
         run: pnpm run hygiene
+
+      - name: Skill contracts
+        run: pnpm run skill-lint
 
   e2e:
     name: Playwright e2e

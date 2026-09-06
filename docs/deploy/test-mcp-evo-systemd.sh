@@ -133,8 +133,9 @@ if ! pnpm --dir "$repo_root" --config.inject-workspace-packages=true \
   exit 1
 fi
 node "$normalizer" "$second_package_fixture" >/dev/null
-if ! diff -qr "$package_fixture" "$second_package_fixture" >/dev/null; then
+if ! diff -qr "$package_fixture" "$second_package_fixture" >"$test_tmp/package-differences.log"; then
   echo "normalized MCP runtime packaging is not path-independent" >&2
+  cat "$test_tmp/package-differences.log" >&2
   exit 1
 fi
 

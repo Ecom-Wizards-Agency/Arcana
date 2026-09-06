@@ -18,7 +18,7 @@ export default defineConfig({
   // through Next.
   oxc: { jsx: { runtime: 'automatic' } },
   test: {
-    include: ['src/**/*.test.ts', 'app/**/*.test.ts'],
+    include: ['src/**/*.test.{ts,tsx}', 'app/**/*.test.{ts,tsx}'],
     exclude: ['e2e/**', '**/node_modules/**', '**/.next/**'],
   },
 });
