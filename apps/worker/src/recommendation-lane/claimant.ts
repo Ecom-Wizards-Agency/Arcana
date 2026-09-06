@@ -1,8 +1,8 @@
 import { Buffer } from 'node:buffer';
 import type { ClaimRef, ClaimedJob } from '@wizard-ads/db';
 import {
-  RecommendationsRunJob,
-  type RecommendationsRunJob as RecommendationsRunPayload,
+  RecommendationsExecutionJob,
+  type RecommendationsExecutionJob as RecommendationsRunPayload,
 } from '@wizard-ads/shared';
 import { RECOMMENDATION_LANE_JOB_TYPE } from './config.js';
 
@@ -40,9 +40,7 @@ export interface RecommendationQueuePort {
   defer(claim: ClaimRef, retryIn: string): Promise<RecommendationSettlementDecision>;
 }
 
-export type RecommendationExecutablePayload = Omit<RecommendationsRunPayload, 'lookbackDays'> & {
-  lookbackDays?: number;
-};
+export type RecommendationExecutablePayload = RecommendationsRunPayload;
 
 /** This is intentionally the same caller shape consumed by createRecommendationsRunner. */
 export type RecommendationExecute<Result = unknown> = (
@@ -216,7 +214,7 @@ export class RecommendationClaimant<Result = unknown> {
     const claim = validClaim(job, this.identity);
     if (claim === null) throw this.latchCustodyFailure('invalid_custody');
 
-    const parsed = RecommendationsRunJob.safeParse(job.payload);
+    const parsed = RecommendationsExecutionJob.safeParse(job.payload);
     if (!parsed.success || parsed.data.orgId !== job.orgId || parsed.data.profileId !== job.profileId) {
       await this.settle(() => this.queue.finish(claim, 'dead', {
         error: 'invalid recommendation job payload',

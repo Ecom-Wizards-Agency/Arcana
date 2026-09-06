@@ -26,6 +26,7 @@ import {
 import type {
   OptimizationGroupSnapshot,
   OptimizationRunScheduleContext,
+  OneTimeRpcSnapshot,
   RecommendationInputs,
   TenantStrategy,
 } from '@wizard-ads/shared';
@@ -51,6 +52,8 @@ export const recommendationPreviewBatches = pgTable(
     clientRequestId: uuid('client_request_id').notNull(),
     selectionMode: text('selection_mode').$type<'all' | 'selected'>().notNull(),
     requestFingerprint: text('request_fingerprint').notNull(),
+    /** One common immutable configuration for an explicit one-time batch. */
+    executionSnapshot: jsonb('execution_snapshot').$type<OneTimeRpcSnapshot>(),
     scopeCount: integer('scope_count').notNull(),
     scopeFingerprint: text('scope_fingerprint').notNull(),
     childCount: integer('child_count').notNull(),
@@ -101,6 +104,8 @@ export const recommendationRuns = pgTable(
     strategySnapshot: jsonb('strategy_snapshot').$type<TenantStrategy>(),
     /** Resolved goal lens paired with strategySnapshot for scoped runs. */
     strategyGoal: text('strategy_goal'),
+    /** Scope v2 uses this document instead of a saved tenant strategy. */
+    executionSnapshot: jsonb('execution_snapshot').$type<OneTimeRpcSnapshot>(),
     groupId: uuid('group_id'),
     groupRole: optimizationGroupRole('group_role'),
     groupSnapshot: jsonb('group_snapshot').$type<OptimizationGroupSnapshot>(),
@@ -152,11 +157,18 @@ export const recommendationRuns = pgTable(
       sql`(
         ${t.scopeVersion} is null and ${t.scopeCount} is null
         and ${t.scopeFingerprint} is null and ${t.jobId} is null and ${t.strategyGoal} is null
+        and ${t.executionSnapshot} is null
       ) or (
         ${t.scopeVersion} = 1 and ${t.scopeCount} between 1 and 10000
         and ${t.scopeFingerprint} ~ '^[0-9a-f]{64}$'
         and ${t.jobId} is not null and ${t.strategySnapshot} is not null
         and btrim(${t.strategyGoal}) <> ''
+        and ${t.executionSnapshot} is null
+      ) or (
+        ${t.scopeVersion} = 2 and ${t.scopeCount} is not null and ${t.scopeCount} between 1 and 10000
+        and ${t.scopeFingerprint} is not null and ${t.scopeFingerprint} ~ '^[0-9a-f]{64}$' and ${t.jobId} is not null
+        and ${t.batchId} is not null and ${t.strategySnapshot} is null and ${t.strategyGoal} is null
+        and ${t.executionSnapshot} is not null
       )`,
     ),
     check(
@@ -169,7 +181,7 @@ export const recommendationRuns = pgTable(
     ),
     check(
       'recommendation_runs_batch_requires_scope_check',
-      sql`${t.batchId} is null or ${t.scopeVersion} = 1`,
+      sql`${t.batchId} is null or ${t.scopeVersion} in (1, 2)`,
     ),
     check(
       'recommendation_runs_execution_lineage_check',

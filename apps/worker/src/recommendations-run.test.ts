@@ -133,6 +133,7 @@ class FakeStore implements RecommendationRunStore {
   expectedGroupIds: Array<string | undefined> = [];
   expectedJobIds: string[] = [];
   loadedGroupIds: Array<string | undefined> = [];
+  loadedOneTimeScopes: RunScope[] = [];
   completed: RunCompletion[] = [];
   failed: Array<{ scope: RunScope; error: string }> = [];
   startResult: StartRunResult = {
@@ -193,6 +194,11 @@ class FakeStore implements RecommendationRunStore {
   async succeedRun(completion: RunCompletion): Promise<number> {
     this.completed.push(completion);
     return completion.proposals.length;
+  }
+
+  async loadOneTimeRecommendationSafety(scope: RunScope) {
+    this.loadedOneTimeScopes.push(scope);
+    return this.groupSafety;
   }
 
   async failRun(scope: RunScope, error: string) {
@@ -257,7 +263,8 @@ describe('explicit one-time RPC runner', () => {
     };
     store.startResult.groupRun = { group, dueAt: snapshot.admittedAt, scheduleContext: null };
     await runRecommendations(store, { ...job, groupId: GROUP_ID }, EXECUTION);
-    expect(store.loadedGroupIds).toEqual([GROUP_ID]);
+    expect(store.loadedGroupIds).toEqual([]);
+    expect(store.loadedOneTimeScopes).toEqual([{ orgId: ORG_ID, profileId: PROFILE_ID, runId: RUN_ID }]);
     expect(store.completed[0]?.proposals[0]?.proposedValue).toBe(0.55);
     store.completed = [];
     store.groupSafety = { ...store.groupSafety, mayPropose: false, incompleteObservations: 1, reason: 'Observation incomplete.' };
@@ -1039,7 +1046,9 @@ describe.skipIf(!databaseAvailableForLegacyStore)('legacy-mode preview enqueue o
 
   beforeAll(async () => {
     database = await createTestDatabase('wp216_legacy_store');
-    expect(await migrationFiles()).toHaveLength(46);
+    const migrations = await migrationFiles();
+    expect(migrations.filter((name) => name <= '20260901060000_recommendation_claim_custody.sql')).toHaveLength(46);
+    expect(migrations).toContain('20260907000000_one_time_rpc_previews.sql');
     const [authority] = await database.sql<{ protocol: string; admission: string }[]>`
       select protocol, admission from public.get_recommendation_claim_authority()
     `;
