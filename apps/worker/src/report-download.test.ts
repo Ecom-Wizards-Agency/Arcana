@@ -28,7 +28,8 @@ function never(): AsyncIterable<Uint8Array> {
 
 function downloadClient(body: ReadableStream<Uint8Array>): DbAdsApiClient {
   return new DbAdsApiClient({
-    resolveConnectionId: async () => null,
+    resolveProfileBinding: async () => null,
+    resolveConnectionBinding: async () => null,
     listConnectionIds: async () => [],
     getRefreshToken: async () => null,
     createClient: () => { throw new Error('unused'); },
