@@ -4,8 +4,9 @@
  *   1. the queue is one Data Grid, full width, sorting and grouping like every
  *      other operator table, and the provenance panel renders every `inputs`
  *      field plus the change reason, the limit reason and the strategy;
- *   2. filtered selection and the progressive decision panels stay
- *      keyboard-reachable on a phone-sized viewport;
+ *   2. the queue's own row is reachable, and filtered selection and the
+ *      progressive decision panels stay keyboard-reachable, on a phone-sized
+ *      viewport;
  *   3. a decision updates in place: the active filter, the selection and the
  *      open evidence survive it and the result is reported inline;
  *   4. accept → export moves the status and produces the three files, and a
@@ -133,6 +134,35 @@ test.describe('recommendations review', () => {
 
     await expect(page.getByTestId('review-filters')).toBeVisible();
     await expect(page.getByTestId('review-actionbar')).toBeVisible();
+
+    // The queue itself has to survive this width, not just the controls above
+    // it. `Select` (44 px) and a pinned `Entity` (260 px) would together claim
+    // 304 of 390 and leave the other ten columns 86 to share, so `Entity`
+    // scrolls with the rest below the breakpoint and only the checkbox stays
+    // put. The proof is that the far end of the row is reachable and readable.
+    const scroller = page.getByTestId('grid-scroller');
+    await expect(scroller).toBeVisible();
+    const entity = page.getByRole('columnheader', { name: 'Entity', exact: true });
+    await expect(entity).toHaveCSS('position', 'relative');
+    await expect(page.getByRole('columnheader', { name: 'Select', exact: true }))
+      .toHaveCSS('position', 'sticky');
+    const overflow = await scroller.evaluate((element) => element.scrollWidth - element.clientWidth);
+    expect(overflow).toBeGreaterThan(0);
+
+    await scroller.evaluate((element) => {
+      element.scrollLeft = element.scrollWidth;
+    });
+    const status = page.getByRole('columnheader', { name: 'Status', exact: true });
+    const statusBox = await status.boundingBox();
+    const pinnedBox = await page
+      .getByRole('columnheader', { name: 'Select', exact: true })
+      .boundingBox();
+    expect(statusBox).not.toBeNull();
+    expect(pinnedBox).not.toBeNull();
+    // Wholly on screen, and clear of the one column that stays pinned over it.
+    expect(statusBox!.x).toBeGreaterThanOrEqual(pinnedBox!.x + pinnedBox!.width);
+    expect(statusBox!.x + statusBox!.width).toBeLessThanOrEqual(390);
+
     await page.getByRole('combobox', { name: 'Reason' }).selectOption('high_acos');
     await page.getByRole('button', { name: 'Select all 1 filtered loaded rows' }).click();
     await expect(page.getByTestId('selection-count')).toContainText(
