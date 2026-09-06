@@ -63,23 +63,69 @@ contain an account label or a seller identifier, which the public-repository rul
 ## Close-out — slice 1 (tokens, warn hue, design document)
 
 Landed: required behaviour 2 (hairline token, light border, test pin), 3 (warn hue), 5
-(one type scale), 7 (design document). Behaviour 1 landed earlier as the hygiene scrub.
-Behaviours 4, 6 and 8, and the `packages/ui` half of behaviour 2, are not in this slice.
+(type scale — partly; see below), 7 (design document). Behaviour 1 landed earlier as the
+hygiene scrub. Behaviours 4, 6 and 8, and the `packages/ui` half of behaviour 2, are not in
+this slice.
+
+This slice's declared file scope for `theme.css` is the token block, the warn scopes and
+the warn-token consumers in that file. Nothing outside it was edited; everything that would
+have required an edit outside it is listed as a handoff below rather than done.
 
 - `--wa-mistline: #E4E7EC` joins the palette block and `--wa-border` points at it in light
   mode. Mistline is 1.24:1 on White against the 1.37:1 of the Ink-into-White mix it
   replaces. No contrast assertion regressed, because none covered borders; the open WCAG
-  1.4.11 gap on control edges is written up in `docs/design/DESIGN-SYSTEM.md`.
+  1.4.11 gap on control edges is written up in `docs/design/DESIGN-SYSTEM.md`, together
+  with the one other boundary that got fainter — `--wa-warn-border`, `#F8B49C` 1.62:1 on
+  Cloud before the warn split, `#F5D194` 1.35:1 after.
 - `--wa-warn: #F59E0B` is a dedicated base. `--wa-warn-text/-bg/-border` derive from it in
   all three scopes (55% into Ink in light for 5.07:1 on Cloud; raw amber in dark for
   7.96:1 on Carbon), and `.wa-kpi-mini--warn`, the last consumer wired straight to
   `var(--wa-accent)`, now reads `var(--wa-warn-text)`. `viz.tsx` consumes the three warn
   tokens for the settling band and needed no edit.
-- `--wa-fw-title: 640` and `--wa-fw-section: 620` live in the token block; `.wa-page-title`,
-  `.wa-section-title` and the `heading` / `subheading` exports in `tokens.ts` all read them.
-  The inline heading moves 700 → 640, which is the one intended visual change; every
-  `style={heading}` call site, `apps/web/app/login/page.tsx` included, now renders at the
-  same weight as `.wa-page-title`.
+- `--wa-fw-title: 700` and `--wa-fw-section: 620` live in the token block. The `heading` and
+  `subheading` exports in `apps/web/src/ui/tokens.ts` read them instead of restating
+  literals, and 700 is deliberately the weight the base `h1` rule in `theme.css` already
+  paints, so the element default and the inline styles agree and **nothing changes on
+  screen**: `apps/web/app/login/page.tsx` and the other 21 `style={heading}` call sites that
+  resolve to `tokens.ts` render 700 exactly as before.
+
+  This is behaviour 5 only as far as the file scope reaches. Of the 39 `style={heading}`
+  call sites in `apps/web`, 22 resolve to `tokens.ts`; the other 17 come from seven
+  file-local `heading` consts that shadow the import. Those, `.wa-page-title`, and the base
+  `h1` rule are all outside the declared scope, so the remaining title-weight sources are
+  handed off below rather than edited. `design-system.test.ts` now asserts that the base
+  `h1` weight equals `--wa-fw-title` and pins the two literals `theme.css` still restates,
+  so the gap cannot widen silently.
+
+### Handoff — the title-weight sources outside this slice's scope
+
+`--wa-fw-title` is 700 and reaches the base `h1` rule's value and `tokens.ts`. Four groups of
+title styling still restate a weight and are outside the WP-211 file scope. Closing them is a
+one-value edit each, and after all four the app has a single title weight.
+
+| File | Line | Now | Should be | Effect |
+|---|---|---|---|---|
+| `apps/web/src/ui/theme.css` | `.wa-page-title` | `font-weight: 640` | `var(--wa-fw-title)` | 8 call sites, one of them the shared `PageHead`, go 640 → 700 |
+| `apps/web/src/ui/theme.css` | `h1` base rule | `font-weight: 700` | `var(--wa-fw-title)` | no visual change; removes the last literal |
+| `apps/web/src/ui/theme.css` | `.wa-section-title` | `font-weight: 620` | `var(--wa-fw-section)` | no visual change; the literal already equals the token |
+| `apps/web/app/ngrams/page.tsx` | file-local `heading` | `fontWeight: 640` | import `heading` from `src/ui/tokens` | 3 call sites go 640 → 700 |
+
+Six further pages — `app/error.tsx`, `app/not-found.tsx`, `app/crosscheck/page.tsx`,
+`app/recommendations/page.tsx`, `app/time-machine/page.tsx`, `app/grid/page.tsx` — declare a
+file-local `heading` const that sets **no** weight, so they already inherit the base 700 and
+render correctly. They should still be collapsed onto the shared export so a future change to
+the token reaches them, but nothing is wrong on screen today.
+
+### Handoff — one remaining accent-budget exception
+
+`.wa-tm-guardrails` (`apps/web/src/ui/theme.css`) still draws `border-left: 3px solid
+var(--wa-accent)`. Its only consumer, `apps/web/app/time-machine/reversion-panel.tsx:86`,
+renders in the same view as a `wa-btn wa-btn--primary`, so that view spends the accent twice —
+the pattern behaviour 3 exists to remove. The rule is an informational `role="note"`, not a
+warn-token consumer, so it is outside this slice's warn scope and was left alone. The fix is
+to repoint it at `--wa-info-border` or `--wa-border-strong`; the guardrail-*limit* warn use the
+design document describes is already carried by `.wa-pill--limit`. Owner: whoever next holds
+`apps/web/src/ui/theme.css` component rules.
 
 ### Handoff to WP-209's owner — `packages/ui`
 

@@ -55,8 +55,16 @@ than the mix it replaces — 1.24:1 on White against 1.37:1 — which is right f
 Neither value satisfies WCAG 1.4.11 (3:1 for the boundary of a user-interface component),
 and `.wa-btn` still draws its edge from `--wa-border`. That is a pre-existing gap this
 change makes marginally worse, not a new one, and it is open: the fix is to move control
-edges onto `--wa-border-strong` and give that token a 3:1 value, which is a change to the
-button primitives rather than to the palette.
+edges onto `--wa-border-strong` (itself only 1.69:1 on White today) and give that token a
+3:1 value, which is a change to the button primitives rather than to the palette.
+
+The same gap moved the same way on the warn outline. `--wa-warn-border` used to be Signal
+Orange at 38% into the surface, `#F8B49C`, 1.62:1 on Cloud; it is now amber at 42%,
+`#F5D194`, 1.35:1. Both are far below 3:1, so this is the one number in the warn split that
+got worse, and it is recorded here rather than fixed for the same reason: badge and banner
+outlines are decorative here because the status is also carried by text, and raising them
+belongs with the control-edge work above. Warn *text* moved the other way: on its own
+badge fill it went 4.38:1 to 4.64:1 in light and 4.54:1 to 6.44:1 in dark.
 
 **Warn does not borrow the accent.** Signal Orange is THE primary action; a view with a
 warning banner and a primary CTA would otherwise spend the accent twice and leave nothing
@@ -69,7 +77,7 @@ never in product UI.
 ## Type
 
 - Inter via `next/font` (variable), self-hosted; no substitute faces.
-- One scale, and the weights below are the CSS, not an aspiration:
+- The weights below are read out of the CSS, not an aspiration:
 
 | Role | Size | Weight | Notes |
 |---|---|---|---|
@@ -77,14 +85,25 @@ never in product UI.
 | Body | 14px (`--wa-fs-base`) | 400 | |
 | Table | 13px (`--wa-fs-sm`) | 400 | |
 | Section title | 16px (`--wa-fs-md`) | 620 (`--wa-fw-section`) | `.wa-section-title`, `subheading` |
-| Page title | 24px (`--wa-fs-xl`) | 640 (`--wa-fw-title`) | −2% tracking; `.wa-page-title`, `heading` |
+| Page title | 24px (`--wa-fs-xl`) | 700 (`--wa-fw-title`) | −2% tracking; base `h1`, `heading` |
 | KPI value | 28px (`--wa-fs-2xl`) | 800 | −2% tracking, tabular |
 
-- The two title weights are custom properties because two surfaces paint titles: the class
-  primitives in `theme.css` and the inline styles exported from `apps/web/src/ui/tokens.ts`.
-  Both read `--wa-fw-title` / `--wa-fw-section`, so a title's weight does not depend on
-  which of the two a screen happened to be written against. Margins are *not* shared:
-  `.wa-page-title` sits in a page head that owns its spacing.
+- The two title weights are custom properties because more than one surface paints titles.
+  The base `h1` rule in `theme.css` and the inline styles exported from
+  `apps/web/src/ui/tokens.ts` now both resolve to `--wa-fw-title` / `--wa-fw-section`, at
+  the 700 and 620 they already rendered, so nothing moved on screen and the weight no
+  longer depends on which of the two a screen was written against. Margins are *not*
+  shared: `.wa-page-title` sits in a page head that owns its spacing.
+- **Still divided, and open:** `.wa-page-title` restates `640` and is the one title source
+  the token does not reach, so its headings — eight call sites, one of them the shared
+  `PageHead` primitive — render lighter than every other page title.
+  `.wa-section-title` restates `620`, which already equals `--wa-fw-section`, and
+  `apps/web/app/ngrams/page.tsx` keeps a fourth, file-local copy of the page-title style
+  at `640`. Six further pages declare a file-local `heading` const with no weight at all
+  and therefore inherit the base 700 correctly. Those component rules and page files are
+  outside the WP-211 file scope; closing the gap is handed off in the WP-211 brief
+  close-out, and `design-system.test.ts` pins the current values so no third weight can
+  appear meanwhile.
 - `font-variant-numeric: tabular-nums` on every table cell, KPI value, and axis tick.
 
 ## Component rules
