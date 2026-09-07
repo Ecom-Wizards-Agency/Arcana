@@ -8,15 +8,16 @@
  */
 import { TagColorInput, TAG_COLORS } from '@wizard-ads/shared';
 import type { TagColorInput as TagColorField } from '@wizard-ads/shared';
+import { MutationInputError } from '../../../src/server/authenticated-mutation';
 
 /**
- * `errorResponse` answers 400 for a plain Error, which is the right status for
+ * The mutation boundary answers 400 for a known input error, the right status for
  * a caller who sent a colour outside the vocabulary. The message names the
  * vocabulary rather than saying "invalid", because the operator's next move is
  * to pick one of these five.
  */
 function refuse(): never {
-  throw new Error(`color must be null or one of ${TAG_COLORS.join(', ')}`);
+  throw new MutationInputError(`color must be null or one of ${TAG_COLORS.join(', ')}`);
 }
 
 /** Parse a required colour field, where absent means "no colour". */

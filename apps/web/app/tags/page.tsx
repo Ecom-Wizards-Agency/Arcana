@@ -5,6 +5,7 @@ import { authenticationDestination } from '../../src/server/request-context';
 import { listCampaignsByTagFilter, listTagTree } from '@wizard-ads/db';
 import type { JsonValue } from '@wizard-ads/db';
 import { TagManager } from './tag-manager';
+import { requireOrgRole } from '../../src/server/org-role';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -23,13 +24,15 @@ function parseState(value: string | string[] | undefined): JsonValue | undefined
 export default async function TagsPage({ searchParams }: { searchParams: SearchParams }) {
   try {
     return await authenticatedPageRead(await headers(), async (database, actor) => {
-      const [tags, campaigns] = await Promise.all([
+      const [tags, campaigns, role] = await Promise.all([
         listTagTree(database, actor.orgId),
         listCampaignsByTagFilter(database, actor.orgId),
+        requireOrgRole(database, actor),
       ]);
       const query = await searchParams;
       return (
         <TagManager
+          canEdit={role !== 'viewer'}
           initialState={parseState(query['state'])}
           tags={tags.map((tag) => ({
             id: tag.id,

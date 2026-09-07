@@ -62,6 +62,21 @@ test.describe('tags and goto links', () => {
       expect(redirect.headers()['vary']).toContain('Authorization');
       expect(result?.status()).toBe(200);
       await expect(page.locator('main[data-interactive="true"]')).toBeVisible();
+      await expect(page.getByText('Viewer access:', { exact: false })).toBeVisible();
+      for (const name of ['Create tag', 'Copyable goto link', 'Tag filtered campaigns', 'Remove tag from filtered campaigns']) {
+        await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
+      }
+      await expect(tagSelect(page)).toBeEnabled();
+      const forged = await page.request.post('/api/tags', {
+        headers: {
+          'x-wizard-ads-auth-bridge': process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET']!,
+          'x-wizard-ads-user-id': process.env['WIZARD_ADS_E2E_USER_VIEWER']!,
+          'x-wizard-ads-org-id': process.env['WIZARD_ADS_E2E_ORG_A']!,
+        },
+        data: { name: 'Synthetic viewer refusal' },
+      });
+      expect(forged.status()).toBe(403);
+      expect(forged.headers()['cache-control']).toBe('private, no-store, max-age=0');
       expect(await database.sql`select uses from public.goto_links where token=${token}`).toEqual([{ uses: 1 }]);
     } finally { await database.close(); }
   });
