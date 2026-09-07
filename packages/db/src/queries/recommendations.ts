@@ -841,6 +841,7 @@ export async function getExportBatch(
            old_value, new_value, clicks, revenue
       from public.apply_rows
      where org_id = ${options.orgId} and batch_id = ${options.batchId}
+       and profile_id = ${batch.profile_id}
      order by created_at, id
   `;
 
@@ -860,6 +861,7 @@ export async function getExportBatch(
 
   const proposals = await listRecommendations(handle, {
     orgId: options.orgId,
+    profileId: batch.profile_id,
     exportBatchId: options.batchId,
   });
 

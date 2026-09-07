@@ -8,7 +8,7 @@ import {
   ContextualNegativeProposal,
   type ContextualNegativeProposal as ContextualNegativeProposalType,
 } from '@wizard-ads/shared';
-import type { DbHandle, QuerySql } from '../client.js';
+import type { DbHandle, QueryHandle, QuerySql } from '../client.js';
 
 export const CONTEXTUAL_NEGATIVE_ACTION_LIMIT = 500;
 export const CONTEXTUAL_NEGATIVE_REVIEW_ROW_LIMIT = 5_000;
@@ -1231,7 +1231,7 @@ export async function exportAcceptedContextualNegatives(
 
 /** Retrieve and verify exact stored bytes. No artifact is rerendered. */
 export async function getContextualNegativeExport(
-  handle: ContextualNegativeQueryHandle,
+  handle: QueryHandle,
   input: { orgId: string; exportId: string; format: ContextualNegativeExportFormat },
 ): Promise<ContextualNegativeStoredArtifact | null> {
   validateUuid(input.orgId, 'orgId');

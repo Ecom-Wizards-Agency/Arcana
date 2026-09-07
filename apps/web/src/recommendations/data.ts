@@ -8,10 +8,10 @@
  * read here rather than reaching for `app/_lib/profiles.ts` keeps that one
  * boundary rather than mixing two handles in one request.
  */
-import type { RequestDatabase } from '@wizard-ads/db';
+import type { QueryHandle } from '@wizard-ads/db';
 import { orderActiveProfiles, resolveActiveProfile } from '../data/active-profile';
 
-export type ProfileQueryHandle = Pick<RequestDatabase, 'sql'>;
+export type ProfileQueryHandle = QueryHandle;
 
 export interface OrgProfile {
   id: string;
