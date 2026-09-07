@@ -3,6 +3,14 @@ import type postgres from 'postgres';
 import type { DbHandle, QuerySql } from '../client.js';
 
 const readSnapshot = Symbol('authenticated read snapshot');
+const editorTransaction = Symbol('authenticated editor transaction');
+
+/** Minted only while current editor authority is locked until commit/rollback. */
+export interface AuthenticatedEditorTransaction {
+  readonly sql: postgres.TransactionSql;
+  readonly actor: Readonly<OrgActor>;
+  readonly [editorTransaction]: true;
+}
 
 /** Minted only inside the fixed authenticated, read-only repeatable snapshot. */
 export interface AuthenticatedReadSnapshot {
@@ -73,6 +81,23 @@ export async function withAuthenticatedActor<T>(
   return withAuthenticatedIdentity(handle, { userId: actor.userId }, async (sql) => {
     await requireMembership(sql, actor);
     return operation(sql);
+  });
+}
+
+/**
+ * One complete owner/admin/analyst operation. The narrow database command
+ * locks authority without granting membership DML; subsequent work still runs
+ * as authenticated under RLS. No automatic retry after an uncertain commit.
+ */
+export async function withAuthenticatedOrgEditor<T>(
+  handle: Pick<DbHandle, 'sql'>,
+  rawActor: OrgActor,
+  operation: (context: AuthenticatedEditorTransaction) => Promise<T>,
+): Promise<T> {
+  const actor = Object.freeze(OrgActor.parse(rawActor));
+  return authenticatedTransaction(handle, { userId: actor.userId }, '', async (sql) => {
+    await sql`select app.lock_org_editor(${actor.orgId}::uuid)`;
+    return operation({ sql, actor, [editorTransaction]: true });
   });
 }
 

@@ -5,11 +5,13 @@
  */
 import {
   bigint,
+  foreignKey,
   index,
   integer,
   jsonb,
   pgTable,
   text,
+  unique,
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
@@ -33,7 +35,12 @@ export const tags = pgTable(
     createdAt: ts('created_at').notNull().defaultNow(),
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('tags_sibling_slug_key').on(t.orgId, t.parentId, t.slug)],
+  (t) => [
+    uniqueIndex('tags_sibling_slug_key').on(t.orgId, t.parentId, t.slug),
+    unique('tags_org_identity_unique').on(t.orgId, t.id),
+    foreignKey({ name: 'tags_org_parent_fkey', columns: [t.orgId, t.parentId],
+      foreignColumns: [t.orgId, t.id] }).onDelete('cascade'),
+  ],
 );
 
 export const entityTags = pgTable(
@@ -54,6 +61,10 @@ export const entityTags = pgTable(
   (t) => [
     uniqueIndex('entity_tags_key').on(t.tagId, t.profileId, t.entityType, t.entityId),
     index('entity_tags_entity_idx').on(t.orgId, t.entityType, t.entityId),
+    foreignKey({ name: 'entity_tags_org_tag_fkey', columns: [t.orgId, t.tagId],
+      foreignColumns: [tags.orgId, tags.id] }).onDelete('cascade'),
+    foreignKey({ name: 'entity_tags_org_profile_fkey', columns: [t.orgId, t.profileId],
+      foreignColumns: [adProfiles.orgId, adProfiles.id] }).onDelete('cascade'),
   ],
 );
 

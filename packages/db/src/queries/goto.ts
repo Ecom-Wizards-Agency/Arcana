@@ -1,11 +1,13 @@
 /** Signed, tenant-scoped deep links. */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { OrgActor } from '@wizard-ads/shared';
-import type { DbHandle } from '../client.js';
+import type { DbHandle, QueryHandle } from '../client.js';
 import { toDate, toDateOrNull, toTimestampParam } from './pg-time.js';
 import { withAuthenticatedActor } from './authenticated-actor.js';
 
 export type GotoQueryHandle = Pick<DbHandle, 'sql'>;
+
+export class GotoInputError extends Error {}
 export type JsonValue =
   | string
   | number
@@ -97,7 +99,7 @@ export function validateGotoRoute(route: string): string {
     normalized.includes('\\') ||
     hasControlCharacter
   ) {
-    throw new Error('Goto route must be an internal application path outside /go');
+    throw new GotoInputError('Goto route must be an internal application path outside /go');
   }
   return normalized;
 }
@@ -115,12 +117,12 @@ export function validateGotoRoute(route: string): string {
  */
 function serializeState(state: JsonValue): string {
   const serialized = JSON.stringify(state);
-  if (serialized === undefined) throw new Error('Goto state must be JSON-serializable');
+  if (serialized === undefined) throw new GotoInputError('Goto state must be JSON-serializable');
   return serialized;
 }
 
 export async function createGotoLink(
-  handle: GotoQueryHandle,
+  handle: QueryHandle,
   input: {
     orgId: string;
     route: string;

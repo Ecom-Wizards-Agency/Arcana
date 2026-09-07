@@ -5,10 +5,17 @@
  * avoids the ambiguous exact-name behavior documented in the AdLabs recon.
  */
 import type { EntityState, EntityType } from '@wizard-ads/shared';
-import type { DbHandle, QueryHandle, QuerySql, Sql } from '../client.js';
+import type { DbHandle, QueryHandle, QuerySql } from '../client.js';
 import { toDate } from './pg-time.js';
+import type { AuthenticatedEditorTransaction } from './authenticated-actor.js';
 
-export type TagQueryHandle = Pick<DbHandle, 'sql'>;
+export type TagQueryHandle = QueryHandle;
+
+/** Safe domain validation only; SQL/internal failures must not become input errors. */
+export class TagInputError extends Error {}
+export class TagNotFoundError extends Error {
+  constructor() { super('Tag not found'); }
+}
 
 export interface TagRecord {
   id: string;
@@ -140,14 +147,14 @@ export function slugifyTagName(name: string): string {
     .trim()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
-  if (!slug) throw new Error('A tag name must contain at least one letter or number');
+  if (!slug) throw new TagInputError('A tag name must contain at least one letter or number');
   return slug;
 }
 
 function normalizeName(name: string): string {
   const normalized = name.trim();
-  if (!normalized) throw new Error('A tag name cannot be empty');
-  if (normalized.length > 120) throw new Error('A tag name cannot exceed 120 characters');
+  if (!normalized) throw new TagInputError('A tag name cannot be empty');
+  if (normalized.length > 120) throw new TagInputError('A tag name cannot exceed 120 characters');
   return normalized;
 }
 
@@ -158,7 +165,7 @@ async function requireTag(sql: QuerySql, orgId: string, tagId: string): Promise<
      where org_id = ${orgId} and id = ${tagId}
   `;
   const row = rows[0];
-  if (!row) throw new Error('Tag not found');
+  if (!row) throw new TagNotFoundError();
   return toTag(row);
 }
 
@@ -212,21 +219,21 @@ export async function updateTag(
   input: UpdateTagInput,
 ): Promise<TagRecord> {
   if (input.name === undefined && input.parentId === undefined && input.color === undefined) {
-    throw new Error('A tag update must change name, parent, or color');
+    throw new TagInputError('A tag update must change name, parent, or color');
   }
   const existing = await requireTag(handle.sql, input.orgId, input.tagId);
   const name = input.name === undefined ? existing.name : normalizeName(input.name);
   const parentId = input.parentId === undefined ? existing.parentId : input.parentId;
 
   if (parentId) {
-    if (parentId === input.tagId) throw new Error('A tag cannot be its own parent');
+    if (parentId === input.tagId) throw new TagInputError('A tag cannot be its own parent');
     await requireTag(handle.sql, input.orgId, parentId);
     const cycle = await handle.sql<{ exists: boolean }[]>`
       select exists(
         select 1 from public.tag_subtree(${input.tagId}) where id = ${parentId}
       ) as exists
     `;
-    if (cycle[0]?.exists) throw new Error('A tag cannot be moved below one of its descendants');
+    if (cycle[0]?.exists) throw new TagInputError('A tag cannot be moved below one of its descendants');
   }
 
   const rows = await handle.sql<TagRow[]>`
@@ -239,7 +246,7 @@ export async function updateTag(
     returning id, org_id, parent_id, name, slug, color, created_by, created_at, updated_at
   `;
   const row = rows[0];
-  if (!row) throw new Error('Tag not found');
+  if (!row) throw new TagNotFoundError();
   return toTag(row);
 }
 
@@ -402,89 +409,101 @@ export async function bulkAssignTagByFilter(
 }
 
 export async function deleteTag(
-  handle: TagQueryHandle,
+  handle: Pick<DbHandle, 'sql'>,
   input: { orgId: string; tagId: string; disposition: DeleteTagMode },
 ): Promise<DeleteTagResult> {
-  return handle.sql.begin(async (transaction) => {
-    const sql = transaction as unknown as Sql;
-    const source = await requireTag(sql, input.orgId, input.tagId);
-    let target: TagRecord | null = null;
-    if (input.disposition.mode === 'reassign') {
-      if (input.disposition.targetTagId === input.tagId) {
-        throw new Error('A deleted tag cannot be its own reassignment target');
-      }
-      target = await requireTag(sql, input.orgId, input.disposition.targetTagId);
-      const descendant = await sql<{ exists: boolean }[]>`
-        select exists(
-          select 1 from public.tag_subtree(${input.tagId}) where id = ${target.id}
-        ) as exists
-      `;
-      if (descendant[0]?.exists) throw new Error('Cannot reassign to a tag that will be deleted');
-    }
+  return handle.sql.begin((sql) => deleteTagRows(sql, input));
+}
 
-    const associations = await sql<{ count: string }[]>`
-      select count(*) as count
+/** The complete delete participates in the caller's locked editor transaction. */
+export async function deleteTagInTransaction(
+  context: AuthenticatedEditorTransaction,
+  input: { tagId: string; disposition: DeleteTagMode },
+): Promise<DeleteTagResult> {
+  return deleteTagRows(context.sql, { ...input, orgId: context.actor.orgId });
+}
+
+async function deleteTagRows(
+  sql: QuerySql,
+  input: { orgId: string; tagId: string; disposition: DeleteTagMode },
+): Promise<DeleteTagResult> {
+  const source = await requireTag(sql, input.orgId, input.tagId);
+  let target: TagRecord | null = null;
+  if (input.disposition.mode === 'reassign') {
+    if (input.disposition.targetTagId === input.tagId) {
+      throw new TagInputError('A deleted tag cannot be its own reassignment target');
+    }
+    target = await requireTag(sql, input.orgId, input.disposition.targetTagId);
+    const descendant = await sql<{ exists: boolean }[]>`
+      select exists(
+        select 1 from public.tag_subtree(${input.tagId}) where id = ${target.id}
+      ) as exists
+    `;
+    if (descendant[0]?.exists) throw new TagInputError('Cannot reassign to a tag that will be deleted');
+  }
+
+  const associations = await sql<{ count: string }[]>`
+    select count(*) as count
+      from public.entity_tags
+     where org_id = ${input.orgId} and tag_id = ${input.tagId}
+  `;
+  const associationCount = Number(associations[0]?.count ?? 0);
+  let reassigned = 0;
+  let detached = associationCount;
+
+  if (target) {
+    await sql`
+      insert into public.entity_tags
+        (tag_id, org_id, profile_id, entity_type, entity_id, created_by)
+      select ${target.id}, org_id, profile_id, entity_type, entity_id, created_by
         from public.entity_tags
        where org_id = ${input.orgId} and tag_id = ${input.tagId}
+      on conflict do nothing
     `;
-    const associationCount = Number(associations[0]?.count ?? 0);
-    let reassigned = 0;
-    let detached = associationCount;
-
-    if (target) {
-      await sql`
-        insert into public.entity_tags
-          (tag_id, org_id, profile_id, entity_type, entity_id, created_by)
-        select ${target.id}, org_id, profile_id, entity_type, entity_id, created_by
-          from public.entity_tags
-         where org_id = ${input.orgId} and tag_id = ${input.tagId}
-        on conflict do nothing
-      `;
-      const verified = await sql<{ count: string }[]>`
-        select count(*) as count
-          from public.entity_tags source
-         where source.org_id = ${input.orgId}
-           and source.tag_id = ${input.tagId}
-           and exists (
-             select 1
-               from public.entity_tags destination
-              where destination.org_id = source.org_id
-                and destination.tag_id = ${target.id}
-                and destination.profile_id is not distinct from source.profile_id
-                and destination.entity_type is not distinct from source.entity_type
-                and destination.entity_id is not distinct from source.entity_id
-           )
-      `;
-      reassigned = Number(verified[0]?.count ?? 0);
-      detached = 0;
-      if (reassigned !== associationCount) {
-        throw new Error(
-          `Tag reassignment lost rows: expected ${associationCount}, verified ${reassigned}`,
-        );
-      }
+    const verified = await sql<{ count: string }[]>`
+      select count(*) as count
+        from public.entity_tags source
+       where source.org_id = ${input.orgId}
+         and source.tag_id = ${input.tagId}
+         and exists (
+           select 1
+             from public.entity_tags destination
+            where destination.org_id = source.org_id
+              and destination.tag_id = ${target.id}
+              and destination.profile_id is not distinct from source.profile_id
+              and destination.entity_type is not distinct from source.entity_type
+              and destination.entity_id is not distinct from source.entity_id
+         )
+    `;
+    reassigned = Number(verified[0]?.count ?? 0);
+    detached = 0;
+    if (reassigned !== associationCount) {
+      throw new Error(
+        `Tag reassignment lost rows: expected ${associationCount}, verified ${reassigned}`,
+      );
     }
+  }
 
-    const moved = await sql<{ id: string }[]>`
-      update public.tags
-         set parent_id = ${source.parentId}
-       where org_id = ${input.orgId} and parent_id = ${input.tagId}
-      returning id
-    `;
-    const deleted = await sql<{ id: string }[]>`
-      delete from public.tags
-       where org_id = ${input.orgId} and id = ${input.tagId}
-      returning id
-    `;
-    if (deleted.length !== 1) throw new Error('Deleting a tag did not delete exactly one row');
+  const moved = await sql<{ id: string }[]>`
+    update public.tags
+       set parent_id = ${source.parentId}
+     where org_id = ${input.orgId} and parent_id = ${input.tagId}
+    returning id
+  `;
+  const deleted = await sql<{ id: string }[]>`
+    delete from public.tags
+     where org_id = ${input.orgId} and id = ${input.tagId}
+    returning id
+  `;
+  if (deleted.length !== 1) throw new Error('Deleting a tag did not delete exactly one row');
 
-    return {
-      tagId: input.tagId,
-      associations: associationCount,
-      reassigned,
-      detached,
-      childrenMoved: moved.length,
-    };
-  });
+  return {
+    tagId: input.tagId,
+    associations: associationCount,
+    reassigned,
+    detached,
+    childrenMoved: moved.length,
+  };
 }
 
 export async function listCampaignsByTagFilter(
