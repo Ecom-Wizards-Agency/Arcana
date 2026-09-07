@@ -139,7 +139,10 @@ export class AuthStack {
     this.mailBase = await this.forward('mail', 8025);
     this.appOrigin = appOrigin ?? this.base;
     await waitFor('PostgreSQL', async () => {
-      try { return docker(['exec', this.names.db, 'pg_isready', '-U', 'postgres']).includes('accepting connections'); } catch { return false; }
+      // The image's temporary initialization server accepts Unix sockets and
+      // then stops. Only the final server listens on TCP; probing it avoids
+      // racing that shutdown before the first schema statement.
+      try { return docker(['exec', this.names.db, 'pg_isready', '-h', '127.0.0.1', '-U', 'postgres']).includes('accepting connections'); } catch { return false; }
     });
     const shim = readFileSync(resolve(root, 'supabase/tests/supabase-platform-shim.sql'), 'utf8');
     const boundary = shim.indexOf('-- ---------------------------------------------------------------------------\n-- auth\n');
