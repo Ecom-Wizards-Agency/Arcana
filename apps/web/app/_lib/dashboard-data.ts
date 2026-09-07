@@ -9,15 +9,11 @@
  * apart, and telling them apart is the entire question the banner answers.
  *
  * Every read here takes the actor's `orgId` alongside the profile id and puts
- * both in the predicate. The profile is already org-checked by the caller, so
- * the second half is defence in depth rather than the only lock — but the web
- * tier connects as the service role, so "already checked upstream" is the only
- * kind of lock this layer has, and one that is written twice is the one that
- * survives a refactor.
+ * both in the predicate. The caller runs these queries inside its current-user
+ * transaction; explicit predicates also bind deliberately multi-agency users.
  */
-import { and, desc, eq, gte, lte } from 'drizzle-orm';
-import { factProfileDaily, reportRequests } from '@wizard-ads/db';
-import type { DbHandle } from '@wizard-ads/db';
+import type { QueryHandle } from '@wizard-ads/db';
+import { operatorFailureLabel } from '../../src/security/operator-failure';
 import type { DailyRow } from '@wizard-ads/core';
 import type { ReportLedgerEntry } from '@wizard-ads/ui';
 import type { Period } from './periods.js';
@@ -31,42 +27,37 @@ import type { Period } from './periods.js';
  * newest attempt failed".
  */
 export async function loadReportLedger(
-  handle: DbHandle,
+  handle: QueryHandle,
   orgId: string,
   profileId: string,
   limit = 40,
 ): Promise<ReportLedgerEntry[]> {
-  const rows = await handle.db
-    // Select only the fields this view consumes. `report_requests` is widened
-    // additively as new ingestion evidence ships; a generic select made every
-    // dashboard depend on all later columns being present before the UI could
-    // render, even though the freshness model did not read them.
-    .select({
-      reportType: reportRequests.reportType,
-      status: reportRequests.status,
-      endDate: reportRequests.endDate,
-      requestedAt: reportRequests.requestedAt,
-      completedAt: reportRequests.completedAt,
-      rowsParsed: reportRequests.rowsParsed,
-      rowsLoaded: reportRequests.rowsLoaded,
-      countsMatch: reportRequests.countsMatch,
-      error: reportRequests.error,
-    })
-    .from(reportRequests)
-    .where(and(eq(reportRequests.orgId, orgId), eq(reportRequests.profileId, profileId)))
-    .orderBy(desc(reportRequests.requestedAt))
-    .limit(limit);
+  const rows = await handle.sql<{
+    reportType: ReportLedgerEntry['reportType']; status: ReportLedgerEntry['status'];
+    endDate: string; requestedAt: Date | string; completedAt: Date | string | null;
+    rowsParsed: number | string | null; rowsLoaded: number | string | null;
+    countsMatch: boolean | null; error: string | null;
+  }[]>`
+    select report_type as "reportType", status, end_date::text as "endDate",
+           requested_at as "requestedAt", completed_at as "completedAt",
+           rows_parsed as "rowsParsed", rows_loaded as "rowsLoaded",
+           counts_match as "countsMatch", error
+      from public.report_requests
+     where org_id = ${orgId} and profile_id = ${profileId}
+     order by requested_at desc
+     limit ${limit}
+  `;
 
   return rows.map((row) => ({
     reportType: row.reportType,
     status: row.status,
     endDate: row.endDate,
-    requestedAt: row.requestedAt.toISOString(),
-    completedAt: row.completedAt === null ? null : row.completedAt.toISOString(),
-    rowsParsed: row.rowsParsed,
-    rowsLoaded: row.rowsLoaded,
+    requestedAt: new Date(row.requestedAt).toISOString(),
+    completedAt: row.completedAt === null ? null : new Date(row.completedAt).toISOString(),
+    rowsParsed: row.rowsParsed === null ? null : Number(row.rowsParsed),
+    rowsLoaded: row.rowsLoaded === null ? null : Number(row.rowsLoaded),
     countsMatch: row.countsMatch,
-    error: row.error,
+    error: operatorFailureLabel(row.error),
   }));
 }
 
@@ -78,56 +69,50 @@ export async function loadReportLedger(
  * replayed against it, and the web tier is the thing that translates.
  */
 export async function loadProfileDailyRows(
-  handle: DbHandle,
+  handle: QueryHandle,
   orgId: string,
   profileId: string,
   account: string,
   window: Period,
 ): Promise<DailyRow[]> {
-  const rows = await handle.db
-    .select()
-    .from(factProfileDaily)
-    .where(
-      and(
-        eq(factProfileDaily.orgId, orgId),
-        eq(factProfileDaily.profileId, profileId),
-        gte(factProfileDaily.date, window.start),
-        lte(factProfileDaily.date, window.end),
-      ),
-    )
-    .orderBy(factProfileDaily.date);
+  const rows = await handle.sql<{
+    date: string; impressions: string | number; clicks: string | number;
+    cost: string | number; sales7d: string | number; purchases7d: string | number;
+  }[]>`
+    select date::text, impressions, clicks, cost, sales_7d as "sales7d", purchases_7d as "purchases7d"
+      from public.fact_profile_daily
+     where org_id = ${orgId} and profile_id = ${profileId}
+       and date between ${window.start} and ${window.end}
+     order by date
+  `;
 
   return rows.map((row) => ({
     account,
     date: row.date,
     level: 'account' as const,
-    impressions: row.impressions,
-    clicks: row.clicks,
-    spend: row.cost,
-    sales: row.sales7d,
-    orders: row.purchases7d,
+    impressions: Number(row.impressions),
+    clicks: Number(row.clicks),
+    spend: Number(row.cost),
+    sales: Number(row.sales7d),
+    orders: Number(row.purchases7d),
   }));
 }
 
 /** Which of those days Amazon is still attributing. The dashboard must say so. */
 export async function loadProvisionalDates(
-  handle: DbHandle,
+  handle: QueryHandle,
   orgId: string,
   profileId: string,
   window: Period,
 ): Promise<string[]> {
-  const rows = await handle.db
-    .select({ date: factProfileDaily.date, provisional: factProfileDaily.provisional })
-    .from(factProfileDaily)
-    .where(
-      and(
-        eq(factProfileDaily.orgId, orgId),
-        eq(factProfileDaily.profileId, profileId),
-        gte(factProfileDaily.date, window.start),
-        lte(factProfileDaily.date, window.end),
-      ),
-    );
-  return rows.filter((row) => row.provisional).map((row) => row.date);
+  const rows = await handle.sql<{ date: string }[]>`
+    select date::text
+      from public.fact_profile_daily
+     where org_id = ${orgId} and profile_id = ${profileId}
+       and date between ${window.start} and ${window.end} and provisional
+     order by date
+  `;
+  return rows.map((row) => row.date);
 }
 
 /**
@@ -138,7 +123,7 @@ export async function loadProvisionalDates(
  * SQL keeps a month of target rows out of the web tier's memory.
  */
 export async function loadCampaignDailyRows(
-  handle: DbHandle,
+  handle: QueryHandle,
   orgId: string,
   profileId: string,
   account: string,

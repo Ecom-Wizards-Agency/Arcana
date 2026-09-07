@@ -27,7 +27,8 @@ import {
   tokens,
 } from '@wizard-ads/ui';
 import type { EntityLevel } from '@wizard-ads/ui';
-import type { DbHandle } from '@wizard-ads/db';
+import { withAuthenticatedActor, type DbHandle } from '@wizard-ads/db';
+import type { OrgActor } from '@wizard-ads/shared';
 import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
 import { gate } from '../../src/auth/guard';
 import { canonicalProfilePath } from '../../src/data/active-profile';
@@ -74,6 +75,7 @@ export default async function GridPage({ searchParams }: PageProps) {
     );
   }
   const orgId = entry.context.active?.orgId ?? '';
+  const actor = { orgId, userId: entry.context.user.id };
 
   const params = await searchParams;
   const profileId = await requestedProfileId(params.profile);
@@ -83,7 +85,7 @@ export default async function GridPage({ searchParams }: PageProps) {
   const comparison = precedingPeriod(period);
   const settled = settledComparisonWindows(period, today);
 
-  const data = await withExistingDatabase(entry.handle, async (handle) => {
+  const data = await withExistingDatabase(entry.handle, actor, async (handle) => {
     const profiles = await listProfiles(handle, orgId);
     const profile = selectProfile(profiles, profileId);
     if (profile === null) return { profiles, profile: null };
@@ -150,7 +152,7 @@ export default async function GridPage({ searchParams }: PageProps) {
 
       <Suspense fallback={<CockpitPending />}>
         <GridCockpit
-          handle={entry.handle}
+          handle={entry.handle} actor={actor}
           orgId={orgId}
           profile={profile}
           period={period}
@@ -168,7 +170,7 @@ export default async function GridPage({ searchParams }: PageProps) {
         freshness={freshness}
         crosscheck={
           <Suspense fallback={<span style={crosscheckPending}>Crosscheck loading…</span>}>
-            <GridCrosscheck handle={entry.handle} profileId={profile.id} />
+            <GridCrosscheck handle={entry.handle} actor={actor} profileId={profile.id} />
           </Suspense>
         }
         campaignId={entity === 'campaigns' ? params.campaign ?? null : null}
@@ -200,12 +202,14 @@ export default async function GridPage({ searchParams }: PageProps) {
  */
 async function GridCockpit({
   handle,
+  actor,
   orgId,
   profile,
   period,
   settled,
 }: {
   handle: DbHandle;
+  actor: OrgActor;
   orgId: string;
   profile: { id: string; label: string; currencyCode: string };
   period: { start: string; end: string };
@@ -218,7 +222,7 @@ async function GridCockpit({
         : period.start,
     end: period.end,
   };
-  const rows = await withExistingDatabase(handle, (open) =>
+  const rows = await withExistingDatabase(handle, actor, (open) =>
     loadProfileDailyRows(open, orgId, profile.id, profile.label, window),
   ).catch(() => null);
   if (rows === null || rows.length === 0) return null;
@@ -283,12 +287,15 @@ function CockpitPending() {
  */
 async function GridCrosscheck({
   handle,
+  actor,
   profileId,
 }: {
   handle: DbHandle;
+  actor: OrgActor;
   profileId: string;
 }) {
-  const model = await loadCrosscheckPanel(handle, { profileId }).catch(() => null);
+  const model = await withAuthenticatedActor(handle, actor,
+    (sql) => loadCrosscheckPanel({ sql }, { orgId: actor.orgId, profileId })).catch(() => null);
   return model === null ? null : <CrosscheckChip chip={model.chip} />;
 }
 

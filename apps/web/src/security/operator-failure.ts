@@ -22,6 +22,12 @@ export function operatorFailureLabel(error: string | null | undefined): string |
   if (/authorization state was altered/.test(normalized)) {
     return 'The altered authorization response was rejected. Nothing was stored.';
   }
+  if (/invalid_client/.test(normalized)) {
+    return 'Amazon application authentication failed. Ask your installation operator to check the Amazon application settings.';
+  }
+  if (/report create outcome unknown/.test(normalized)) {
+    return 'Amazon may have received this report request. Its outcome must be checked before retrying.';
+  }
   if (/row[- ]count|reconcil|counts? (?:do not|don't) match|count mismatch/.test(normalized)) {
     return 'Row-count reconciliation failed. The affected report was not promoted.';
   }

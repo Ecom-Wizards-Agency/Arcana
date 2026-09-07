@@ -46,7 +46,9 @@ export async function navContext(user: SessionUser): Promise<NavContext> {
     if (!active) return EMPTY;
 
     const { listProfiles } = await import('../../app/_lib/profiles');
-    const rows = await listProfiles(handle, active.orgId);
+    const { withAuthenticatedActor } = await import('@wizard-ads/db');
+    const rows = await withAuthenticatedActor(handle, { orgId: active.orgId, userId: user.id },
+      (sql) => listProfiles({ sql }, active.orgId));
     return {
       orgName: active.name,
       profiles: mapNavProfiles(rows),

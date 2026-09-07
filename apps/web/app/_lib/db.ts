@@ -18,8 +18,9 @@
  * `withExistingDatabase` instead: opening another pool after authentication is
  * redundant connection setup on every navigation.
  */
-import { connectionStringFromEnv, createDb } from '@wizard-ads/db';
-import type { DbHandle } from '@wizard-ads/db';
+import { connectionStringFromEnv, createDb, withAuthenticatedActor } from '@wizard-ads/db';
+import type { DbHandle, QueryHandle } from '@wizard-ads/db';
+import type { OrgActor } from '@wizard-ads/shared';
 import { isDatabaseUnreachable } from '../../src/db-unreachable';
 
 export function openDatabase(): DbHandle | null {
@@ -55,10 +56,11 @@ export async function withDatabase<T>(run: (handle: DbHandle) => Promise<T>): Pr
  */
 export async function withExistingDatabase<T>(
   handle: DbHandle,
-  run: (handle: DbHandle) => Promise<T>,
+  actor: OrgActor,
+  run: (handle: QueryHandle) => Promise<T>,
 ): Promise<T | null> {
   try {
-    return await run(handle);
+    return await withAuthenticatedActor(handle, actor, (sql) => run({ sql }));
   } catch (error) {
     if (isDatabaseUnreachable(error)) return null;
     throw error;

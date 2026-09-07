@@ -31,6 +31,15 @@ describe('operator failure labels', () => {
     expect(operatorFailureLabel(null)).toBeNull();
   });
 
+  it('distinguishes application credentials and uncertain report creation from reconnectable grants', () => {
+    expect(operatorFailureLabel('LWA refresh refused: invalid_client: private-response')).toBe(
+      'Amazon application authentication failed. Ask your installation operator to check the Amazon application settings.',
+    );
+    expect(operatorFailureLabel('report create outcome unknown; attended reconciliation required')).toBe(
+      'Amazon may have received this report request. Its outcome must be checked before retrying.',
+    );
+  });
+
   it('preserves only known-safe OAuth guidance', () => {
     expect(operatorFailureLabel('the authorization link expired; start again')).toBe(
       'The authorization link expired. Start the connection again.',

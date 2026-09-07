@@ -1,4 +1,4 @@
-import type { DbHandle } from '@wizard-ads/db';
+import type { QueryHandle } from '@wizard-ads/db';
 
 export interface DashboardOperatingStatus {
   campaigns: {
@@ -46,7 +46,7 @@ interface OperatingStatusWire {
  * without giving the operator more information.
  */
 export async function readDashboardOperatingStatus(
-  handle: Pick<DbHandle, 'sql'>,
+  handle: QueryHandle,
   input: { orgId: string; profileId: string },
 ): Promise<DashboardOperatingStatus> {
   const [row] = await handle.sql<OperatingStatusWire[]>`

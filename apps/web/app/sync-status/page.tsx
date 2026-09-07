@@ -8,6 +8,7 @@
  * job succeeded" and "every source row was accounted for" are different
  * claims and only the second one is worth anything.
  */
+import { withAuthenticatedActor } from '@wizard-ads/db';
 import type { ReactNode } from 'react';
 import { gate } from '../../src/auth/guard';
 import { loadSyncStatus, reportAccountingLabel } from '../../src/data/sync-status';
@@ -41,7 +42,8 @@ export default async function SyncStatusPage({ searchParams }: Props): Promise<R
   const org = context.active;
   if (!org) return null;
 
-  const status = await loadSyncStatus(handle, org.orgId, query.profile ?? null);
+  const status = await withAuthenticatedActor(handle, { orgId: org.orgId, userId: context.user.id },
+    (sql) => loadSyncStatus({ sql }, org.orgId, query.profile ?? null));
 
   return (
     <main style={page}>

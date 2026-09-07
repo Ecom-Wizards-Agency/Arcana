@@ -15,7 +15,7 @@
  *
  * Styling is WP-06's job. This is a table.
  */
-import type { DbHandle } from '@wizard-ads/db';
+import type { QueryHandle } from '@wizard-ads/db';
 import { operatorFailureLabel } from '../security/operator-failure';
 
 export interface JobRow {
@@ -75,7 +75,7 @@ const JOB_LIMIT = 100;
 const REPORT_LIMIT = 100;
 
 export async function loadSyncStatus(
-  handle: DbHandle,
+  handle: QueryHandle,
   orgId: string,
   profileId?: string | null,
 ): Promise<SyncStatus> {
@@ -97,13 +97,13 @@ export async function loadSyncStatus(
            coalesce(p.account_name, p.amazon_profile_id) as label,
            p.region::text as region,
            p.sync_enabled,
-           (select max(f.date)::text from public.fact_profile_daily f where f.profile_id = p.id)
+           (select max(f.date)::text from public.fact_profile_daily f where f.org_id = p.org_id and f.profile_id = p.id)
              as latest_fact_date,
            count(*) filter (where j.status = 'queued') as queued,
            count(*) filter (where j.status = 'running') as running,
            count(*) filter (where j.status = 'failed') as failed
       from public.ad_profiles p
-      left join public.sync_jobs j on j.profile_id = p.id
+      left join public.sync_jobs j on j.org_id = p.org_id and j.profile_id = p.id
      where p.org_id = ${orgId}
        and (${scope}::uuid is null or p.id = ${scope}::uuid)
      group by p.id
@@ -137,7 +137,7 @@ export async function loadSyncStatus(
            j.finished_at::text as finished_at,
            j.last_error
       from public.sync_jobs j
-      join public.ad_profiles p on p.id = j.profile_id
+      join public.ad_profiles p on p.org_id = j.org_id and p.id = j.profile_id
      where j.org_id = ${orgId}
        and (${scope}::uuid is null or j.profile_id = ${scope}::uuid)
      order by j.created_at desc
@@ -185,7 +185,7 @@ export async function loadSyncStatus(
            r.accounting_complete,
            r.error
       from public.report_requests r
-      join public.ad_profiles p on p.id = r.profile_id
+      join public.ad_profiles p on p.org_id = r.org_id and p.id = r.profile_id
      where r.org_id = ${orgId}
        and (${scope}::uuid is null or r.profile_id = ${scope}::uuid)
      order by r.requested_at desc

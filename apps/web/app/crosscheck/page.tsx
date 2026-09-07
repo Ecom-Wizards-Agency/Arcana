@@ -13,17 +13,15 @@
  * worker.
  *
  * Entry goes through `gate()`, the same guard `/settings` uses. The profile
- * switcher is then intersected with the org's own roster: `listCrosscheckedProfiles`
- * belongs to `tools/crosscheck-cli` and takes no org, so the scoping happens
- * here rather than by reaching into a package this route does not own. A
- * profile id in the query string that survives that intersection is one the
- * caller's org owns; anything else selects nothing.
+ * roster and verdicts run in an authenticated transaction and carry the same
+ * explicit organization scope, including for users with several memberships.
  */
 import type { CSSProperties } from 'react';
-import { listCrosscheckedProfiles, loadCrosscheckPanel, withDatabase } from '@wizard-ads/crosscheck-cli';
+import { listCrosscheckedProfiles, loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
 import type { CrosscheckPanelModel } from '@wizard-ads/crosscheck-cli/pure';
 import { gate } from '../../src/auth/guard';
 import { gateMessage } from '../../src/ui/gate-message';
+import { withExistingDatabase } from '../_lib/db';
 import { listProfiles } from '../_lib/profiles';
 import { CrosscheckPanel } from './panel';
 
@@ -47,15 +45,15 @@ export default async function CrosscheckPage({ searchParams }: PageProps) {
 
   const { profile } = await searchParams;
 
-  const data = await withDatabase(async (handle) => {
+  const data = await withExistingDatabase(entry.handle, { orgId, userId: entry.context.user.id }, async (handle) => {
     const owned = new Set((await listProfiles(handle, orgId)).map((row) => row.id));
-    const profiles = (await listCrosscheckedProfiles(handle)).filter((row) =>
+    const profiles = (await listCrosscheckedProfiles(handle, orgId)).filter((row) =>
       owned.has(row.profileId),
     );
     const requested = profile !== undefined && owned.has(profile) ? profile : null;
     const selected = requested ?? profiles[0]?.profileId ?? null;
     const model: CrosscheckPanelModel | null =
-      selected === null ? null : await loadCrosscheckPanel(handle, { profileId: selected });
+      selected === null ? null : await loadCrosscheckPanel(handle, { orgId, profileId: selected });
     return { profiles, selected, model };
   });
 
