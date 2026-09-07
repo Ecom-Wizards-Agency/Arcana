@@ -42,10 +42,15 @@ const SCOPE = 'advertising::campaign_management';
 
 export async function startAmazonMock(options: AmazonMockOptions): Promise<AmazonMock> {
   const calls: string[] = [];
+  let exchanges = 0;
+  let refreshes = 0;
 
   const server: Server = createServer((request, response) => {
     const url = new URL(request.url ?? '/', `http://127.0.0.1:${options.port}`);
     calls.push(`${request.method} ${url.pathname}`);
+    if (request.method === 'GET' && url.pathname === '/__test/calls') {
+      json(response, 200, { exchanges, refreshes, calls }); return;
+    }
 
     // The authorize screen, with the operator's approval assumed.
     if (url.pathname === '/ap/oa') {
@@ -68,10 +73,13 @@ export async function startAmazonMock(options: AmazonMockOptions): Promise<Amazo
     if (url.pathname === '/auth/o2/token' && request.method === 'POST') {
       readBody(request).then((body) => {
         const form = new URLSearchParams(body);
-        if (form.get('grant_type') !== 'authorization_code' || !form.get('code')) {
+        const isExchange = form.get('grant_type') === 'authorization_code' && !!form.get('code');
+        const isRefresh = form.get('grant_type') === 'refresh_token' && form.get('refresh_token') === options.renewal;
+        if (!isExchange && !isRefresh) {
           json(response, 400, { error: 'invalid_grant', error_description: 'no code' });
           return;
         }
+        if (isExchange) exchanges += 1; else refreshes += 1;
         if (!form.get('client_secret')) {
           json(response, 401, { error: 'invalid_client', error_description: 'no secret' });
           return;

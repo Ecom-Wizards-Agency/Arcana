@@ -1,13 +1,9 @@
-/**
- * `/settings/connections` — the Amazon grant, and the result of the last one.
- *
- * This is also the OAuth flow's landing page: the callback redirects here with
- * the per-region counts in the query, so the banner below is the "N profiles
- * per region" result page the brief asks for. Putting it here rather than on a
- * standalone screen means a reload does not lose the connection state, only the
- * banner, which is the right thing to lose.
- */
+/** Agency connections and persisted worker progress. URL parameters never supply result counts. */
 import type { ReactNode } from 'react';
+import { latestAmazonConnection, readAmazonConnection, withAuthenticatedActor } from '@wizard-ads/db';
+import { Uuid } from '@wizard-ads/shared';
+import { amazonConnectionsEnabled } from '../../../src/env';
+import { ConnectionProgress } from '../../../src/oauth/connection-progress';
 import { can } from '../../../src/auth/roles';
 import { gate } from '../../../src/auth/guard';
 import { listConnections } from '../../../src/data/connections';
@@ -20,17 +16,15 @@ export const dynamic = 'force-dynamic';
 
 interface Props {
   searchParams: Promise<{
-    connected?: string;
-    regions?: string;
-    failed?: string;
-    total?: string;
+    org?: string;
+    operation?: string;
     oauth_error?: string;
   }>;
 }
 
 export default async function ConnectionsPage({ searchParams }: Props): Promise<ReactNode> {
   const query = await searchParams;
-  const result = await gate();
+  const result = await gate(query.org);
 
   if (result.state === 'no-database') {
     return (
@@ -58,10 +52,18 @@ export default async function ConnectionsPage({ searchParams }: Props): Promise<
   const org = context.active;
   if (!org) return null;
 
-  const [connections, roster] = await Promise.all([
-    listConnections(handle, org.orgId),
-    loadRoster(handle, org.orgId),
+  const actor = { orgId: org.orgId, userId: context.user.id };
+  const enabled = amazonConnectionsEnabled();
+  const [{ connections, roster }, operation] = await Promise.all([
+    withAuthenticatedActor(handle, actor, async (sql) => ({
+      connections: await listConnections({ sql }, org.orgId),
+      roster: await loadRoster({ sql }, org.orgId),
+    })),
+    enabled ? (query.operation !== undefined
+      ? Uuid.safeParse(query.operation).success ? readAmazonConnection(handle, actor, query.operation) : null
+      : latestAmazonConnection(handle, actor)) : null,
   ]);
+  const inProgress = operation !== null && ['awaiting_consent','queued','exchanging','discovering'].includes(operation.state);
   const mayConnect = can(org.role, 'manageConnection');
   const connected = connections.some((connection) => connection.status === 'active');
 
@@ -70,9 +72,8 @@ export default async function ConnectionsPage({ searchParams }: Props): Promise<
       <Shell context={context} current="connections">
         <h1 style={heading}>Connections</h1>
         <p style={muted}>
-          One Amazon Ads authorization per organisation. The refresh token goes straight into
-          Supabase Vault; this page never sees it and neither does any other part of the web
-          app.
+          Connect an Amazon Ads account for this agency, then choose which profiles to synchronize.
+          Only members of this agency can access its profiles.
         </p>
 
         {query.oauth_error ? (
@@ -81,25 +82,8 @@ export default async function ConnectionsPage({ searchParams }: Props): Promise<
           </p>
         ) : null}
 
-        {query.connected ? (
-          <div style={banner('good')} data-testid="oauth-result">
-            <strong>Connected.</strong>{' '}
-            <span data-testid="oauth-total">{query.total ?? '0'}</span> profile(s) landed.
-            <ul style={{ margin: '0.5rem 0 0', paddingLeft: '1.25rem' }}>
-              {parseRegionCounts(query.regions).map(([region, count]) => (
-                <li key={region} data-testid={`oauth-region-${region}`}>
-                  {region}: {count}
-                </li>
-              ))}
-            </ul>
-            {query.failed ? (
-              <p style={{ margin: '0.5rem 0 0' }} data-testid="oauth-failed">
-                No grant in: {query.failed}. That is normal when the authorization does not
-                cover every region.
-              </p>
-            ) : null}
-          </div>
-        ) : null}
+        {operation ? <ConnectionProgress key={operation.operationId} initial={operation} mayCancel={mayConnect} /> : null}
+        {enabled && query.operation && !operation ? <p style={banner('warn')}>This connection is not available in the selected agency.</p> : null}
 
         <h2 style={subheading}>Amazon Ads</h2>
         {connections.length === 0 ? (
@@ -112,7 +96,7 @@ export default async function ConnectionsPage({ searchParams }: Props): Promise<
               <tr>
                 <th style={th}>Label</th>
                 <th style={th}>Status</th>
-                <th style={th}>Credential</th>
+                <th style={th}>Authorization</th>
                 <th style={th}>Profiles</th>
                 <th style={th}>Connected</th>
                 <th style={th}>Last error</th>
@@ -125,7 +109,7 @@ export default async function ConnectionsPage({ searchParams }: Props): Promise<
                   <td style={td} data-testid="connection-status">
                     {connection.status}
                   </td>
-                  <td style={td}>{connection.hasCredential ? 'in Vault' : 'none'}</td>
+                  <td style={td}>{connection.hasCredential ? 'Stored' : 'Missing'}</td>
                   <td style={td}>{connection.profileCount}</td>
                   <td style={td}>{connection.connectedAt ?? '—'}</td>
                   <td style={td}>{connection.lastError ?? '—'}</td>
@@ -136,21 +120,22 @@ export default async function ConnectionsPage({ searchParams }: Props): Promise<
         )}
 
         <p style={{ marginTop: '1rem' }}>
-          {mayConnect ? (
-            <a href="/api/amazon/oauth/start" data-testid="connect-amazon">
+          {mayConnect && enabled && !inProgress ? (
+            <a href={`/api/amazon/oauth/start?${new URLSearchParams({ org: org.orgId })}`} data-testid="connect-amazon">
               {connected ? 'Reconnect Amazon Ads' : 'Connect Amazon Ads'}
             </a>
           ) : (
             <span style={muted} data-testid="connect-forbidden">
-              Connecting Amazon Ads requires the admin or owner role.
+              {!mayConnect ? 'Connecting Amazon Ads requires the admin or owner role.'
+                : !enabled ? 'Amazon connections are temporarily unavailable. Contact your installation operator.'
+                  : 'A connection is already in progress. Finish or cancel it before starting another.'}
             </span>
           )}
         </p>
 
         <h2 style={subheading}>More connections</h2>
         <p style={muted}>
-          These sources are on the roadmap. The buttons are here so the shape of the product is
-          honest about where it is going; the backends are gated behind their own work packages.
+          Additional Amazon integrations are planned.
         </p>
         <div className="wa-row" style={{ gap: '0.5rem', marginTop: '0.5rem' }}>
           <button
@@ -195,14 +180,4 @@ export default async function ConnectionsPage({ searchParams }: Props): Promise<
       </Shell>
     </main>
   );
-}
-
-/** `NA:71,EU:138` back into pairs, ignoring anything that is not that shape. */
-function parseRegionCounts(value: string | undefined): [string, string][] {
-  if (!value) return [];
-  return value
-    .split(',')
-    .map((part) => part.split(':'))
-    .filter((parts): parts is [string, string] => parts.length === 2 && /^\d+$/.test(parts[1] ?? ''))
-    .map(([region, count]) => [region, count] as [string, string]);
 }

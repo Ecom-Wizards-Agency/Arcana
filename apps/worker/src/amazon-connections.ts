@@ -4,7 +4,7 @@ import {
   type AdsConnectionCredentialBinding, type AmazonConnectionInstallation,
   type AmazonConnectionOperation, type AmazonConnectionRegionProgress, type Region,
 } from '@wizard-ads/shared';
-import { AdsApiParseError, AdsAuthError, AdsAuthorizationCodeError } from '@wizard-ads/ads-api';
+import { AdsApiHttpError, AdsApiParseError, AdsAuthError, AdsAuthorizationCodeError } from '@wizard-ads/ads-api';
 
 type RegionFailure = NonNullable<AmazonConnectionRegionProgress['reason']>;
 type ExchangeFailure = 'exchange_refused' | 'exchange_uncertain' | 'installation_changed';
@@ -63,7 +63,7 @@ function deadline(parent: AbortSignal, milliseconds: number): { signal: AbortSig
 }
 
 function regionFailure(error: unknown): RegionFailure {
-  if (error instanceof AdsAuthError) return 'access_refused';
+  if (error instanceof AdsAuthError || (error instanceof AdsApiHttpError && [401,403].includes(error.status))) return 'access_refused';
   if (error instanceof AdsApiParseError || error instanceof InvalidDiscoveryResponse) return 'invalid_response';
   return 'request_failed';
 }

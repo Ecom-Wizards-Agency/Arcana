@@ -11,7 +11,9 @@
  * that check starts failing in production only.
  */
 import { NextResponse } from 'next/server';
-import { amazonOAuthConfig, secureCookies, stateSigningKey } from '../../../../../src/env';
+import { randomUUID } from 'node:crypto';
+import { beginAmazonConnection } from '@wizard-ads/db';
+import { amazonConnectionsEnabled, amazonOAuthConfig, secureCookies, stateSigningKey } from '../../../../../src/env';
 import { authorize, Forbidden } from '../../../../../src/auth/roles';
 import { authOrigin } from '../../../../../src/auth/origin';
 import {
@@ -20,7 +22,7 @@ import {
 } from '../../../../../src/auth/security-authorization';
 import { database } from '../../../../../src/data/db';
 import { resolveOrgContext } from '../../../../../src/data/orgs';
-import { createNonce, createState, nonceCookie } from '../../../../../src/oauth/state';
+import { createNonce, createState, nonceCookie, nonceDigest } from '../../../../../src/oauth/state';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -64,14 +66,24 @@ export async function GET(request: Request): Promise<Response> {
   let config;
   let key;
   try {
+    if (!amazonConnectionsEnabled()) return problem(503, 'Amazon connections are temporarily unavailable');
     config = amazonOAuthConfig();
     key = stateSigningKey();
-  } catch (error) {
-    return problem(503, error instanceof Error ? error.message : 'oauth is not configured');
+  } catch {
+    return problem(503, 'Amazon connections are not configured');
   }
 
   const nonce = createNonce();
-  const state = createState(key, { org: context.active.orgId, sub: user.id, nonce });
+  let state: string;
+  try {
+    const operation = await beginAmazonConnection(handle, { orgId: context.active.orgId, userId: user.id }, {
+      requestId: randomUUID(), nonceHash: nonceDigest(nonce), clientId: config.clientId,
+      redirectUri: config.redirectUri, scope: config.scope,
+    });
+    state = createState(key, { org: context.active.orgId, sub: user.id, nonce, operationId: operation.operationId });
+  } catch {
+    return problem(503, 'A connection could not be started. Check Connections for an existing operation, then try again.');
+  }
 
   const authorizeUrl = new URL(config.authorizeUrl);
   authorizeUrl.search = new URLSearchParams({

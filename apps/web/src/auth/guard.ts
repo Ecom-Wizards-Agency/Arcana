@@ -29,8 +29,8 @@ export type Gate =
   | { state: 'no-database' }
   | { state: 'no-org'; context: OrgContext };
 
-export async function gate(): Promise<Gate> {
-  return resolvePageGate(true);
+export async function gate(preferredOrgId?: string | null): Promise<Gate> {
+  return resolvePageGate(true, preferredOrgId);
 }
 
 /** Account security must remain reachable when policy requires MFA enrollment. */
@@ -38,7 +38,7 @@ export async function gateAccountSecurity(): Promise<Gate> {
   return resolvePageGate(false);
 }
 
-async function resolvePageGate(enforceAssurance: boolean): Promise<Gate> {
+async function resolvePageGate(enforceAssurance: boolean, preferredOrgId?: string | null): Promise<Gate> {
   const identity = enforceAssurance ? await currentOperatorIdentity() : null;
   const user = identity === null ? await currentUser() : identity.user;
   if (!user) {
@@ -53,7 +53,7 @@ async function resolvePageGate(enforceAssurance: boolean): Promise<Gate> {
 
   let context: OrgContext;
   try {
-    context = await resolveOrgContext(handle, user);
+    context = await resolveOrgContext(handle, user, preferredOrgId);
   } catch (error) {
     if (isDatabaseUnreachable(error)) return { state: 'no-database' };
     throw error;
@@ -74,17 +74,17 @@ async function resolvePageGate(enforceAssurance: boolean): Promise<Gate> {
  * The same gate for a server action, where there is no page to render a
  * message on: anything short of a usable context throws.
  */
-export async function gateAction(): Promise<{ handle: DbHandle; active: Membership }> {
+export async function gateAction(preferredOrgId?: string): Promise<{ handle: DbHandle; active: Membership; userId: string }> {
   const identity = await currentOperatorIdentity();
   const user = identity.user;
   if (!user) throw new Error('not signed in');
   const handle = requireDatabase();
-  const context = await resolveOrgContext(handle, user);
+  const context = await resolveOrgContext(handle, user, preferredOrgId);
   const active = context.active;
   if (!active) throw new Error('you belong to no organisation');
   const authorization = authorizeOperatorRole(identity, active.role, '/dashboard');
   if (authorization.status !== 'ok') throw new Error('additional authentication required');
-  return { handle, active };
+  return { handle, active, userId: user.id };
 }
 
 /** Account-security actions still require membership, but apply their own step-up rule. */

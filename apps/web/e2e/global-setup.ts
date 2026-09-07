@@ -108,9 +108,14 @@ export default async function globalSetup(): Promise<void> {
       });
       return { resource: mock, cleanup: () => mock.close() };
     },
-    acquireServer: (connectionString, mock) => {
-      const server = spawnWebServer(connectionString, mock);
-      return { resource: server, cleanup: () => stopProcess(server.child) };
+    acquireServer: async (connectionString, mock) => {
+      const worker = await spawnConnectionTestWorker(connectionString, mock.url);
+      try {
+        const server = spawnWebServer(connectionString, mock);
+        return { resource: server, cleanup: async () => {
+          try { await stopProcess(server.child); } finally { await stopProcess(worker); }
+        } };
+      } catch (error) { await stopProcess(worker); throw error; }
     },
     waitUntilReady: async (server) => {
       await waitForE2EServerOrFailure(
@@ -307,6 +312,27 @@ interface SpawnedWebServer {
   failedBeforeReady: Promise<never>;
 }
 
+async function spawnConnectionTestWorker(connectionString: string, mockOrigin: string): Promise<ChildProcess> {
+  const worker = spawn(process.execPath, ['--import', 'tsx', resolve(REPO_ROOT, 'apps/worker/src/amazon-connections-e2e.ts')], {
+    cwd: REPO_ROOT, stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+    env: { PATH: process.env['PATH'], NODE_ENV: 'test', WIZARD_ADS_TEST_DATABASE_URL: connectionString,
+      OPENSPELL_TEST_AMAZON_ORIGIN: mockOrigin, OPENSPELL_TEST_APP_ORIGIN: BASE_URL },
+  });
+  try {
+    await new Promise<void>((resolveReady, reject) => {
+      const timer = setTimeout(() => reject(new Error('Connection test worker did not start')), 15_000);
+      worker.once('message', (value) => {
+        clearTimeout(timer);
+        if (typeof value === 'object' && value !== null && 'ready' in value && value.ready === true) resolveReady();
+        else reject(new Error('Unexpected connection test worker readiness'));
+      });
+      worker.once('error', () => { clearTimeout(timer); reject(new Error('Connection test worker could not start')); });
+      worker.once('exit', () => { clearTimeout(timer); reject(new Error('Connection test worker exited')); });
+    });
+    return worker;
+  } catch (error) { await stopProcess(worker); throw error; }
+}
+
 function spawnWebServer(connectionString: string, amazon: AmazonMock): SpawnedWebServer {
   const child = spawn(
     resolve(WEB_ROOT, 'node_modules/.bin/next'),
@@ -330,14 +356,10 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock): SpawnedWe
         WIZARD_ADS_APP_URL: BASE_URL,
         WIZARD_ADS_E2E_AUTH: '1',
         AMAZON_LWA_CLIENT_ID: 'amzn1.application-oa2-client.e2e',
-        AMAZON_LWA_CLIENT_SECRET: 'synthetic-e2e-client-secret',
         AMAZON_OAUTH_REDIRECT_URI: `${BASE_URL}/api/amazon/oauth/callback`,
         AMAZON_OAUTH_STATE_KEY: STATE_KEY,
         AMAZON_LWA_AUTHORIZE_URL: amazon.authorizeUrl,
-        AMAZON_LWA_TOKEN_URL: amazon.tokenUrl,
-        AMAZON_ADS_HOST_NA: amazon.hosts.NA,
-        AMAZON_ADS_HOST_EU: amazon.hosts.EU,
-        AMAZON_ADS_HOST_FE: amazon.hosts.FE,
+        OPENSPELL_AMAZON_CONNECTIONS_ENABLED: '1',
       },
     },
   );

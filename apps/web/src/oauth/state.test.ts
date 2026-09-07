@@ -15,17 +15,19 @@ import {
   nonceCookie,
   nonceCookieName,
   STATE_TTL_SECONDS,
+  STATE_VERSION,
   verifyState,
 } from './state';
 
 const KEY = 'x'.repeat(48);
 const OTHER_KEY = 'y'.repeat(48);
 const ORG = '11111111-1111-4111-8111-111111111111';
+const OPERATION = '33333333-3333-4333-8333-333333333333';
 const SUB = '22222222-2222-4222-8222-222222222222';
 
 function mint(now = Date.now()): { state: string; nonce: string } {
   const nonce = createNonce();
-  return { state: createState(KEY, { org: ORG, sub: SUB, nonce }, now), nonce };
+  return { state: createState(KEY, { operationId: OPERATION, org: ORG, sub: SUB, nonce }, now), nonce };
 }
 
 describe('oauth state', () => {
@@ -36,6 +38,7 @@ describe('oauth state', () => {
     if (!result.ok) return;
     expect(result.claims.org).toBe(ORG);
     expect(result.claims.sub).toBe(SUB);
+    expect(result.claims.operationId).toBe(OPERATION);
   });
 
   it('rejects a payload edited in flight', () => {
@@ -48,10 +51,23 @@ describe('oauth state', () => {
     expect(verifyState(KEY, forged, nonce)).toEqual({ ok: false, reason: 'bad_signature' });
   });
 
+  it('rejects changed operation identity and legacy state without a durable operation', () => {
+    const { state, nonce } = mint();
+    const [encoded, signature] = state.split('.') as [string, string];
+    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+    payload.operationId = '44444444-4444-4444-8444-444444444444';
+    const changed = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    expect(verifyState(KEY, `${changed}.${signature}`, nonce)).toMatchObject({ ok: false, reason: 'bad_signature' });
+    payload.v = 1; delete payload.operationId;
+    const legacy = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const signed = createHmac('sha256', KEY).update(legacy).digest('base64url');
+    expect(verifyState(KEY, `${legacy}.${signed}`, nonce)).toMatchObject({ ok: false, reason: 'malformed' });
+  });
+
   it('rejects a swapped signature', () => {
     const { state, nonce } = mint();
     const [encoded] = state.split('.') as [string, string];
-    const other = createState(OTHER_KEY, { org: ORG, sub: SUB, nonce });
+    const other = createState(OTHER_KEY, { operationId: OPERATION, org: ORG, sub: SUB, nonce });
     const [, otherSignature] = other.split('.') as [string, string];
 
     expect(verifyState(KEY, `${encoded}.${otherSignature}`, nonce)).toEqual({
@@ -62,7 +78,7 @@ describe('oauth state', () => {
 
   it('rejects a state signed with a different key', () => {
     const nonce = createNonce();
-    const state = createState(OTHER_KEY, { org: ORG, sub: SUB, nonce });
+    const state = createState(OTHER_KEY, { operationId: OPERATION, org: ORG, sub: SUB, nonce });
     expect(verifyState(KEY, state, nonce)).toEqual({ ok: false, reason: 'bad_signature' });
   });
 
@@ -92,7 +108,7 @@ describe('oauth state', () => {
     // exp-minus-iat check this passes, which is why the check exists.
     const nonce = createNonce();
     const issuedAt = Math.floor(Date.now() / 1000);
-    const payload = { v: 1, iat: issuedAt, exp: issuedAt + 86400, org: ORG, sub: SUB, nonce };
+    const payload = { v: STATE_VERSION, operationId: OPERATION, iat: issuedAt, exp: issuedAt + 86400, org: ORG, sub: SUB, nonce };
     const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
     // Signed with the real key, so the signature check passes and the TTL
     // assertion is the only defence left standing.
@@ -127,7 +143,7 @@ describe('oauth state', () => {
   });
 
   it('refuses to sign with a key that is too short', () => {
-    expect(() => createState('short', { org: ORG, sub: SUB, nonce: createNonce() })).toThrow(
+    expect(() => createState('short', { operationId: OPERATION, org: ORG, sub: SUB, nonce: createNonce() })).toThrow(
       /at least 32 bytes/,
     );
   });
