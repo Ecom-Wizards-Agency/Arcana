@@ -8,15 +8,14 @@
  * is the one with the tests. So this file's whole job is to hand the engine the
  * rows for a scope.
  *
- * Every query carries `org_id` as well as `profile_id`. The web handle connects
- * as the application's own role, so RLS is the second fence rather than the
- * first; a query that forgot the org predicate would be a cross-tenant read in
- * the browser even though the same statement is safe from PostgREST.
+ * Every query carries `org_id` as well as `profile_id` and accepts the page's
+ * authenticated transaction. Explicit scope is still required when a user
+ * belongs to more than one agency.
  */
 import type { SearchTermRow } from '@wizard-ads/core';
-import type { RequestDatabase } from '@wizard-ads/db';
+import type { QueryHandle } from '@wizard-ads/db';
 
-export type NgramQueryHandle = Pick<RequestDatabase, 'sql'>;
+export type NgramQueryHandle = QueryHandle;
 
 export interface NgramScope {
   orgId: string;

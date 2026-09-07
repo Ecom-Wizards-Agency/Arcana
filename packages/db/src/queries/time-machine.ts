@@ -17,10 +17,9 @@
  * everything an operator batch touched. An entry is therefore attributed to
  * exactly one source.
  *
- * Every statement carries an explicit `org_id` and `profile_id` predicate. The
- * web tier connects as the application's own role, so RLS is the second fence,
- * not the first: a query that forgot the org predicate would be a cross-tenant
- * read in the browser even though the same query is safe from PostgREST.
+ * Every statement carries an explicit `org_id` and `profile_id` predicate.
+ * Page readers also use authenticated transactions; reversion export admission
+ * owns a separate write transaction.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -34,7 +33,7 @@ import type {
   ReversionBatchPreview as ReversionBatchPreviewType,
   ReversionRowPreview,
 } from '@wizard-ads/shared';
-import type { DbHandle, QuerySql } from '../client.js';
+import type { DbHandle, QueryHandle, QuerySql } from '../client.js';
 import type { JsonValue } from './goto.js';
 import { lockCurrentApplyStates } from './apply-state.js';
 import { toDate, toDateOrNull } from './pg-time.js';
@@ -142,7 +141,7 @@ const toEntry = (row: TimelineRow): TimelineEntry => ({
  * making the other contribute nothing.
  */
 export async function listTimeline(
-  handle: TimeMachineQueryHandle,
+  handle: QueryHandle,
   filter: TimelineFilter,
 ): Promise<TimelineEntry[]> {
   const entityTypes = filter.entityTypes?.length ? [...filter.entityTypes] : null;
@@ -237,7 +236,7 @@ export interface TimelineFacets {
  * option that would widen the view is a trap.
  */
 export async function listTimelineFacets(
-  handle: TimeMachineQueryHandle,
+  handle: QueryHandle,
   input: { orgId: string; profileId: string },
 ): Promise<TimelineFacets> {
   const rows = await handle.sql<{ entity_type: string; field: string }[]>`
@@ -413,7 +412,7 @@ function classifyReversionRow(
 }
 
 export async function listReversionBatches(
-  handle: TimeMachineQueryHandle,
+  handle: QueryHandle,
   input: { orgId: string; profileId: string; limit?: number },
 ): Promise<ReversionBatchSummary[]> {
   const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);

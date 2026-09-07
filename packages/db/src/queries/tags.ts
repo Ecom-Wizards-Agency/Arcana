@@ -5,7 +5,7 @@
  * avoids the ambiguous exact-name behavior documented in the AdLabs recon.
  */
 import type { EntityState, EntityType } from '@wizard-ads/shared';
-import type { DbHandle, Sql } from '../client.js';
+import type { DbHandle, QueryHandle, QuerySql, Sql } from '../client.js';
 import { toDate } from './pg-time.js';
 
 export type TagQueryHandle = Pick<DbHandle, 'sql'>;
@@ -151,7 +151,7 @@ function normalizeName(name: string): string {
   return normalized;
 }
 
-async function requireTag(sql: Sql, orgId: string, tagId: string): Promise<TagRecord> {
+async function requireTag(sql: QuerySql, orgId: string, tagId: string): Promise<TagRecord> {
   const rows = await sql<TagRow[]>`
     select id, org_id, parent_id, name, slug, color, created_by, created_at, updated_at
       from public.tags
@@ -162,7 +162,7 @@ async function requireTag(sql: Sql, orgId: string, tagId: string): Promise<TagRe
   return toTag(row);
 }
 
-export async function listTags(handle: TagQueryHandle, orgId: string): Promise<TagRecord[]> {
+export async function listTags(handle: QueryHandle, orgId: string): Promise<TagRecord[]> {
   const rows = await handle.sql<TagRow[]>`
     select id, org_id, parent_id, name, slug, color, created_by, created_at, updated_at
       from public.tags
@@ -173,7 +173,7 @@ export async function listTags(handle: TagQueryHandle, orgId: string): Promise<T
 }
 
 export async function listTagTree(
-  handle: TagQueryHandle,
+  handle: QueryHandle,
   orgId: string,
 ): Promise<TagTreeNode[]> {
   const nodes = new Map<string, TagTreeNode>(
@@ -488,7 +488,7 @@ export async function deleteTag(
 }
 
 export async function listCampaignsByTagFilter(
-  handle: TagQueryHandle,
+  handle: QueryHandle,
   orgId: string,
   filter?: EntityTagFilter,
 ): Promise<CampaignTagListRow[]> {
