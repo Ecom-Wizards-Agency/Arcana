@@ -10,6 +10,9 @@ export function operatorFailureLabel(error: string | null | undefined): string |
   if (!error) return null;
 
   const normalized = error.toLowerCase();
+  if (normalized === 'the credential could not be stored in vault.') {
+    return 'Credential storage failed. Ask your installation operator to check credential storage before trying again.';
+  }
   if (/authorization link expired/.test(normalized)) {
     return 'The authorization link expired. Start the connection again.';
   }

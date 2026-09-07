@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { operatorFailureLabel } from './operator-failure';
 
+it('shows an actionable credential storage failure without accepting appended private details', () => {
+  const fixed = 'The credential could not be stored in Vault.';
+  expect(operatorFailureLabel(fixed)).toBe(
+    'Credential storage failed. Ask your installation operator to check credential storage before trying again.',
+  );
+  const untrusted = `${fixed} synthetic private credential details`;
+  expect(operatorFailureLabel(untrusted)).toBe('The operation failed. Review the private worker log for the underlying cause.');
+  expect(operatorFailureLabel(untrusted)).not.toContain('synthetic private');
+});
+
 describe('operator failure labels', () => {
   it('never returns database statements or bind parameters', () => {
     const raw = [

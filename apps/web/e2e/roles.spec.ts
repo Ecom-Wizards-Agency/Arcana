@@ -221,7 +221,7 @@ test('an admin persists a schedule and bulk-syncs the exact selected synthetic r
   await expect(page.getByTestId('toggle-sync')).toHaveValue('0');
 });
 
-test('an admin stores an integration key once and can revoke it', async ({ page }) => {
+test('an admin manages a credential and sees a safe failed replacement without losing the prior value', async ({ page }) => {
   await signIn(page, 'admin');
   await page.goto('/settings/integrations');
 
@@ -250,6 +250,32 @@ test('an admin stores an integration key once and can revoke it', async ({ page 
   await expect(
     page.getByTestId('integration-row-datadive').filter({ hasText: 'E2E DataDive' }),
   ).toContainText('active');
+
+  const state = await readState();
+  const handle = createDb({ connectionString: state.connectionString, max: 1 });
+  try {
+    await handle.sql`create function public.e2e_refuse_integration_activation() returns trigger language plpgsql as $$
+      begin if new.label='E2E DataDive' and new.status='active' then
+        raise exception 'synthetic private storage detail'; end if; return new; end $$`;
+    await handle.sql`create trigger e2e_refuse_integration_activation before update on public.integration_connections
+      for each row execute function public.e2e_refuse_integration_activation()`;
+    await page.getByTestId('integration-label-datadive').fill('E2E DataDive');
+    await page.getByTestId('integration-secret-datadive').fill(`${INTEGRATION_VALUE}-refused`);
+    await page.getByTestId('submit-integration-datadive').click();
+    await expect(row).toContainText('Credential storage failed. Ask your installation operator');
+    await expect(page.getByTestId('integration-secret-datadive')).toHaveValue('');
+    await expect(page.locator('body')).not.toContainText(INTEGRATION_VALUE);
+    await expect(page.locator('body')).not.toContainText('synthetic private storage detail');
+    const results = await handle.sql<{ value: string; audit_count: number }[]>`
+      select public.get_integration_secret(c.id) as value,
+        (select count(*)::int from public.audit_log a where a.target_id=c.id::text) as audit_count
+      from public.integration_connections c where c.org_id=${state.orgId} and c.label='E2E DataDive'`;
+    expect(results).toEqual([{ value: `${INTEGRATION_VALUE}-rotated`, audit_count: 4 }]);
+  } finally {
+    await handle.sql`drop trigger if exists e2e_refuse_integration_activation on public.integration_connections`;
+    await handle.sql`drop function if exists public.e2e_refuse_integration_activation()`;
+    await handle.close();
+  }
 });
 
 test('the analyst edit persisted for every role that can read it', async ({ page }) => {
