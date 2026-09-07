@@ -6,3 +6,6 @@ packages:
 # Build scripts we have reviewed and allow to run on install.
 allowBuilds:
   esbuild: true
+
+patchedDependencies:
+  postgres@3.4.9: patches/postgres@3.4.9.patch
