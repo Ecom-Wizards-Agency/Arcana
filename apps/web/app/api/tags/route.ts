@@ -1,20 +1,13 @@
 import { requestActor, errorResponse, openWebDatabase, requireOrgMembership } from '../../../src/server/request-context';
 import { createTag, listTagTree } from '@wizard-ads/db';
 import { parseTagColor } from './color-input';
+import { authenticatedRead } from '../../../src/server/authenticated-read';
 
 export const runtime = 'nodejs';
 
 export async function GET(request: Request): Promise<Response> {
-  const database = openWebDatabase();
-  try {
-    const actor = await requestActor(request.headers);
-    await requireOrgMembership(database, actor);
-    return Response.json({ tags: await listTagTree(database, actor.orgId) });
-  } catch (error) {
-    return errorResponse(error);
-  } finally {
-    await database.close();
-  }
+  return authenticatedRead(request, async (handle, actor) =>
+    Response.json({ tags: await listTagTree(handle, actor.orgId) }));
 }
 
 export async function POST(request: Request): Promise<Response> {

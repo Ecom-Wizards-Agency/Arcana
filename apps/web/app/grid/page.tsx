@@ -162,6 +162,7 @@ export default async function GridPage({ searchParams }: PageProps) {
 
       <GridWorkspace
         key={`${profile.id}:${entity}:${period.start}:${period.end}:${params.campaign ?? ''}`}
+        actor={actor}
         entity={entity}
         currencyCode={profile.currencyCode}
         profileId={profile.id}

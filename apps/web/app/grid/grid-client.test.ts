@@ -2,7 +2,7 @@
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_LAYOUT_WRITE_DELAY_MS, columnsFor } from '@wizard-ads/ui';
+import { DEFAULT_LAYOUT_WRITE_DELAY_MS, MemoryViewStore, columnsFor } from '@wizard-ads/ui';
 import type {
   EntityLevel,
   GridRow,
@@ -147,11 +147,61 @@ const freshness = {
   coversThrough: null,
 };
 
+describe('Grid actor ownership', () => {
+  it('cannot apply a delayed saved layout from the previous actor at the same URL', async () => {
+    stubGridFetch();
+    const previous = new DeferredViewStore(); const nextStore = new MemoryViewStore();
+    const host = document.createElement('div'); document.body.append(host);
+    const root = createRoot(host); mounted.push(root);
+    act(() => root.render(createElement(GridWorkspace, workspaceProps('campaigns', previous))));
+    await flushGridLoad();
+    const next = workspaceProps('campaigns', nextStore);
+    next.actor = { ...next.actor, userId: '82828282-8282-4282-8282-828282828282' };
+    act(() => root.render(createElement(GridWorkspace, next)));
+    await flushGridLoad();
+    expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('true');
+    await act(async () => {
+      previous.restore('campaigns', scopedView('campaigns', {
+        columns: ['campaign_name'], sort: [], groupBy: [],
+        filter: { groups: [{ filters: [{ key: 'CAMPAIGN_NAME', conditions: [{ operator: '=', values: ['Synthetic old private filter'] }] }] }] },
+      }));
+    });
+    expect(host.textContent).not.toContain('Synthetic old private filter');
+    expect(host.querySelector('[aria-label="Remove filter CAMPAIGN_NAME"]')).toBeNull();
+  });
+
+  it('flushes the previous actor buffer to its old store before a new workspace can edit', async () => {
+    stubGridFetch();
+    const previous = new CachedViewStore({ campaigns: scopedView('campaigns', {
+      columns: ['campaign_name', 'clicks', 'spend'], filter: { groups: [] }, sort: [], groupBy: [],
+    }) });
+    const nextStore = new MemoryViewStore();
+    const host = document.createElement('div'); document.body.append(host);
+    const root = createRoot(host); mounted.push(root);
+    act(() => root.render(createElement(GridWorkspace, workspaceProps('campaigns', previous))));
+    await flushGridLoad();
+    await act(async () => {
+      host.querySelector<HTMLElement>('[role="columnheader"][aria-label="Spend"]')?.click();
+      host.querySelector<HTMLElement>('[role="columnheader"][aria-label="Clicks"]')?.click();
+    });
+    expect(previous.remembered).toHaveLength(1);
+    const next = workspaceProps('campaigns', nextStore);
+    next.actor = { ...next.actor, orgId: '83838383-8383-4383-8383-838383838383' };
+    act(() => root.render(createElement(GridWorkspace, next)));
+    expect(previous.remembered).toHaveLength(2);
+    expect(previous.remembered.at(-1)?.sort).toEqual([{ columnId: 'clicks', direction: 'desc' }]);
+    await flushGridLoad();
+    expect(await nextStore.lastLayout('campaigns')).toBeNull();
+    expect(host.querySelector('[role="columnheader"][aria-label="Clicks"]')?.getAttribute('aria-sort')).not.toBe('descending');
+  });
+});
+
 function workspaceProps(
   entity: EntityLevel,
   store: ViewStore | null,
 ): Parameters<typeof GridWorkspace>[0] {
   return {
+    actor: { userId: '76767676-7676-4676-8676-767676767676', orgId: '77777777-7777-4777-8777-777777777777' },
     entity,
     currencyCode: 'USD',
     profileId: 'synthetic-profile',

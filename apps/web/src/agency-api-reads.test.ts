@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
 import { GET as bids } from '../app/api/bid-history/route';
 import { GET as experiments } from '../app/api/experiments/route';
@@ -9,12 +9,14 @@ import { GET as feedback } from '../app/api/feedback/route';
 import { GET as item } from '../app/api/feedback/[itemId]/route';
 import { GET as similar } from '../app/api/feedback/similar/route';
 import { GET as groups } from '../app/api/optimizer/groups/route';
+import { GET as tags } from '../app/api/tags/route';
 import { authenticatedRead } from './server/authenticated-read';
+import * as requestContext from './server/request-context';
 
 const available = await databaseAvailable();
 const bridge = 'synthetic-agency-api-read-bridge';
 const date = '2026-08-29';
-const kinds = ['bids', 'experiments', 'experiment', 'options', 'feedback', 'item', 'similar', 'groups'] as const;
+const kinds = ['bids', 'experiments', 'experiment', 'options', 'feedback', 'item', 'similar', 'groups', 'tags'] as const;
 type Kind = typeof kinds[number];
 interface Agency { orgId: string; userId: string; profileId: string; experimentId: string; itemId: string; marker: string }
 
@@ -34,6 +36,7 @@ describe.skipIf(!available)('agency API reads', () => {
       const [bug] = await database.sql<{ id: string }[]>`update public.feedback_items set title=${marker} where org_id=${orgId} returning id`;
       await database.sql`update public.campaigns set name=${marker} where org_id=${orgId}`;
       await database.sql`update public.optimization_groups set name=${marker} where org_id=${orgId}`;
+      await database.sql`update public.tags set name=${marker} where org_id=${orgId}`;
       agencies.push({ orgId, userId, profileId: profile!.id, experimentId: exp!.id, itemId: bug!.id, marker });
     }
     process.env['DATABASE_URL'] = database.connectionString;
@@ -64,6 +67,7 @@ describe.skipIf(!available)('agency API reads', () => {
     if (kind === 'feedback') return feedback(request('/api/feedback?type=bug&sort=votes', actor, orgId));
     if (kind === 'item') return item(request(`/api/feedback/${target.itemId}`, actor, orgId), { params: Promise.resolve({ itemId: target.itemId }) });
     if (kind === 'similar') return similar(request('/api/feedback/similar?q=' + encodeURIComponent(target.marker), actor, orgId));
+    if (kind === 'tags') return tags(request('/api/tags', actor, orgId));
     return groups(request(`/api/optimizer/groups?profileId=${target.profileId}`, actor, orgId));
   }
   function privateData(response: Response): void {
@@ -78,7 +82,7 @@ describe.skipIf(!available)('agency API reads', () => {
       for (const target of agencies) {
         const response = await read(kind, actor, target);
         privateData(response);
-        expect(response.status).toBe(actor === target || kind === 'feedback' || kind === 'similar' ? 200 : 404);
+        expect(response.status).toBe(actor === target || kind === 'feedback' || kind === 'similar' || kind === 'tags' ? 200 : 404);
         const text = await response.text();
         for (const other of agencies.filter((agency) => agency !== actor)) expect(text).not.toContain(other.marker);
         if (actor === target) {
@@ -87,6 +91,7 @@ describe.skipIf(!available)('agency API reads', () => {
           if (kind === 'feedback') expect(body['counts']).toMatchObject({ total: 1, openBugs: 1 });
           if (kind === 'feedback' || kind === 'experiments' || kind === 'similar') expect(body['items']).toHaveLength(1);
           if (kind === 'bids') expect(body['points']).toHaveLength(1);
+          if (kind === 'tags') expect(body['tags']).toHaveLength(1);
         }
         if (actor !== target) {
           const forged = await read(kind, actor, target, target.orgId);
@@ -138,5 +143,51 @@ describe.skipIf(!available)('agency API reads', () => {
       await database.sql`drop function public.api_read_test_failure()`;
     }
     expect((await read('feedback', actor, actor)).status).toBe(200);
+  });
+
+  it('reads tags under authenticated RLS and hides a real SQL failure', async () => {
+    const actor = agencies[0]!;
+    await database.sql`create policy tags_read_hidden on public.tags as restrictive for select to authenticated using(false)`;
+    try {
+      const response = await read('tags', actor, actor);
+      privateData(response);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ tags: [] });
+    } finally { await database.sql`drop policy tags_read_hidden on public.tags`; }
+    await database.sql`alter table public.tags rename column name to synthetic_hidden_name`;
+    try {
+      const response = await read('tags', actor, actor);
+      privateData(response);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: 'Could not load this data. Try again.' });
+    } finally { await database.sql`alter table public.tags rename column synthetic_hidden_name to name`; }
+    expect((await read('tags', actor, actor)).status).toBe(200);
+  });
+
+  it('verifies identity before opening and returns a private error after a failed final close', async () => {
+    const actor = agencies[0]!;
+    const identify = vi.spyOn(requestContext, 'requestActor').mockRejectedValue(new requestContext.RequestAuthError('Authentication required', 401));
+    const originalOpen = requestContext.openWebDatabase;
+    const open = vi.spyOn(requestContext, 'openWebDatabase');
+    try {
+      const response = await read('tags', actor, actor);
+      privateData(response);
+      expect(response.status).toBe(401);
+      expect(open).not.toHaveBeenCalled();
+    } finally { identify.mockRestore(); open.mockRestore(); }
+    let closes = 0;
+    const failingOpen = vi.spyOn(requestContext, 'openWebDatabase').mockImplementation(() => {
+      const handle = originalOpen();
+      return { ...handle, close: async () => { closes++; await handle.close(); throw new Error('Synthetic private teardown failure'); } };
+    });
+    try {
+      for (const kind of kinds) {
+        const response = await read(kind, actor, actor);
+        privateData(response);
+        expect(response.status).toBe(503);
+        expect(await response.json()).toEqual({ error: 'Could not load this data. Try again.' });
+      }
+      expect(closes).toBe(kinds.length);
+    } finally { failingOpen.mockRestore(); }
   });
 });

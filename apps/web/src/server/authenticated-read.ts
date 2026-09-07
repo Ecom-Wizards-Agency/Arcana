@@ -1,4 +1,4 @@
-import { AgencyAccessDenied, withAuthenticatedActor, type QueryHandle, type RequestDatabase } from '@wizard-ads/db';
+import { AgencyAccessDenied, withAuthenticatedActor, type QueryHandle } from '@wizard-ads/db';
 import { Uuid, type OrgActor } from '@wizard-ads/shared';
 import { errorResponse, openWebDatabase, requestActor, RequestAuthError } from './request-context';
 import { privateResponse } from './private-response';
@@ -21,11 +21,16 @@ export async function authenticatedRead(
   request: Request,
   read: (handle: QueryHandle, actor: OrgActor) => Promise<Response>,
 ): Promise<Response> {
-  let database: RequestDatabase | null = null;
   try {
     const actor = await requestActor(request.headers);
-    database = openWebDatabase();
-    return privateResponse(await withAuthenticatedActor(database, actor, (sql) => read({ sql }, actor)));
+    const database = openWebDatabase();
+    let response: Response;
+    try {
+      response = await withAuthenticatedActor(database, actor, (sql) => read({ sql }, actor));
+    } finally {
+      await database.close();
+    }
+    return privateResponse(response);
   } catch (error) {
     if (error instanceof AgencyAccessDenied || error instanceof RequestAuthError || error instanceof SyntaxError) {
       return privateResponse(errorResponse(error));
@@ -34,7 +39,5 @@ export async function authenticatedRead(
       return privateResponse(Response.json({ error: error.message }, { status: error.status }));
     }
     return privateResponse(Response.json({ error: 'Could not load this data. Try again.' }, { status: 503 }));
-  } finally {
-    await database?.close();
   }
 }

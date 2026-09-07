@@ -14,6 +14,7 @@
  */
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import { createDb } from '@wizard-ads/db';
 
 const EXPIRED_TOKEN = process.env['WIZARD_ADS_E2E_EXPIRED_TOKEN'] ?? '';
 const FOREIGN_TOKEN = process.env['WIZARD_ADS_E2E_FOREIGN_TOKEN'] ?? '';
@@ -36,6 +37,35 @@ async function openTags(page: Page, path = '/tags'): Promise<void> {
 }
 
 test.describe('tags and goto links', () => {
+  test('a viewer follows a shared link privately with exactly one recorded visit', async ({ page }) => {
+    await openTags(page);
+    await page.getByRole('button', { name: 'Copyable goto link' }).click();
+    await expect(page.getByRole('status')).toContainText('/go/');
+    const message = (await page.getByRole('status').textContent()) ?? '';
+    const path = message.slice(message.indexOf('/go/'));
+    const token = path.slice('/go/'.length);
+    const database = createDb({ connectionString: process.env['DATABASE_URL']!, max: 1 });
+    try {
+      const before = await database.sql`select uses from public.goto_links where token=${token}`;
+      expect(before).toEqual([{ uses: 0 }]);
+      await page.setExtraHTTPHeaders({
+        'x-wizard-ads-auth-bridge': process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET']!,
+        'x-wizard-ads-user-id': process.env['WIZARD_ADS_E2E_USER_VIEWER']!,
+        'x-wizard-ads-org-id': process.env['WIZARD_ADS_E2E_ORG_A']!,
+      });
+      const redirected = page.waitForResponse((response) => new URL(response.url()).pathname === path);
+      const result = await page.goto(path);
+      const redirect = await redirected;
+      expect(redirect.status()).toBe(307);
+      expect(redirect.headers()['cache-control']).toBe('private, no-store, max-age=0');
+      expect(redirect.headers()['vary']).toContain('Cookie');
+      expect(redirect.headers()['vary']).toContain('Authorization');
+      expect(result?.status()).toBe(200);
+      await expect(page.locator('main[data-interactive="true"]')).toBeVisible();
+      expect(await database.sql`select uses from public.goto_links where token=${token}`).toEqual([{ uses: 1 }]);
+    } finally { await database.close(); }
+  });
+
   test('tagging a campaign set drives both the list and the dashboard count', async ({ page }) => {
     await openTags(page);
     // The seed: one campaign already carries the fixture tag, the rest do not.

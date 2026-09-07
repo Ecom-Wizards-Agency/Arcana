@@ -4,13 +4,55 @@ import { createDb } from '@wizard-ads/db';
 import { signIn } from './support/auth';
 import { applyRequestedCpuThrottle } from './support/cpu-throttle';
 import { expectDateRangePresets } from './support/date-range';
-import { readState } from './support/fixture';
+import { readState, USERS } from './support/fixture';
 
 test.beforeEach(async ({ page }) => applyRequestedCpuThrottle(page));
 
+test('saved Grid names and layouts stay with their signer across account switches on one browser', async ({ page }) => {
+  const { orgId } = await readState();
+  await signIn(page, 'admin');
+  await page.goto('/grid?entity=campaigns');
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await page.getByLabel('Row density').selectOption('compact');
+  await page.getByRole('textbox', { name: 'New view name' }).fill('Synthetic owner lens');
+  await page.getByRole('button', { name: 'Save view', exact: true }).click();
+  await expect(page.getByRole('combobox', { name: 'Saved view', exact: true }).locator('option')).toContainText(['Saved views…', 'Synthetic owner lens']);
+  // Leave an ownerless legacy copy, as an older application version did. The
+  // next signer must neither import it nor erase the original owner's data.
+  await page.evaluate(({ org, user }) => {
+    const named = window.localStorage.getItem(`wizard-ads:views:v2:${org}:${user}`);
+    const layout = window.localStorage.getItem(`wizard-ads:layout:v2:${org}:${user}`);
+    if (!named || !layout) throw new Error('Expected counted owner preferences');
+    window.localStorage.setItem('wizard-ads:views:v1', named);
+    window.localStorage.setItem('wizard-ads:layout:v1', layout);
+  }, { org: orgId, user: USERS.admin });
+
+  await signIn(page, 'viewer');
+  await page.reload();
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await expect(page.getByLabel('Row density')).toHaveValue('normal');
+  const choices = page.getByRole('combobox', { name: 'Saved view', exact: true }).locator('option');
+  await expect(choices).toHaveText(['Saved views…']);
+  await page.getByLabel('Row density').selectOption('comfortable');
+  await page.getByRole('textbox', { name: 'New view name' }).fill('Synthetic viewer lens');
+  await page.getByRole('button', { name: 'Save view', exact: true }).click();
+  await expect(choices).toHaveText(['Saved views…', 'Synthetic viewer lens']);
+  await page.reload();
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await expect(page.getByLabel('Row density')).toHaveValue('comfortable');
+  await expect(choices).toHaveText(['Saved views…', 'Synthetic viewer lens']);
+
+  await signIn(page, 'admin');
+  await page.reload();
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await expect(page.getByLabel('Row density')).toHaveValue('compact');
+  await expect(choices).toHaveText(['Saved views…', 'Synthetic owner lens']);
+});
+
 test('grid restores the matching saved filter, grouping, and sort before becoming interactive', async ({ page }) => {
   await signIn(page, 'admin');
-  const { fixtureProfileId } = await readState();
+  const { fixtureProfileId, orgId } = await readState();
+  const layoutKey = ['wizard-ads:layout:v2', orgId, USERS.admin].join(':');
   const savedLayout = {
     id: 'saved-campaign-layout',
     name: 'Saved campaign layout',
@@ -29,7 +71,7 @@ test('grid restores the matching saved filter, grouping, and sort before becomin
   await page.addInitScript(
     ({ key, value }) => window.localStorage.setItem(key, value),
     {
-      key: 'wizard-ads:layout:v1',
+      key: layoutKey,
       value: JSON.stringify({ campaigns: savedLayout }),
     },
   );
@@ -53,14 +95,14 @@ test('grid restores the matching saved filter, grouping, and sort before becomin
     await expect(page.getByTestId('grid-data-ready')).toHaveCount(0);
     await expect(page.getByTestId('grid-scroller')).toHaveCount(0);
     await expect(page.getByTestId('grid-start-experiment')).toHaveCount(0);
-    const preReadyLayout = await page.evaluate(() => {
-      const raw = window.localStorage.getItem('wizard-ads:layout:v1');
+    const preReadyLayout = await page.evaluate((key) => {
+      const raw = window.localStorage.getItem(key);
       if (raw === null) return null;
       const parsed = JSON.parse(raw) as {
         campaigns?: { filter?: unknown; groupBy?: unknown; sort?: unknown };
       };
       return parsed.campaigns ?? null;
-    });
+    }, layoutKey);
     expect(preReadyLayout).toMatchObject({
       filter: savedLayout.filter,
       groupBy: savedLayout.groupBy,
@@ -85,12 +127,12 @@ test('grid restores the matching saved filter, grouping, and sort before becomin
   await expect(page.getByRole('columnheader', { name: 'Spend' })).toHaveAttribute('aria-sort', 'descending');
   await expect
     .poll(() =>
-      page.evaluate(() => {
-        const raw = window.localStorage.getItem('wizard-ads:layout:v1');
+      page.evaluate((key) => {
+        const raw = window.localStorage.getItem(key);
         if (raw === null) return null;
         const parsed = JSON.parse(raw) as { campaigns?: { sort?: unknown } };
         return parsed.campaigns?.sort ?? null;
-      }),
+      }, layoutKey),
     )
     .toEqual([{ columnId: 'spend', direction: 'desc' }]);
 });
@@ -163,6 +205,8 @@ test('grid selects every categorical value, filters exact rows, and restores the
 
 test('grid sorts on a header click, groups by dragging headers into the group bar, and persists density', async ({ page }) => {
   await signIn(page, 'admin');
+  const { orgId } = await readState();
+  const layoutKey = ['wizard-ads:layout:v2', orgId, USERS.admin].join(':');
   await page.goto('/grid?entity=campaigns');
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
 
@@ -209,12 +253,12 @@ test('grid sorts on a header click, groups by dragging headers into the group ba
   await expect(page.getByTestId('grid-shell')).toHaveAttribute('data-density', 'compact');
   await expect
     .poll(() =>
-      page.evaluate(() => {
-        const raw = window.localStorage.getItem('wizard-ads:layout:v1');
+      page.evaluate((key) => {
+        const raw = window.localStorage.getItem(key);
         if (raw === null) return null;
         const parsed = JSON.parse(raw) as { campaigns?: { density?: unknown; groupBy?: unknown } };
         return parsed.campaigns ?? null;
-      }),
+      }, layoutKey),
     )
     .toMatchObject({ density: 'compact', groupBy: ['campaign_state', 'ad_product'] });
   await page.reload();
