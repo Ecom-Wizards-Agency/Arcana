@@ -95,18 +95,20 @@ export async function fetchProfiles(
   ctx: HttpContext,
   region: Region,
   clientId: string,
-  getAccessToken: (force: boolean) => Promise<string>,
+  getAccessToken: (force: boolean, signal?: AbortSignal) => Promise<string>,
   userAgent?: string,
+  signal?: AbortSignal,
 ): Promise<AdsProfile[]> {
-  return (await fetchProfilesCounted(ctx, region, clientId, getAccessToken, userAgent)).profiles;
+  return (await fetchProfilesCounted(ctx, region, clientId, getAccessToken, userAgent, signal)).profiles;
 }
 
 export async function fetchProfilesCounted(
   ctx: HttpContext,
   region: Region,
   clientId: string,
-  getAccessToken: (force: boolean) => Promise<string>,
+  getAccessToken: (force: boolean, signal?: AbortSignal) => Promise<string>,
   userAgent?: string,
+  signal?: AbortSignal,
 ): Promise<AdsProfileDiscoveryResult> {
   const result = await httpRequest(ctx, {
     method: 'GET',
@@ -119,6 +121,10 @@ export async function fetchProfilesCounted(
       ...(userAgent === undefined ? {} : { userAgent }),
     }),
     idempotent: true,
+    timeoutMs: 30_000,
+    maxResponseBytes: 16 * 1024 * 1024,
+    redirect: 'error',
+    ...(signal === undefined ? {} : { signal }),
   });
 
   let parsed: unknown;
@@ -139,7 +145,8 @@ export async function listProfilesCounted(
   const ctx = createHttpContext(region, options);
   const tokens = new TokenProvider(credentials, options);
   return fetchProfilesCounted(ctx, region, credentials.clientId,
-    (force) => force ? tokens.forceRefresh() : tokens.getAccessToken(), options.userAgent);
+    (force, signal) => force ? tokens.forceRefresh(signal) : tokens.getAccessToken(signal),
+    options.userAgent, options.signal);
 }
 
 /** Every profile this grant can see in one region. */
@@ -154,8 +161,9 @@ export async function listProfiles(
     ctx,
     region,
     credentials.clientId,
-    (force) => (force ? tokens.forceRefresh() : tokens.getAccessToken()),
+    (force, signal) => (force ? tokens.forceRefresh(signal) : tokens.getAccessToken(signal)),
     options.userAgent,
+    options.signal,
   );
 }
 
@@ -184,8 +192,8 @@ export async function listProfilesAcrossRegions(
 ): Promise<CrossRegionProfiles> {
   const regions = [...(options.regions ?? ALL_REGIONS)];
   const tokens = new TokenProvider(credentials, options);
-  const getAccessToken = (force: boolean): Promise<string> =>
-    force ? tokens.forceRefresh() : tokens.getAccessToken();
+  const getAccessToken = (force: boolean, signal?: AbortSignal): Promise<string> =>
+    force ? tokens.forceRefresh(signal) : tokens.getAccessToken(signal);
 
   const profiles: AdsProfile[] = [];
   const failures: RegionFailure[] = [];
@@ -194,7 +202,7 @@ export async function listProfilesAcrossRegions(
     const ctx = createHttpContext(region, options);
     try {
       profiles.push(
-        ...(await fetchProfiles(ctx, region, credentials.clientId, getAccessToken, options.userAgent)),
+        ...(await fetchProfiles(ctx, region, credentials.clientId, getAccessToken, options.userAgent, options.signal)),
       );
     } catch (error) {
       failures.push({ region, error });

@@ -10,6 +10,7 @@ import { AdsApiClient } from './client.js';
 import { listProfilesAcrossRegions, listProfilesCounted, parseProfiles, parseProfilesCounted } from './profiles.js';
 import { createMockServer, lwaRoute } from './__fixtures__/server.js';
 import { PROFILES_EU, PROFILES_NA } from './__fixtures__/payloads.js';
+import { HttpResponseTooLargeError } from './http.js';
 
 const CREDENTIALS = {
   clientId: 'amzn1.application-oa2-client.example',
@@ -75,6 +76,39 @@ describe('parseProfiles', () => {
     expect(result).toMatchObject({ received: 3, rejected: [{ index: 2, reason: 'invalid_profile_id' }] });
     expect(result.profiles).toHaveLength(2);
     expect(server.requestsFor('/v2/profiles')).toHaveLength(1);
+  });
+
+  it('cancels a stalled profile body and does not schedule another attempt', async () => {
+    const controller = new AbortController(); let profileRequests = 0; let cancellations = 0;
+    let bodyOpened!: () => void; const opened = new Promise<void>((resolve) => { bodyOpened = resolve; });
+    const server = createMockServer([lwaRoute()]);
+    const pending = listProfilesCounted(CREDENTIALS, 'EU', {
+      signal: controller.signal,
+      fetch: async (url, init) => {
+        if (!url.endsWith('/v2/profiles')) return server.fetch(url, init);
+        profileRequests += 1;
+        expect(init?.redirect).toBe('error'); expect(init?.signal).toBeDefined();
+        return new Response(new ReadableStream<Uint8Array>({
+          pull() { bodyOpened(); }, cancel() { cancellations += 1; },
+        }, { highWaterMark: 0 }));
+      },
+    });
+    const outcome = pending.catch((error: unknown) => error);
+    await opened; controller.abort(new DOMException('Synthetic stop', 'AbortError'));
+    expect(await outcome).toMatchObject({ name: 'AbortError' });
+    expect(profileRequests).toBe(1); expect(cancellations).toBe(1);
+  });
+
+  it('refuses an oversized profile response before buffering it', async () => {
+    let cancellations = 0; const server = createMockServer([lwaRoute()]);
+    await expect(listProfilesCounted(CREDENTIALS, 'NA', {
+      retry: { maxAttempts: 1 },
+      fetch: async (url, init) => url.endsWith('/v2/profiles')
+        ? new Response(new ReadableStream<Uint8Array>({ cancel() { cancellations += 1; } }), {
+          headers: { 'Content-Length': String(16 * 1024 * 1024 + 1) },
+        }) : server.fetch(url, init),
+    })).rejects.toBeInstanceOf(HttpResponseTooLargeError);
+    expect(cancellations).toBe(1);
   });
 });
 
