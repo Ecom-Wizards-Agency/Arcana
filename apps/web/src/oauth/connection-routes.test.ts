@@ -153,7 +153,13 @@ describe.skipIf(!available)('web consent admission and status on actual authenti
       nonce: f.nonce, operationId: f.operationId });
     expect((await callback(requestFor(zeroKeyState, f.nonce))).headers.get('location')).toContain('could+not+be+verified');
     vi.stubEnv('AMAZON_OAUTH_STATE_KEY', key);
-    const altered = f.state.slice(0, -1) + (f.state.endsWith('a') ? 'b' : 'a');
+    // Changing the final base64url character can touch only discarded padding
+    // bits. Flip an actual signature byte so this always represents tampering.
+    const [encoded, signature] = f.state.split('.');
+    const changedSignature = Buffer.from(signature!, 'base64url');
+    changedSignature[0] = changedSignature[0]! ^ 1;
+    const altered = `${encoded}.${changedSignature.toString('base64url')}`;
+    expect(verifyState(key, altered, f.nonce)).toEqual({ ok: false, reason: 'bad_signature' });
     await callback(requestFor(altered, f.nonce));
     expect(await db.sql`select code_secret_id from app.amazon_connection_operations where id=${f.operationId}`)
       .toEqual([{ code_secret_id: null }]);
