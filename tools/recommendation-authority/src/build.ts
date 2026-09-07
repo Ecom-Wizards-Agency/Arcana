@@ -18,6 +18,7 @@ export async function buildAuthorityArtifact(revision: string, destination: stri
     'pnpm-lock.yaml', 'tools/recommendation-authority/package.json',
     'tools/recommendation-authority/src/build.ts',
     'docs/deploy/install-recommendation-authority.sh',
+    'docs/deploy/install-recommendation-database-ca.sh',
   ]);
   const revisionDefine = 'OPENSPELL_BROKER_REVISION';
   for (const [entry, output] of [['entry.ts', 'broker.mjs'], ['verify-entry.ts', 'verify.mjs']] as const) {
@@ -37,7 +38,7 @@ export async function buildAuthorityArtifact(revision: string, destination: stri
     }
     for (const input of Object.keys(metadata.inputs)) {
       const path = relative(root, resolve(root, input));
-      if (!/^(tools\/recommendation-authority\/src\/|docs\/deploy\/openspell-recommendation-authority-contract\.mjs$|node_modules\/\.pnpm\/postgres@3\.4\.9\/node_modules\/postgres\/)/u.test(path)
+      if (!/^(tools\/recommendation-authority\/src\/|docs\/deploy\/openspell-recommendation-(?:authority-contract|database-trust)\.mjs$|node_modules\/\.pnpm\/postgres@3\.4\.9\/node_modules\/postgres\/)/u.test(path)
         || path.includes('..')) throw new Error('Authority bundle imports an unapproved source');
       inputs.add(path);
     }

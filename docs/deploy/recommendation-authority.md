@@ -83,6 +83,33 @@ identity, expected old/new authority, compatible worker/web revisions and indepe
 readback. Credential provisioning and production transitions require their own scoped
 authorization; running the installer does not authorize them.
 
+## Database certificate trust
+
+If the database uses a private CA, obtain its public PEM certificate from the database
+host's documented source and approve its SHA-256 separately. From the clean approved
+main checkout, install it with the dedicated command:
+
+```sh
+bash docs/deploy/install-recommendation-database-ca.sh \
+  --revision "$APPROVED_REVISION" --certificate "$REVIEWED_CA_PEM" --sha256 "$APPROVED_CA_SHA256"
+```
+
+The only destination is `/etc/openspell/recommendation-database-ca.pem`, a public,
+root-owned regular file with mode0644 and safe root-owned parents. Installation
+checks the PEM and approved digest, serializes with deployment, and publishes without
+overwriting an existing file. An identical safe file is reusable; replacement requires
+a separately reviewed certificate rotation. No credential or host trust store changes.
+
+With this file present, both database URLs must contain exactly `sslmode=verify-full`.
+The broker passes explicit CA options to its PostgreSQL connection, preserving Node's
+default CAs and certificate/hostname verification. The dedicated worker and deployment
+readback processes add the same CA to their own Node defaults before constructing DB
+clients. They require Node22.19 or newer with this API available. Other workers and
+applications receive no additional CA. Without the fixed file, existing default trust
+and URL behavior are preserved. Unsafe ownership, symlinks, unreadable/malformed CA
+files, ambiguous TLS modes and ambient TLS overrides cause refusal. The runtime has
+no certificate-path environment variable and never falls back after a bad custom CA.
+
 ## Verification
 
 The public `@wizard-ads/recommendation-authority` test task exercises malformed input,
@@ -100,3 +127,9 @@ The [worker deployment proof](test-recommendation-worker-deployment.mjs) separat
 checks transition/readback classification and the restricted runtime import graph.
 CI runs both tasks publicly on standard hosted runners; Docker or database failure is
 a failed required check, not a passing skipped installation test.
+
+The TLS regression runs the actual built broker, worker and both readback commands
+against a networkless synthetic TLS server. It counts verified PostgreSQL Startup
+packets, refuses wrong CAs/hostnames before Startup, and never requests authentication.
+It also exercises CA custody failures, mode/ambient-setting refusal and actual CA
+installer filesystem operations inside the owned disposable container.

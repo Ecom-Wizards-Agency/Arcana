@@ -78,6 +78,7 @@ build_recommendation_worker_artifact() (
   const inputs = new Set([
     'docs/deploy/build-recommendation-worker-artifact.sh',
     'docs/deploy/install-recommendation-worker-evo-systemd.sh',
+    'docs/deploy/install-recommendation-database-ca.sh',
   ]);
   for (const file of files) {
     const meta = JSON.parse(fs.readFileSync(file, 'utf8'));
