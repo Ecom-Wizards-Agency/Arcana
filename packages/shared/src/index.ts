@@ -13,6 +13,7 @@ export * from './agency.js';
 export * from './mcp-key-metadata.js';
 export * from './amazon-connections.js';
 export * from './integrations.js';
+export * from './feedback.js';
 export * from './entities.js';
 export * from './facts.js';
 export * from './recommendations.js';
