@@ -8,7 +8,7 @@
  * silently dropped row would turn "we compared 14 days" into a false claim
  * about a gate that unlocks writes.
  */
-import type { DbHandle } from '@wizard-ads/db';
+import type { DbHandle, QueryHandle } from '@wizard-ads/db';
 import type { CrosscheckFinding, ResultGrain, ResultMetric, ResultVerdict } from './compare.js';
 
 export interface WriteCounts {
@@ -99,7 +99,7 @@ export interface ReadResultsOptions {
 
 /** Verdict history, oldest first. The panel and the exit report share this read. */
 export async function readResults(
-  handle: DbHandle,
+  handle: QueryHandle,
   options: ReadResultsOptions = {},
 ): Promise<StoredResult[]> {
   const rows = await handle.sql<
