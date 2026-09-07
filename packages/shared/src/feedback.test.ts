@@ -16,6 +16,16 @@ describe('feedback command contract', () => {
     expect(FeedbackCommand.safeParse({ kind: 'triage', itemId, status: 'planned', title: 'Mixed' }).success).toBe(false);
     expect(FeedbackCommand.safeParse({ kind: 'duplicate', itemId, duplicateOf: itemId, adminNote: 'Mixed' }).success).toBe(false);
   });
+  it('normalizes context through the command boundary without trusting caller labels', () => {
+    for (const route of ['https://example.test/grid', '//example.test/grid', '/grid\\other', '/grid\nheader']) {
+      const parsed = FeedbackCommand.parse({ kind: 'create', type: 'bug', title: 'Context',
+        pageContext: { route, profileId: null, appVersion: '   ' } });
+      expect(parsed).toMatchObject({ pageContext: { route: null, profileId: null, appVersion: null } });
+    }
+    const parsed = FeedbackCommand.parse({ kind: 'create', type: 'bug', title: 'Context',
+      pageContext: { route: ' /grid ', profileId: null, appVersion: ' version ' } });
+    expect(parsed).toMatchObject({ pageContext: { route: '/grid', appVersion: 'version' } });
+  });
   it('rejects invalid or empty changes while allowing the unchanged no-body vote intent', () => {
     expect(FeedbackCommand.parse({ kind: 'toggleVote', itemId })).toEqual({ kind: 'toggleVote', itemId });
     for (const command of [null, [], { kind: 'edit', itemId }, { kind: 'triage', itemId },

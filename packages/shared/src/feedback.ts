@@ -16,11 +16,18 @@ export const FeedbackTitle = z.string().trim().transform((value) => value.replac
   .pipe(z.string().min(1, 'A feedback title cannot be empty').max(200, 'A feedback title cannot exceed 200 characters'));
 export const FeedbackBody = z.string().trim().max(20_000, 'A feedback description cannot exceed 20000 characters');
 
+export const FeedbackRoute = z.string().trim().transform((value) => {
+  if (!value.startsWith('/') || value.startsWith('//') || value.includes('\\')
+    || [...value].some((character) => character.charCodeAt(0) < 32)) return null;
+  return value.slice(0, 512);
+}).nullable();
+export const FeedbackAppVersion = z.string().trim().transform((value) => value ? value.slice(0, 64) : null).nullable();
+
 /** Normalized optional provenance. A UUID still requires an agency-bound lookup. */
 export const FeedbackSubmissionContext = z.object({
-  route: z.string().max(512).nullable(),
+  route: FeedbackRoute,
   profileId: Uuid.nullable(),
-  appVersion: z.string().max(64).nullable(),
+  appVersion: FeedbackAppVersion,
 }).strict();
 export type FeedbackSubmissionContext = z.infer<typeof FeedbackSubmissionContext>;
 
