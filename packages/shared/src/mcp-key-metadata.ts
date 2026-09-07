@@ -15,3 +15,17 @@ export const McpKeyMetadata = z.object({
   createdAt: z.iso.datetime(),
 }).strict();
 export type McpKeyMetadata = z.infer<typeof McpKeyMetadata>;
+
+export const MCP_KEY_EXPIRY_DAY_OPTIONS = [7, 30, 90] as const;
+export const DEFAULT_MCP_KEY_EXPIRY_DAYS = 30;
+export const McpKeyExpiryDays = z.union([z.literal(7), z.literal(30), z.literal(90)]);
+
+/** A manager's read-key command contains only a digest, never the raw token. */
+export const McpReadKeyIssue = z.object({
+  label: z.string().trim().min(1).max(200),
+  profileIds: z.array(Uuid).min(1).max(10_000),
+  expiresInDays: McpKeyExpiryDays,
+  keyPrefix: z.string().regex(/^wza_[A-Za-z0-9_-]{8}$/),
+  tokenHash: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+export type McpReadKeyIssue = z.infer<typeof McpReadKeyIssue>;
