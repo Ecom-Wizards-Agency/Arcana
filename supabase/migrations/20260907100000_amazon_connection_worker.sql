@@ -191,6 +191,19 @@ begin
 end;
 $$;
 
+create function app.fail_amazon_connection_discovery(p_operation_id uuid, p_lease_id uuid)
+returns jsonb language plpgsql security definer set search_path = pg_catalog, public, pg_temp
+as $$
+declare v_operation app.amazon_connection_operations;
+begin
+  perform app.assert_service_role('fail_amazon_connection_discovery');
+  v_operation := app.lock_amazon_connection_discovery(p_operation_id, p_lease_id);
+  if v_operation.state <> 'discovering' then return app.amazon_connection_view(v_operation); end if;
+  return app.amazon_connection_view(app.finish_amazon_connection_operation(
+    p_operation_id, 'reconnect_required', 'installation_changed'));
+end;
+$$;
+
 create function app.record_amazon_connection_region(
   p_operation_id uuid, p_lease_id uuid, p_region public.ads_region, p_input jsonb, p_failure text
 ) returns jsonb language plpgsql security definer set search_path = pg_catalog, public, pg_temp
@@ -202,7 +215,6 @@ declare v_operation app.amazon_connection_operations; v_receipt text; v_region j
 begin
   perform app.assert_service_role('record_amazon_connection_region');
   v_operation := app.lock_amazon_connection_discovery(p_operation_id, p_lease_id);
-  if v_operation.state <> 'discovering' then return app.amazon_connection_view(v_operation); end if;
   if p_region is null or (p_failure is not null and p_failure not in
       ('access_refused','request_failed','invalid_response','persistence_failed'))
     or (p_input is null and p_failure is null) then
@@ -215,6 +227,9 @@ begin
     end if;
     return app.amazon_connection_view(v_operation);
   end if;
+  -- Settled receipts still bind the original input after the final region ends
+  -- discovery. Terminal status is not permission to reuse a receipt differently.
+  if v_operation.state <> 'discovering' then return app.amazon_connection_view(v_operation); end if;
   if p_input is not null then
     if jsonb_typeof(p_input) is distinct from 'object'
       or (p_input - array['region','received','profiles','rejected']) <> '{}'::jsonb
@@ -290,8 +305,10 @@ end;
 $$;
 
 revoke all on function app.lock_amazon_connection_discovery(uuid,uuid),
+  app.fail_amazon_connection_discovery(uuid,uuid),
   app.start_amazon_connection_region(uuid,uuid,public.ads_region),
   app.record_amazon_connection_region(uuid,uuid,public.ads_region,jsonb,text)
   from public, anon, authenticated, service_role;
-grant execute on function app.start_amazon_connection_region(uuid,uuid,public.ads_region),
+grant execute on function app.fail_amazon_connection_discovery(uuid,uuid),
+  app.start_amazon_connection_region(uuid,uuid,public.ads_region),
   app.record_amazon_connection_region(uuid,uuid,public.ads_region,jsonb,text) to service_role;

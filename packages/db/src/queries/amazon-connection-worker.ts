@@ -71,6 +71,16 @@ export async function readAmazonConnectionWorker(
   `));
 }
 
+/** A changed installation can stop only its currently owned discovery claim. */
+export async function failAmazonConnectionDiscovery(
+  handle: Pick<DbHandle, 'sql'>, operationId: string, leaseId: string,
+): Promise<AmazonConnectionOperation> {
+  const id = Uuid.parse(operationId); const lease = Uuid.parse(leaseId);
+  return command(handle, async (sql) => operation(await sql<{ result: unknown }[]>`
+    select app.fail_amazon_connection_discovery(${id}, ${lease}) as result
+  `));
+}
+
 export async function startAmazonConnectionRegion(
   handle: Pick<DbHandle, 'sql'>, operationId: string, leaseId: string, region: Region,
 ): Promise<AmazonConnectionOperation> {

@@ -5,7 +5,7 @@ import { createTestDatabase, databaseAvailable, type TestDatabase } from './test
 import { asServiceRole, asUser } from './testing/rls.js';
 import { beginAmazonConnection, submitAmazonConnection } from './queries/amazon-connection-operations.js';
 import { AmazonConnectionCommandError, attachAmazonConnectionGrant, claimAmazonConnection,
-  failAmazonConnectionExchange, readAmazonConnectionWorker, recordAmazonConnectionRegion,
+  failAmazonConnectionExchange, failAmazonConnectionDiscovery, readAmazonConnectionWorker, recordAmazonConnectionRegion,
   startAmazonConnectionRegion } from './queries/amazon-connection-worker.js';
 import { getAdsRefreshToken, storeAdsRefreshToken } from './queries/tokens.js';
 
@@ -166,7 +166,30 @@ describe.skipIf(!available)('single-use connection exchange custody', () => {
     await recordAmazonConnectionRegion(db, value.operationId, value.leaseId, 'NA', roster('NA', []), null);
     const final = await recordAmazonConnectionRegion(db, value.operationId, value.leaseId, 'FE', null, 'access_refused');
     expect(final).toMatchObject({ state: 'partial', reason: 'discovery_incomplete' });
+    expect(await recordAmazonConnectionRegion(db, value.operationId, value.leaseId, 'FE', null, 'access_refused')).toEqual(final);
+    await expect(recordAmazonConnectionRegion(db, value.operationId, value.leaseId, 'FE', roster('FE', ['changed']), null))
+      .rejects.toBeInstanceOf(AmazonConnectionCommandError);
+    await expect(recordAmazonConnectionRegion(db, value.operationId, value.leaseId, 'EU', roster('EU', ['changed']), null))
+      .rejects.toBeInstanceOf(AmazonConnectionCommandError);
+    expect(await db.sql`select id from public.ad_profiles where org_id=${value.actor.orgId}`).toHaveLength(2);
+    expect(await db.sql`select id from public.audit_log where target_id=${value.operationId} and action='amazon.discovery_recorded'`).toHaveLength(3);
     expect(await claimAmazonConnection(db, randomUUID())).toBeNull();
+  });
+
+  it('only a current worker discovery lease can stop a changed installation', async () => {
+    const value = await discovery();
+    await asUser(db, value.actor.userId, async (sql) => {
+      await expect(sql`select app.fail_amazon_connection_discovery(${value.operationId},${value.leaseId})`)
+        .rejects.toMatchObject({ code: '42501' });
+    });
+    await expect(failAmazonConnectionDiscovery(db, value.operationId, randomUUID()))
+      .rejects.toBeInstanceOf(AmazonConnectionCommandError);
+    expect((await readAmazonConnectionWorker(db, value.operationId)).state).toBe('discovering');
+    const stopped = await failAmazonConnectionDiscovery(db, value.operationId, value.leaseId);
+    expect(stopped).toMatchObject({ state: 'reconnect_required', reason: 'installation_changed' });
+    expect(await failAmazonConnectionDiscovery(db, value.operationId, value.leaseId)).toEqual(stopped);
+    expect(await getAdsRefreshToken(db, value.connectionId)).toBe('synthetic-grant');
+    expect(await db.sql`select id from public.ad_profiles where org_id=${value.actor.orgId}`).toHaveLength(0);
   });
 
   it('distinguishes complete, empty and fully refused regional cycles', async () => {
