@@ -12,9 +12,11 @@ import {
   optimizationWeekdaysFromIso,
   optimizationWeekdaysToIso,
   type AdProduct,
+  type OrgActor,
   type ScheduledOptimizationGroup as OptimizationGroupValue,
 } from '@wizard-ads/shared';
 import type { DbHandle, QueryHandle, QuerySql } from '../client.js';
+import { lockPrivilegedOrgEditor } from './privileged-actor.js';
 
 export type OptimizationGroupSettings = Omit<
   OptimizationGroupValue,
@@ -212,20 +214,42 @@ export async function saveOptimizationGroup(
   handle: Pick<DbHandle, 'sql'>,
   input: SaveOptimizationGroupInput,
 ): Promise<SaveOptimizationGroupResult> {
+  return handle.sql.begin(prepareOptimizationGroupSave(input));
+}
+
+/**
+ * Complete human save: current editor authority and all domain locks/writes
+ * share one transaction. Domain SQL is privileged, with exact actor scope;
+ * authenticated mirror/audit grants deliberately remain unchanged.
+ */
+export async function saveOptimizationGroupForActor(
+  handle: Pick<DbHandle, 'sql'>,
+  rawActor: OrgActor,
+  input: Omit<SaveOptimizationGroupInput, 'orgId' | 'actorId'>,
+): Promise<SaveOptimizationGroupResult> {
+  return handle.sql.begin(async (sql) => {
+    const actor = await lockPrivilegedOrgEditor(sql, rawActor);
+    return prepareOptimizationGroupSave({ ...input, orgId: actor.orgId, actorId: actor.userId })(sql);
+  });
+}
+
+function prepareOptimizationGroupSave(
+  input: SaveOptimizationGroupInput,
+): (sql: QuerySql) => Promise<SaveOptimizationGroupResult> {
   const id = input.id ?? randomUUID();
   const group = ScheduledOptimizationGroup.parse({
+    ...input.settings,
     version: 2,
     id,
     orgId: input.orgId,
     profileId: input.profileId,
-    ...input.settings,
   });
   const campaignIds = uniqueNonempty(input.campaignIds);
   if (campaignIds.length !== input.campaignIds.length) {
     throw new OptimizationGroupPersistenceError('campaign assignments must be unique and nonempty');
   }
 
-  return handle.sql.begin(async (sql) => {
+  return async (sql) => {
     const [profile] = await sql<{ id: string; timezone: string; review_hour: number | string }[]>`
       select id, timezone, coalesce(preferred_sync_hour, 4) as review_hour
         from public.ad_profiles
@@ -381,7 +405,7 @@ export async function saveOptimizationGroup(
       movedCampaigns,
       removedCampaigns: removed.length,
     };
-  });
+  };
 }
 
 async function readGroupRecords(
