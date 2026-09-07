@@ -158,6 +158,16 @@ jobs:
           path: apps/web/node_modules/.cache/playwright/reports
           if-no-files-found: ignore
 
+      - name: Upload counted browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-check-counts
+          path: apps/web/node_modules/.cache/playwright/e2e-summary-*
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
   auth-acceptance:
     name: Auth and onboarding acceptance
     runs-on: ubuntu-latest

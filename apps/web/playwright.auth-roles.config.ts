@@ -6,13 +6,14 @@
  * same isolated database lifecycle. Only test selection and artifacts differ.
  */
 import { defineConfig, devices } from '@playwright/test';
+import { withE2ESummaryReporter } from './e2e/e2e-count-reporter';
 import authConfig from './playwright.auth.config';
 
 export default defineConfig({
   ...authConfig,
   testMatch: /roles\.spec\.ts$/,
   outputDir: './node_modules/.cache/playwright/auth-roles',
-  reporter: process.env['CI']
+  reporter: withE2ESummaryReporter(process.env['CI']
     ? [
         ['list'],
         [
@@ -23,6 +24,6 @@ export default defineConfig({
           },
         ],
       ]
-    : [['list']],
+    : [['list']]),
   projects: [{ name: 'auth-roles', use: { ...devices['Desktop Chrome'] } }],
 });

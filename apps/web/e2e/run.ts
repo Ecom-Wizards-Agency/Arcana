@@ -75,7 +75,7 @@
  * Anything after the suite name is forwarded to Playwright (`--grep`, `-x`, …).
  */
 import { spawn } from 'node:child_process';
-import { readFile, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -84,6 +84,11 @@ import type { TestDatabase } from '@wizard-ads/db/testing';
 import { createGotoLink, recordEntityChanges } from '@wizard-ads/db';
 import { ROADMAP_ITEMS, seedRoadmap } from '../../../supabase/seed/seed-roadmap.js';
 import { parseE2EArgs } from '../src/e2e-args.js';
+import {
+  E2E_SUMMARY_FILE_ENV,
+  hasE2ESelectionArgs,
+  readAndValidateE2ESuiteSummary,
+} from './e2e-count-reporter.js';
 import {
   getE2ESuiteDefinition,
   runE2ESuiteMatrix,
@@ -146,6 +151,35 @@ function run(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<n
   return new Promise<number>((resolve) => {
     child.on('exit', (code) => resolve(code ?? 1));
   });
+}
+
+async function runPlaywright(
+  config: string,
+  playwrightArgs: string[],
+  env: NodeJS.ProcessEnv,
+  summaryFile: string,
+  expectedTests: number,
+): Promise<number> {
+  const code = await run(
+    'pnpm',
+    ['exec', 'playwright', 'test', '-c', config, ...playwrightArgs],
+    { ...env, [E2E_SUMMARY_FILE_ENV]: summaryFile },
+  );
+  const listOnly = playwrightArgs.includes('--list');
+  const selectionArgs = playwrightArgs.filter((argument) => argument !== '--list');
+  await readAndValidateE2ESuiteSummary(
+    summaryFile,
+    expectedTests,
+    Boolean(env['CI']) || !hasE2ESelectionArgs(selectionArgs),
+    listOnly,
+  );
+  return code;
+}
+
+async function createSummaryDirectory(): Promise<string> {
+  const parent = join(APP_DIRECTORY, 'node_modules/.cache/playwright');
+  await mkdir(parent, { recursive: true });
+  return await mkdtemp(join(parent, 'e2e-summary-'));
 }
 
 /**
@@ -337,6 +371,8 @@ async function seedTimeMachine(
 async function tagsGoto(
   config: ProductionBridgeSuiteDefinition['config'],
   playwrightArgs: string[],
+  summaryFile: string,
+  expectedTests: number,
 ): Promise<number> {
   const database = await createTestDatabase('wp08_e2e');
   try {
@@ -425,9 +461,9 @@ async function tagsGoto(
     if (buildCode !== 0) return buildCode;
     await assertRequestTimeRoute('/strategy', 'strategy.html');
 
-    return await run(
-      'pnpm',
-      ['exec', 'playwright', 'test', '-c', config, ...playwrightArgs],
+    return await runPlaywright(
+      config,
+      playwrightArgs,
       {
         ...process.env,
         DATABASE_URL: database.connectionString,
@@ -451,6 +487,8 @@ async function tagsGoto(
         WIZARD_ADS_E2E_REC_PROPOSALS: String(recommendations.proposals),
         WIZARD_ADS_E2E_REC_SEARCH_TERMS: String(recommendations.searchTerms),
       },
+      summaryFile,
+      expectedTests,
     );
   } finally {
     await database.drop();
@@ -469,6 +507,7 @@ async function tagsGoto(
 async function authenticated(
   definition: AuthenticatedDevSuiteDefinition,
   playwrightArgs: string[],
+  summaryFile: string,
 ): Promise<number> {
   const env = { ...process.env };
   delete env['WIZARD_ADS_E2E_AUTH_BRIDGE'];
@@ -480,24 +519,54 @@ async function authenticated(
     env['OPENSPELL_RECOMMENDATION_LANE_READY'] = '1';
     env['OPENSPELL_RECOMMENDATION_LANE_REVISION'] = '0'.repeat(40);
   }
-  return await run(
-    'pnpm',
-    ['exec', 'playwright', 'test', '-c', definition.config, ...playwrightArgs],
-    env,
-  );
+  return await runPlaywright(definition.config, playwrightArgs, env, summaryFile, definition.expectedTests);
 }
 
 async function runSuite(
   definition: E2ESuiteDefinition,
   playwrightArgs: string[],
+  summaryFile: string,
 ): Promise<number> {
   return definition.kind === 'production-bridge'
-    ? await tagsGoto(definition.config, playwrightArgs)
-    : await authenticated(definition, playwrightArgs);
+    ? await tagsGoto(definition.config, playwrightArgs, summaryFile, definition.expectedTests)
+    : await authenticated(definition, playwrightArgs, summaryFile);
+}
+
+async function listE2ESuites(
+  definitions: readonly E2ESuiteDefinition[],
+  playwrightArgs: string[],
+): Promise<number> {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    WIZARD_ADS_E2E_PORT: '1',
+    WIZARD_ADS_AUTH_BRIDGE_SECRET: 'discovery',
+    WIZARD_ADS_E2E_USER_A: 'discovery',
+    WIZARD_ADS_E2E_ORG_A: 'discovery',
+  };
+  delete env[E2E_SUMMARY_FILE_ENV];
+  return await runE2ESuiteMatrix(
+    definitions,
+    async (definition) => {
+      console.log(`\n=== e2e suite discovery: ${definition.name} ===\n`);
+      return await run(
+        'pnpm',
+        ['exec', 'playwright', 'test', '-c', definition.config, ...playwrightArgs],
+        env,
+      );
+    },
+    (definition, error) => {
+      console.error(`E2E suite '${definition.name}' discovery failed:`, error);
+    },
+  );
 }
 
 async function main(): Promise<number> {
   const { suites, playwrightArgs } = parseE2EArgs(process.argv.slice(2));
+  const definitions = suites.map(getE2ESuiteDefinition);
+
+  if (playwrightArgs.includes('--list')) {
+    return await listE2ESuites(definitions, playwrightArgs);
+  }
 
   if (!(await databaseAvailable())) {
     throw new Error(
@@ -505,11 +574,13 @@ async function main(): Promise<number> {
     );
   }
 
+  const summaryDirectory = await createSummaryDirectory();
+
   return await runE2ESuiteMatrix(
-    suites.map(getE2ESuiteDefinition),
+    definitions,
     async (definition) => {
       console.log(`\n=== e2e suite: ${definition.name} ===\n`);
-      return await runSuite(definition, playwrightArgs);
+      return await runSuite(definition, playwrightArgs, join(summaryDirectory, `${definition.name}.json`));
     },
     (definition, error) => {
       console.error(`E2E suite '${definition.name}' threw before returning an exit code:`, error);
