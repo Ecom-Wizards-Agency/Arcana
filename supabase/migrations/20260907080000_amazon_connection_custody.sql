@@ -107,10 +107,11 @@ begin
   end if;
   v_name := 'wizard-ads:ads-connection:' || p_connection_id::text;
   if v_secret_id is null then
-    v_secret_id := vault.create_secret(p_token, v_name, 'Amazon Ads LWA refresh credential');
-  else
-    perform vault.update_secret(v_secret_id, p_token);
+    -- Vault 0.3.1 inserts before encrypting in create_secret. Only a non-secret
+    -- placeholder may enter that intermediate row; update_secret encrypts first.
+    v_secret_id := vault.create_secret('pending', v_name, 'Amazon Ads LWA refresh credential');
   end if;
+  perform vault.update_secret(v_secret_id, p_token);
   update public.ads_connections
      set vault_secret_id = v_secret_id, status = 'active',
          credential_generation = credential_generation + 1,

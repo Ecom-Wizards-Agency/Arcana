@@ -115,9 +115,12 @@ begin
     where id = p_operation_id returning * into strict v_operation;
   if v_secret_id is not null then delete from vault.secrets where id = v_secret_id; end if;
   insert into public.audit_log(org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
-    values (v_operation.org_id, 'service', 'connection-operation', 'amazon.connection_settled',
+    values (v_operation.org_id,
+      (case when p_state = 'cancelled' then 'user' else 'service' end)::public.audit_actor_type,
+      case when p_state = 'cancelled' then auth.uid()::text else 'connection-operation' end, 'amazon.connection_settled',
       'amazon_connection_operation', v_operation.id::text,
-      jsonb_build_object('state', p_state, 'reason', p_reason), 'worker');
+      jsonb_build_object('state', p_state, 'reason', p_reason),
+      case when p_state = 'cancelled' then 'web' else 'worker' end);
   return v_operation;
 end;
 $$;

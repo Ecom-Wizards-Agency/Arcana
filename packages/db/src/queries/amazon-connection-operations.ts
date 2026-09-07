@@ -7,6 +7,18 @@ import { withAuthenticatedActor } from './authenticated-actor.js';
 
 type Handle = Pick<DbHandle, 'sql'>;
 
+/** Keep only fixed diagnostics; postgres.js errors can retain bound credentials. */
+export class AmazonConsentStoreError extends Error {
+  readonly code: string | undefined;
+  constructor(sqlState?: string) {
+    super('Amazon consent could not be saved');
+    this.name = 'AmazonConsentStoreError';
+    this.code = sqlState !== undefined
+      && ['42501', '22023', '23505', '40001', '40P01', '55P03', '57014'].includes(sqlState)
+      ? sqlState : undefined;
+  }
+}
+
 function operationResponse(rows: { operation: unknown }[]): AmazonConnectionOperation {
   if (rows.length !== 1) throw new Error('Connection response count mismatch');
   return AmazonConnectionOperation.parse(rows[0]!.operation);
@@ -28,9 +40,15 @@ export async function submitAmazonConnection(
   handle: Handle, actor: OrgActor, raw: AmazonConnectionSubmit,
 ): Promise<AmazonConnectionOperation> {
   const input = AmazonConnectionSubmit.parse(raw);
-  return withAuthenticatedActor(handle, actor, async (sql) => operationResponse(await sql<{ operation: unknown }[]>`
-    select app.submit_amazon_connection(${actor.orgId}, ${input.operationId}, ${input.nonceHash}, ${input.code}) as operation
-  `));
+  try {
+    return await withAuthenticatedActor(handle, actor, async (sql) => operationResponse(await sql<{ operation: unknown }[]>`
+      select app.submit_amazon_connection(${actor.orgId}, ${input.operationId}, ${input.nonceHash}, ${input.code}) as operation
+    `));
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+      ? error.code : undefined;
+    throw new AmazonConsentStoreError(code);
+  }
 }
 
 export async function cancelAmazonConnection(

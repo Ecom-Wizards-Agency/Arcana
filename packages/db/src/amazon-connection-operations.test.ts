@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AmazonConnectionBegin, OrgActor } from '@wizard-ads/shared';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from './testing/harness.js';
 import { asUser } from './testing/rls.js';
-import { beginAmazonConnection, cancelAmazonConnection, readAmazonConnection, submitAmazonConnection } from './queries/amazon-connection-operations.js';
+import { AmazonConsentStoreError, beginAmazonConnection, cancelAmazonConnection, readAmazonConnection, submitAmazonConnection } from './queries/amazon-connection-operations.js';
 
 const available = await databaseAvailable();
 const nonceHash = 'c'.repeat(64);
@@ -109,6 +109,10 @@ describe.skipIf(!available)('organization consent custody', () => {
     expect((await cancelAmazonConnection(db, actor, operation.operationId)).state).toBe('cancelled');
     expect(await db.sql`select id from vault.secrets where id=${row!.code_secret_id}`).toHaveLength(0);
     expect(await db.sql`select id from public.audit_log where org_id=${actor.orgId} and action='amazon.connection_settled'`).toHaveLength(1);
+    expect(await db.sql`select actor_type::text,actor_id,source from public.audit_log
+      where org_id=${actor.orgId} and action='amazon.connection_settled'`).toEqual([
+      { actor_type: 'user', actor_id: actor.userId, source: 'web' },
+    ]);
     expect((await beginAmazonConnection(db, actor, request())).state).toBe('awaiting_consent');
     expect(await count(actor, 'operations')).toBe(2);
   });
@@ -155,5 +159,20 @@ describe.skipIf(!available)('organization consent custody', () => {
     expect(await db.sql`select id from vault.secrets where name=${'openspell:amazon-consent:' + a.operationId}`).toHaveLength(0);
     expect(await db.sql`select id from vault.secrets where name=${'openspell:amazon-consent:' + b.operationId}`).toHaveLength(1);
     expect((await readAmazonConnection(db, other, b.operationId))!.state).toBe('queued');
+  });
+
+  it('never propagates bound consent parameters or driver causes on a refused submission', async () => {
+    const actor = await agency(); const operation = await beginAmazonConnection(db, actor, request());
+    const code = ['synthetic', randomUUID(), 'consent'].join('-');
+    const error: unknown = await submitAmazonConnection(db, actor, {
+      operationId: operation.operationId, nonceHash: 'a'.repeat(64), code,
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AmazonConsentStoreError);
+    expect(error).toMatchObject({ code: '42501' });
+    expect(error).not.toHaveProperty('parameters');
+    expect(error).not.toHaveProperty('cause');
+    const properties = Object.getOwnPropertyNames(error).map((key) => Object.getOwnPropertyDescriptor(error, key)?.value);
+    expect(JSON.stringify(properties)).not.toContain(code);
+    expect(JSON.stringify(properties)).not.toContain('a'.repeat(64));
   });
 });
