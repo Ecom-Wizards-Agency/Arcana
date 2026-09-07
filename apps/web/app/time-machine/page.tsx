@@ -10,6 +10,7 @@
  * are a plain GET form and every control is a link or a query parameter. No
  * server action, no client island — a page that only reads has no state to hold.
  */
+import { authenticatedPageRead, pageReadErrorMessage } from '../../src/server/authenticated-page-read';
 import type { CSSProperties } from 'react';
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
@@ -20,12 +21,7 @@ import {
   listTimelineFacets,
 } from '@wizard-ads/db';
 import type { ChangeSource, TimelineEntry } from '@wizard-ads/db';
-import {
-  authenticationDestination,
-  openWebDatabase,
-  requestActor,
-  requireOrgMembership,
-} from '../../src/server/request-context';
+import { authenticationDestination } from '../../src/server/request-context';
 import { listOrgProfiles, selectOrgProfile } from '../../src/recommendations/data';
 import { requireOrgRole } from '../../src/server/org-role';
 import { can } from '../../src/auth/roles';
@@ -125,310 +121,307 @@ function groupByDay(entries: readonly TimelineEntry[]): DayGroup[] {
 }
 
 export default async function TimeMachinePage({ searchParams }: { searchParams: SearchParams }) {
-  const database = openWebDatabase();
   try {
-    const actor = await requestActor(await headers());
-    await requireOrgMembership(database, actor);
-    const role = await requireOrgRole(database, actor);
-    const query = await searchParams;
+    return await authenticatedPageRead(await headers(), async (database, actor) => {
+      const role = await requireOrgRole(database, actor);
+      const query = await searchParams;
 
-    const profiles = await listOrgProfiles(database, actor.orgId);
-    const profile = selectOrgProfile(profiles, one(query['profile']));
-    if (profile === null) {
-      return (
-        <main style={main}>
-          <h1 style={heading}>Time Machine</h1>
-          <p style={muted}>This organisation has no advertising profiles yet.</p>
-        </main>
-      );
-    }
-
-    const facets = await listTimelineFacets(database, {
-      orgId: actor.orgId,
-      profileId: profile.id,
-    });
-
-    const rawEntityType = one(query['type']);
-    const entityType = rawEntityType && facets.entityTypes.includes(rawEntityType) ? rawEntityType : null;
-    const rawField = one(query['field']);
-    const field = rawField && facets.fields.includes(rawField) ? rawField : null;
-    const rawSource = one(query['source']);
-    const source: ChangeSource | null = rawSource === 'sync' || rawSource === 'apply' ? rawSource : null;
-    const requestedFrom = one(query['from']);
-    const requestedTo = one(query['to']);
-    const from = isDate(requestedFrom) ? requestedFrom : null;
-    const toParam = isDate(requestedTo) ? requestedTo : null;
-    const cursor = timelineCursor(query);
-    // The `to` bound is a whole day: extend an end date to the end of that day.
-    const toBound = toParam === null ? null : `${toParam}T23:59:59.999Z`;
-
-    const timelineWindow = await listTimeline(database, {
-      orgId: actor.orgId,
-      profileId: profile.id,
-      entityTypes: entityType ? [entityType] : null,
-      field,
-      source,
-      from: from ?? null,
-      to: toBound,
-      limit: TIMELINE_PAGE_SIZE + 1,
-      before: cursor,
-    });
-    const hasOlder = timelineWindow.length > TIMELINE_PAGE_SIZE;
-    const entries = timelineWindow.slice(0, TIMELINE_PAGE_SIZE);
-    const reversionBatches = await listReversionBatches(database, {
-      orgId: actor.orgId,
-      profileId: profile.id,
-    });
-    const requestedBatch = one(query['batch']);
-    const selectedBatch =
-      requestedBatch === undefined
-        ? null
-        : reversionBatches.find((batch) => batch.batchId === requestedBatch) ?? null;
-    const reversionPreview =
-      selectedBatch === null
-        ? null
-        : await getReversionBatchPreview(database, {
-            orgId: actor.orgId,
-            batchId: selectedBatch.batchId,
-          });
-    const days = groupByDay(entries);
-    const hasAnyHistory = facets.entityTypes.length > 0 || facets.fields.length > 0;
-    const filtersActive = entityType !== null || field !== null || source !== null || from !== null || toParam !== null;
-
-    const base = (extra: Record<string, string>): string => {
-      const params = new URLSearchParams({ profile: profile.id, ...extra });
-      return `/time-machine?${params.toString()}`;
-    };
-    const pageHref = (before: TimelineEntry | null): string => {
-      const params = new URLSearchParams({ profile: profile.id });
-      if (entityType !== null) params.set('type', entityType);
-      if (field !== null) params.set('field', field);
-      if (source !== null) params.set('source', source);
-      if (from !== null) params.set('from', from);
-      if (toParam !== null) params.set('to', toParam);
-      if (selectedBatch !== null) params.set('batch', selectedBatch.batchId);
-      if (before !== null) {
-        params.set('before_at', before.observedAt.toISOString());
-        params.set('before_id', before.id);
-      }
-      return `/time-machine?${params.toString()}`;
-    };
-
-    return (
-      <main style={main} data-interactive="true">
-        <header style={pageHeader}>
-          <div style={pageHeading}>
+      const profiles = await listOrgProfiles(database, actor.orgId);
+      const profile = selectOrgProfile(profiles, one(query['profile']));
+      if (profile === null) {
+        return (
+          <main style={main}>
             <h1 style={heading}>Time Machine</h1>
-            <p style={muted}>
-              Exported batches, synchronized evidence, and external account changes. Reviewing this
-              history does not change Amazon.
+            <p style={muted}>This organisation has no advertising profiles yet.</p>
+          </main>
+        );
+      }
+
+      const facets = await listTimelineFacets(database, {
+        orgId: actor.orgId,
+        profileId: profile.id,
+      });
+
+      const rawEntityType = one(query['type']);
+      const entityType = rawEntityType && facets.entityTypes.includes(rawEntityType) ? rawEntityType : null;
+      const rawField = one(query['field']);
+      const field = rawField && facets.fields.includes(rawField) ? rawField : null;
+      const rawSource = one(query['source']);
+      const source: ChangeSource | null = rawSource === 'sync' || rawSource === 'apply' ? rawSource : null;
+      const requestedFrom = one(query['from']);
+      const requestedTo = one(query['to']);
+      const from = isDate(requestedFrom) ? requestedFrom : null;
+      const toParam = isDate(requestedTo) ? requestedTo : null;
+      const cursor = timelineCursor(query);
+      // The `to` bound is a whole day: extend an end date to the end of that day.
+      const toBound = toParam === null ? null : `${toParam}T23:59:59.999Z`;
+
+      const timelineWindow = await listTimeline(database, {
+        orgId: actor.orgId,
+        profileId: profile.id,
+        entityTypes: entityType ? [entityType] : null,
+        field,
+        source,
+        from: from ?? null,
+        to: toBound,
+        limit: TIMELINE_PAGE_SIZE + 1,
+        before: cursor,
+      });
+      const hasOlder = timelineWindow.length > TIMELINE_PAGE_SIZE;
+      const entries = timelineWindow.slice(0, TIMELINE_PAGE_SIZE);
+      const reversionBatches = await listReversionBatches(database, {
+        orgId: actor.orgId,
+        profileId: profile.id,
+      });
+      const requestedBatch = one(query['batch']);
+      const selectedBatch =
+        requestedBatch === undefined
+          ? null
+          : reversionBatches.find((batch) => batch.batchId === requestedBatch) ?? null;
+      const reversionPreview =
+        selectedBatch === null
+          ? null
+          : await getReversionBatchPreview(database, {
+              orgId: actor.orgId,
+              batchId: selectedBatch.batchId,
+            });
+      const days = groupByDay(entries);
+      const hasAnyHistory = facets.entityTypes.length > 0 || facets.fields.length > 0;
+      const filtersActive = entityType !== null || field !== null || source !== null || from !== null || toParam !== null;
+
+      const base = (extra: Record<string, string>): string => {
+        const params = new URLSearchParams({ profile: profile.id, ...extra });
+        return `/time-machine?${params.toString()}`;
+      };
+      const pageHref = (before: TimelineEntry | null): string => {
+        const params = new URLSearchParams({ profile: profile.id });
+        if (entityType !== null) params.set('type', entityType);
+        if (field !== null) params.set('field', field);
+        if (source !== null) params.set('source', source);
+        if (from !== null) params.set('from', from);
+        if (toParam !== null) params.set('to', toParam);
+        if (selectedBatch !== null) params.set('batch', selectedBatch.batchId);
+        if (before !== null) {
+          params.set('before_at', before.observedAt.toISOString());
+          params.set('before_id', before.id);
+        }
+        return `/time-machine?${params.toString()}`;
+      };
+
+      return (
+        <main style={main} data-interactive="true">
+          <header style={pageHeader}>
+            <div style={pageHeading}>
+              <h1 style={heading}>Time Machine</h1>
+              <p style={muted}>
+                Exported batches, synchronized evidence, and external account changes. Reviewing this
+                history does not change Amazon.
+              </p>
+            </div>
+            <ActiveAccountSelector profiles={profiles} activeProfileId={profile.id} />
+          </header>
+
+          {reversionBatches.length === 0 ? null : (
+            <section className="wa-tm-batches" aria-labelledby="export-batches-title">
+              <header className="wa-tm-section-head">
+                <div>
+                  <span className="wa-label">Batch history</span>
+                  <h2 id="export-batches-title">Exports and reversions</h2>
+                </div>
+                <span>{reversionBatches.length} recent batch{reversionBatches.length === 1 ? '' : 'es'}</span>
+              </header>
+              <nav className="wa-tm-batch-list" aria-label="Export batches">
+                {reversionBatches.map((batch) => (
+                  <a
+                    key={batch.batchId}
+                    href={`/time-machine?${new URLSearchParams({ profile: profile.id, batch: batch.batchId })}`}
+                    className={batch.batchId === selectedBatch?.batchId ? 'is-selected' : undefined}
+                    data-testid="time-machine-batch"
+                  >
+                    <span>
+                      <strong>{batch.tag}</strong>
+                      <small>{batch.optGroup} · {batch.lever}</small>
+                    </span>
+                    <span>
+                      <strong>{batch.reversibleRows}</strong>
+                      <small>{batch.lifecycleStatus.replaceAll('_', ' ')}</small>
+                    </span>
+                  </a>
+                ))}
+              </nav>
+            </section>
+          )}
+
+          {reversionPreview === null ? null : (
+            <ReversionPanel preview={reversionPreview} canExport={can(role, 'exportBatches')} />
+          )}
+
+          {reversionBatches.length > 0 && selectedBatch === null ? (
+            <p className="wa-page-sub" data-testid="time-machine-batch-prompt">
+              Select a batch to inspect synchronized evidence and preview an exact reversion.
             </p>
-          </div>
-          <ActiveAccountSelector profiles={profiles} activeProfileId={profile.id} />
-        </header>
+          ) : null}
 
-        {reversionBatches.length === 0 ? null : (
-          <section className="wa-tm-batches" aria-labelledby="export-batches-title">
-            <header className="wa-tm-section-head">
-              <div>
-                <span className="wa-label">Batch history</span>
-                <h2 id="export-batches-title">Exports and reversions</h2>
+          {hasAnyHistory ? (
+            <form method="get" style={filters} aria-label="Filter changes" data-testid="timeline-filters">
+              <input type="hidden" name="profile" value={profile.id} />
+              <label style={fieldLabel}>
+                Entity type
+                <select name="type" defaultValue={entityType ?? ''} style={control} data-testid="filter-type">
+                  <option value="">All types</option>
+                  {facets.entityTypes.map((value) => (
+                    <option key={value} value={value}>
+                      {ENTITY_LABEL[value] ?? value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label style={fieldLabel}>
+                Field
+                <select name="field" defaultValue={field ?? ''} style={control} data-testid="filter-field">
+                  <option value="">All fields</option>
+                  {facets.fields.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label style={fieldLabel}>
+                Source
+                <select name="source" defaultValue={source ?? ''} style={control} data-testid="filter-source">
+                  <option value="">Any source</option>
+                  <option value="sync">Sync detected</option>
+                  <option value="apply">Operator export</option>
+                </select>
+              </label>
+              <label style={fieldLabel}>
+                From
+                <input type="date" name="from" defaultValue={from ?? ''} style={control} data-testid="filter-from" />
+              </label>
+              <label style={fieldLabel}>
+                To
+                <input type="date" name="to" defaultValue={toParam ?? ''} style={control} data-testid="filter-to" />
+              </label>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
+                <button type="submit" style={submitButton} data-testid="filter-apply">
+                  Apply
+                </button>
+                {filtersActive ? (
+                  <a href={base({})} style={{ ...pill, alignSelf: 'center' }} data-testid="filter-clear">
+                    Clear
+                  </a>
+                ) : null}
               </div>
-              <span>{reversionBatches.length} recent batch{reversionBatches.length === 1 ? '' : 'es'}</span>
-            </header>
-            <nav className="wa-tm-batch-list" aria-label="Export batches">
-              {reversionBatches.map((batch) => (
-                <a
-                  key={batch.batchId}
-                  href={`/time-machine?${new URLSearchParams({ profile: profile.id, batch: batch.batchId })}`}
-                  className={batch.batchId === selectedBatch?.batchId ? 'is-selected' : undefined}
-                  data-testid="time-machine-batch"
-                >
-                  <span>
-                    <strong>{batch.tag}</strong>
-                    <small>{batch.optGroup} · {batch.lever}</small>
-                  </span>
-                  <span>
-                    <strong>{batch.reversibleRows}</strong>
-                    <small>{batch.lifecycleStatus.replaceAll('_', ' ')}</small>
-                  </span>
-                </a>
-              ))}
+            </form>
+          ) : null}
+
+          {cursor !== null ? (
+            <nav style={pagination} aria-label="Change history position" data-testid="timeline-pagination">
+              <a href={pageHref(null)} style={pill} data-testid="timeline-newer">
+                ← Newest changes
+              </a>
             </nav>
-          </section>
-        )}
+          ) : null}
 
-        {reversionPreview === null ? null : (
-          <ReversionPanel preview={reversionPreview} canExport={can(role, 'exportBatches')} />
-        )}
-
-        {reversionBatches.length > 0 && selectedBatch === null ? (
-          <p className="wa-page-sub" data-testid="time-machine-batch-prompt">
-            Select a batch to inspect synchronized evidence and preview an exact reversion.
-          </p>
-        ) : null}
-
-        {hasAnyHistory ? (
-          <form method="get" style={filters} aria-label="Filter changes" data-testid="timeline-filters">
-            <input type="hidden" name="profile" value={profile.id} />
-            <label style={fieldLabel}>
-              Entity type
-              <select name="type" defaultValue={entityType ?? ''} style={control} data-testid="filter-type">
-                <option value="">All types</option>
-                {facets.entityTypes.map((value) => (
-                  <option key={value} value={value}>
-                    {ENTITY_LABEL[value] ?? value}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label style={fieldLabel}>
-              Field
-              <select name="field" defaultValue={field ?? ''} style={control} data-testid="filter-field">
-                <option value="">All fields</option>
-                {facets.fields.map((value) => (
-                  <option key={value} value={value}>
-                    {value}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label style={fieldLabel}>
-              Source
-              <select name="source" defaultValue={source ?? ''} style={control} data-testid="filter-source">
-                <option value="">Any source</option>
-                <option value="sync">Sync detected</option>
-                <option value="apply">Operator export</option>
-              </select>
-            </label>
-            <label style={fieldLabel}>
-              From
-              <input type="date" name="from" defaultValue={from ?? ''} style={control} data-testid="filter-from" />
-            </label>
-            <label style={fieldLabel}>
-              To
-              <input type="date" name="to" defaultValue={toParam ?? ''} style={control} data-testid="filter-to" />
-            </label>
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
-              <button type="submit" style={submitButton} data-testid="filter-apply">
-                Apply
-              </button>
-              {filtersActive ? (
-                <a href={base({})} style={{ ...pill, alignSelf: 'center' }} data-testid="filter-clear">
-                  Clear
-                </a>
+          {!hasAnyHistory ? (
+            <p style={empty} data-testid="timeline-empty" role="status">
+              No changes recorded yet — they appear as sync detects them or you apply them.
+            </p>
+          ) : entries.length === 0 && cursor !== null ? (
+            <p style={empty} data-testid="timeline-empty-cursor" role="status">
+              No older changes remain. Return to the newest changes to continue reviewing history.
+            </p>
+          ) : entries.length === 0 ? (
+            <p style={empty} data-testid="timeline-empty-filtered" role="status">
+              No changes match these filters.{' '}
+              <a href={base({})}>Clear filters</a> to see the full history.
+            </p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }} data-testid="timeline">
+              {days.map((day) => (
+                <section key={day.key} aria-label={day.label}>
+                  <h2 style={dayHeading} data-testid="timeline-day">
+                    {day.label}
+                    <span style={dayCount}>{day.entries.length}</span>
+                  </h2>
+                  <ul style={entryList}>
+                    {day.entries.map((entry) => {
+                      const level = GRID_LEVEL[entry.entityType];
+                      return (
+                        <li key={entry.id} style={entryRow} data-testid="timeline-entry" data-source={entry.source}>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'baseline' }}>
+                            <span
+                              style={entry.source === 'apply' ? applyBadge : syncBadge}
+                              data-testid="entry-source"
+                            >
+                              {entry.source === 'sync'
+                                ? 'Sync'
+                                : entry.batch?.sourceBatchId != null
+                                  ? 'Reversion export'
+                                  : entry.batch?.status === 'applied'
+                                    ? 'Applied externally'
+                                    : entry.batch?.status === 'reverted'
+                                      ? 'Verified reverted'
+                                      : entry.batch?.status === 'abandoned'
+                                        ? 'Abandoned'
+                                        : 'Exported'}
+                            </span>
+                            <span style={{ fontWeight: 600 }}>{ENTITY_LABEL[entry.entityType] ?? entry.entityType}</span>
+                            <span style={{ color: 'var(--wa-text)' }}>
+                              {entry.entityName ?? entry.amazonId}
+                            </span>
+                            <span style={muted}>· {entry.field}</span>
+                          </div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'baseline' }}>
+                            <code style={oldChip}>{formatValue(entry.oldValue)}</code>
+                            <span aria-hidden="true" style={muted}>→</span>
+                            <code style={newChip}>{formatValue(entry.newValue)}</code>
+                            <span style={timeText}>{TIME_FORMAT.format(entry.observedAt)} UTC</span>
+                            {entry.batch !== null && entry.batch.note ? (
+                              <span style={muted} title={entry.batch.tag}>
+                                · {entry.batch.note}
+                              </span>
+                            ) : null}
+                            {level ? (
+                              <a
+                                href={`/grid?profile=${profile.id}&entity=${level}`}
+                                style={gotoLink}
+                                data-testid="entry-goto"
+                              >
+                                View in grid →
+                              </a>
+                            ) : null}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </section>
+              ))}
+              {hasOlder ? (
+                <nav style={pagination} aria-label="Change history pages" data-testid="timeline-pagination">
+                  <span />
+                  <a href={pageHref(entries.at(-1) ?? null)} style={pill} data-testid="timeline-older">
+                    Older changes →
+                  </a>
+                </nav>
               ) : null}
             </div>
-          </form>
-        ) : null}
-
-        {cursor !== null ? (
-          <nav style={pagination} aria-label="Change history position" data-testid="timeline-pagination">
-            <a href={pageHref(null)} style={pill} data-testid="timeline-newer">
-              ← Newest changes
-            </a>
-          </nav>
-        ) : null}
-
-        {!hasAnyHistory ? (
-          <p style={empty} data-testid="timeline-empty" role="status">
-            No changes recorded yet — they appear as sync detects them or you apply them.
-          </p>
-        ) : entries.length === 0 && cursor !== null ? (
-          <p style={empty} data-testid="timeline-empty-cursor" role="status">
-            No older changes remain. Return to the newest changes to continue reviewing history.
-          </p>
-        ) : entries.length === 0 ? (
-          <p style={empty} data-testid="timeline-empty-filtered" role="status">
-            No changes match these filters.{' '}
-            <a href={base({})}>Clear filters</a> to see the full history.
-          </p>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }} data-testid="timeline">
-            {days.map((day) => (
-              <section key={day.key} aria-label={day.label}>
-                <h2 style={dayHeading} data-testid="timeline-day">
-                  {day.label}
-                  <span style={dayCount}>{day.entries.length}</span>
-                </h2>
-                <ul style={entryList}>
-                  {day.entries.map((entry) => {
-                    const level = GRID_LEVEL[entry.entityType];
-                    return (
-                      <li key={entry.id} style={entryRow} data-testid="timeline-entry" data-source={entry.source}>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'baseline' }}>
-                          <span
-                            style={entry.source === 'apply' ? applyBadge : syncBadge}
-                            data-testid="entry-source"
-                          >
-                            {entry.source === 'sync'
-                              ? 'Sync'
-                              : entry.batch?.sourceBatchId != null
-                                ? 'Reversion export'
-                                : entry.batch?.status === 'applied'
-                                  ? 'Applied externally'
-                                  : entry.batch?.status === 'reverted'
-                                    ? 'Verified reverted'
-                                    : entry.batch?.status === 'abandoned'
-                                      ? 'Abandoned'
-                                      : 'Exported'}
-                          </span>
-                          <span style={{ fontWeight: 600 }}>{ENTITY_LABEL[entry.entityType] ?? entry.entityType}</span>
-                          <span style={{ color: 'var(--wa-text)' }}>
-                            {entry.entityName ?? entry.amazonId}
-                          </span>
-                          <span style={muted}>· {entry.field}</span>
-                        </div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'baseline' }}>
-                          <code style={oldChip}>{formatValue(entry.oldValue)}</code>
-                          <span aria-hidden="true" style={muted}>→</span>
-                          <code style={newChip}>{formatValue(entry.newValue)}</code>
-                          <span style={timeText}>{TIME_FORMAT.format(entry.observedAt)} UTC</span>
-                          {entry.batch !== null && entry.batch.note ? (
-                            <span style={muted} title={entry.batch.tag}>
-                              · {entry.batch.note}
-                            </span>
-                          ) : null}
-                          {level ? (
-                            <a
-                              href={`/grid?profile=${profile.id}&entity=${level}`}
-                              style={gotoLink}
-                              data-testid="entry-goto"
-                            >
-                              View in grid →
-                            </a>
-                          ) : null}
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </section>
-            ))}
-            {hasOlder ? (
-              <nav style={pagination} aria-label="Change history pages" data-testid="timeline-pagination">
-                <span />
-                <a href={pageHref(entries.at(-1) ?? null)} style={pill} data-testid="timeline-older">
-                  Older changes →
-                </a>
-              </nav>
-            ) : null}
-          </div>
-        )}
-      </main>
-    );
+          )}
+        </main>
+      );
+    });
   } catch (error) {
     const authDestination = authenticationDestination(error);
     if (authDestination !== null) redirect(authDestination);
-    const message = error instanceof Error ? error.message : 'The change history is unavailable';
+    const message = pageReadErrorMessage(error, 'The change history is unavailable');
     return (
       <main style={main}>
         <h1 style={heading}>Time Machine</h1>
         <p role="alert">{message}</p>
       </main>
     );
-  } finally {
-    await database.close();
   }
 }
 

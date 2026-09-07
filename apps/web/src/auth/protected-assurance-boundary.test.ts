@@ -21,7 +21,7 @@ describe('protected assurance boundary', () => {
     expect(files[1]).toContain('enforceAssurance: enforceGridAssurance');
   });
 
-  it('redirects every requestActor page through the structured auth continuation', async () => {
+  it('keeps direct and authenticated page reads on the structured auth continuation', async () => {
     const pagePaths = [
       'app/bugs/page.tsx',
       'app/campaigns/page.tsx',
@@ -39,8 +39,9 @@ describe('protected assurance boundary', () => {
     ];
     for (const path of pagePaths) {
       const contents = await source(path);
-      expect(contents).toContain('requestActor(');
+      expect(contents).toMatch(/(?:requestActor|authenticatedPageRead)\(/);
       expect(contents).toContain('authenticationDestination(error)');
     }
+    expect(await source('src/server/authenticated-page-read.ts')).toContain('await requestActor(headers)');
   });
 });

@@ -9,6 +9,9 @@
  * The comparison is honest about what it is — a rough measurement against the
  * rest of the account, not a randomized test — and the note on it says so.
  */
+import { authenticatedPageRead, pageReadErrorMessage } from '../../../src/server/authenticated-page-read';
+import type { QueryHandle } from '@wizard-ads/db';
+import type { OrgActor } from '@wizard-ads/shared';
 import { headers } from 'next/headers';
 import { notFound, redirect } from 'next/navigation';
 import {
@@ -17,7 +20,7 @@ import {
   listEntityChangesInWindow,
   listExperimentEvents,
 } from '@wizard-ads/db';
-import { authenticationDestination, openWebDatabase, requestActor } from '../../../src/server/request-context';
+import { authenticationDestination } from '../../../src/server/request-context';
 import { requireOrgRole } from '../../../src/server/org-role';
 import { can } from '../../../src/auth/roles';
 import { listProfileOptions, loadExperimentSpendSeries } from '../../../src/experiments/data';
@@ -32,15 +35,14 @@ type RouteParams = Promise<{ experimentId: string }>;
 type DetailProps = Parameters<typeof ExperimentDetail>[0];
 
 export default async function ExperimentDetailPage({ params }: { params: RouteParams }) {
-  const database = openWebDatabase();
   const { experimentId } = await params;
   let detail: DetailProps | null;
   try {
-    detail = await loadDetail(database, experimentId);
+    detail = await authenticatedPageRead(await headers(), (database, actor) => loadDetail(database, actor, experimentId));
   } catch (error) {
     const authDestination = authenticationDestination(error);
     if (authDestination !== null) redirect(authDestination);
-    const message = error instanceof Error ? error.message : 'Experiment is unavailable';
+    const message = pageReadErrorMessage(error, 'Experiment is unavailable');
     return (
       <main style={page}>
         <h1 style={heading}>Experiment</h1>
@@ -48,8 +50,6 @@ export default async function ExperimentDetailPage({ params }: { params: RoutePa
         <p style={muted}>Nothing was read; this is the page refusing, not an empty experiment.</p>
       </main>
     );
-  } finally {
-    await database.close();
   }
 
   // Outside the try on purpose. `notFound()` works by throwing a control-flow
@@ -61,10 +61,10 @@ export default async function ExperimentDetailPage({ params }: { params: RoutePa
 }
 
 async function loadDetail(
-  database: ReturnType<typeof openWebDatabase>,
+  database: QueryHandle,
+  actor: OrgActor,
   experimentId: string,
 ): Promise<DetailProps | null> {
-  const actor = await requestActor(await headers());
   const role = await requireOrgRole(database, actor);
   const experiment = await getExperiment(database, { orgId: actor.orgId, experimentId });
   if (!experiment) return null;
