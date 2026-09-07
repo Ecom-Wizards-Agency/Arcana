@@ -4,12 +4,14 @@ import { Buffer } from 'node:buffer';
 import process from 'node:process';
 import { clearTimeout, setTimeout } from 'node:timers';
 import { pathToFileURL } from 'node:url';
+import { initializeRecommendationDatabaseTrust } from './openspell-recommendation-database-trust.mjs';
 
 const MAX_INPUT_BYTES = 8_192;
 import { parseCutoverEvidence, parseAuthorityTuple, expectedTransition, classifyTransitionReadback, parseBrokerResult, validateCutoverEvidence } from './openspell-recommendation-authority-contract.mjs';
 export { parseAuthorityTuple, expectedTransition, classifyTransitionReadback, parseBrokerResult, validateCutoverEvidence } from './openspell-recommendation-authority-contract.mjs';
 const REVISION = /^[0-9a-f]{40}$/u;
 async function readAuthority(databaseUrl, revision) {
+  initializeRecommendationDatabaseTrust(databaseUrl);
   const { RecommendationWorkerDatabase } = await import('@wizard-ads/db/recommendation-worker');
   const database = new RecommendationWorkerDatabase({
     connectionString: databaseUrl,
@@ -25,6 +27,7 @@ async function readAuthority(databaseUrl, revision) {
 }
 
 async function readCutoverEvidence(databaseUrl, revision) {
+  initializeRecommendationDatabaseTrust(databaseUrl);
   const { RecommendationWorkerDatabase } = await import('@wizard-ads/db/recommendation-worker');
   const database = new RecommendationWorkerDatabase({
     connectionString: databaseUrl,

@@ -218,6 +218,7 @@ const shellFiles = [
   'verify-recommendation-worker-evo-systemd.sh',
   'recommendation-worker-evo-systemd-lib.sh',
   'build-recommendation-worker-artifact.sh',
+  'install-recommendation-database-ca.sh',
 ];
 for (const file of shellFiles) execFileSync('bash', ['-n', join(deploy, file)]);
 const installer = await readFile(join(deploy, shellFiles[0]), 'utf8');
@@ -276,6 +277,7 @@ for (const path of graph) {
 assert(graph.has('apps/worker/src/recommendation-cadence.ts'));
 assert(graph.has('apps/worker/src/profile-calendar.ts'));
 assert(!graph.has('apps/worker/src/schedules.ts'));
+assert(graph.has('docs/deploy/openspell-recommendation-database-trust.mjs'));
 
 // Run the same complete unprivileged build used by installation. This catches
 // artifact-content failures that a successful bundle/import graph cannot see.
@@ -299,7 +301,9 @@ try {
   const inputs = (await readFile(join(artifact, 'RUNTIME_INPUTS'), 'utf8')).trimEnd().split('\n');
   assert.equal(new Set(inputs).size, inputs.length);
   for (const path of ['docs/deploy/build-recommendation-worker-artifact.sh',
-    'docs/deploy/install-recommendation-worker-evo-systemd.sh']) assert(inputs.includes(path));
+    'docs/deploy/install-recommendation-worker-evo-systemd.sh',
+    'docs/deploy/install-recommendation-database-ca.sh',
+    'docs/deploy/openspell-recommendation-database-trust.mjs']) assert(inputs.includes(path));
 
   const verifyContent = () => spawnSync('bash', ['-c',
     'source "$1"; verify_recommendation_worker_artifact_content "$2" "$3"',

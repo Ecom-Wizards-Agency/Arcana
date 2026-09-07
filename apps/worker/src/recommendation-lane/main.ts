@@ -1,4 +1,5 @@
 import { once } from 'node:events';
+import { initializeRecommendationDatabaseTrust } from '../../../../docs/deploy/openspell-recommendation-database-trust.mjs';
 import { RecommendationClaimantCustodyError } from './claimant.js';
 import { recommendationLaneConfigFromEnv } from './config.js';
 import { RecommendationHealthMonitor, listenRecommendationHealth } from './health.js';
@@ -7,6 +8,7 @@ import { startRecommendationRuntimeReporting } from './runtime-report.js';
 
 export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const config = recommendationLaneConfigFromEnv(env);
+  initializeRecommendationDatabaseTrust(config.databaseUrl, env);
   const runtime = createRecommendationLaneRuntime(config);
   let server: Awaited<ReturnType<typeof listenRecommendationHealth>> | null = null;
   let claimantLoop: Promise<void> | null = null;
