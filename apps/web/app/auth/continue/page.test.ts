@@ -11,8 +11,9 @@ vi.mock('../../../src/auth/session', () => ({
   currentUser: mocks.currentUser,
   currentSessionSecurity: mocks.currentSessionSecurity,
 }));
+vi.mock('next/navigation', () => ({ redirect: (path: string) => { throw new Error(`REDIRECT:${path}`); } }));
 
-import { GET } from './route';
+import AuthContinuePage from './page';
 
 const baseConfig = {
   passwordLogin: false,
@@ -33,8 +34,7 @@ describe('/auth/continue', () => {
 
   it('preserves the pre-rollout path when assurance enforcement is off', async () => {
     mocks.currentUser.mockResolvedValue({ id: 'user-1', email: null });
-    const response = await GET(new Request('https://app.example.test/auth/continue?next=%2Fdashboard'));
-    expect(response.headers.get('location')).toBe('https://app.example.test/dashboard');
+    await expect(AuthContinuePage({ searchParams: Promise.resolve({ next: '/dashboard' }) })).rejects.toThrow('REDIRECT:/dashboard');
     expect(mocks.currentSessionSecurity).not.toHaveBeenCalled();
   });
 
@@ -46,15 +46,18 @@ describe('/auth/continue', () => {
       current: 'aal1',
       next: 'aal2',
     });
-    const response = await GET(new Request('https://app.example.test/auth/continue?next=%2Fdashboard'));
-    expect(response.headers.get('location')).toBe(
-      'https://app.example.test/auth/mfa/challenge?next=%2Fdashboard',
-    );
+    await expect(AuthContinuePage({ searchParams: Promise.resolve({ next: '/dashboard' }) })).rejects.toThrow(
+      `REDIRECT:/auth/mfa/challenge?${new URLSearchParams({ next: '/dashboard' })}`);
   });
 
   it('rejects an external continuation target', async () => {
     mocks.currentUser.mockResolvedValue({ id: 'user-1', email: null });
-    const response = await GET(new Request('https://app.example.test/auth/continue?next=%2F%2Fevil.test'));
-    expect(response.headers.get('location')).toBe('https://app.example.test/dashboard');
+    await expect(AuthContinuePage({ searchParams: Promise.resolve({ next: '//evil.test' }) })).rejects.toThrow('REDIRECT:/dashboard');
+  });
+
+  it('preserves the invitation when primary authentication is missing', async () => {
+    mocks.currentUser.mockResolvedValue(null);
+    await expect(AuthContinuePage({ searchParams: Promise.resolve({ next: '/agency-invite/synthetic' }) })).rejects.toThrow(
+      `REDIRECT:/login?${new URLSearchParams({ next: '/agency-invite/synthetic' })}`);
   });
 });
