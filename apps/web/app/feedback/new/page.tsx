@@ -6,14 +6,11 @@
  * `?profile=` parameter. Both are normalised on the server before the form ever
  * shows them, so what the user is asked to approve is exactly what will be stored.
  */
+import { authenticatedPageRead, pageReadErrorMessage } from '../../../src/server/authenticated-page-read';
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import type { FeedbackType } from '@wizard-ads/db';
-import {
-  authenticationDestination,
-  openWebDatabase,
-  requestActor,
-} from '../../../src/server/request-context';
+import { authenticationDestination } from '../../../src/server/request-context';
 import { requireOrgRole } from '../../../src/server/org-role';
 import { pageContext, profileIdFromRoute } from '../../../src/feedback/page-context';
 import { page, heading, muted } from '../../../src/ui/tokens';
@@ -28,28 +25,28 @@ const single = (value: string | string[] | undefined): string | null =>
   typeof value === 'string' ? value : null;
 
 export default async function NewFeedbackPage({ searchParams }: { searchParams: SearchParams }) {
-  const database = openWebDatabase();
   try {
-    const actor = await requestActor(await headers());
-    await requireOrgRole(database, actor);
-    const query = await searchParams;
-    const route = single(query['from']);
-    const requestedType = single(query['type']);
-    const preselectedType: FeedbackType | undefined =
-      requestedType === 'bug' || requestedType === 'feature' ? requestedType : undefined;
-    const context = pageContext({
-      route,
-      profileId: profileIdFromRoute(route),
-      appVersion: process.env['WIZARD_ADS_APP_VERSION'] ?? null,
-      actorType: 'user',
+    return await authenticatedPageRead(await headers(), async (database, actor) => {
+      await requireOrgRole(database, actor);
+      const query = await searchParams;
+      const route = single(query['from']);
+      const requestedType = single(query['type']);
+      const preselectedType: FeedbackType | undefined =
+        requestedType === 'bug' || requestedType === 'feature' ? requestedType : undefined;
+      const context = pageContext({
+        route,
+        profileId: profileIdFromRoute(route),
+        appVersion: process.env['WIZARD_ADS_APP_VERSION'] ?? null,
+        actorType: 'user',
+      });
+      return <SubmitFeedbackForm context={context} preselectedType={preselectedType} />;
     });
-    return <SubmitFeedbackForm context={context} preselectedType={preselectedType} />;
   } catch (error) {
     // A page, not an API: an anonymous reporter gets the login screen rather
     // than an instruction to sign in with nowhere to do it.
     const authDestination = authenticationDestination(error);
     if (authDestination !== null) redirect(authDestination);
-    const message = error instanceof Error ? error.message : 'Feedback is unavailable';
+    const message = pageReadErrorMessage(error, 'Feedback is unavailable');
     return (
       <main style={page}>
         <h1 style={heading}>Submission form</h1>
@@ -57,7 +54,5 @@ export default async function NewFeedbackPage({ searchParams }: { searchParams: 
         <p style={muted}>Nothing was filed; this is the form refusing to open.</p>
       </main>
     );
-  } finally {
-    await database.close();
   }
 }

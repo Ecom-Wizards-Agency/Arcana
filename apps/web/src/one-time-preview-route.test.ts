@@ -79,7 +79,7 @@ it.skipIf(!available)('reconciles an interrupted receipt after worker loss witho
     const status = await GET(new Request(`http://localhost/api/optimizer/runs/${accepted.batchId}?profileId=${profileId}`, { headers: headers() }),
       { params: Promise.resolve({ batchId: accepted.batchId }) });
     expect(status.status).toBe(200);
-    expect(status.headers.get('cache-control')).toBe('no-store');
+    expect(status.headers.get('cache-control')).toBe('private, no-store, max-age=0');
     expect(await status.json()).toMatchObject({ status: 'queued', executionSnapshot: { configuration }, availability: { ready: false, reason: 'worker_unavailable' } });
     const [count] = await database.sql<{ count: number }[]>`
       select count(*)::integer as count from public.recommendation_preview_batches where client_request_id = ${input.clientRequestId}::uuid

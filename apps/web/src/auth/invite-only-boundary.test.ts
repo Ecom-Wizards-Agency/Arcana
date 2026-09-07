@@ -15,7 +15,7 @@ async function sourceFiles(directory: string): Promise<string[]> {
 }
 
 describe('invite-only identity boundary', () => {
-  it('keeps account creation in invitation acceptance with no passwordless signup path', async () => {
+  it('requires provider email verification instead of creating preconfirmed accounts in web', async () => {
     const webRoot = process.cwd();
     const files = [
       ...(await sourceFiles(resolve(webRoot, 'app'))),
@@ -27,7 +27,8 @@ describe('invite-only identity boundary', () => {
     })));
     expect(
       sources.filter(({ source }) => source.includes('auth.admin.createUser')).map(({ path }) => path),
-    ).toEqual([join('app', 'invite', '[token]', 'actions.ts')]);
+    ).toEqual([]);
+    expect(sources.some(({ source }) => /email_confirm\s*:\s*true/.test(source))).toBe(false);
 
     const login = sources.find(({ path }) => path === join('app', 'login', 'actions.ts'))?.source;
     expect(login).toContain('auth.signInWithPassword');

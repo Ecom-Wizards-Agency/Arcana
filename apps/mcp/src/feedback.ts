@@ -24,7 +24,8 @@ import { z } from 'zod';
 import { createFeedbackItem } from '@wizard-ads/db';
 import type { FeedbackSeverity, FeedbackType } from '@wizard-ads/db';
 import { ToolError } from './errors.js';
-import type { ServerContext, ToolOutcome } from './server.js';
+import type { ToolOutcome } from './server.js';
+import type { OperationContext } from './operation.js';
 
 export const SUBMIT_FEEDBACK_TITLE = 'File a bug report or feature request';
 
@@ -57,7 +58,7 @@ export interface SubmitFeedbackArgs {
 }
 
 export async function submitFeedback(
-  context: ServerContext,
+  context: OperationContext,
   args: SubmitFeedbackArgs,
 ): Promise<ToolOutcome> {
   if (args.type !== 'bug' && args.severity !== undefined) {
@@ -67,8 +68,9 @@ export async function submitFeedback(
   try {
     const item = await createFeedbackItem(context.handle, {
       orgId: context.scope.orgId,
-      // No user is behind an MCP call. The key is, and it is in the context.
-      authorId: null,
+      // This legacy tool is not registered in the analytical catalog. Any
+      // future activation must retain the verified key owner's RLS identity.
+      authorId: context.actor.userId,
       type: args.type,
       title: args.title,
       body: args.body,

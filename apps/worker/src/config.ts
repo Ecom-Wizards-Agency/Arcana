@@ -28,6 +28,8 @@ export interface WorkerConfig {
   revision: string;
   /** Whether this process hosts timers and independent background consumers. */
   startsBackgroundPasses: boolean;
+  /** Default off until the connection schema and this worker are installed. */
+  amazonConnectionsEnabled: boolean;
   /** Default-off WP-181 cohort. Account bindings remain database-owned. */
   unifiedReporting: UnifiedReportingDualRunPolicy;
   /**
@@ -103,6 +105,11 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     unifiedReady,
   );
   const unifiedReporting = resolveUnifiedReportingDualRunPolicy(env, deployment);
+  const amazonConnectionsEnabled = env['OPENSPELL_AMAZON_CONNECTIONS_ENABLED'] === '1';
+  if (amazonConnectionsEnabled && (deployment.role !== 'general'
+    || (deployment.jobTypes !== undefined && !deployment.jobTypes.includes('entity.sync')))) {
+    throw new Error('Amazon connections require a general worker with entity synchronization');
+  }
   return {
     databaseUrl: connectionStringFromEnv(env),
     workerId: env['WORKER_ID'] ?? `worker-${process.pid}`,
@@ -116,6 +123,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     claimProtocol: deployment.claimProtocol,
     revision: workerRevisionFromEnv(env),
     startsBackgroundPasses: deployment.startsBackgroundPasses,
+    amazonConnectionsEnabled,
     unifiedReporting,
     crosscheckInboxDir: env['CROSSCHECK_INBOX_DIR'] || undefined,
     authHealthcheckIntervalMs:

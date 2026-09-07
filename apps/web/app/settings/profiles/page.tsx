@@ -17,6 +17,7 @@
 import type { ReactNode } from 'react';
 import { GOAL_LENSES } from '@wizard-ads/core';
 import { Region } from '@wizard-ads/shared';
+import { withAuthenticatedActor } from '@wizard-ads/db';
 import { can } from '../../../src/auth/roles';
 import { gate } from '../../../src/auth/guard';
 import { isRosterSort, loadRoster } from '../../../src/data/profiles';
@@ -43,6 +44,7 @@ export const dynamic = 'force-dynamic';
 
 interface Props {
   searchParams: Promise<{
+    org?: string;
     region?: string;
     country?: string;
     q?: string;
@@ -65,7 +67,7 @@ const ROSTER_PAGE_SIZE = 50;
 
 export default async function ProfilesPage({ searchParams }: Props): Promise<ReactNode> {
   const query = await searchParams;
-  const result = await gate();
+  const result = await gate(query.org);
 
   if (result.state !== 'ok') {
     return (
@@ -85,13 +87,13 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
   if (!org) return null;
 
   const sort: RosterSort = isRosterSort(query.sort) ? query.sort : 'name';
-  const roster = await loadRoster(handle, org.orgId, {
+  const roster = await withAuthenticatedActor(handle, { orgId: org.orgId, userId: context.user.id }, (sql) => loadRoster({ sql }, org.orgId, {
     region: query.region ?? null,
     country: query.country ?? null,
     search: query.q ?? null,
     syncEnabled: query.sync === 'on' ? true : query.sync === 'off' ? false : null,
     sort,
-  });
+  }));
 
   const mayEditTargets = can(org.role, 'editTargets');
   const mayToggleSync = can(org.role, 'toggleSync');
@@ -106,7 +108,7 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
 
   /** The current filters, minus the page, so a page link keeps the roster it was built from. */
   const pageHref = (target: number): string => {
-    const params = new URLSearchParams();
+    const params = new URLSearchParams({ org: org.orgId });
     for (const [key, value] of Object.entries({
       region: query.region,
       country: query.country,
@@ -158,6 +160,7 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
         />
 
         <form method="get">
+          <input type="hidden" name="org" value={org.orgId} />
           <Toolbar>
             <Field label="Search" htmlFor="roster-q">
               <Input
@@ -234,7 +237,7 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
             </Button>
             {/* A link, not a reset: the filter lives in the URL, so clearing it
                 means going to the unfiltered URL, not blanking the inputs. */}
-            <a className="wa-btn wa-btn--ghost" href="/settings/profiles">
+            <a className="wa-btn wa-btn--ghost" href={`/settings/profiles?${new URLSearchParams({ org: org.orgId })}`}>
               Clear
             </a>
           </Toolbar>
@@ -247,7 +250,7 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
         ) : null}
 
         <RosterSelectionProvider>
-          {mayToggleSync ? <BulkSyncBar action={bulkSetSync} /> : null}
+          {mayToggleSync ? <BulkSyncBar orgId={org.orgId} action={bulkSetSync} /> : null}
 
           <TableFrame data-testid="roster-table">
             <table className="wa-table wa-table--numeric">
@@ -279,6 +282,7 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
                   <ProfileTableRow
                     key={profile.id}
                     profile={profile}
+                    orgId={org.orgId}
                     mayEditTargets={mayEditTargets}
                     mayToggleSync={mayToggleSync}
                   />
@@ -328,7 +332,7 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
                     Connect Amazon Ads
                   </a>
                 ) : (
-                  <a className="wa-btn wa-btn--sm" href="/settings/profiles">
+                  <a className="wa-btn wa-btn--sm" href={`/settings/profiles?${new URLSearchParams({ org: org.orgId })}`}>
                     Clear the filter
                   </a>
                 )
@@ -342,11 +346,13 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
 }
 
 function ProfileTableRow({
+  orgId,
   profile,
   mayEditTargets,
   mayToggleSync,
 }: {
   profile: ProfileRow;
+  orgId: string;
   mayEditTargets: boolean;
   mayToggleSync: boolean;
 }): ReactNode {
@@ -371,7 +377,7 @@ function ProfileTableRow({
       <td>{profile.currencyCode}</td>
       <td data-testid="sync-state">
         {mayToggleSync ? (
-          <SyncControl profileId={profile.id} profileLabel={label} enabled={profile.syncEnabled} />
+          <SyncControl orgId={orgId} profileId={profile.id} profileLabel={label} enabled={profile.syncEnabled} />
         ) : (
           <Badge tone={profile.syncEnabled ? 'good' : 'neutral'} dot data-testid="sync-readonly">
             {profile.syncEnabled ? 'on' : 'off'}
@@ -415,6 +421,7 @@ function ProfileTableRow({
             />
             <form action={saveSchedule} id={scheduleFormId}>
               <input type="hidden" name="profileId" value={profile.id} />
+              <input type="hidden" name="orgId" value={orgId} />
               <Button type="submit" size="sm" data-testid="save-schedule">
                 Save
               </Button>
@@ -476,6 +483,7 @@ function ProfileTableRow({
         {mayEditTargets ? (
           <form action={saveTargets} id={formId}>
             <input type="hidden" name="profileId" value={profile.id} />
+              <input type="hidden" name="orgId" value={orgId} />
             <Button type="submit" size="sm" data-testid="save-targets">
               Save
             </Button>

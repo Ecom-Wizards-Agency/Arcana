@@ -8,7 +8,7 @@
  * them. That is why WP-09's acceptance check demands a negative test at the
  * tool layer rather than only in the database.
  */
-import type { DbHandle } from '@wizard-ads/db';
+import type { QueryHandle } from '@wizard-ads/db';
 import { ToolError } from './errors.js';
 import { jsonText } from './json.js';
 import { buildFactQuery, buildProductCoverageQuery } from './sql.js';
@@ -72,7 +72,7 @@ const toProfile = (row: ProfileRow): ProfileRecord => ({
 });
 
 export async function listProfiles(
-  handle: DbHandle,
+  handle: QueryHandle,
   scope: KeyScopeContext,
 ): Promise<ProfileRecord[]> {
   if (scope.profileIds !== null && scope.profileIds.length === 0) return [];
@@ -101,7 +101,7 @@ export async function listProfiles(
  * this server never states one.
  */
 export async function resolveProfile(
-  handle: DbHandle,
+  handle: QueryHandle,
   scope: KeyScopeContext,
   profileId: string,
 ): Promise<ProfileRecord> {
@@ -124,7 +124,7 @@ export async function resolveProfile(
   return toProfile(row);
 }
 
-export async function runBuiltQuery<T>(handle: DbHandle, query: BuiltQuery): Promise<T[]> {
+export async function runBuiltQuery<T>(handle: QueryHandle, query: BuiltQuery): Promise<T[]> {
   return (await handle.sql.unsafe(query.text, query.params as never[])) as unknown as T[];
 }
 
@@ -138,7 +138,7 @@ export interface FactResult {
 }
 
 export async function runFactQuery(
-  handle: DbHandle,
+  handle: QueryHandle,
   spec: FactQuerySpec,
 ): Promise<FactResult> {
   const query = buildFactQuery(spec);
@@ -154,7 +154,7 @@ export interface ProductCoverage {
 }
 
 export async function productCoverage(
-  handle: DbHandle,
+  handle: QueryHandle,
   orgId: string,
   profileId: string,
   window: DateWindow,
@@ -206,7 +206,7 @@ export interface SyncStatus {
 }
 
 export async function getSyncStatus(
-  handle: DbHandle,
+  handle: QueryHandle,
   scope: KeyScopeContext,
   profile: ProfileRecord,
 ): Promise<SyncStatus> {
@@ -307,7 +307,7 @@ export interface RecommendationRunRecord {
 }
 
 export async function getLatestRecommendations(
-  handle: DbHandle,
+  handle: QueryHandle,
   scope: KeyScopeContext,
   profile: ProfileRecord,
   options: { status?: string | undefined; reason?: string | undefined; limit: number },
@@ -409,7 +409,7 @@ export interface DailySeriesRow {
 }
 
 export async function readProfileDaily(
-  handle: DbHandle,
+  handle: QueryHandle,
   scope: KeyScopeContext,
   profileId: string,
   window: DateWindow,
@@ -442,7 +442,7 @@ export async function readProfileDaily(
 }
 
 export async function readCampaignDaily(
-  handle: DbHandle,
+  handle: QueryHandle,
   scope: KeyScopeContext,
   profileId: string,
   window: DateWindow,
@@ -532,7 +532,7 @@ export interface GotoLinkRecord {
 }
 
 export async function createGotoLink(
-  handle: DbHandle,
+  handle: QueryHandle,
   scope: KeyScopeContext,
   input: {
     route: GotoRoute;
@@ -588,7 +588,7 @@ export interface ProfileContext {
 }
 
 export async function getProfileContext(
-  handle: DbHandle,
+  handle: QueryHandle,
   scope: KeyScopeContext,
   profile: ProfileRecord,
 ): Promise<ProfileContext> {
@@ -626,10 +626,10 @@ export async function getProfileContext(
     { campaigns: string; ad_groups: string; keywords: string; targets: string }[]
   >`
     select
-      (select count(*) from public.campaigns where profile_id = ${profile.id})::text as campaigns,
-      (select count(*) from public.ad_groups where profile_id = ${profile.id})::text as ad_groups,
-      (select count(*) from public.keywords where profile_id = ${profile.id})::text as keywords,
-      (select count(*) from public.targets where profile_id = ${profile.id})::text as targets
+      (select count(*) from public.campaigns where org_id = ${scope.orgId} and profile_id = ${profile.id})::text as campaigns,
+      (select count(*) from public.ad_groups where org_id = ${scope.orgId} and profile_id = ${profile.id})::text as ad_groups,
+      (select count(*) from public.keywords where org_id = ${scope.orgId} and profile_id = ${profile.id})::text as keywords,
+      (select count(*) from public.targets where org_id = ${scope.orgId} and profile_id = ${profile.id})::text as targets
   `;
 
   const row = strategy[0];

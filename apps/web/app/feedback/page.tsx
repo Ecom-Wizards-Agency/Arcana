@@ -1,8 +1,9 @@
 /** The retired tracker: old item links are routed to their new typed home. */
+import { authenticatedPageRead } from '../../src/server/authenticated-page-read';
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { getFeedbackItem } from '@wizard-ads/db';
-import { authenticationDestination, openWebDatabase, requestActor } from '../../src/server/request-context';
+import { authenticationDestination } from '../../src/server/request-context';
 import { requireOrgRole } from '../../src/server/org-role';
 import { LegacyFeedbackRedirect } from './legacy-redirect';
 
@@ -26,23 +27,22 @@ export default async function FeedbackPage({ searchParams }: { searchParams: Sea
   if (candidate === null) return <LegacyFeedbackRedirect />;
   if (!UUID.test(candidate)) redirect('/bugs');
 
-  const database = openWebDatabase();
   let destination = '/bugs';
   try {
-    const actor = await requestActor(await headers());
-    await requireOrgRole(database, actor);
-    const item = await getFeedbackItem(database, {
-      orgId: actor.orgId,
-      itemId: candidate,
-      viewerId: actor.userId,
+    destination = await authenticatedPageRead(await headers(), async (database, actor) => {
+      await requireOrgRole(database, actor);
+      const item = await getFeedbackItem(database, {
+        orgId: actor.orgId,
+        itemId: candidate,
+        viewerId: actor.userId,
     });
-    if (item?.type === 'feature') destination = `/roadmap#roadmap-${item.id}`;
-    if (item?.type === 'bug') destination = `/bugs#bug-${item.id}`;
+    if (item?.type === 'feature') return `/roadmap#roadmap-${item.id}`;
+    if (item?.type === 'bug') return `/bugs#bug-${item.id}`;
+    return '/bugs';
+    });
   } catch (error) {
     const authDestination = authenticationDestination(error);
     if (authDestination !== null) redirect(authDestination);
-  } finally {
-    await database.close();
   }
   redirect(destination);
 }

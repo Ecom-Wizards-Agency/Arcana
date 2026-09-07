@@ -1,6 +1,7 @@
 import { Suspense } from 'react';
 import { redirect } from 'next/navigation';
 import {
+  withAuthenticatedActor,
   readCreativePerformance,
   readLatestCreativeSyncJobState,
   readLatestCreativeSyncSnapshot,
@@ -52,7 +53,8 @@ export default async function CreativePerformancePage({ searchParams }: PageProp
   const to = one(query.to);
   const selectedPresetId = one(query.preset);
   const orgId = entry.context.active?.orgId ?? '';
-  const profiles = await listProfiles(entry.handle, orgId);
+  const actor = { orgId, userId: entry.context.user.id };
+  const profiles = await withAuthenticatedActor(entry.handle, actor, (sql) => listProfiles({ sql }, orgId));
   const profile = selectProfile(profiles, requested);
 
   if (profile === null) {
@@ -82,23 +84,25 @@ export default async function CreativePerformancePage({ searchParams }: PageProp
     profileToday,
   );
 
-  const rows = readCreativePerformance(entry.handle, {
-    orgId,
-    profileId: profile.id,
-    from: period.start,
-    to: period.end,
+  const evidence = withAuthenticatedActor(entry.handle, actor, async (sql) => {
+    const handle = { sql };
+    const [rows, snapshot, latestJob] = await Promise.all([
+      readCreativePerformance(handle, { orgId, profileId: profile.id, from: period.start, to: period.end }),
+      readLatestCreativeSyncSnapshot(handle, { orgId, profileId: profile.id }),
+      readLatestCreativeSyncJobState(handle, { orgId, profileId: profile.id }),
+    ]);
+    return { rows, snapshot, latestJob };
   });
-  const snapshot = readLatestCreativeSyncSnapshot(entry.handle, { orgId, profileId: profile.id });
-  const latestJob = readLatestCreativeSyncJobState(entry.handle, { orgId, profileId: profile.id });
+  const rows = evidence.then((value) => value.rows);
   const pilot = creativeSyncPilotFromEnv();
   const producerEligible = profile.syncEnabled
     && pilot.enabled
     && pilot.profileIds.includes(profile.id.toLowerCase());
-  const lifecycleEvidence = Promise.all([snapshot, latestJob]).then(
-    ([resolvedSnapshot, resolvedJob]): CreativeLifecycleEvidence => ({
+  const lifecycleEvidence = evidence.then(
+    ({ snapshot, latestJob }): CreativeLifecycleEvidence => ({
       producerEligible,
-      latestJob: resolvedJob,
-      snapshot: resolvedSnapshot,
+      latestJob,
+      snapshot,
     }),
   );
 

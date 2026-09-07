@@ -73,6 +73,10 @@ the Advertising API connection.
    [hosted-history bundle tool](tools/hosted-migration-bundle/README.md) is not a fresh
    database initializer. Development seeds are synthetic test data, not a production
    first-owner installer.
+   Keep the exposed API schemas as declared in [supabase/config.toml](supabase/config.toml).
+   The `app`, `mcp` and `vault` schemas must remain unexposed: server-only manager
+   commands rely on the web application's verified session and authenticator checks
+   before their independent database membership checks.
 2. **Configure Vercel.** Build the `@wizard-ads/web` workspace with its locked monorepo
    dependencies. Set `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
    server-only `DATABASE_URL` and the exact HTTPS `WIZARD_ADS_APP_URL` through deployment
@@ -86,9 +90,15 @@ the Advertising API connection.
    `/api/amazon/oauth/callback`. Set the public application identity and signed-state
    configuration from the web template. The worker uses `LWA_CLIENT_ID` and
    `LWA_CLIENT_SECRET` for that same app; tenant refresh tokens belong in Vault.
-   The current web template also requests `AMAZON_LWA_CLIENT_SECRET` for a legacy
-   callback. That callback must be replaced by the worker-owned exchange before this
-   topology meets the repository's credential boundary.
+   The web callback validates the session and signed state, then submits a protected
+   connection operation. It has no client secret or token-exchange endpoint. Set
+   `AMAZON_OAUTH_ALLOWED_REDIRECT_URIS` on the general worker to the exact allowed
+   callbacks, comma-separated when production and protected review share that worker.
+   New connections default off. Enable `OPENSPELL_AMAZON_CONNECTIONS_ENABLED=1` on
+   the compatible general worker first, verify its connection-processing health, then
+   enable that flag on the web deployments. Install the matching connection migrations
+   before either activation. Existing consent links from an earlier protocol require
+   a new authorization.
 4. **Install and verify the worker.** Use the maintained
    [worker configuration](apps/worker/README.md),
    [report worker deployment](docs/deploy/evo-report-worker.md) and
@@ -99,11 +109,11 @@ the Advertising API connection.
    queue ownership and database authority before allowing claims. The
    [Vercel cron configuration](apps/web/vercel.json) must agree with the lane handoff;
    staging a worker does not transfer queue ownership.
-5. **Provision an owner and prove the first connection.** Installation needs an
-   operator-controlled organization invitation, verified owner email, password setup
-   and account connection. The current source does not yet provide a complete
-   production first-owner installer. Complete that path and verify exact-organization
-   access before opening an installation to unrelated agencies. Do not substitute a
+5. **Provision an owner and prove the first connection.** Use the
+   [agency operator command](tools/agency-operator/README.md) to issue an independent
+   first-owner invitation. Install its matching Auth template and redirects, verify
+   password setup and exact-organization access, and complete the worker-owned
+   connection workflow before admitting unrelated agencies. Do not substitute a
    development seed or permanent operator membership. For each first sync, reconcile
    profiles discovered, profiles accepted, entities listed/upserted and report rows
    parsed/loaded; show missing or refused rows explicitly.
@@ -117,9 +127,8 @@ web origin and allowed redirects, visible `WIZARD_ADS_REVIEW_LIVE_DATA=1` labeli
 disabled cron. Such a deployment is a review of live data, not a disposable test
 database. Schema and Auth changes must remain compatible with both active releases.
 
-The first-owner installer and worker-owned OAuth exchange above are current installation
-limitations. A checkout, passing tests or deployed login page alone is not a complete
-self-host installation.
+Verify the complete password, invitation, connection and first-sync workflow in the
+target installation; source tests do not establish its deployment or Amazon approval.
 
 ## Source guides
 

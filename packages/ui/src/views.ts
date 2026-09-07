@@ -15,12 +15,14 @@
  * ## Storage
  *
  * `ViewStore` is a port with two implementations here: in-memory (tests) and
- * `localStorage` (the browser). Both are per-user by construction because the
- * storage is. A shared, org-scoped, DB-backed store needs a `grid_views` table,
+ * `localStorage` (the browser). Browser stores require both user and agency
+ * identity; origin storage alone is shared across signed-in accounts. A
+ * shared, org-scoped, DB-backed store needs a `grid_views` table,
  * which belongs to WP-01's migrations -- so this file defines the interface it
  * would implement and stops there rather than inventing a schema across an
  * ownership line.
  */
+import { OrgActor } from '@wizard-ads/shared';
 import { ENTITY_LEVELS } from './columns.js';
 import type { EntityLevel } from './columns.js';
 import { isGridDensity } from './density.js';
@@ -193,8 +195,6 @@ export class MemoryViewStore implements ViewStore {
   }
 }
 
-const NAMED_KEY = 'wizard-ads:views:v1';
-const LAYOUT_KEY = 'wizard-ads:layout:v1';
 const FILTER_OPERATORS = new Set([
   '>', '<', '>=', '<=', '=', '<>', 'IN', 'NOT_IN', 'LIKE', 'NOT_LIKE', 'IS_NULL', 'IS_NOT_NULL',
 ]);
@@ -273,7 +273,19 @@ export interface KeyValueStorage {
  * never be able to blank the grid. It is a cache of a preference, not data.
  */
 export class LocalViewStore implements ViewStore, SynchronousLayoutSource {
-  constructor(private readonly storage: KeyValueStorage) {}
+  private readonly namedKey: string;
+  private readonly layoutKey: string;
+
+  constructor(private readonly storage: KeyValueStorage, rawActor: Readonly<OrgActor>) {
+    const actor = OrgActor.parse(rawActor);
+    // UUID validation makes the separators unambiguous. Derive immutable keys
+    // once, so a delayed write always belongs to the store's original owner.
+    const scope = `${actor.orgId}:${actor.userId}`;
+    this.namedKey = `wizard-ads:views:v2:${scope}`;
+    this.layoutKey = `wizard-ads:layout:v2:${scope}`;
+    // Ownerless v1 keys are deliberately left unread and unchanged. Assigning
+    // them to the next signer would disclose the previous agency's filters.
+  }
 
   private readRecord(key: string): Record<string, unknown> {
     try {
@@ -304,22 +316,22 @@ export class LocalViewStore implements ViewStore, SynchronousLayoutSource {
   }
 
   async list(entity: EntityLevel): Promise<SavedView[]> {
-    const all = this.readViews(NAMED_KEY);
+    const all = this.readViews(this.namedKey);
     return Object.values(all)
       .filter((view) => view.entity === entity)
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async save(view: SavedView): Promise<void> {
-    const all = this.readViews(NAMED_KEY);
+    const all = this.readViews(this.namedKey);
     all[view.id] = view;
-    this.write(NAMED_KEY, all);
+    this.write(this.namedKey, all);
   }
 
   async remove(id: string): Promise<void> {
-    const all = this.readViews(NAMED_KEY);
+    const all = this.readViews(this.namedKey);
     delete all[id];
-    this.write(NAMED_KEY, all);
+    this.write(this.namedKey, all);
   }
 
   async lastLayout(entity: EntityLevel): Promise<SavedView | null> {
@@ -337,13 +349,13 @@ export class LocalViewStore implements ViewStore, SynchronousLayoutSource {
    * able to blank the grid.
    */
   cachedLayout(entity: EntityLevel): SavedView | null {
-    const candidate = this.readRecord(LAYOUT_KEY)[entity];
+    const candidate = this.readRecord(this.layoutKey)[entity];
     return isSavedView(candidate) && candidate.entity === entity ? candidate : null;
   }
 
   async rememberLayout(view: SavedView): Promise<void> {
-    const all = this.readViews(LAYOUT_KEY);
+    const all = this.readViews(this.layoutKey);
     all[view.entity] = view;
-    this.write(LAYOUT_KEY, all);
+    this.write(this.layoutKey, all);
   }
 }

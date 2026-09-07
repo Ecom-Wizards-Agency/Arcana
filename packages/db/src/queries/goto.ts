@@ -1,9 +1,13 @@
 /** Signed, tenant-scoped deep links. */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import type { DbHandle } from '../client.js';
+import type { OrgActor } from '@wizard-ads/shared';
+import type { DbHandle, QueryHandle } from '../client.js';
 import { toDate, toDateOrNull, toTimestampParam } from './pg-time.js';
+import { withAuthenticatedActor } from './authenticated-actor.js';
 
 export type GotoQueryHandle = Pick<DbHandle, 'sql'>;
+
+export class GotoInputError extends Error {}
 export type JsonValue =
   | string
   | number
@@ -95,7 +99,7 @@ export function validateGotoRoute(route: string): string {
     normalized.includes('\\') ||
     hasControlCharacter
   ) {
-    throw new Error('Goto route must be an internal application path outside /go');
+    throw new GotoInputError('Goto route must be an internal application path outside /go');
   }
   return normalized;
 }
@@ -113,12 +117,12 @@ export function validateGotoRoute(route: string): string {
  */
 function serializeState(state: JsonValue): string {
   const serialized = JSON.stringify(state);
-  if (serialized === undefined) throw new Error('Goto state must be JSON-serializable');
+  if (serialized === undefined) throw new GotoInputError('Goto state must be JSON-serializable');
   return serialized;
 }
 
 export async function createGotoLink(
-  handle: GotoQueryHandle,
+  handle: QueryHandle,
   input: {
     orgId: string;
     route: string;
@@ -171,6 +175,38 @@ export async function resolveGotoLink(
               last_used_at, created_by, created_at
   `;
   return rows[0] ? toGotoLink(rows[0]) : null;
+}
+
+/**
+ * One current member's signed-link visit. The narrow command permits viewer
+ * accounting; returned state still comes from an authenticated relation read.
+ * A hidden or invalid return rejects the transaction, including its increment.
+ * Never automatically retry an uncertain commit as another visit.
+ */
+export async function consumeGotoLinkForActor(
+  handle: GotoQueryHandle,
+  actor: OrgActor,
+  input: { token: string; signingSecret: string },
+): Promise<GotoLinkRecord | null> {
+  if (!isValidGotoToken(input.token, input.signingSecret)) return null;
+  return withAuthenticatedActor(handle, actor, async (sql) => {
+    const consumed = await sql<{ id: string | null }[]>`
+      select app.consume_goto_link(${actor.orgId}::uuid, ${input.token}) as id
+    `;
+    if (consumed.length !== 1) throw new Error('Link visit could not be confirmed');
+    const id = consumed[0]!.id;
+    if (id === null) return null;
+    const rows = await sql<GotoRow[]>`
+      select id, org_id, token, route, state, label, expires_at, uses,
+             last_used_at, created_by, created_at
+        from public.goto_links
+       where id = ${id} and org_id = ${actor.orgId} and token = ${input.token}
+    `;
+    if (rows.length !== 1) throw new Error('Link visit could not be confirmed');
+    const link = toGotoLink(rows[0]!);
+    validateGotoRoute(link.route);
+    return link;
+  });
 }
 
 export function gotoRedirectLocation(route: string, state: JsonValue): string {

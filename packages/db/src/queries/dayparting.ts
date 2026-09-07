@@ -25,7 +25,7 @@ import {
   type MarketingStreamNormalizeJob as MarketingStreamNormalizeJobValue,
   type MarketingStreamSubscriptionBinding as MarketingStreamSubscriptionBindingValue,
 } from '@wizard-ads/shared';
-import type { DbHandle } from '../client.js';
+import type { DbHandle, QueryHandle } from '../client.js';
 
 export interface MarketingStreamScope {
   adProduct: AdProduct;
@@ -835,7 +835,7 @@ export async function replaceMarketingStreamHourlyFacts(
 
 /** Tenant-scoped hourly facts for heatmaps or pure proposal generation. */
 export async function readMarketingStreamHourlyFacts(
-  handle: DbHandle,
+  handle: QueryHandle,
   input: ReadMarketingStreamFactsInput,
 ): Promise<MarketingStreamHourlyFactValue[]> {
   const rows = await handle.sql<FactWireRow[]>`

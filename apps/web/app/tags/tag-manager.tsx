@@ -24,6 +24,7 @@ interface UiTag {
 }
 
 interface TagManagerProps {
+  canEdit: boolean;
   tags: UiTag[];
   campaigns: CampaignTagListRow[];
   initialState?: JsonValue;
@@ -71,7 +72,7 @@ async function mutate(path: string, method: string, body: unknown): Promise<void
   }
 }
 
-export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
+export function TagManager({ tags, campaigns, initialState, canEdit }: TagManagerProps) {
   const allTags = useMemo(() => flattenTags(tags), [tags]);
   const descendants = useMemo(() => descendantMap(tags), [tags]);
   const [filter, setFilter] = useState<TagFilter>(() => tagFilterFromState(initialState));
@@ -183,9 +184,9 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
         style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 10, marginRight: 7, background: tagSwatchColor(tag.color) }}
       />
       <strong>{tag.name}</strong> <small style={{ color: 'var(--wa-text-faint)' }}>{tag.id}</small>{' '}
-      <button type="button" onClick={() => rename(tag)}>Rename</button>{' '}
-      <button type="button" onClick={() => move(tag)}>Move</button>{' '}
-      <button type="button" onClick={() => remove(tag)}>Delete…</button>
+      <button type="button" disabled={!canEdit} onClick={() => rename(tag)}>Rename</button>{' '}
+      <button type="button" disabled={!canEdit} onClick={() => move(tag)}>Move</button>{' '}
+      <button type="button" disabled={!canEdit} onClick={() => remove(tag)}>Delete…</button>
       {tag.children.length > 0 && <ul style={{ listStyle: 'none', padding: 0 }}>{renderTree(tag.children, depth + 1)}</ul>}
     </li>
   ));
@@ -201,6 +202,7 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
         <p style={{ marginTop: 0, color: 'var(--wa-text-muted)' }}>Classify profiles and advertising entities, then reuse one filter across lists and dashboards.</p>
       </header>
       {message && <p role="status" style={{ padding: 10, background: 'var(--wa-accent-soft)', color: 'var(--wa-accent-text)', borderRadius: 6 }}>{message}</p>}
+      {!canEdit && <p>Viewer access: you can browse and filter tags. Editing and creating shared links require an analyst, admin, or owner.</p>}
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1fr) minmax(420px, 2fr)', gap: 20 }}>
         <section style={panel} aria-labelledby="taxonomy-title">
           <h2 id="taxonomy-title">Taxonomy</h2>
@@ -236,7 +238,7 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
                 ))}
               </div>
             </fieldset>
-            <button type="submit">Create tag</button>
+            <button type="submit" disabled={!canEdit}>Create tag</button>
           </form>
           {tags.length > 0 ? <ul style={{ listStyle: 'none', padding: 0 }}>{renderTree(tags)}</ul> : <p>No tags yet.</p>}
         </section>
@@ -260,7 +262,7 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
               </select>
             </label>
             <label><input type="checkbox" checked={filter.includeDescendants !== false} onChange={(event) => setFilter({ ...filter, includeDescendants: event.target.checked })} /> Include child tags</label>
-            <button type="button" onClick={() => void createGoto()}>Copyable goto link</button>
+            <button type="button" disabled={!canEdit} onClick={() => void createGoto()}>Copyable goto link</button>
           </div>
           <aside aria-label="Dashboard tag summary" style={{ padding: 12, background: 'var(--wa-surface-2)', borderRadius: 8, marginBottom: 14 }}>
             Dashboard count using the same tag filter: <strong>{filteredCampaigns.length}</strong>
@@ -270,8 +272,8 @@ export function TagManager({ tags, campaigns, initialState }: TagManagerProps) {
               <option value="">Choose destination tag</option>
               {allTags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}
             </select>
-            <button type="button" onClick={bulkAssign}>Tag filtered campaigns</button>
-            <button type="button" onClick={bulkUnassign}>Remove tag from filtered campaigns</button>
+            <button type="button" disabled={!canEdit} onClick={bulkAssign}>Tag filtered campaigns</button>
+            <button type="button" disabled={!canEdit} onClick={bulkUnassign}>Remove tag from filtered campaigns</button>
           </div>
           <ul data-testid="campaign-list">
             {filteredCampaigns.map((campaign) => (

@@ -5,7 +5,7 @@
  * to know the id and every reason not to print it, so the query answers "is
  * there a credential" and stops there.
  */
-import type { DbHandle } from '@wizard-ads/db';
+import type { QueryHandle } from '@wizard-ads/db';
 import { operatorFailureLabel } from '../security/operator-failure';
 
 export type ConnectionStatus = 'pending' | 'active' | 'error' | 'revoked';
@@ -23,7 +23,7 @@ export interface ConnectionSummary {
 }
 
 export async function listConnections(
-  handle: DbHandle,
+  handle: QueryHandle,
   orgId: string,
 ): Promise<ConnectionSummary[]> {
   const rows = await handle.sql<
@@ -49,7 +49,7 @@ export async function listConnections(
            c.last_error,
            count(p.id) as profile_count
       from public.ads_connections c
-      left join public.ad_profiles p on p.connection_id = c.id
+      left join public.ad_profiles p on p.connection_id = c.id and p.org_id = c.org_id
      where c.org_id = ${orgId}
      group by c.id
      order by c.created_at

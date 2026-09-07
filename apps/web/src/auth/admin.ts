@@ -1,8 +1,8 @@
 /**
  * The one service-role Supabase client in the web tier.
  *
- * It exists solely for invite acceptance to create an already-confirmed Auth
- * user. Application data still goes through the direct Postgres handle, and
+ * It exists solely for manager-authorized email invitation delivery. It never
+ * preconfirms an email or sets a recipient's password. Application data uses Postgres, and
  * session cookies still go through the anon server client in `supabase.ts`.
  */
 import { createClient } from '@supabase/supabase-js';

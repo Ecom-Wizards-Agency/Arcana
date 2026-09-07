@@ -31,7 +31,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260907020000_one_time_preview_exports.sql');
+    expect(files.at(-1)).toBe('20260907180000_feedback_mutation_authority.sql');
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {
@@ -843,6 +843,19 @@ describe.skipIf(!available)('migrations', () => {
          where privilege.grantee in (
            0::oid,
            (select oid from pg_catalog.pg_roles where rolname = 'authenticated')
+         )
+        union all
+        select 'ad_profiles'::name as table_name, 'UPDATE'::text as privilege
+         where (
+           select bool_and(
+             case when attribute.attname = any(array[
+               'target_acos','target_total_acos','goal_lens','monthly_budget',
+               'sync_enabled','timezone','timezone_locked','preferred_sync_hour'
+             ]) then has_column_privilege('authenticated', 'public.ad_profiles', attribute.attname, 'UPDATE')
+             else not has_column_privilege('authenticated', 'public.ad_profiles', attribute.attname, 'UPDATE') end
+           ) from pg_catalog.pg_attribute attribute
+            where attribute.attrelid = 'public.ad_profiles'::regclass
+              and attribute.attnum > 0 and not attribute.attisdropped
          )
         union all
         select 'sync_jobs'::name as table_name, 'SELECT'::text as privilege

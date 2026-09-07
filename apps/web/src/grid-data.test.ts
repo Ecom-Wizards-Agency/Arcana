@@ -16,7 +16,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
-import { ensureFactPartitions } from '@wizard-ads/db';
+import { ensureFactPartitions, withAuthenticatedActor } from '@wizard-ads/db';
 import { buildGridModel, groupRows, resolveField } from '@wizard-ads/ui';
 import type { GridRow } from '@wizard-ads/ui';
 import { loadGridRows } from '../app/_lib/grid-data.js';
@@ -408,7 +408,7 @@ suite('grid and roster reads against SQL aggregates', () => {
     expect(fresh?.dimensions['harvested']).toBe(false);
   });
 
-  it('loads and enriches the 3,597-row operator fixture within the cold server budget', async () => {
+  it('loads the 3,597-row fixture with authenticated RLS within the server budget', async () => {
     await database.sql`
       insert into public.keywords
         (org_id, profile_id, amazon_id, ad_product, name, state, campaign_id, ad_group_id,
@@ -429,14 +429,21 @@ suite('grid and roster reads against SQL aggregates', () => {
         from generate_series(1, 3597) value
     `;
 
+    // Fresh test tables otherwise depend on the timing of auto-analyze and can
+    // choose a nested-loop plan from one-row estimates. Establish statistics
+    // explicitly; this measures the first full read, not a cold-statistics plan.
+    await database.sql`analyze public.fact_search_term_daily, public.keywords, public.targets,
+      public.campaigns, public.ad_groups, public.org_members, public.orgs, public.ad_profiles`;
     const startedAt = performance.now();
-    const { rows, rowCount, truncated } = await loadGridRows(database, 'search_terms', {
+    const { rows, rowCount, truncated } = await withAuthenticatedActor(database, {
+      orgId, userId: '00000000-0000-4000-8000-0000000006a1',
+    }, (sql) => loadGridRows({ sql }, 'search_terms', {
       orgId,
       profileId,
       currencyCode: 'USD',
       period: PERIOD,
       comparison: COMPARISON,
-    });
+    }));
     const elapsedMs = performance.now() - startedAt;
     const fixtureRows = rows.filter((row) =>
       String(row.dimensions['search_term']).startsWith('performance term '),

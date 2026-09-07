@@ -11,7 +11,7 @@
  * well as `id`, so a guessed uuid from another tenant updates nothing, and both
  * verify the row count rather than trusting that the statement ran.
  */
-import type { DbHandle } from '@wizard-ads/db';
+import type { QueryHandle } from '@wizard-ads/db';
 import type { Region } from '@wizard-ads/shared';
 
 export interface ProfileRow {
@@ -63,7 +63,7 @@ export interface Roster {
 }
 
 export async function loadRoster(
-  handle: DbHandle,
+  handle: QueryHandle,
   orgId: string,
   filter: RosterFilter = {},
 ): Promise<Roster> {
@@ -150,7 +150,7 @@ export interface TargetEdit {
 
 /** Analyst and above. Returns the updated row; throws when nothing matched. */
 export async function updateProfileTargets(
-  handle: DbHandle,
+  handle: QueryHandle,
   orgId: string,
   profileId: string,
   edit: TargetEdit,
@@ -174,7 +174,7 @@ export async function updateProfileTargets(
 
 /** Admin and above: this one costs money. */
 export async function setProfileSyncEnabled(
-  handle: DbHandle,
+  handle: QueryHandle,
   orgId: string,
   profileId: string,
   enabled: boolean,
@@ -203,7 +203,7 @@ export async function setProfileSyncEnabled(
  * was asked to is a bug, not a success (program rule 4).
  */
 export async function setProfilesSyncEnabled(
-  handle: DbHandle,
+  handle: QueryHandle,
   orgId: string,
   profileIds: readonly string[],
   enabled: boolean,
@@ -235,7 +235,7 @@ export interface ScheduleEdit {
  * clearing only the hour does not silently unpin a calendar someone chose.
  */
 export async function updateProfileSchedule(
-  handle: DbHandle,
+  handle: QueryHandle,
   orgId: string,
   profileId: string,
   edit: ScheduleEdit,

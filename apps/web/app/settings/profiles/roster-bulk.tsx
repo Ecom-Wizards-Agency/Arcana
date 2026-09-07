@@ -117,9 +117,11 @@ export function SelectAllCheckbox({ profileIds }: { profileIds: readonly string[
 }
 
 export function BulkSyncBar({
+  orgId,
   action,
 }: {
   action: (formData: FormData) => Promise<void>;
+  orgId: string;
 }): ReactNode {
   const { selected, clear } = useRosterSelection();
   const [pending, startTransition] = useTransition();
@@ -132,6 +134,7 @@ export function BulkSyncBar({
     const form = new FormData();
     for (const id of ids) form.append('profileIds', id);
     form.set('enabled', enabled ? '1' : '0');
+    form.set('orgId', orgId);
 
     startTransition(async () => {
       try {

@@ -4,6 +4,7 @@
  */
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
+import { createDb } from '@wizard-ads/db';
 
 const BRIDGE = process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET'] ?? '';
 const ORG_A = process.env['WIZARD_ADS_E2E_ORG_A'] ?? '';
@@ -126,6 +127,109 @@ test('a Roadmap vote toggles and survives reload', async ({ page }) => {
 
   await open(page, '/roadmap');
   target = roadmapCard(page, REQUEST_TITLE);
+  await expect(target.getByTestId('vote-count')).toHaveText('1');
+
+  const itemId = await target.getAttribute('data-item-id');
+  expect(itemId).not.toBeNull();
+  const voteUrl = `**/api/feedback/${itemId}/vote`;
+  const itemUrl = `**/api/feedback/${itemId}`;
+  let posts = 0;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(voteUrl, async (route) => {
+    posts++;
+    expect((await route.fetch()).status()).toBe(200);
+    await held;
+    await route.abort('failed');
+  });
+  await target.getByTestId('vote-button').click();
+  await expect(target.getByTestId('vote-button')).toBeDisabled();
+  release();
+  await expect(page.getByRole('status')).toHaveText(
+    'Showing the current saved vote. The change is still unconfirmed; reload before voting again.',
+  );
+  await expect(target.getByTestId('vote-count')).toHaveText('0');
+  await expect(target.getByTestId('vote-button')).toBeDisabled();
+  expect(posts).toBe(1);
+  await page.unroute(voteUrl);
+  await open(page, '/roadmap');
+  target = roadmapCard(page, REQUEST_TITLE);
+  await target.getByTestId('vote-button').click();
+  await expect(target.getByTestId('vote-count')).toHaveText('1');
+
+  posts = 0;
+  await page.route(voteUrl, async (route) => {
+    posts++;
+    expect((await route.fetch()).status()).toBe(200);
+    await route.abort('failed');
+  });
+  await page.route(itemUrl, (route) => route.fulfill({ status: 503, json: { error: 'Synthetic outage' } }));
+  await target.getByTestId('vote-button').click();
+  await expect(page.getByRole('status')).toHaveText(
+    'The vote could not be confirmed. Reload to check its saved state.',
+  );
+  await expect(target.getByTestId('vote-button')).toBeDisabled();
+  const saved = await page.request.get(`/api/feedback/${itemId}`);
+  expect(saved.status()).toBe(200);
+  expect((await saved.json()).item).toMatchObject({ votes: 0, viewerHasVoted: false });
+  expect(posts).toBe(1);
+  await page.unroute(voteUrl);
+  await page.unroute(itemUrl);
+  await open(page, '/roadmap');
+  target = roadmapCard(page, REQUEST_TITLE);
+  await expect(target.getByTestId('vote-count')).toHaveText('0');
+  await expect(target.getByTestId('vote-button')).toBeEnabled();
+  await target.getByTestId('vote-button').click();
+  await expect(target.getByTestId('vote-count')).toHaveText('1');
+
+  // A current-state GET can overtake a POST whose DELETE is waiting on a row.
+  // Prove this with the real handler and an actual transaction, not a timer.
+  const database = createDb({ connectionString: process.env['DATABASE_URL']!, max: 2 });
+  let unlock!: () => void;
+  let locked!: () => void;
+  const heldRow = new Promise<void>((resolve) => { unlock = resolve; });
+  const rowReady = new Promise<void>((resolve) => { locked = resolve; });
+  const transaction = database.sql.begin(async (sql) => {
+    const rows = await sql`select item_id from public.feedback_votes where item_id=${itemId!} for update`;
+    expect(rows).toHaveLength(1);
+    locked();
+    await heldRow;
+  });
+  let completed: Promise<number> | undefined;
+  posts = 0;
+  try {
+    await rowReady;
+    await page.route(voteUrl, async (route) => {
+      posts++;
+      completed = route.fetch().then((response) => response.status(), () => 0);
+      await expect.poll(async () => (await database.sql`
+        select pid from pg_stat_activity where datname=current_database()
+          and wait_event_type='Lock' and query like '%delete from public.feedback_votes%'
+      `).length).toBe(1);
+      await route.abort('failed');
+    });
+    await target.getByTestId('vote-button').click();
+    await expect(page.getByRole('status')).toHaveText(
+      'Showing the current saved vote. The change is still unconfirmed; reload before voting again.',
+    );
+    await expect(target.getByTestId('vote-count')).toHaveText('1');
+    await expect(target.getByTestId('vote-button')).toBeDisabled();
+    unlock();
+    await transaction;
+    expect(await completed).toBe(200);
+    expect(posts).toBe(1);
+    expect(await database.sql`select item_id from public.feedback_votes where item_id=${itemId!}`).toHaveLength(0);
+    await expect(target.getByTestId('vote-button')).toBeDisabled();
+  } finally {
+    unlock();
+    await transaction;
+    await page.unroute(voteUrl);
+    await database.close();
+  }
+  await open(page, '/roadmap');
+  target = roadmapCard(page, REQUEST_TITLE);
+  await expect(target.getByTestId('vote-count')).toHaveText('0');
+  await target.getByTestId('vote-button').click();
   await expect(target.getByTestId('vote-count')).toHaveText('1');
 });
 

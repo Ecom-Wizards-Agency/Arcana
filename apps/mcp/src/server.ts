@@ -10,7 +10,10 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { addDays } from '@wizard-ads/core';
-import type { DbHandle, ExperimentStatus } from '@wizard-ads/db';
+import type { ExperimentStatus } from '@wizard-ads/db';
+import { withMcpOperation } from './operation.js';
+import type { ServerContext, OperationContext } from './operation.js';
+export type { ServerContext } from './operation.js';
 import { writeAuditEntry } from './audit.js';
 import { ENTITY_LEVELS, LEVELS } from './catalog.js';
 import type { EntityLevel } from './catalog.js';
@@ -24,7 +27,7 @@ import {
   resolveProfile,
   runFactQuery,
 } from './data.js';
-import type { KeyScopeContext, ProfileRecord } from './data.js';
+import type { ProfileRecord } from './data.js';
 import { buildFlags, buildPacing } from './analysis.js';
 import {
   GET_EXPERIMENT_DESCRIPTION,
@@ -41,19 +44,10 @@ import { instructionsDocument } from './instructions.js';
 import { ALL_METRICS } from './metrics.js';
 import { FILTER_OPERATORS } from './sql.js';
 import type { DateWindow, FactQuerySpec, FilterCondition, SortSpec } from './sql.js';
-import type { McpConfig } from './config.js';
 
 export const SERVER_NAME = 'openspell';
 export const PRODUCT_NAME = 'OpenSpell';
 export const SERVER_VERSION = '0.1.0';
-
-export interface ServerContext {
-  handle: DbHandle;
-  config: McpConfig;
-  scope: KeyScopeContext;
-  keyId: string;
-  orgSlug: string;
-}
 
 // ---------------------------------------------------------------------------
 // Shared argument shapes
@@ -128,7 +122,7 @@ export interface ToolOutcome {
   profileId?: string | null;
 }
 
-type ToolHandler<Args> = (args: Args) => Promise<ToolOutcome>;
+type ToolHandler<Args> = (args: Args, operation: OperationContext) => Promise<ToolOutcome>;
 
 interface McpToolResult {
   [key: string]: unknown;
@@ -156,9 +150,9 @@ function audited<Args>(context: ServerContext, tool: string, handler: ToolHandle
   return async (args: Args): Promise<McpToolResult> => {
     const started = Date.now();
     try {
-      const outcome = await handler(args);
+      const outcome = await withMcpOperation(context, (operation) => handler(args, operation));
       await writeAuditEntry(context.handle, {
-        orgId: context.scope.orgId,
+        orgId: context.actor.orgId,
         keyId: context.keyId,
         tool,
         params: args,
@@ -174,7 +168,7 @@ function audited<Args>(context: ServerContext, tool: string, handler: ToolHandle
         ? error.message
         : 'the query could not be completed. This has been logged; nothing was changed.';
       await writeAuditEntry(context.handle, {
-        orgId: context.scope.orgId,
+        orgId: context.actor.orgId,
         keyId: context.keyId,
         tool,
         params: args,
@@ -204,14 +198,14 @@ interface ResourceOutcome<Result> {
 function auditedResourceRead<Rest extends unknown[], Result>(
   context: ServerContext,
   resource: string,
-  handler: (uri: URL, ...rest: Rest) => Promise<ResourceOutcome<Result>>,
+  handler: (operation: OperationContext, uri: URL, ...rest: Rest) => Promise<ResourceOutcome<Result>>,
 ): (uri: URL, ...rest: Rest) => Promise<Result> {
   return async (uri: URL, ...rest: Rest): Promise<Result> => {
     const started = Date.now();
     try {
-      const outcome = await handler(uri, ...rest);
+      const outcome = await withMcpOperation(context, (operation) => handler(operation, uri, ...rest));
       await writeAuditEntry(context.handle, {
-        orgId: context.scope.orgId,
+        orgId: context.actor.orgId,
         keyId: context.keyId,
         tool: `resource.${resource}.read`,
         params: { uri: uri.href },
@@ -224,7 +218,7 @@ function auditedResourceRead<Rest extends unknown[], Result>(
     } catch (error) {
       const known = error instanceof ToolError;
       await writeAuditEntry(context.handle, {
-        orgId: context.scope.orgId,
+        orgId: context.actor.orgId,
         keyId: context.keyId,
         tool: `resource.${resource}.read`,
         params: { uri: uri.href },
@@ -247,14 +241,14 @@ function auditedResourceRead<Rest extends unknown[], Result>(
 function auditedResourceList<Result>(
   context: ServerContext,
   resource: string,
-  handler: () => Promise<ResourceOutcome<Result>>,
+  handler: (operation: OperationContext) => Promise<ResourceOutcome<Result>>,
 ): () => Promise<Result> {
   return async (): Promise<Result> => {
     const started = Date.now();
     try {
-      const outcome = await handler();
+      const outcome = await withMcpOperation(context, handler);
       await writeAuditEntry(context.handle, {
-        orgId: context.scope.orgId,
+        orgId: context.actor.orgId,
         keyId: context.keyId,
         tool: `resource.${resource}.list`,
         params: {},
@@ -265,7 +259,7 @@ function auditedResourceList<Result>(
       return outcome.result;
     } catch (error) {
       await writeAuditEntry(context.handle, {
-        orgId: context.scope.orgId,
+        orgId: context.actor.orgId,
         keyId: context.keyId,
         tool: `resource.${resource}.list`,
         params: {},
@@ -289,13 +283,13 @@ function auditedResourceList<Result>(
 // ---------------------------------------------------------------------------
 
 async function freshness(
-  context: ServerContext,
+  context: OperationContext,
   profile: ProfileRecord,
 ): Promise<{ latestFactDate: string | null; provisional: boolean | null; note: string }> {
   const rows = await context.handle.sql<{ date: string; provisional: boolean }[]>`
     select date::text as date, provisional
       from public.fact_profile_daily
-     where org_id = ${context.scope.orgId} and profile_id = ${profile.id}
+     where org_id = ${context.actor.orgId} and profile_id = ${profile.id}
      order by date desc
      limit 1
   `;
@@ -354,8 +348,8 @@ function registerExperimentTools(server: McpServer, context: ServerContext): voi
       inputSchema: listExperimentsInputSchema,
       annotations: { readOnlyHint: true },
     },
-    audited(context, 'list_experiments', (args: { profile_id?: string; status?: ExperimentStatus }) =>
-      listExperimentsTool(context, args),
+    audited(context, 'list_experiments', (args: { profile_id?: string; status?: ExperimentStatus }, operation) =>
+      listExperimentsTool(operation, args),
     ),
   );
 
@@ -367,14 +361,14 @@ function registerExperimentTools(server: McpServer, context: ServerContext): voi
       inputSchema: getExperimentInputSchema,
       annotations: { readOnlyHint: true },
     },
-    audited(context, 'get_experiment', (args: { experiment_id: string }) =>
-      getExperimentTool(context, args),
+    audited(context, 'get_experiment', (args: { experiment_id: string }, operation) =>
+      getExperimentTool(operation, args),
     ),
   );
 }
 
 function registerReadTools(server: McpServer, context: ServerContext): void {
-  const { handle, config, scope } = context;
+  const { config } = context;
   const limitSchema = z
     .number()
     .int()
@@ -393,11 +387,12 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
-    audited(context, 'list_profiles', async () => {
+    audited(context, 'list_profiles', async (_args, operation) => {
+      const { handle, scope } = operation;
       const profiles = await listProfiles(handle, scope);
       return {
         payload: {
-          org: context.orgSlug,
+          org: operation.orgSlug,
           keyScope: scope.profileIds === null ? 'all profiles in the org' : 'a subset of profiles',
           count: profiles.length,
           profiles,
@@ -418,7 +413,8 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
       inputSchema: { profile_id: profileIdSchema },
       annotations: { readOnlyHint: true },
     },
-    audited(context, 'get_sync_status', async ({ profile_id }: { profile_id: string }) => {
+    audited(context, 'get_sync_status', async ({ profile_id }: { profile_id: string }, operation) => {
+      const { handle, scope } = operation;
       const profile = await resolveProfile(handle, scope, profile_id);
       const status = await getSyncStatus(handle, scope, profile);
       return {
@@ -469,7 +465,8 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
         filters?: z.infer<typeof filterSchema>[];
         sort?: z.infer<typeof sortSchema>[];
         limit: number;
-      }) => {
+      }, operation) => {
+        const { handle, scope } = operation;
         const profile = await resolveProfile(handle, scope, args.profile_id);
         const window = toWindow(args.date_range);
         const compare =
@@ -528,7 +525,7 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
                   },
                 }
               : {}),
-            freshness: await freshness(context, profile),
+            freshness: await freshness(operation, profile),
           },
           summary: {
             entity: args.entity,
@@ -577,7 +574,8 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
         filters?: z.infer<typeof filterSchema>[];
         sort?: z.infer<typeof sortSchema>[];
         limit: number;
-      }) => {
+      }, operation) => {
+        const { handle, scope } = operation;
         const profile = await resolveProfile(handle, scope, args.profile_id);
         const window = toWindow(args.date_range);
         const result = await runFactQuery(handle, {
@@ -604,7 +602,7 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
             rowCount: result.rows.length,
             truncated: result.truncated,
             rows: result.rows,
-            freshness: await freshness(context, profile),
+            freshness: await freshness(operation, profile),
           },
           summary: { entity: args.entity, rows: result.rows.length, truncated: result.truncated },
           profileId: profile.id,
@@ -645,7 +643,8 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
         filters?: z.infer<typeof filterSchema>[];
         sort?: z.infer<typeof sortSchema>[];
         limit: number;
-      }) => {
+      }, operation) => {
+        const { handle, scope } = operation;
         const profile = await resolveProfile(handle, scope, args.profile_id);
         const window = toWindow(args.date_range);
         const result = await runFactQuery(handle, {
@@ -672,7 +671,7 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
             rowCount: result.rows.length,
             truncated: result.truncated,
             rows: result.rows,
-            freshness: await freshness(context, profile),
+            freshness: await freshness(operation, profile),
           },
           summary: { entity: args.entity, groupedBy: args.group_by, rows: result.rows.length },
           profileId: profile.id,
@@ -713,7 +712,8 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
         filters?: z.infer<typeof filterSchema>[];
         sort?: z.infer<typeof sortSchema>[];
         limit: number;
-      }) => {
+      }, operation) => {
+        const { handle, scope } = operation;
         const profile = await resolveProfile(handle, scope, args.profile_id);
         const window = toWindow(args.date_range);
         const result = await runFactQuery(handle, {
@@ -783,7 +783,8 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
     audited(
       context,
       'get_recommendations',
-      async (args: { profile_id: string; status?: string; reason?: string; limit: number }) => {
+      async (args: { profile_id: string; status?: string; reason?: string; limit: number }, operation) => {
+        const { handle, scope } = operation;
         const profile = await resolveProfile(handle, scope, args.profile_id);
         const run = await getLatestRecommendations(handle, scope, profile, {
           status: args.status,
@@ -822,7 +823,8 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
       },
       annotations: { readOnlyHint: true },
     },
-    audited(context, 'get_flags', async (args: { profile_id: string; as_of?: string }) => {
+    audited(context, 'get_flags', async (args: { profile_id: string; as_of?: string }, operation) => {
+      const { handle, scope } = operation;
       const profile = await resolveProfile(handle, scope, args.profile_id);
       const flags = await buildFlags(handle, scope, profile, args.as_of);
       return {
@@ -851,7 +853,8 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
       },
       annotations: { readOnlyHint: true },
     },
-    audited(context, 'get_pacing', async (args: { profile_id: string; as_of?: string }) => {
+    audited(context, 'get_pacing', async (args: { profile_id: string; as_of?: string }, operation) => {
+      const { handle, scope } = operation;
       const profile = await resolveProfile(handle, scope, args.profile_id);
       const pacing = await buildPacing(handle, scope, profile, args.as_of);
       return {
@@ -869,8 +872,6 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
 }
 
 function registerResources(server: McpServer, context: ServerContext): void {
-  const { handle, scope } = context;
-
   server.registerResource(
     'instructions',
     'wizardads://instructions',
@@ -879,7 +880,8 @@ function registerResources(server: McpServer, context: ServerContext): void {
       description: 'Pipeline, entity levels, metric conventions, filter grammar, and the traps.',
       mimeType: 'text/markdown',
     },
-    auditedResourceRead(context, 'instructions', async (uri) => {
+    auditedResourceRead(context, 'instructions', async (operation, uri) => {
+      const { handle, scope } = operation;
       const profiles = await listProfiles(handle, scope);
       return {
         result: {
@@ -887,7 +889,7 @@ function registerResources(server: McpServer, context: ServerContext): void {
             {
               uri: uri.href,
               mimeType: 'text/markdown',
-              text: instructionsDocument(context.orgSlug, profiles.length),
+              text: instructionsDocument(operation.orgSlug, profiles.length),
             },
           ],
         },
@@ -899,7 +901,8 @@ function registerResources(server: McpServer, context: ServerContext): void {
   server.registerResource(
     'profile-context',
     new ResourceTemplate('wizardads://profiles/{profileId}', {
-      list: auditedResourceList(context, 'profile-context', async () => {
+      list: auditedResourceList(context, 'profile-context', async (operation) => {
+        const { handle, scope } = operation;
         const profiles = await listProfiles(handle, scope);
         return {
           result: {
@@ -926,7 +929,8 @@ function registerResources(server: McpServer, context: ServerContext): void {
     auditedResourceRead(
       context,
       'profile-context',
-      async (uri, variables: Record<string, string | string[]>) => {
+      async (operation, uri, variables: Record<string, string | string[]>) => {
+      const { handle, scope } = operation;
       const raw = variables['profileId'];
       const profileId = Array.isArray(raw) ? raw[0] : raw;
       if (!profileId) throw new ToolError('invalid_argument', 'no profile id in the resource URI');

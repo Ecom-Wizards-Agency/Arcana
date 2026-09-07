@@ -6,17 +6,17 @@
  * `BidCorridorPoint[]` the chart plots, and combines it with target identity
  * and same-window KPI bases for the asynchronous row-level drill-down.
  *
- * Every read takes the actor's `orgId` alongside the profile id and puts both in
- * the predicate — defence in depth, since the web tier connects as the service
- * role and "already checked upstream" is the only lock this layer has.
+ * Every read takes the actor's org and profile and filters by both. API callers
+ * pass the query handle from their authenticated transaction, so database RLS
+ * and explicit selected-agency predicates apply together.
  */
-import type { DbHandle } from '@wizard-ads/db';
+import type { QueryHandle } from '@wizard-ads/db';
 import type { BaseTotals } from '@wizard-ads/ui';
 import type { BidCorridorPoint } from '../../src/ui/viz';
 
 /** One target's corridor over the window, oldest first, as chart points. */
 export async function loadCorridor(
-  handle: Pick<DbHandle, 'sql'>,
+  handle: QueryHandle,
   orgId: string,
   profileId: string,
   targetId: string,
@@ -82,7 +82,7 @@ export interface BidHistoryPayload {
 
 /** One actor-scoped payload for the asynchronous per-target modal. */
 export async function loadBidHistory(
-  handle: Pick<DbHandle, 'sql'>,
+  handle: QueryHandle,
   args: {
     orgId: string;
     profileId: string;

@@ -12,4 +12,11 @@ describe('@wizard-ads/db', () => {
     expect('getIntegrationSecret' in databasePackage).toBe(false);
     expect(getIntegrationSecret).toBeTypeOf('function');
   });
+
+  it('keeps installation provisioning off the product query export', () => {
+    expect('provisionAgency' in databasePackage).toBe(false);
+    expect('reissueAgencyBootstrapInvitation' in databasePackage).toBe(false);
+    expect('revokeAgencyBootstrapInvitation' in databasePackage).toBe(false);
+    expect('agencyBootstrapDeliveryContext' in databasePackage).toBe(false);
+  });
 });

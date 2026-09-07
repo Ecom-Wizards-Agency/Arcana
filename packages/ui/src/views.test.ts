@@ -9,6 +9,13 @@ import {
 } from './views.js';
 import type { KeyValueStorage, SavedView, ViewStore } from './views.js';
 
+const actor = {
+  userId: '71717171-7171-4171-8171-717171717171',
+  orgId: '72727272-7272-4272-8272-727272727272',
+};
+const namedKey = `wizard-ads:views:v2:${actor.orgId}:${actor.userId}`;
+const layoutKey = `wizard-ads:layout:v2:${actor.orgId}:${actor.userId}`;
+
 function view(overrides: Partial<SavedView> = {}): SavedView {
   return {
     id: newViewId(),
@@ -44,7 +51,7 @@ class FakeStorage implements KeyValueStorage {
 
 describe.each([
   ['memory', () => new MemoryViewStore()],
-  ['local', () => new LocalViewStore(new FakeStorage())],
+  ['local', () => new LocalViewStore(new FakeStorage(), actor)],
 ] as const)('%s view store', (_label, build) => {
   it('round-trips a named view and scopes the list to its entity level', async () => {
     const store = build();
@@ -126,9 +133,9 @@ describe.each([
 describe('LocalViewStore resilience', () => {
   it('treats a corrupt entry as "no saved views" rather than throwing', async () => {
     const storage = new FakeStorage();
-    const store = new LocalViewStore(storage);
+    const store = new LocalViewStore(storage, actor);
     await store.save(view());
-    storage.poison('wizard-ads:views:v1');
+    storage.poison(namedKey);
 
     await expect(store.list('campaigns')).resolves.toEqual([]);
     await expect(store.lastLayout('campaigns')).resolves.toBeNull();
@@ -142,9 +149,9 @@ describe('LocalViewStore resilience', () => {
     ['wrong layout entity', {}, { campaigns: view({ entity: 'targets' }) }],
   ])('treats %s as empty local state', async (_case, named, layouts) => {
     const storage = new FakeStorage();
-    storage.put('wizard-ads:views:v1', named);
-    storage.put('wizard-ads:layout:v1', layouts);
-    const store = new LocalViewStore(storage);
+    storage.put(namedKey, named);
+    storage.put(layoutKey, layouts);
+    const store = new LocalViewStore(storage, actor);
 
     await expect(store.list('campaigns')).resolves.toEqual([]);
     await expect(store.lastLayout('campaigns')).resolves.toBeNull();
@@ -153,8 +160,8 @@ describe('LocalViewStore resilience', () => {
   it('keeps valid named views while dropping malformed siblings', async () => {
     const storage = new FakeStorage();
     const valid = view({ id: 'valid-view' });
-    storage.put('wizard-ads:views:v1', { valid, bad: null });
-    const store = new LocalViewStore(storage);
+    storage.put(namedKey, { valid, bad: null });
+    const store = new LocalViewStore(storage, actor);
 
     await expect(store.list('campaigns')).resolves.toEqual([valid]);
   });
@@ -165,8 +172,80 @@ describe('LocalViewStore resilience', () => {
       setItem: () => {
         throw new Error('QuotaExceededError');
       },
-    });
+    }, actor);
     await expect(store.save(view())).resolves.toBeUndefined();
+  });
+});
+
+describe('LocalViewStore account and agency ownership', () => {
+  it('keeps named views, filters and layouts separate for users and agencies on one origin', async () => {
+    const storage = new FakeStorage();
+    const actors = [actor,
+      { ...actor, orgId: '73737373-7373-4373-8373-737373737373' },
+      { ...actor, userId: '74747474-7474-4474-8474-747474747474' },
+    ];
+    const views = actors.map((_, i) => view({ id: 'same-view-id', name: `Synthetic agency view ${i}`,
+      filter: { groups: [{ filters: [{ key: 'CAMPAIGN_NAME', conditions: [{ operator: '=', values: [`Synthetic agency campaign ${i}`] }] }] }] },
+    }));
+    for (const [index, owner] of actors.entries()) {
+      const store = new LocalViewStore(storage, owner);
+      expect(await store.list('campaigns')).toEqual([]);
+      expect(store.cachedLayout('campaigns')).toBeNull();
+      await store.save(views[index]!); await store.rememberLayout(views[index]!);
+    }
+    // A fresh instance for each returning signer restores exactly its own lens.
+    for (const [index, owner] of actors.entries()) {
+      const reloaded = new LocalViewStore(storage, owner);
+      expect(await reloaded.list('campaigns')).toEqual([views[index]]);
+      expect(reloaded.cachedLayout('campaigns')).toEqual(views[index]);
+    }
+    await new LocalViewStore(storage, actors[1]!).remove('same-view-id');
+    expect(await new LocalViewStore(storage, actor).list('campaigns')).toEqual([views[0]]);
+    expect(await new LocalViewStore(storage, actors[1]!).list('campaigns')).toEqual([]);
+    expect(await new LocalViewStore(storage, actors[2]!).list('campaigns')).toEqual([views[2]]);
+  });
+
+  it('leaves ownerless legacy views unread and unchanged', async () => {
+    const storage = new FakeStorage();
+    const legacy = view({ name: 'Synthetic previous signer filter' });
+    storage.put('wizard-ads:views:v1', { [legacy.id]: legacy });
+    storage.put('wizard-ads:layout:v1', { campaigns: legacy });
+    const oldNamed = storage.getItem('wizard-ads:views:v1');
+    const oldLayout = storage.getItem('wizard-ads:layout:v1');
+    const reads = vi.spyOn(storage, 'getItem');
+    const store = new LocalViewStore(storage, actor);
+    expect(await store.list('campaigns')).toEqual([]);
+    expect(store.cachedLayout('campaigns')).toBeNull();
+    await store.save(view()); await store.rememberLayout(view());
+    expect(reads.mock.calls.flat()).not.toContain('wizard-ads:views:v1');
+    expect(reads.mock.calls.flat()).not.toContain('wizard-ads:layout:v1');
+    reads.mockRestore();
+    expect(storage.getItem('wizard-ads:views:v1')).toBe(oldNamed);
+    expect(storage.getItem('wizard-ads:layout:v1')).toBe(oldLayout);
+  });
+
+  it('keeps delayed writes with the original immutable owner', async () => {
+    vi.useFakeTimers();
+    try {
+      const storage = new FakeStorage(); const owner = { ...actor };
+      const oldStore = new LocalViewStore(storage, owner);
+      const buffer = new LayoutWriteBuffer(oldStore);
+      const first = view({ name: 'Synthetic first gesture' });
+      const last = view({ name: 'Synthetic final gesture' });
+      buffer.remember(first); buffer.remember(last);
+      owner.orgId = '75757575-7575-4575-8575-757575757575';
+      const nextStore = new LocalViewStore(storage, owner);
+      const next = view({ name: 'Synthetic new agency layout' });
+      await nextStore.rememberLayout(next);
+      buffer.flush();
+      expect(new LocalViewStore(storage, actor).cachedLayout('campaigns')).toEqual(last);
+      expect(nextStore.cachedLayout('campaigns')).toEqual(next);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('rejects an unbound storage namespace', () => {
+    expect(() => new LocalViewStore(new FakeStorage(), { userId: '', orgId: '' })).toThrow();
   });
 });
 
@@ -180,7 +259,7 @@ describe('newViewId', () => {
 describe('density in the saved layout', () => {
   it('persists a density beside the widths and rejects an unknown one', async () => {
     const storage = new FakeStorage();
-    const store = new LocalViewStore(storage);
+    const store = new LocalViewStore(storage, actor);
     await store.rememberLayout(view({ density: 'compact' }));
     expect((await store.lastLayout('campaigns'))?.density).toBe('compact');
 
@@ -190,7 +269,7 @@ describe('density in the saved layout', () => {
     await store.rememberLayout(legacy);
     expect(await store.lastLayout('campaigns')).toEqual(legacy);
 
-    storage.put('wizard-ads:layout:v1', { campaigns: { ...view(), density: 'dense' } });
+    storage.put(layoutKey, { campaigns: { ...view(), density: 'dense' } });
     expect(await store.lastLayout('campaigns')).toBeNull();
   });
 });
@@ -198,7 +277,7 @@ describe('density in the saved layout', () => {
 describe('synchronous layout restoration', () => {
   it('answers the remembered layout with no round trip, and refuses what it cannot trust', async () => {
     const storage = new FakeStorage();
-    const store = new LocalViewStore(storage);
+    const store = new LocalViewStore(storage, actor);
     const layout = view({ density: 'compact' });
     await store.rememberLayout(layout);
 
@@ -213,9 +292,9 @@ describe('synchronous layout restoration', () => {
 
     // Every defence the asynchronous read had is still in force.
     expect(store.cachedLayout('targets')).toBeNull();
-    storage.put('wizard-ads:layout:v1', { campaigns: { ...view(), density: 'dense' } });
+    storage.put(layoutKey, { campaigns: { ...view(), density: 'dense' } });
     expect(store.cachedLayout('campaigns')).toBeNull();
-    storage.poison('wizard-ads:layout:v1');
+    storage.poison(layoutKey);
     expect(store.cachedLayout('campaigns')).toBeNull();
   });
 });

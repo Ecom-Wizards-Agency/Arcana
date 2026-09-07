@@ -23,6 +23,23 @@ describe('worker health readiness', () => {
   };
   afterEach(async () => Promise.all(servers.splice(0).map(closeServer)));
 
+  it('reports unavailable connection processing after repeated custody failures', async () => {
+    const worker = {
+      status: () => ({ workerId: 'synthetic', stopping: false, running: 0, claimLoop: readyClaimLoop }),
+    } as SyncWorker;
+    const server = await startHealthServer(worker, 0, { deployment, amazonConnections: {
+      status: () => ({ enabled: true, running: true, stopping: false, inFlight: 0,
+        consecutiveFailures: 3, lastSuccessAt: null }),
+    } });
+    servers.push(server);
+    const { port } = server.address() as AddressInfo;
+    const response = await fetch(`http://127.0.0.1:${port}/healthz`);
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({ components: { amazonConnections: {
+      enabled: true, consecutiveFailures: 3, inFlight: 0,
+    } } });
+  });
+
   it('degrades readiness when enabled Marketing Stream ingestion is not running', async () => {
     const worker = {
       status: () => ({ workerId: 'synthetic', stopping: false, running: 0, claimLoop: readyClaimLoop }),

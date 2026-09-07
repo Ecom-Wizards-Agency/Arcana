@@ -14,26 +14,12 @@
  * because a second capability table is how two answers to one question appear.
  */
 
-export const ORG_ROLES = ['owner', 'admin', 'analyst', 'viewer'] as const;
-export type OrgRole = (typeof ORG_ROLES)[number];
+import { OrgRole, ORG_CAPABILITY_ROLES } from '@wizard-ads/shared';
+import type { OrgCapability } from '@wizard-ads/shared';
 
-export type Capability =
-  | 'read'
-  | 'editTargets'
-  | 'toggleSync'
-  | 'manageConnection'
-  | 'manageMembers'
-  | 'triageFeedback'
-  | 'exportBatches'
-  // WP-19: file and edit your own experiments (analyst+); an admin edits any.
-  | 'manageExperiments';
-
-const CAPABILITIES: Record<OrgRole, readonly Capability[]> = {
-  owner: ['read', 'editTargets', 'toggleSync', 'manageConnection', 'manageMembers', 'triageFeedback', 'exportBatches', 'manageExperiments'],
-  admin: ['read', 'editTargets', 'toggleSync', 'manageConnection', 'manageMembers', 'triageFeedback', 'exportBatches', 'manageExperiments'],
-  analyst: ['read', 'editTargets', 'manageExperiments'],
-  viewer: ['read'],
-};
+export { type OrgRole } from '@wizard-ads/shared';
+export type Capability = OrgCapability;
+export const ORG_ROLES = OrgRole.options;
 
 export function isOrgRole(value: unknown): value is OrgRole {
   return typeof value === 'string' && (ORG_ROLES as readonly string[]).includes(value);
@@ -41,7 +27,7 @@ export function isOrgRole(value: unknown): value is OrgRole {
 
 export function can(role: OrgRole | null | undefined, capability: Capability): boolean {
   if (!role) return false;
-  return CAPABILITIES[role].includes(capability);
+  return (ORG_CAPABILITY_ROLES[capability] as readonly OrgRole[]).includes(role);
 }
 
 /** The roles that hold a capability. Used by tests and by the DB-policy mirror. */

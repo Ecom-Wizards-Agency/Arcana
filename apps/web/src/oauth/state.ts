@@ -18,9 +18,10 @@
  * runtime, and `timingSafeEqual` is not optional: a signature check with `===`
  * leaks the signature one byte at a time.
  */
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { Uuid } from '@wizard-ads/shared';
 
-export const STATE_VERSION = 1;
+export const STATE_VERSION = 2;
 export const STATE_TTL_SECONDS = 15 * 60;
 export const NONCE_COOKIE = '__Host-wizard_ads_oauth_nonce';
 
@@ -32,6 +33,8 @@ const MIN_KEY_BYTES = 32;
 
 /** Claims carried across the Amazon redirect. Nothing secret, all of it signed. */
 export interface OAuthStateClaims {
+  /** The durable operation created before leaving this installation. */
+  operationId: string;
   /** Org the connection will belong to. */
   org: string;
   /** Supabase user id of the admin who started the flow. */
@@ -63,6 +66,10 @@ export function createNonce(): string {
   return base64Url(randomBytes(NONCE_BYTES));
 }
 
+export function nonceDigest(nonce: string): string {
+  return createHash('sha256').update(nonce).digest('hex');
+}
+
 /**
  * Mint a state token. `now` is injectable so the expiry can be tested without
  * a fake clock, which is the only reason it is a parameter.
@@ -80,6 +87,7 @@ export function createState(
     org: claims.org,
     sub: claims.sub,
     nonce: claims.nonce,
+    operationId: claims.operationId,
   };
   const encoded = base64Url(Buffer.from(JSON.stringify(payload), 'utf8'));
   return `${encoded}.${base64Url(sign(key, encoded))}`;
@@ -131,7 +139,7 @@ export function verifyState(
     return { ok: false, reason: 'nonce_mismatch' };
   }
 
-  return { ok: true, claims: { org: parsed.org, sub: parsed.sub, nonce: parsed.nonce } };
+  return { ok: true, claims: { org: parsed.org, sub: parsed.sub, nonce: parsed.nonce, operationId: parsed.operationId } };
 }
 
 /** The `Set-Cookie` value that carries the nonce through the Amazon round trip. */
@@ -198,12 +206,13 @@ function isStatePayload(value: unknown): value is StatePayload {
   const candidate = value as Record<string, unknown>;
   return (
     candidate['v'] === STATE_VERSION &&
+    Uuid.safeParse(candidate['operationId']).success &&
     Number.isInteger(candidate['iat']) &&
     Number.isInteger(candidate['exp']) &&
     typeof candidate['org'] === 'string' &&
-    candidate['org'].length > 0 &&
+    Uuid.safeParse(candidate['org']).success &&
     typeof candidate['sub'] === 'string' &&
-    candidate['sub'].length > 0 &&
+    Uuid.safeParse(candidate['sub']).success &&
     typeof candidate['nonce'] === 'string' &&
     candidate['nonce'].length === NONCE_LENGTH
   );

@@ -13,9 +13,12 @@ export async function buildAuthorityArtifact(revision: string, destination: stri
   const require = createRequire(import.meta.url);
   const tsxRequire = createRequire(require.resolve('tsx/package.json'));
   const esbuild = join(dirname(tsxRequire.resolve('esbuild/package.json')), 'bin/esbuild');
+  const driverPatch = 'patches/postgres@3.4.9.patch';
+  const patchHash = createHash('sha256').update(await readFile(join(root, driverPatch))).digest('hex');
+  const driverPrefix = `node_modules/.pnpm/postgres@3.4.9_patch_hash=${patchHash}/node_modules/postgres/`;
   await mkdir(destination, { recursive: false, mode: 0o755 });
   const inputs = new Set<string>([
-    'pnpm-lock.yaml', 'tools/recommendation-authority/package.json',
+    'pnpm-lock.yaml', 'pnpm-workspace.yaml', driverPatch, 'tools/recommendation-authority/package.json',
     'tools/recommendation-authority/src/build.ts',
     'docs/deploy/install-recommendation-authority.sh',
     'docs/deploy/install-recommendation-database-ca.sh',
@@ -38,7 +41,8 @@ export async function buildAuthorityArtifact(revision: string, destination: stri
     }
     for (const input of Object.keys(metadata.inputs)) {
       const path = relative(root, resolve(root, input));
-      if (!/^(tools\/recommendation-authority\/src\/|docs\/deploy\/openspell-recommendation-(?:authority-contract|database-trust)\.mjs$|node_modules\/\.pnpm\/postgres@3\.4\.9\/node_modules\/postgres\/)/u.test(path)
+      if ((!/^(tools\/recommendation-authority\/src\/|docs\/deploy\/openspell-recommendation-(?:authority-contract|database-trust)\.mjs$)/u.test(path)
+        && !path.startsWith(driverPrefix))
         || path.includes('..')) throw new Error('Authority bundle imports an unapproved source');
       inputs.add(path);
     }

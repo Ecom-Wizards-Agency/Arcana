@@ -7,11 +7,12 @@
  * real: the browser, the cookies, the signed state, the server-side exchange,
  * the Vault RPC and the upsert.
  */
+import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import { createDb } from '@wizard-ads/db';
 import { signIn, signOut } from './support/auth';
 import { createNonce, createState, nonceCookieName } from '../src/oauth/state';
-import { BASE_URL, GRANT, GRANT_TOTAL, STATE_KEY, USERS, readState } from './support/fixture';
+import { BASE_URL, GRANT, GRANT_TOTAL, MOCK_PORT, STATE_KEY, USERS, readState } from './support/fixture';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -49,12 +50,15 @@ test('an admin connects Amazon and sees the profiles per region', async ({ page 
   await expect(page.getByTestId('oauth-result')).toBeVisible();
 
   await expect(page.getByTestId('oauth-total')).toHaveText(String(GRANT_TOTAL));
-  await expect(page.getByTestId('oauth-region-NA')).toHaveText(`NA: ${GRANT.na}`);
-  await expect(page.getByTestId('oauth-region-EU')).toHaveText(`EU: ${GRANT.eu}`);
+  await expect(page.getByTestId('oauth-region-NA')).toContainText(`NA: ${GRANT.na}`);
+  await expect(page.getByTestId('oauth-region-EU')).toContainText(`EU: ${GRANT.eu}`);
   // The grant covers two of three regions; that is stated, not swallowed.
   await expect(page.getByTestId('oauth-failed')).toContainText('FE');
 
   await expect(page.getByTestId('connection-status')).toHaveText('active');
+  const counts = await (await page.request.get(`http://127.0.0.1:${MOCK_PORT}/__test/calls`)).json();
+  expect(counts.exchanges).toBe(1);
+  expect(counts.refreshes).toBe(4); // one per region, plus the single FE401 refresh.
 
   // And the roster agrees with the banner: the seeded fixture profile plus the
   // five the grant returned.
@@ -90,7 +94,7 @@ test('a tampered state is rejected and nothing is stored', async ({ page }) => {
   await signIn(page, 'admin');
 
   const nonce = createNonce();
-  const genuine = createState(STATE_KEY, { org: (await readState()).orgId, sub: USERS.admin, nonce });
+  const genuine = createState(STATE_KEY, { operationId: randomUUID(), org: (await readState()).orgId, sub: USERS.admin, nonce });
   const [encoded, signature] = genuine.split('.') as [string, string];
   const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
   payload.org = '99999999-9999-4999-8999-999999999999';
@@ -102,7 +106,8 @@ test('a tampered state is rejected and nothing is stored', async ({ page }) => {
   await page.goto(callbackUrl(forged));
 
   await expect(page.getByTestId('oauth-error')).toContainText('altered');
-  await expect(page.getByTestId('oauth-result')).toHaveCount(0);
+  // Previously persisted discovery remains visible; forged URL counts are ignored.
+  await expect(page.getByTestId('oauth-total')).toHaveText(String(GRANT_TOTAL));
 });
 
 test('an expired state is rejected', async ({ page }) => {
@@ -112,7 +117,7 @@ test('an expired state is rejected', async ({ page }) => {
   // Minted sixteen minutes ago: signature valid, window closed.
   const expired = createState(
     STATE_KEY,
-    { org: (await readState()).orgId, sub: USERS.admin, nonce },
+    { operationId: randomUUID(), org: (await readState()).orgId, sub: USERS.admin, nonce },
     Date.now() - 16 * 60 * 1000,
   );
 
@@ -129,7 +134,7 @@ test('a state minted for another session is rejected', async ({ page }) => {
   await signIn(page, 'admin');
   const nonce = createNonce();
   const other = createState(STATE_KEY, {
-    org: (await readState()).orgId,
+    operationId: randomUUID(), org: (await readState()).orgId,
     sub: USERS.analyst,
     nonce,
   });
@@ -145,7 +150,7 @@ test('a state minted for another session is rejected', async ({ page }) => {
 test('a state replayed without its cookie is rejected', async ({ page }) => {
   await signIn(page, 'admin');
   const state = createState(STATE_KEY, {
-    org: (await readState()).orgId,
+    operationId: randomUUID(), org: (await readState()).orgId,
     sub: USERS.admin,
     nonce: createNonce(),
   });

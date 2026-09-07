@@ -3,7 +3,7 @@
 The worker handles Amazon entity sync, asynchronous report ingestion, recommendation
 runs and crosscheck ingestion. Web requests preview, approve and enqueue work;
 provider execution belongs here. The root [installation guide](../../README.md)
-records the remaining onboarding and legacy OAuth limitations.
+describes agency onboarding and the supported runtime topology.
 
 ## The shape of it
 
@@ -16,6 +16,8 @@ records the remaining onboarding and legacy OAuth limitations.
 | `crosscheck.ts` | The seam WP-10's `runCrosscheckIngest` is called through, plus the retry classification. |
 | `schedules.ts` | The default cadences, as rows rather than as a comment. |
 | `ads-api.ts` | The narrow client interface the worker needs, plus `DbAdsApiClient` — the adapter that maps it onto the real `@wizard-ads/ads-api` client (per-connection/per-region, Vault-backed refresh token). |
+| `amazon-connections.ts` | Serial single-use authorization exchange and resumable, counted regional discovery. |
+| `amazon-connection-adapters.ts` | Worker-only provider credentials and protected database commands for connection operations. |
 | `main.ts` | Process entry: config, health server, the two passes, graceful shutdown. |
 | `marketing-stream-sqs.ts` | Optional SQS long-poll ingress. It acknowledges only after the raw ledger and hourly projection counts reconcile. |
 | `spapi-sqp.ts` | Exact profile/marketplace binding, Vault-backed LWA token composition, and regional Reports API client pool. |
@@ -74,6 +76,23 @@ in-process for plain Postgres. Both paths ignore token-bearing claims. The Evo r
 it. Recovery is deliberately attended because a timeout cannot prove provider work stopped.
 
 ## The auth healthcheck is not a queue job — deliberately
+
+New agency connections use a separate durable operation before profiles exist.
+Install the matching connection migrations, configure the worker's application
+credentials and exact comma-separated `AMAZON_OAUTH_ALLOWED_REDIRECT_URIS`, then
+enable `OPENSPELL_AMAZON_CONNECTIONS_ENABLED=1` on a general worker that can claim
+`entity.sync`. The singular `AMAZON_OAUTH_REDIRECT_URI` is accepted for an installation
+with one callback. The report and recommendation lanes cannot own this consumer.
+Verify `components.amazonConnections` on `/healthz` before enabling the web flag.
+
+The worker consumes an authorization code once. An uncertain exchange requires new
+consent; a lost attachment response is reconciled against the committed operation.
+Discovery resumes without re-exchanging the code and records each region's received,
+parsed, refused, upserted and newly created counts together. Shutdown aborts a regional
+request and leaves it resumable after its lease expires. Membership removal or
+credential rotation refuses stale custody. Three consecutive command failures degrade
+health; no code, token, profile identifier or provider response appears in that health
+payload. Connecting does not select profiles for sync or copy tenant strategy settings.
 
 `AuthHealthMonitor` probes account access on an in-process timer. It does not depend
 on the queue it monitors.

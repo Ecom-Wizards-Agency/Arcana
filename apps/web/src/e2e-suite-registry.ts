@@ -19,7 +19,7 @@ export const E2E_SUITE_DEFINITIONS = [
       'tags-goto.spec.ts',
       'time-machine.spec.ts',
     ],
-    expectedTests: 33,
+    expectedTests: 34,
   },
   {
     name: 'grid-performance',
@@ -35,7 +35,7 @@ export const E2E_SUITE_DEFINITIONS = [
     config: 'playwright.optimization-groups.config.ts',
     project: 'optimization-groups',
     expectedSpecFiles: ['optimization-groups.spec.ts'],
-    expectedTests: 2,
+    expectedTests: 3,
   },
   {
     name: 'profile-context',
@@ -67,7 +67,7 @@ export const E2E_SUITE_DEFINITIONS = [
     config: 'playwright.auth.config.ts',
     project: 'auth',
     expectedSpecFiles: ['dashboard.spec.ts', 'grid.spec.ts'],
-    expectedTests: 7,
+    expectedTests: 8,
   },
   {
     name: 'auth-members',
@@ -91,7 +91,7 @@ export const E2E_SUITE_DEFINITIONS = [
     config: 'playwright.auth-roles.config.ts',
     project: 'auth-roles',
     expectedSpecFiles: ['roles.spec.ts'],
-    expectedTests: 8,
+    expectedTests: 9,
   },
   {
     name: 'route-acceptance',

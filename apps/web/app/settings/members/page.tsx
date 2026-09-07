@@ -44,8 +44,8 @@ export default async function MembersPage(): Promise<ReactNode> {
   }
 
   const [members, invitations] = await Promise.all([
-    listMembers(handle, active.orgId),
-    listPendingInvitations(handle, active.orgId),
+    listMembers(handle, { orgId: active.orgId, userId: context.user.id }),
+    listPendingInvitations(handle, { orgId: active.orgId, userId: context.user.id }),
   ]);
 
   return (

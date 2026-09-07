@@ -1,27 +1,12 @@
-/**
- * `GET /api/amazon/oauth/callback` — Amazon comes back here.
- *
- * The order of the checks is the security of the route, so it is worth stating:
- *
- *  1. **State first, before anything is read from the query.** Signature, TTL,
- *     and the nonce against its `__Host-` cookie twin. A tampered or expired
- *     state is rejected before the authorization code is even looked at.
- *  2. **Session second.** The state says which org and which user started the
- *     flow; the live session must still be that user, and that user must still
- *     hold `manageConnection` in that org. A signed state is not a capability
- *     on its own: an admin demoted while the tab was open lands here.
- *  3. **Then, and only then, the exchange.** Server-side, with the client
- *     secret from the environment; the code and the tokens never reach the
- *     browser and never reach a log line.
- *
- * The nonce cookie is cleared on every outcome, success included: a nonce is
- * single-use, and leaving it set turns "replay is impossible" into "replay is
- * impossible until someone changes this file".
+/** Amazon callback validates browser/session custody and submits one protected operation.
+ * Token exchange and profile discovery execute exclusively in the worker.
  */
 import { NextResponse } from 'next/server';
-import { amazonOAuthConfig, secureCookies, stateSigningKey } from '../../../../../src/env';
+import { cancelAmazonConnection, submitAmazonConnection } from '@wizard-ads/db';
+import { amazonConnectionsEnabled, secureCookies, stateSigningKey } from '../../../../../src/env';
 import { can } from '../../../../../src/auth/roles';
 import { authOrigin } from '../../../../../src/auth/origin';
+import { ORG_COOKIE } from '../../../../../src/cookies';
 import {
   authorizeOperatorRole,
   currentOperatorIdentity,
@@ -31,17 +16,13 @@ import { membershipFor, resolveOrgContext } from '../../../../../src/data/orgs';
 import {
   clearedNonceCookie,
   nonceCookieName,
+  nonceDigest,
   verifyState,
 } from '../../../../../src/oauth/state';
 import type { StateFailure } from '../../../../../src/oauth/state';
-import { completeConnection } from '../_lib/connect';
-import { AmazonOAuthError, httpAmazonOAuthPort } from '../_lib/lwa';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-/** One connection per org in v1; the label is what makes reconnect idempotent. */
-const CONNECTION_LABEL = 'Amazon Ads';
 
 const SETTINGS = '/settings/connections';
 
@@ -50,11 +31,9 @@ export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
 
   const cookieNonce = readCookie(request, nonceCookieName(secure));
-  const verification = verifyState(
-    safeKey(),
-    url.searchParams.get('state'),
-    cookieNonce,
-  );
+  let verification;
+  try { verification = verifyState(stateSigningKey(), url.searchParams.get('state'), cookieNonce); }
+  catch { return finish(secure, failure('the authorization could not be verified; start again')); }
   if (!verification.ok) {
     return finish(secure, failure(stateMessage(verification.reason)));
   }
@@ -85,60 +64,39 @@ export async function GET(request: Request): Promise<Response> {
     );
   }
 
-  // Amazon's own refusal (the operator declined, or the app is misconfigured).
-  const amazonError = url.searchParams.get('error');
-  if (amazonError) {
-    const description = url.searchParams.get('error_description') ?? amazonError;
-    return finish(secure, failure(`Amazon did not grant access: ${description}`));
+  const actor = { orgId: membership.orgId, userId: user.id };
+  const { operationId } = verification.claims;
+  const destination = `${SETTINGS}?${new URLSearchParams({ org: actor.orgId, operation: operationId })}`;
+  if (!amazonConnectionsEnabled()) {
+    return finish(secure, failure('Amazon connections are temporarily unavailable'));
   }
-
+  if (url.searchParams.has('error')) {
+    // Never echo provider descriptions. They may contain request identifiers.
+    try { await cancelAmazonConnection(handle, actor, operationId); }
+    catch { return finish(secure, failure('The connection could not be reconciled; check Connections')); }
+    return finish(secure, destination, actor.orgId);
+  }
   const code = url.searchParams.get('code');
-  if (!code) return finish(secure, failure('Amazon returned no authorization code'));
-
-  let config;
+  if (!code || code.length > 8192) return finish(secure, failure('Amazon returned no usable authorization code'));
   try {
-    config = amazonOAuthConfig();
-  } catch (error) {
-    return finish(secure, failure(error instanceof Error ? error.message : 'oauth is not configured'));
-  }
-
-  try {
-    const result = await completeConnection(handle, httpAmazonOAuthPort(config), {
-      orgId: membership.orgId,
-      userId: user.id,
-      label: CONNECTION_LABEL,
-      lwaClientId: config.clientId,
-      scope: config.scope,
-      code,
+    await submitAmazonConnection(handle, actor, {
+      operationId, nonceHash: nonceDigest(verification.claims.nonce), code,
     });
-
-    const params = new URLSearchParams({
-      connected: '1',
-      total: String(result.totalUpserted),
-      regions: result.regions
-        .filter((outcome) => outcome.error === null)
-        .map((outcome) => `${outcome.region}:${outcome.upserted}`)
-        .join(','),
-    });
-    const failed = result.regions.filter((outcome) => outcome.error !== null);
-    if (failed.length > 0) {
-      params.set('failed', failed.map((outcome) => outcome.region).join(','));
-    }
-    return finish(secure, `${SETTINGS}?${params.toString()}`);
-  } catch (error) {
-    const message =
-      error instanceof AmazonOAuthError
-        ? `${error.message}${error.detail ? ` (${error.detail})` : ''}`
-        : error instanceof Error
-          ? error.message
-          : 'the connection failed';
-    return finish(secure, failure(message));
+  } catch {
+    // The commit may have succeeded. The durable status page is the recovery
+    // destination; never repeat the exchange or serialize a query error here.
   }
+  return finish(secure, destination, actor.orgId);
 }
 
 /** Redirect, always clearing the nonce. Never a body: the code is in the URL. */
-function finish(secure: boolean, location: string): Response {
+function finish(secure: boolean, location: string, verifiedOrgId?: string): Response {
   const response = NextResponse.redirect(absolute(location), 303);
+  if (verifiedOrgId !== undefined) {
+    response.cookies.set(ORG_COOKIE, verifiedOrgId, {
+      httpOnly: true, sameSite: 'lax', secure, path: '/', maxAge: 60 * 60 * 24 * 365,
+    });
+  }
   response.headers.set('Cache-Control', 'no-store, max-age=0');
   response.headers.set('Referrer-Policy', 'no-referrer');
   response.headers.append('Set-Cookie', clearedNonceCookie(secure));
@@ -171,17 +129,6 @@ function stateMessage(reason: StateFailure): string {
     case 'malformed':
     case 'not_yet_valid':
       return 'the authorization state was altered and was rejected; nothing was stored';
-  }
-}
-
-/** The signing key, or a value that cannot verify anything. */
-function safeKey(): string {
-  try {
-    return stateSigningKey();
-  } catch {
-    // 32 zero bytes: long enough to satisfy the length assertion, and no state
-    // this app ever minted can verify against it.
-    return '0'.repeat(32);
   }
 }
 

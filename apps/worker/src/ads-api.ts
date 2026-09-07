@@ -14,12 +14,13 @@ import {
   type SbAdProbePage,
 } from '@wizard-ads/ads-api';
 import {
-  getAdsRefreshToken,
-  getProfileConnectionId,
+  getAdsRefreshTokenForGeneration,
+  getProfileCredentialBinding,
+  getConnectionCredentialBinding,
   listActiveConnectionIdsForRegion,
   type DbHandle,
 } from '@wizard-ads/db';
-import type { EntityRow, Region, WorkerReportType } from '@wizard-ads/shared';
+import type { AdsConnectionCredentialBinding, EntityRow, Region, WorkerReportType } from '@wizard-ads/shared';
 
 /** The profile routing information every Amazon call needs. */
 export interface AdsProfileContext {
@@ -242,12 +243,14 @@ export type UnderlyingClient = Pick<
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface AdsApiAdapterDeps {
-  /** Amazon's connection id for one of our profile uuids, or null when it has none. */
-  resolveConnectionId(profileId: string): Promise<string | null>;
+  /** Match organization, profile, provider identity and region before credential access. */
+  resolveProfileBinding(profile: AdsProfileContext): Promise<AdsConnectionCredentialBinding | null>;
+  /** A fresh binding for health probes without a selected profile. */
+  resolveConnectionBinding(connectionId: string): Promise<AdsConnectionCredentialBinding | null>;
   /** Active, credentialed connections that own a profile in the region. */
   listConnectionIds(region: Region): Promise<readonly string[]>;
   /** The Vault-backed refresh token for a connection. Never logged. */
-  getRefreshToken(connectionId: string): Promise<string | null>;
+  getRefreshToken(binding: AdsConnectionCredentialBinding): Promise<string | null>;
   /** Build one region-scoped client for one connection's grant. */
   createClient(input: { connectionId: string; region: Region; refreshToken: string }): UnderlyingClient;
   /** Download transport. Defaults to the global `fetch`. */
@@ -266,10 +269,9 @@ const KNOWN_REPORT_STATUSES = new Set<AdsReportStatus['status']>([
  * The worker's `AdsApiClient`, backed by the real Amazon client.
  *
  * One underlying client per `(connection, region)` pair, built lazily: the
- * refresh token is read from Vault the first time a connection is touched and
- * the client cached, because minting an access token per job would refresh the
- * grant hundreds of times an hour. An auth failure evicts the cache entry so a
- * rotated credential is picked up on the next attempt rather than never.
+ * persisted credential generation is checked before each cache reuse. Rotation
+ * and revocation therefore reach every worker process without waiting for an
+ * old grant to fail. Only a changed generation needs another Vault read.
  *
  * Every Amazon error is narrowed to what the worker's retry policy can act on:
  * a 429 or 5xx (or a timeout) becomes `AdsApiRetryableError` so the job is
@@ -278,7 +280,9 @@ const KNOWN_REPORT_STATUSES = new Set<AdsReportStatus['status']>([
  * attempt counter to age out into the dead-letter.
  */
 export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, SuggestedBidClient, SbVideoContractProbeClient {
-  private readonly clients = new Map<string, UnderlyingClient>();
+  private readonly clients = new Map<string, {
+    orgId: string; generation: string; client: UnderlyingClient;
+  }>();
   private readonly fetch: FetchLike;
 
   constructor(private readonly deps: AdsApiAdapterDeps) {
@@ -490,7 +494,10 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
     const connectionIds = await this.deps.listConnectionIds(region);
     const profileIds: string[] = [];
     for (const connectionId of connectionIds) {
-      const client = await this.clientFor(connectionId, region);
+      const binding = await this.deps.resolveConnectionBinding(connectionId);
+      if (binding === null) { this.clients.delete(`${connectionId}:${region}`); continue; }
+      if (binding.connectionId !== connectionId) throw new Error('Connection credential binding mismatch');
+      const client = await this.clientFor(binding, region);
       if (!client) continue;
       const profiles = await this.guard(region, () => client.getProfiles(), connectionId);
       for (const profile of profiles) profileIds.push(profile.profileId);
@@ -538,21 +545,24 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
   }
 
   private async clientForProfile(profile: AdsProfileContext): Promise<UnderlyingClient> {
-    const connectionId = await this.deps.resolveConnectionId(profile.id);
-    if (!connectionId) throw new Error(`profile ${profile.id} has no Amazon connection`);
-    const client = await this.clientFor(connectionId, profile.region);
-    if (!client) throw new Error(`connection ${connectionId} has no stored refresh token`);
+    const binding = await this.deps.resolveProfileBinding(profile);
+    if (binding === null) throw new Error(`profile ${profile.id} has no Amazon connection`);
+    if (binding.orgId !== profile.orgId) throw new Error('Profile credential binding mismatch');
+    const client = await this.clientFor(binding, profile.region);
+    if (!client) throw new Error(`connection ${binding.connectionId} has no stored refresh token`);
     return client;
   }
 
-  private async clientFor(connectionId: string, region: Region): Promise<UnderlyingClient | null> {
+  private async clientFor(binding: AdsConnectionCredentialBinding, region: Region): Promise<UnderlyingClient | null> {
+    const { connectionId, orgId, generation } = binding;
     const key = `${connectionId}:${region}`;
     const cached = this.clients.get(key);
-    if (cached) return cached;
-    const refreshToken = await this.deps.getRefreshToken(connectionId);
+    if (cached?.generation === generation && cached.orgId === orgId) return cached.client;
+    this.clients.delete(key);
+    const refreshToken = await this.deps.getRefreshToken(binding);
     if (!refreshToken) return null;
     const client = this.deps.createClient({ connectionId, region, refreshToken });
-    this.clients.set(key, client);
+    this.clients.set(key, { orgId, generation, client });
     return client;
   }
 
@@ -716,9 +726,12 @@ export function createAdsApiClientFromEnv(
   const userAgent = env['AMAZON_ADS_USER_AGENT'];
 
   return new DbAdsApiClient({
-    resolveConnectionId: (profileId) => getProfileConnectionId(handle, profileId),
+    resolveProfileBinding: (profile) => getProfileCredentialBinding(
+      handle, profile.orgId, profile.id, profile.amazonProfileId, profile.region,
+    ),
+    resolveConnectionBinding: (connectionId) => getConnectionCredentialBinding(handle, connectionId),
     listConnectionIds: (region) => listActiveConnectionIdsForRegion(handle, region),
-    getRefreshToken: (connectionId) => getAdsRefreshToken(handle, connectionId),
+    getRefreshToken: (binding) => getAdsRefreshTokenForGeneration(handle, binding),
     createClient: ({ region, refreshToken }) =>
       new UnderlyingAdsApiClient({
         region,

@@ -21,6 +21,7 @@ import { requireCapability, requireOrgRole } from '../../../src/server/org-role'
 import { experimentErrorResponse } from '../../../src/experiments/http';
 import { listProposedTests } from '../../../src/experiments/data';
 import { can } from '../../../src/auth/roles';
+import { authenticatedRead, readUuid } from '../../../src/server/authenticated-read';
 
 export const runtime = 'nodejs';
 
@@ -30,12 +31,16 @@ const asStatus = (value: string | null): ExperimentStatus | null =>
     : null;
 
 export async function GET(request: Request): Promise<Response> {
-  const database = openWebDatabase();
-  try {
-    const actor = await requestActor(request.headers);
+  return authenticatedRead(request, async (database, actor) => {
     const role = await requireOrgRole(database, actor);
     const query = new URL(request.url).searchParams;
     const profileId = query.get('profile');
+    if (profileId !== null) {
+      readUuid(profileId, 'profile');
+      if (!(await profileBelongsToOrg(database, { orgId: actor.orgId, profileId }))) {
+        return Response.json({ error: 'Profile not found' }, { status: 404 });
+      }
+    }
     const [items, proposedTests] = await Promise.all([
       listExperiments(database, {
         orgId: actor.orgId,
@@ -52,11 +57,7 @@ export async function GET(request: Request): Promise<Response> {
       role,
       canManage: can(role, 'manageExperiments'),
     });
-  } catch (error) {
-    return experimentErrorResponse(error);
-  } finally {
-    await database.close();
-  }
+  });
 }
 
 export async function POST(request: Request): Promise<Response> {

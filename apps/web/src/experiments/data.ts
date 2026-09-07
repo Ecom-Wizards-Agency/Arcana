@@ -1,13 +1,11 @@
 /**
  * The reads the experiment pages share.
  *
- * They go through the request database (raw `sql`) rather than the Drizzle
- * handle, because the experiment surfaces authenticate through the same header
- * bridge the feedback and tag surfaces use, not through the session gate — so
- * they live on `openWebDatabase`, and every read names the org the actor
- * resolved to.
+ * Queries accept a transaction handle and bind the actor's organization and
+ * selected profile explicitly. Hosted identity comes from the verified session;
+ * the synthetic header bridge is confined to isolated acceptance tests.
  */
-import type { RequestDatabase } from '@wizard-ads/db';
+import type { QueryHandle } from '@wizard-ads/db';
 import {
   CATEGORY_DISCOVERY,
   CATEGORY_PROFIT,
@@ -26,7 +24,7 @@ export interface ProfileOption {
 }
 
 export async function listProfileOptions(
-  handle: Pick<RequestDatabase, 'sql'>,
+  handle: QueryHandle,
   orgId: string,
 ): Promise<ProfileOption[]> {
   const rows = await handle.sql<{
@@ -91,7 +89,7 @@ export interface ExperimentScopeOptions {
  * reliable, already-synchronized source exists.
  */
 export async function listExperimentScopeOptions(
-  handle: Pick<RequestDatabase, 'sql'>,
+  handle: QueryHandle,
   input: { orgId: string; profileId: string },
 ): Promise<ExperimentScopeOptions> {
   const [campaignRows, productRows] = await Promise.all([
@@ -172,7 +170,7 @@ export function profileTestTags(signals: ProfileTestSignals): Set<string> {
  * rows: creating a tracked experiment remains the existing manual flow.
  */
 export async function listProposedTests(
-  handle: Pick<RequestDatabase, 'sql'>,
+  handle: QueryHandle,
   input: { orgId: string; profileId: string },
 ): Promise<TestIdea[]> {
   const [profiles, campaigns] = await Promise.all([
@@ -216,7 +214,7 @@ export interface DailySpendPoint {
  * rather than dropping to the floor.
  */
 export async function loadExperimentSpendSeries(
-  handle: Pick<RequestDatabase, 'sql'>,
+  handle: QueryHandle,
   input: {
     orgId: string;
     profileId: string;

@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  postgres@3.4.9: fc3cced338767cd52eaa651b009e8e61c17a8d64d3eda3ac7aa3f8d56aca5a3b
+
 importers:
 
   .:
@@ -108,7 +111,7 @@ importers:
         version: link:../worker
       drizzle-orm:
         specifier: ^0.45.2
-        version: 0.45.2(postgres@3.4.9)
+        version: 0.45.2(postgres@3.4.9(patch_hash=fc3cced338767cd52eaa651b009e8e61c17a8d64d3eda3ac7aa3f8d56aca5a3b))
       next:
         specifier: ^16.3.0
         version: 16.3.0(@playwright/test@1.62.1)(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -219,10 +222,10 @@ importers:
         version: link:../shared
       drizzle-orm:
         specifier: ^0.45.2
-        version: 0.45.2(postgres@3.4.9)
+        version: 0.45.2(postgres@3.4.9(patch_hash=fc3cced338767cd52eaa651b009e8e61c17a8d64d3eda3ac7aa3f8d56aca5a3b))
       postgres:
         specifier: ^3.4.9
-        version: 3.4.9
+        version: 3.4.9(patch_hash=fc3cced338767cd52eaa651b009e8e61c17a8d64d3eda3ac7aa3f8d56aca5a3b)
     devDependencies:
       '@types/node':
         specifier: ^22.20.1
@@ -313,6 +316,22 @@ importers:
         specifier: ^22.20.1
         version: 22.20.1
 
+  tools/agency-operator:
+    dependencies:
+      '@supabase/supabase-js':
+        specifier: 2.112.3
+        version: 2.112.3
+      '@wizard-ads/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@wizard-ads/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
+
   tools/crosscheck-cli:
     dependencies:
       '@wizard-ads/core':
@@ -336,7 +355,7 @@ importers:
         version: 22.20.1
       postgres:
         specifier: ^3.4.9
-        version: 3.4.9
+        version: 3.4.9(patch_hash=fc3cced338767cd52eaa651b009e8e61c17a8d64d3eda3ac7aa3f8d56aca5a3b)
 
   tools/hosted-migration-conformance:
     devDependencies:
@@ -365,7 +384,7 @@ importers:
     dependencies:
       postgres:
         specifier: 3.4.9
-        version: 3.4.9
+        version: 3.4.9(patch_hash=fc3cced338767cd52eaa651b009e8e61c17a8d64d3eda3ac7aa3f8d56aca5a3b)
     devDependencies:
       '@types/node':
         specifier: ^22.20.1
@@ -5729,9 +5748,9 @@ snapshots:
 
   dom-accessibility-api@0.5.16: {}
 
-  drizzle-orm@0.45.2(postgres@3.4.9):
+  drizzle-orm@0.45.2(postgres@3.4.9(patch_hash=fc3cced338767cd52eaa651b009e8e61c17a8d64d3eda3ac7aa3f8d56aca5a3b)):
     optionalDependencies:
-      postgres: 3.4.9
+      postgres: 3.4.9(patch_hash=fc3cced338767cd52eaa651b009e8e61c17a8d64d3eda3ac7aa3f8d56aca5a3b)
 
   dunder-proto@1.0.1:
     dependencies:
@@ -6631,7 +6650,7 @@ snapshots:
       picocolors: 1.1.1
       source-map-js: 1.2.1
 
-  postgres@3.4.9: {}
+  postgres@3.4.9(patch_hash=fc3cced338767cd52eaa651b009e8e61c17a8d64d3eda3ac7aa3f8d56aca5a3b): {}
 
   prelude-ls@1.2.1: {}
 

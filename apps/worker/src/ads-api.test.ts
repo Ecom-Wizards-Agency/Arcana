@@ -40,6 +40,7 @@ const profile: AdsProfileContext = {
 };
 
 const CONNECTION_ID = '99999999-9999-4999-8999-999999999999';
+const binding = { connectionId: CONNECTION_ID, orgId: profile.orgId, generation: '1' };
 
 const unifiedDefinition: UnifiedReportDefinition = {
   format: 'CSV',
@@ -142,7 +143,8 @@ function makeAdapter(
 ): { adapter: DbAdsApiClient; createClient: ReturnType<typeof vi.fn> } {
   const createClient = vi.fn(() => client);
   const deps: AdsApiAdapterDeps = {
-    resolveConnectionId: async () => CONNECTION_ID,
+    resolveProfileBinding: async () => binding,
+    resolveConnectionBinding: async () => binding,
     listConnectionIds: async () => [CONNECTION_ID],
     getRefreshToken: async () => 'refresh-token',
     createClient,
@@ -250,8 +252,55 @@ describe('DbAdsApiClient.listEntities', () => {
     });
   });
 
+  it('both worker processes observe an in-place reconnect before cache reuse', async () => {
+    let generation = '1';
+    const used: string[] = [];
+    const readBinding = vi.fn(async () => ({ ...binding, generation }));
+    const getRefreshToken = vi.fn(async (requested: typeof binding) =>
+      requested.generation === generation ? `synthetic-generation-${generation}` : null);
+    const createClient = vi.fn(({ refreshToken }: { refreshToken: string }) => underlying({
+      getReport: async () => { used.push(refreshToken); return reportMeta('PENDING'); },
+    }));
+    const make = () => new DbAdsApiClient({
+      resolveProfileBinding: readBinding, resolveConnectionBinding: readBinding,
+      listConnectionIds: async () => [CONNECTION_ID], getRefreshToken, createClient,
+    });
+    const first = make(); const second = make();
+    for (const adapter of [first, second]) await adapter.getReport(profile, 'synthetic-report');
+    generation = '2';
+    for (const adapter of [first, second, first]) await adapter.getReport(profile, 'synthetic-report');
+    expect(used).toEqual(['synthetic-generation-1', 'synthetic-generation-1',
+      'synthetic-generation-2', 'synthetic-generation-2', 'synthetic-generation-2']);
+    expect(readBinding).toHaveBeenCalledTimes(5);
+    expect(getRefreshToken).toHaveBeenCalledTimes(4);
+    expect(createClient).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not use an existing cached client after revocation', async () => {
+    let revoked = false;
+    const readBinding = vi.fn(async () => revoked ? null : binding);
+    const getReport = vi.fn(async () => reportMeta('PENDING'));
+    const { adapter } = makeAdapter(underlying({ getReport }), { resolveProfileBinding: readBinding });
+    await adapter.getReport(profile, 'synthetic-report');
+    revoked = true;
+    await expect(adapter.getReport(profile, 'synthetic-report')).rejects.toThrow(/no Amazon connection/);
+    expect(getReport).toHaveBeenCalledTimes(1);
+    expect(readBinding).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a foreign organization binding before reading Vault or creating a client', async () => {
+    const getRefreshToken = vi.fn(async () => 'synthetic-grant');
+    const { adapter, createClient } = makeAdapter(underlying(), {
+      resolveProfileBinding: async () => ({ ...binding, orgId: '33333333-3333-4333-8333-333333333333' }),
+      getRefreshToken,
+    });
+    await expect(adapter.getReport(profile, 'synthetic-report')).rejects.toThrow(/binding mismatch/);
+    expect(getRefreshToken).not.toHaveBeenCalled();
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
   it('throws when the profile has no connection', async () => {
-    const { adapter } = makeAdapter(underlying(), { resolveConnectionId: async () => null });
+    const { adapter } = makeAdapter(underlying(), { resolveProfileBinding: async () => null });
     await expect(adapter.listEntities(profile, false)).rejects.toThrow(/no Amazon connection/);
   });
 
@@ -265,7 +314,7 @@ describe('DbAdsApiClient.listEntities', () => {
     const { adapter } = makeAdapter(underlying(), { getRefreshToken });
     await adapter.listEntities(profile, false);
     // The token reaches createClient only; the adapter never returns it.
-    expect(getRefreshToken).toHaveBeenCalledWith(CONNECTION_ID);
+    expect(getRefreshToken).toHaveBeenCalledWith(binding);
   });
 });
 

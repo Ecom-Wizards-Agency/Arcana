@@ -1,11 +1,10 @@
-import { getContextualNegativeExport, type RequestDatabase } from '@wizard-ads/db';
+import { getContextualNegativeExport, withAuthenticatedActor, type RequestDatabase } from '@wizard-ads/db';
+import { Uuid } from '@wizard-ads/shared';
 import {
-  errorResponse,
   openWebDatabase,
   requestActor,
-  requireOrgMembership,
 } from '../../../../../../src/server/request-context';
-import { parseExportFormat } from '../../../../../../src/query-intelligence/review-http';
+import { DownloadRequestError, downloadErrorResponse, downloadResponse } from '../../../../../../src/server/download-response';
 import { contextualNegativeReviewErrorResponse } from '../../../../../../src/query-intelligence/review-errors';
 
 export const runtime = 'nodejs';
@@ -15,22 +14,23 @@ type RouteContext = { params: Promise<{ exportId: string }> };
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
   let database: RequestDatabase | null = null;
   try {
-    database = openWebDatabase();
     const actor = await requestActor(request.headers);
-    await requireOrgMembership(database, actor);
+    database = openWebDatabase();
     const { exportId } = await context.params;
-    const format = parseExportFormat(new URL(request.url).searchParams.get('format'));
-    const artifact = await getContextualNegativeExport(database, {
+    if (!Uuid.safeParse(exportId).success) throw new DownloadRequestError('A valid export id is required');
+    const format = new URL(request.url).searchParams.get('format');
+    if (format !== 'csv' && format !== 'json') throw new DownloadRequestError('format must be csv or json');
+    const artifact = await withAuthenticatedActor(database, actor, (sql) => getContextualNegativeExport({ sql }, {
       orgId: actor.orgId,
       exportId,
       format,
-    });
-    if (artifact === null) return Response.json({ error: 'Not found' }, { status: 404 });
+    }));
+    if (artifact === null) throw new DownloadRequestError('Not found', 404);
 
     const date = artifact.createdAt.toISOString().slice(0, 10);
     const filename = `openspell-contextual-negatives-${date}-${artifact.exportId.slice(0, 8)}.${format}`;
     const body = Uint8Array.from(artifact.bytes).buffer;
-    return new Response(body, {
+    return downloadResponse(new Response(body, {
       headers: {
         'cache-control': 'private, no-store',
         'content-disposition': `attachment; filename="${filename}"`,
@@ -41,9 +41,9 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         'x-openspell-amazon-updated': 'false',
         'x-openspell-exported-rows': String(artifact.rowCount),
       },
-    });
+    }));
   } catch (error) {
-    return contextualNegativeReviewErrorResponse(error) ?? errorResponse(error);
+    return downloadResponse(contextualNegativeReviewErrorResponse(error) ?? downloadErrorResponse(error));
   } finally {
     await database?.close();
   }

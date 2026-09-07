@@ -2,14 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
+import { acceptTeamInvitation, inspectTeamInvitation } from '@wizard-ads/db';
 import {
-  claimInvitation,
   createInvitation,
-  findInvitationByTokenHash,
   hashInviteToken,
   invitationStatus,
   newInviteToken,
-  unclaimInvitation,
 } from './invitations';
 
 describe('invitation tokens and status', () => {
@@ -64,11 +62,10 @@ describe.skipIf(!available)('invitation persistence and claims', () => {
       role: 'analyst',
       invitedBy: ownerId,
     });
-    const found = await findInvitationByTokenHash(database, hashInviteToken(issued.token));
+    const found = await inspectTeamInvitation(database, hashInviteToken(issued.token));
 
-    expect(found?.id).toBe(issued.invitation.id);
     expect(found?.email).toBe(issued.invitation.email.toLowerCase());
-    expect(found?.status).toBe('pending');
+    expect(found?.state).toBe('pending');
     const stored = await database.sql<{ token_hash: string }[]>`
       select token_hash from public.org_invitations where id = ${issued.invitation.id}
     `;
@@ -76,7 +73,7 @@ describe.skipIf(!available)('invitation persistence and claims', () => {
     expect(stored[0]?.token_hash).not.toBe(issued.token);
   });
 
-  it('claims only once and can reopen a provisional claim', async () => {
+  it('accepts once and reconciles a retry without a provisional claim', async () => {
     const issued = await createInvitation(database, {
       orgId,
       email: `claim-${randomUUID()}@example.test`,
@@ -84,12 +81,17 @@ describe.skipIf(!available)('invitation persistence and claims', () => {
       invitedBy: ownerId,
     });
     const tokenHash = hashInviteToken(issued.token);
-
-    const first = await claimInvitation(database, tokenHash);
-    const second = await claimInvitation(database, tokenHash);
-    expect(first?.status).toBe('accepted');
-    expect(second).toBeNull();
-    expect(await unclaimInvitation(database, orgId, first?.id ?? '')).toBe(true);
-    expect((await claimInvitation(database, tokenHash))?.id).toBe(first?.id);
+    const userId = randomUUID();
+    await database.sql`insert into auth.users(id,email,email_confirmed_at) values (${userId},${issued.invitation.email},now())`;
+    const outcomes = await Promise.all([
+      acceptTeamInvitation(database, { userId }, tokenHash),
+      acceptTeamInvitation(database, { userId }, tokenHash),
+    ]);
+    expect(outcomes.map((result) => result.outcome).sort()).toEqual(['accepted', 'already_accepted']);
+    const [counts] = await database.sql`
+      select (select count(*)::int from public.org_members where org_id=${orgId} and user_id=${userId}) as memberships,
+             (select count(*)::int from public.audit_log where target_id=${issued.invitation.id} and action='invitation.accepted') as audits
+    `;
+    expect(counts).toEqual({ memberships: 1, audits: 1 });
   });
 });

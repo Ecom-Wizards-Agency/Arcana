@@ -19,6 +19,10 @@
 export const PACKAGE_NAME = '@wizard-ads/db' as const;
 
 export * from './client.js';
+export * from './queries/authenticated-actor.js';
+export * from './queries/agency-bootstrap.js';
+export * from './queries/amazon-connection-operations.js';
+export * from './queries/team-invitation-acceptance.js';
 export * from './schema/index.js';
 export * from './queries/chunk.js';
 export * from './queries/campaign-update.js';
@@ -37,6 +41,9 @@ export * from './queries/feedback.js';
 export * from './queries/goto.js';
 export {
   IntegrationSecretStoreError,
+  IntegrationCredentialCommandError,
+  connectIntegrationCredentialForActor,
+  revokeIntegrationCredentialForActor,
   createIntegrationConnection,
   listIntegrationConnections,
   revokeIntegrationSecret,
@@ -66,3 +73,6 @@ export * from './queries/time-machine.js';
 export * from './queries/apply-state.js';
 export * from './queries/tokens.js';
 export * from './queries/request-client.js';
+
+export * from './queries/mcp-key-metadata.js';
+export * from './queries/mcp-key-commands.js';

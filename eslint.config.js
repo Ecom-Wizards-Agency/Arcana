@@ -107,15 +107,14 @@ export default tseslint.config(
     },
   },
   {
-    // The LWA OAuth server routes are the ONE sanctioned exception to the
-    // no-ads-api-in-web rule (WP-04 brief): the code exchange and the
-    // first profile fetch happen in the callback. Everything else in web
-    // stays banned below.
+    // Consent callbacks validate browser custody and enqueue; all provider
+    // clients and credential reads remain in the worker, including first setup.
     files: ['apps/web/**/*.{ts,tsx}'],
-    ignores: ['apps/web/app/api/amazon/oauth/**'],
     rules: {
       'no-restricted-imports': forbid([
         ['@wizard-ads/ads-api', 'every Amazon API call lives in apps/worker, never in the web app.'],
+        ['@wizard-ads/db/operator', 'installation provisioning is not an application or organization-role capability.'],
+        ['@wizard-ads/agency-operator', 'the installation CLI is not an application dependency.'],
         ['@wizard-ads/sp-api', 'every Amazon API call lives in apps/worker, never in the web app.'],
         ['@wizard-ads/datadive-api', 'every DataDive API call lives in apps/worker, never in the web app.'],
         ['@wizard-ads/mrp-api', 'every MRP MCP call lives in apps/worker, never in the web app.'],
@@ -124,6 +123,15 @@ export default tseslint.config(
           '@wizard-ads/db/worker',
           'decrypted integration credentials are worker-only; the web app may only store or revoke them.',
         ],
+      ]),
+    },
+  },
+  {
+    files: ['apps/mcp/**/*.{ts,tsx}', 'apps/worker/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': forbid([
+        ['@wizard-ads/db/operator', 'installation provisioning requires its separate operator command.'],
+        ['@wizard-ads/agency-operator', 'the installation CLI is not an application dependency.'],
       ]),
     },
   },

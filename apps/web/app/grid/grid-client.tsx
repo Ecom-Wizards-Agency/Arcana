@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { ReactNode } from 'react';
+import type { OrgActor } from '@wizard-ads/shared';
 import {
   DataGrid,
   DEFAULT_DENSITY,
@@ -51,6 +52,8 @@ import type { GridPayload } from '../_lib/grid-data';
 import { BidHistoryModal } from '../../src/ui/bid-history-modal';
 
 export interface GridWorkspaceProps {
+  /** Identity supplied by the authenticated server page, never an API override. */
+  actor: Readonly<OrgActor>;
   entity: EntityLevel;
   currencyCode: string;
   profileId: string;
@@ -247,6 +250,12 @@ export function experimentScopeIds(rows: readonly GridRow[], key: string): strin
 }
 
 export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
+  // Identity replacement owns the entire hook subtree: rows, late requests,
+  // saved views, selections and buffered writes. Callers need no special key.
+  return <ScopedGridWorkspace key={JSON.stringify([props.actor.userId, props.actor.orgId])} {...props} />;
+}
+
+function ScopedGridWorkspace(props: GridWorkspaceProps): ReactNode {
   const scope = gridRowsRequestUrl(props);
   const generation = useRef(0);
   const activeRequest = useRef<InFlightGridRequest | null>(null);
@@ -278,6 +287,7 @@ export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
       });
 
     return () => {
+      generation.current++;
       if (request.settled) return;
       // React development Strict Mode immediately re-runs an effect after its
       // cleanup. Give that same-scope run one task to reclaim the in-flight
@@ -381,7 +391,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   const router = useRouter();
   const available = useMemo(() => columnsFor(props.entity), [props.entity]);
   const [browserStore] = useState(() =>
-    typeof window === 'undefined' ? null : new LocalViewStore(window.localStorage),
+    typeof window === 'undefined' ? null : new LocalViewStore(window.localStorage, props.actor),
   );
   const store = props.viewStore === undefined ? browserStore : props.viewStore;
   const scopeKey = `${props.entity}\u0000${props.campaignId ?? ''}`;

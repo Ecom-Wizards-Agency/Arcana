@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import { withAuthenticatedActor } from '@wizard-ads/db';
 import { gate } from '../../src/auth/guard';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
 
@@ -20,7 +21,9 @@ export default async function StrategyRedirect({ searchParams }: PageProps): Pro
   const { profile } = await searchParams;
   if (entry.state === 'ok') {
     const requested = await requestedProfileId(profile);
-    const profiles = await listProfiles(entry.handle, entry.context.active?.orgId ?? '');
+    const orgId = entry.context.active?.orgId ?? '';
+    const profiles = await withAuthenticatedActor(entry.handle, { orgId, userId: entry.context.user.id },
+      (sql) => listProfiles({ sql }, orgId));
     const active = selectProfile(profiles, requested);
     if (active !== null) {
       const destination = '/dashboard?' + new URLSearchParams({ profile: active.id }).toString();

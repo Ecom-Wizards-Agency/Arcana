@@ -15,12 +15,12 @@
  * a randomized test, and the UI says so — but the numbers it does show are the
  * real ones, verified against a direct SQL sum in the query suite.
  */
-import type { DbHandle } from '../client.js';
+import type { QueryHandle } from '../client.js';
 import type { ExperimentScope } from '../schema/experiments.js';
 import { toDate, toDateOrNull } from './pg-time.js';
 import type { JsonValue } from './goto.js';
 
-export type ExperimentQueryHandle = Pick<DbHandle, 'sql'>;
+export type ExperimentQueryHandle = QueryHandle;
 
 export const EXPERIMENT_TYPES = [
   'bid_push',

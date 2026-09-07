@@ -24,7 +24,8 @@ import { Suspense } from 'react';
 import { redirect } from 'next/navigation';
 import { analyzeAccount, classifyCampaignCategory, computePacing, evaluate, pacingFlag } from '@wizard-ads/core';
 import type { DailyRow, Flag } from '@wizard-ads/core';
-import type { DbHandle } from '@wizard-ads/db';
+import { withAuthenticatedActor, type DbHandle } from '@wizard-ads/db';
+import type { OrgActor } from '@wizard-ads/shared';
 import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
 import { assessFreshness } from '@wizard-ads/ui';
 import { CrosscheckChip } from '../crosscheck/panel';
@@ -61,6 +62,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
     );
   }
   const orgId = entry.context.active?.orgId ?? '';
+  const actor = { orgId, userId: entry.context.user.id };
 
   const params = await searchParams;
   const profileId = await requestedProfileId(params.profile);
@@ -69,7 +71,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   const settled = settledComparisonWindows(period, today);
   const analysisWindow = { start: addDays(period.start, -8), end: period.end };
 
-  const data = await withExistingDatabase(entry.handle, async (handle) => {
+  const data = await withExistingDatabase(entry.handle, actor, async (handle) => {
     const profiles = await listProfiles(handle, orgId);
     const profile = selectProfile(profiles, profileId);
     if (profile === null) return { profiles, profile: null };
@@ -210,7 +212,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
 
         <FreshnessBar assessment={freshness}>
           <Suspense fallback={null}>
-            <DashboardCrosscheck handle={entry.handle} profileId={profile.id} />
+            <DashboardCrosscheck handle={entry.handle} actor={actor} profileId={profile.id} />
           </Suspense>
         </FreshnessBar>
 
@@ -227,7 +229,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           <PacingCard pacing={pacing as PacingView | null} context={context} />
           <Suspense fallback={<OperatingStatusLoading />}>
             <OperatingStatus
-              handle={entry.handle}
+              handle={entry.handle} actor={actor}
               orgId={orgId}
               profileId={profile.id}
             />
@@ -236,7 +238,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
 
         <Suspense fallback={<CampaignInsightsLoading />}>
           <DashboardCampaignInsights
-            handle={entry.handle}
+            handle={entry.handle} actor={actor}
             orgId={orgId}
             profileId={profile.id}
             profileLabel={profile.label}
@@ -257,17 +259,21 @@ export default async function DashboardPage({ searchParams }: PageProps) {
 
 async function DashboardCrosscheck({
   handle,
+  actor,
   profileId,
 }: {
   handle: DbHandle;
+  actor: OrgActor;
   profileId: string;
 }) {
-  const model = await loadCrosscheckPanel(handle, { profileId }).catch(() => null);
+  const model = await withAuthenticatedActor(handle, actor,
+    (sql) => loadCrosscheckPanel({ sql }, { orgId: actor.orgId, profileId })).catch(() => null);
   return model === null ? null : <CrosscheckChip chip={model.chip} />;
 }
 
 async function DashboardCampaignInsights({
   handle,
+  actor,
   orgId,
   profileId,
   profileLabel,
@@ -280,6 +286,7 @@ async function DashboardCampaignInsights({
   period,
 }: {
   handle: DbHandle;
+  actor: OrgActor;
   orgId: string;
   profileId: string;
   profileLabel: string;
@@ -291,13 +298,9 @@ async function DashboardCampaignInsights({
   currencyCode: string;
   period: { start: string; end: string };
 }) {
-  const campaignRows = await loadCampaignDailyRows(
-    handle,
-    orgId,
-    profileId,
-    profileLabel,
-    analysisWindow,
-  );
+  const campaignRows = await withAuthenticatedActor(handle, actor, (sql) => loadCampaignDailyRows(
+    { sql }, orgId, profileId, profileLabel, analysisWindow,
+  ));
   const categorised: DailyRow[] = campaignRows.map((row) => ({
     ...row,
     category: classifyCampaignCategory(row.campaignName),
@@ -368,14 +371,17 @@ function CampaignInsightsLoading() {
 
 async function OperatingStatus({
   handle,
+  actor,
   orgId,
   profileId,
 }: {
   handle: DbHandle;
+  actor: OrgActor;
   orgId: string;
   profileId: string;
 }) {
-  const status = await readDashboardOperatingStatus(handle, { orgId, profileId });
+  const status = await withAuthenticatedActor(handle, actor,
+    (sql) => readDashboardOperatingStatus({ sql }, { orgId, profileId }));
   const openBatch = status.stagedBatch;
   const stockNeedsReview = status.stockSignals > 0;
   const observationNeedsReview = status.observations.revert > 0 || status.observations.settling > 0;

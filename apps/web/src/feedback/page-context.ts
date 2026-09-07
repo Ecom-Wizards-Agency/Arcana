@@ -12,6 +12,7 @@
  * a jsonb column that an admin reads, so it is length-capped and constrained to
  * an internal path.
  */
+import { FeedbackAppVersion, FeedbackRoute } from '@wizard-ads/shared';
 
 export type FeedbackActorType = 'user' | 'mcp';
 
@@ -29,7 +30,6 @@ export interface PageContext {
   actorType: FeedbackActorType;
 }
 
-const MAX_ROUTE = 512;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
@@ -40,11 +40,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
  * rather than sanitised into something that looks trustworthy.
  */
 export function normalizeRoute(route: string | null | undefined): string | null {
-  if (typeof route !== 'string') return null;
-  const trimmed = route.trim();
-  if (!trimmed.startsWith('/') || trimmed.startsWith('//') || trimmed.includes('\\')) return null;
-  if ([...trimmed].some((character) => character.charCodeAt(0) < 32)) return null;
-  return trimmed.slice(0, MAX_ROUTE);
+  const parsed = FeedbackRoute.safeParse(route);
+  return parsed.success ? parsed.data : null;
 }
 
 /** Recover the selected profile from the route captured by the feedback entry. */
@@ -56,15 +53,13 @@ export function profileIdFromRoute(route: string | null | undefined): string | n
 }
 
 export function pageContext(input: PageContextInput): PageContext {
+  const version = FeedbackAppVersion.safeParse(input.appVersion);
   return {
     route: normalizeRoute(input.route),
     profileId: typeof input.profileId === 'string' && UUID.test(input.profileId)
       ? input.profileId
       : null,
-    appVersion:
-      typeof input.appVersion === 'string' && input.appVersion.trim()
-        ? input.appVersion.trim().slice(0, 64)
-        : null,
+    appVersion: version.success ? version.data : null,
     actorType: input.actorType === 'mcp' ? 'mcp' : 'user',
   };
 }

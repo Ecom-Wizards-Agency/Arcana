@@ -7,26 +7,29 @@
  * than touching a key that is not theirs.
  */
 import { revokeMcpKey } from '../../../../../src/data/mcp-keys';
-import { errorResponse, openWebDatabase, requestActor } from '../../../../../src/server/request-context';
+import { openWebDatabase, requestActor } from '../../../../../src/server/request-context';
 import { requireCapability } from '../../../../../src/server/org-role';
+import { mcpKeyError, mcpKeyResponse, requireMcpKeyOrigin } from '../../../../../src/server/mcp-key-response';
 
 export const runtime = 'nodejs';
 
 type RouteContext = { params: Promise<{ keyId: string }> };
 
 export async function POST(request: Request, context: RouteContext): Promise<Response> {
-  const database = openWebDatabase();
+  let database: ReturnType<typeof openWebDatabase> | undefined;
   try {
+    requireMcpKeyOrigin(request);
+    database = openWebDatabase();
     const actor = await requestActor(request.headers);
     await requireCapability(database, actor, 'manageConnection');
     const { keyId } = await context.params;
 
-    const revoked = await revokeMcpKey(database, actor.orgId, keyId);
-    if (!revoked) return Response.json({ error: 'Key not found' }, { status: 404 });
-    return Response.json({ revoked: true });
+    const revoked = await revokeMcpKey(database, actor, keyId);
+    if (!revoked) return mcpKeyResponse(Response.json({ error: 'Key not found' }, { status: 404 }));
+    return mcpKeyResponse(Response.json({ revoked: true }));
   } catch (error) {
-    return errorResponse(error);
+    return mcpKeyError(error);
   } finally {
-    await database.close();
+    await database?.close();
   }
 }

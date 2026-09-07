@@ -115,12 +115,12 @@ $$;
 create schema if not exists auth;
 grant usage on schema auth to anon, authenticated, service_role;
 
--- Column set trimmed to what wizard-ads references (a foreign key target and an
--- email for readable fixtures). The real table has forty more columns and none
--- of them matter here.
+-- Only the canonical identity/email columns referenced by the application.
+-- CREATE IF NOT EXISTS leaves the platform-owned real Auth table untouched.
 create table if not exists auth.users (
   id uuid primary key default gen_random_uuid(),
   email text,
+  email_confirmed_at timestamptz,
   created_at timestamptz not null default now()
 );
 

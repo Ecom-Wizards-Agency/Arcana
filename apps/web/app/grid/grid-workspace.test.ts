@@ -74,6 +74,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 
 function props(profileId = '50505050-5050-4050-8050-505050505050') {
   return {
+    actor: { userId: '78787878-7878-4878-8878-787878787878', orgId: '79797979-7979-4979-8979-797979797979' },
     entity: 'search_terms' as const,
     currencyCode: 'USD',
     profileId,
@@ -220,6 +221,43 @@ describe('Grid row transport', () => {
       ?.getAttribute('href');
     expect(experimentHref).toContain('terms=synthetic+term+0002');
     expect(experimentHref).not.toContain('synthetic+term+0001');
+  });
+
+  it.each(['userId', 'orgId'] as const)('starts a new request when %s changes at the identical URL and ignores the old response', async (field) => {
+    const first = deferred<Response>(); const second = deferred<Response>();
+    const fetch = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
+      .mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    vi.stubGlobal('fetch', fetch);
+    const { host, root } = mount();
+    const next = props();
+    next.actor[field] = '80808080-8080-4080-8080-808080808080';
+    act(() => root.render(createElement(GridWorkspace, next)));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[1]?.[0]).toBe(fetch.mock.calls[0]?.[0]);
+    expect(host.querySelector('[data-testid="grid-data-loading"]')).not.toBeNull();
+    await act(async () => { first.resolve(Response.json(payload([row(1, 'old-actor')]))); await first.promise; });
+    expect(host.querySelector('[data-testid="grid-data-ready"]')).toBeNull();
+    await act(async () => { second.resolve(Response.json(payload([row(2, 'current-actor')]))); await second.promise; });
+    expect(host.querySelector('[data-testid="grid-start-experiment"]')?.getAttribute('href')).toContain('terms=synthetic+term+0002');
+    expect(host.textContent).not.toContain('synthetic term 0001');
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(fetch.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+  });
+
+  it.each(['userId', 'orgId'] as const)('removes ready rows and controls immediately when %s changes', async (field) => {
+    const second = deferred<Response>();
+    const fetch = vi.fn<() => Promise<Response>>()
+      .mockResolvedValueOnce(Response.json(payload([row(1)]))).mockReturnValueOnce(second.promise);
+    vi.stubGlobal('fetch', fetch);
+    const { host, root } = mount();
+    await act(async () => undefined);
+    expect(host.querySelector('[data-testid="grid-data-ready"]')).not.toBeNull();
+    const next = props(); next.actor[field] = '81818181-8181-4181-8181-818181818181';
+    act(() => root.render(createElement(GridWorkspace, next)));
+    expect(host.querySelector('[data-testid="grid-data-ready"]')).toBeNull();
+    expect(host.textContent).not.toContain('Export CSV');
+    expect(host.querySelector('[data-testid="grid-data-loading"]')).not.toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it('preserves filtering, three-level grouping, totals, and CSV across 3,597-row JSON transport', () => {

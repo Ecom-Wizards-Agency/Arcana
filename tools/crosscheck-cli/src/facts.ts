@@ -16,7 +16,7 @@
  *
  * Every read here excludes backfilled facts. See the note above the queries.
  */
-import type { DbHandle } from '@wizard-ads/db';
+import type { DbHandle, QueryHandle } from '@wizard-ads/db';
 import type { OurCampaignTotals, OurProfileDay } from './compare.js';
 
 /**
@@ -166,14 +166,16 @@ export async function readOurCampaignTotals(
 
 /** Campaign names for the drill-down, from the entity mirror. */
 export async function readCampaignNames(
-  handle: DbHandle,
+  handle: QueryHandle,
   profileId: string,
   campaignIds: readonly string[],
+  orgId?: string,
 ): Promise<Map<string, string>> {
   if (campaignIds.length === 0) return new Map();
   const rows = await handle.sql<{ amazon_id: string; name: string | null }[]>`
     select amazon_id, name from public.campaigns
-    where profile_id = ${profileId} and amazon_id in ${handle.sql([...campaignIds])}
+    where (${orgId ?? null}::uuid is null or org_id = ${orgId ?? null}::uuid)
+      and profile_id = ${profileId} and amazon_id in ${handle.sql([...campaignIds])}
   `;
   return new Map(rows.filter((row) => row.name !== null).map((row) => [row.amazon_id, row.name as string]));
 }

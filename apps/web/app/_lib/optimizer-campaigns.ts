@@ -1,4 +1,4 @@
-import type { DbHandle } from '@wizard-ads/db';
+import type { QueryHandle } from '@wizard-ads/db';
 import type { Period } from './periods';
 import { withServerTiming } from './server-timing';
 
@@ -45,7 +45,7 @@ interface CampaignWireRow {
  * The entity mirror drives row membership, so a campaign with no activity is still visible.
  */
 export async function loadOptimizerCampaignFacts(
-  handle: Pick<DbHandle, 'sql'>,
+  handle: QueryHandle,
   input: {
     orgId: string;
     profileId: string;
@@ -136,7 +136,7 @@ export async function loadOptimizerCampaignFacts(
   }, (rows) => rows.length);
 }
 
-function windowSums(handle: Pick<DbHandle, 'sql'>, period: Period, comparison: Period) {
+function windowSums(handle: QueryHandle, period: Period, comparison: Period) {
   const { sql } = handle;
   return sql`
     count(*) filter (where date between ${period.start} and ${period.end}) as current_rows,

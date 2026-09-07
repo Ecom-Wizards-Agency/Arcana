@@ -1,13 +1,16 @@
 import {
-  PostgresRecommendationRunStore,
+  readRecommendationPreviewBatchStatus,
   RecommendationPreviewError,
 } from '@wizard-ads/worker';
-import { createDb, resolveOneTimePreviewReadiness } from '@wizard-ads/db';
+import { resolveOneTimePreviewReadiness, withAuthenticatedActor } from '@wizard-ads/db';
 import {
   errorResponse,
+  openWebDatabase,
+  RequestAuthError,
   requestActor,
 } from '../../../../../src/server/request-context';
-import { requireOrgRole } from '../../../../../src/server/org-role';
+import { AgencyAccessDenied } from '@wizard-ads/db';
+import { privateResponse } from '../../../../../src/server/private-response';
 import {
   OptimizerPreviewHttpError,
   optimizerPreviewUuid,
@@ -19,39 +22,51 @@ type RouteContext = { params: Promise<{ batchId: string }> };
 
 /** Read the bounded aggregate status of one tenant-scoped preview batch. */
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
-  const connectionString = process.env['DATABASE_URL'];
-  if (!connectionString) return Response.json({ error: 'Database is not configured' }, { status: 503 });
-  const database = createDb({ connectionString, max: 1, statementTimeoutSeconds: 15 });
   try {
     const actor = await requestActor(request.headers);
-    await requireOrgRole(database, actor);
-    const parameters = await context.params;
-    const batchId = optimizerPreviewUuid(parameters.batchId, 'batchId');
-    const profileId = optimizerPreviewUuid(
-      new URL(request.url).searchParams.get('profileId'),
-      'profileId',
-    );
-    const status = await new PostgresRecommendationRunStore(database)
-      .getRecommendationPreviewBatchStatus({
-        orgId: actor.orgId,
-        profileId,
-        batchId,
+    const database = openWebDatabase();
+    let response: Response;
+    try {
+      const status = await withAuthenticatedActor(database, actor, async (sql) => {
+        const parameters = await context.params;
+        const batchId = optimizerPreviewUuid(parameters.batchId, 'batchId');
+        const profileId = optimizerPreviewUuid(
+          new URL(request.url).searchParams.get('profileId'),
+          'profileId',
+        );
+        return readRecommendationPreviewBatchStatus({ sql }, {
+          orgId: actor.orgId,
+          profileId,
+          batchId,
+        });
       });
-    if (status === null) return Response.json({ error: 'Not found' }, { status: 404 });
-    const availability = status.executionSnapshot === undefined ? undefined : await resolveOneTimePreviewReadiness(database);
-    return Response.json({ ...status, ...(availability === undefined ? {} : { availability }) }, { headers: { 'cache-control': 'no-store' } });
+      if (status === null) {
+        response = Response.json({ error: 'Not found' }, { status: 404 });
+      } else {
+        // Installation readiness is privileged infrastructure metadata. Read it
+        // separately, only after the authenticated tenant result has settled.
+        const availability = status.executionSnapshot === undefined
+          ? undefined
+          : await resolveOneTimePreviewReadiness(database);
+        response = Response.json({ ...status, ...(availability === undefined ? {} : { availability }) });
+      }
+    } finally {
+      await database.close();
+    }
+    return privateResponse(response);
   } catch (error) {
     if (error instanceof OptimizerPreviewHttpError) {
-      return Response.json({ error: error.message }, { status: error.status });
+      return privateResponse(Response.json({ error: error.message }, { status: error.status }));
     }
     if (error instanceof RecommendationPreviewError) {
-      return Response.json(
+      return privateResponse(Response.json(
         { error: error.message, code: error.code },
         { status: error.httpStatus },
-      );
+      ));
     }
-    return errorResponse(error);
-  } finally {
-    await database.close();
+    if (error instanceof RequestAuthError || error instanceof AgencyAccessDenied) {
+      return privateResponse(errorResponse(error));
+    }
+    return privateResponse(Response.json({ error: 'Could not load preview status. Try again.' }, { status: 503 }));
   }
 }

@@ -1,3 +1,4 @@
+import { withAuthenticatedActor } from '@wizard-ads/db';
 /** `/settings/integrations` — generic external API credential custody. */
 import type { ReactNode } from 'react';
 import { listCompetitorLinks, listIntegrationConnections } from '@wizard-ads/db';
@@ -73,11 +74,13 @@ export default async function IntegrationsPage(): Promise<ReactNode> {
   const org = context.active;
   if (!org) return null;
 
-  const connections = await listIntegrationConnections(handle, org.orgId);
-  const [competitorLinks, profiles] = await Promise.all([
-    listCompetitorLinks(handle, org.orgId),
-    listProfiles(handle, org.orgId),
-  ]);
+  const [connections, competitorLinks, profiles] = await withAuthenticatedActor(
+    handle, { orgId: org.orgId, userId: context.user.id }, (sql) => Promise.all([
+      listIntegrationConnections({ sql }, org.orgId),
+      listCompetitorLinks({ sql }, org.orgId),
+      listProfiles({ sql }, org.orgId),
+    ]),
+  );
   const mayManage = can(org.role, 'manageConnection');
   const mayEditCompetitors = can(org.role, 'editTargets');
 

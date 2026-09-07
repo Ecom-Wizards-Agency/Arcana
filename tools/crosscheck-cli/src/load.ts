@@ -7,13 +7,14 @@
  * returns a plain object — a server component can await it directly.
  */
 import { connectionStringFromEnv, createDb } from '@wizard-ads/db';
-import type { DbHandle } from '@wizard-ads/db';
+import type { DbHandle, QueryHandle } from '@wizard-ads/db';
 import { buildPanelModel } from './panel.js';
 import type { CrosscheckPanelModel } from './panel.js';
 import { readCampaignNames, readProfile } from './facts.js';
 import { readResults } from './results.js';
 
 export interface LoadPanelOptions {
+  orgId?: string;
   profileId: string;
   startDate?: string;
   endDate?: string;
@@ -26,11 +27,12 @@ export interface CrosscheckProfileOption {
 }
 
 export async function loadCrosscheckPanel(
-  handle: DbHandle,
+  handle: QueryHandle,
   options: LoadPanelOptions,
 ): Promise<CrosscheckPanelModel> {
   const rows = await readResults(handle, {
     profileId: options.profileId,
+    orgId: options.orgId,
     startDate: options.startDate,
     endDate: options.endDate,
   });
@@ -41,7 +43,7 @@ export async function loadCrosscheckPanel(
         .map((row) => row.entityId as string),
     ),
   ];
-  const names = await readCampaignNames(handle, options.profileId, campaignIds);
+  const names = await readCampaignNames(handle, options.profileId, campaignIds, options.orgId);
   return buildPanelModel(rows, { campaignNames: names, profileId: options.profileId });
 }
 
@@ -51,14 +53,16 @@ export async function loadCrosscheckPanel(
  * rule forbids from a tracked file — this is runtime data, not a fixture.
  */
 export async function listCrosscheckedProfiles(
-  handle: DbHandle,
+  handle: QueryHandle,
+  orgId?: string,
 ): Promise<CrosscheckProfileOption[]> {
   const rows = await handle.sql<
     { id: string; account_name: string | null; amazon_profile_id: string; region: string }[]
   >`
     select p.id, p.account_name, p.amazon_profile_id, p.region::text as region
     from public.ad_profiles p
-    where exists (select 1 from public.crosscheck_results c where c.profile_id = p.id)
+    where (${orgId ?? null}::uuid is null or p.org_id = ${orgId ?? null}::uuid)
+      and exists (select 1 from public.crosscheck_results c where c.org_id = p.org_id and c.profile_id = p.id)
     order by p.account_name nulls last, p.amazon_profile_id
   `;
   return rows.map((row) => ({

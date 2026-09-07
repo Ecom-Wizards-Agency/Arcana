@@ -1,3 +1,4 @@
+import { withAuthenticatedActor } from '@wizard-ads/db';
 /**
  * `/optimizer` — the Campaign Optimizer, laid out like AdLabs' "Bid Optimizer"
  * (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/04-optimizer.md`).
@@ -68,6 +69,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
   }
   const { handle, context } = entry;
   const orgId = context.active?.orgId ?? '';
+  const actor = { orgId, userId: context.user.id };
   const mayRunOptimizer = can(context.active?.role, 'editTargets');
 
   const params = await searchParams;
@@ -76,7 +78,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
   const period = periodFromParams(params, today);
   const settled = settledComparisonWindows(period, today);
 
-  const profiles = await listProfiles(handle, orgId);
+  const profiles = await withAuthenticatedActor(handle, actor, (sql) => listProfiles({ sql }, orgId));
   const profile = selectProfile(profiles, profileId);
   if (profile === null) {
     return (
@@ -98,14 +100,14 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
   if (canonical !== null) redirect(canonical);
 
   const [pageData, previewReadiness] = await Promise.all([
-    loadOptimizerPageData({
-      handle,
+    withAuthenticatedActor(handle, actor, (sql) => loadOptimizerPageData({
+      handle: { sql },
       orgId,
       profile,
       period,
       settledComparison: settled.comparison,
       ...(params.run === undefined ? {} : { requestedRunId: params.run }),
-    }),
+    })),
     resolveOneTimePreviewReadiness(handle),
   ]);
   const {

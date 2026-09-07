@@ -11,6 +11,7 @@ import {
   boolean,
   check,
   date,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -259,7 +260,11 @@ export const competitorLinks = pgTable(
     enabled: boolean('enabled').notNull().default(true),
     createdAt: ts('created_at').notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('competitor_links_key').on(t.orgId, t.ourAsin, t.competitorAsin)],
+  (t) => [
+    uniqueIndex('competitor_links_key').on(t.orgId, t.ourAsin, t.competitorAsin),
+    foreignKey({ name: 'competitor_links_org_profile_fkey', columns: [t.orgId, t.profileId],
+      foreignColumns: [adProfiles.orgId, adProfiles.id] }).onDelete('cascade'),
+  ],
 );
 
 export const creativeAssets = pgTable(

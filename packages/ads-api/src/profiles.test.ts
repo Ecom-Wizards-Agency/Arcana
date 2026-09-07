@@ -7,9 +7,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import { AdsApiClient } from './client.js';
-import { listProfilesAcrossRegions, parseProfiles } from './profiles.js';
+import { listProfilesAcrossRegions, listProfilesCounted, parseProfiles, parseProfilesCounted } from './profiles.js';
 import { createMockServer, lwaRoute } from './__fixtures__/server.js';
 import { PROFILES_EU, PROFILES_NA } from './__fixtures__/payloads.js';
+import { HttpResponseTooLargeError } from './http.js';
 
 const CREDENTIALS = {
   clientId: 'amzn1.application-oa2-client.example',
@@ -46,6 +47,68 @@ describe('parseProfiles', () => {
 
   it('refuses a body that is not an array rather than returning nothing', () => {
     expect(() => parseProfiles({ profiles: [] }, 'NA')).toThrow(/JSON array/);
+  });
+
+  it('counts every malformed and rounded identifier without exposing raw input', () => {
+    const result = parseProfilesCounted([null, {}, { profileId: Number.MAX_SAFE_INTEGER + 1 },
+      { profileId: '9007199254740993' }], 'EU');
+    expect(result.received).toBe(4);
+    expect(result.profiles.map((p) => p.profileId)).toEqual(['9007199254740993']);
+    expect(result.rejected).toEqual([
+      { index: 0, reason: 'invalid_row' }, { index: 1, reason: 'invalid_profile_id' },
+      { index: 2, reason: 'unsafe_profile_id' },
+    ]);
+  });
+
+  it('refuses every copy of a duplicate instead of choosing an arbitrary account row', () => {
+    const result = parseProfilesCounted([{ profileId: 1 }, { profileId: '1' },
+      { profileId: '2' }, { profileId: 1 }], 'NA');
+    expect(result.received).toBe(4);
+    expect(result.profiles.map((p) => p.profileId)).toEqual(['2']);
+    expect(result.rejected).toEqual([0, 1, 3].map((index) => ({ index, reason: 'duplicate_profile_id' })));
+  });
+
+  it('keeps parser counts through the actual discovery HTTP boundary', async () => {
+    const server = createMockServer([lwaRoute(),
+      { method: 'GET', match: '/v2/profiles', responses: [{ status: 200, json: PROFILES_NA }] },
+    ]);
+    const result = await listProfilesCounted(CREDENTIALS, 'NA', { fetch: server.fetch });
+    expect(result).toMatchObject({ received: 3, rejected: [{ index: 2, reason: 'invalid_profile_id' }] });
+    expect(result.profiles).toHaveLength(2);
+    expect(server.requestsFor('/v2/profiles')).toHaveLength(1);
+  });
+
+  it('cancels a stalled profile body and does not schedule another attempt', async () => {
+    const controller = new AbortController(); let profileRequests = 0; let cancellations = 0;
+    let bodyOpened!: () => void; const opened = new Promise<void>((resolve) => { bodyOpened = resolve; });
+    const server = createMockServer([lwaRoute()]);
+    const pending = listProfilesCounted(CREDENTIALS, 'EU', {
+      signal: controller.signal,
+      fetch: async (url, init) => {
+        if (!url.endsWith('/v2/profiles')) return server.fetch(url, init);
+        profileRequests += 1;
+        expect(init?.redirect).toBe('error'); expect(init?.signal).toBeDefined();
+        return new Response(new ReadableStream<Uint8Array>({
+          pull() { bodyOpened(); }, cancel() { cancellations += 1; },
+        }, { highWaterMark: 0 }));
+      },
+    });
+    const outcome = pending.catch((error: unknown) => error);
+    await opened; controller.abort(new DOMException('Synthetic stop', 'AbortError'));
+    expect(await outcome).toMatchObject({ name: 'AbortError' });
+    expect(profileRequests).toBe(1); expect(cancellations).toBe(1);
+  });
+
+  it('refuses an oversized profile response before buffering it', async () => {
+    let cancellations = 0; const server = createMockServer([lwaRoute()]);
+    await expect(listProfilesCounted(CREDENTIALS, 'NA', {
+      retry: { maxAttempts: 1 },
+      fetch: async (url, init) => url.endsWith('/v2/profiles')
+        ? new Response(new ReadableStream<Uint8Array>({ cancel() { cancellations += 1; } }), {
+          headers: { 'Content-Length': String(16 * 1024 * 1024 + 1) },
+        }) : server.fetch(url, init),
+    })).rejects.toBeInstanceOf(HttpResponseTooLargeError);
+    expect(cancellations).toBe(1);
   });
 });
 

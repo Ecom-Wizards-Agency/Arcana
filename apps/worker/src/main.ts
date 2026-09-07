@@ -1,5 +1,7 @@
 import { createDb } from '@wizard-ads/db';
 import { createAdsApiClientFromEnv } from './ads-api.js';
+import { AmazonConnectionLoop } from './amazon-connections.js';
+import { createAmazonConnectionProvider, createAmazonConnectionStore } from './amazon-connection-adapters.js';
 import { configFromEnv } from './config.js';
 import { createCrosscheckIngest } from './crosscheck.js';
 import { createDataDiveRankSyncHandler } from './datadive.js';
@@ -74,6 +76,9 @@ const runsAmazonJobs = config.jobTypes === undefined
   || config.jobTypes.some((jobType) => AMAZON_JOB_TYPES.has(jobType));
 // One client instance serves both the queue worker and bid-corridor sync.
 const adsApi = runsAmazonJobs ? createAdsApiClientFromEnv(handle) : undefined;
+const amazonConnections = config.amazonConnectionsEnabled
+  ? new AmazonConnectionLoop(createAmazonConnectionStore(handle), createAmazonConnectionProvider(handle))
+  : undefined;
 const unifiedReporting = adsApi && config.unifiedReporting.enabled
   ? new WorkerUnifiedDualRun({
       policy: config.unifiedReporting,
@@ -125,6 +130,7 @@ const worker = new SyncWorker({
   pollIntervalMs: config.pollIntervalMs,
 });
 marketingStream?.start();
+amazonConnections?.start();
 const health = await startHealthServer(worker, config.port, {
   deployment: {
     revision: config.revision,
@@ -133,6 +139,7 @@ const health = await startHealthServer(worker, config.port, {
     jobTypes: config.jobTypes ?? 'all',
   },
   marketingStream,
+  amazonConnections,
 }, config.healthHost);
 const authHealth = config.startsBackgroundPasses && adsApi
   ? new AuthHealthMonitor(worker, config.authHealthcheckIntervalMs)
@@ -176,6 +183,7 @@ async function performShutdown(): Promise<WorkerShutdownEvidence> {
   bidSeries?.stop();
   recommendationObserver?.stop();
   await marketingStream?.stop();
+  await amazonConnections?.stop();
   const evidence = await worker.shutdown();
   await closeServer(health);
   await handle.close();

@@ -20,6 +20,7 @@
  * Supabase session.
  */
 import { defineConfig, devices } from '@playwright/test';
+import { withE2ESummaryReporter } from './e2e/e2e-count-reporter';
 
 function required(name: string): string {
   const value = process.env[name];
@@ -43,7 +44,7 @@ export default defineConfig({
   retries: 0,
   timeout: 60_000,
   expect: { timeout: 15_000 },
-  reporter: process.env['CI']
+  reporter: withE2ESummaryReporter(process.env['CI']
     ? [
         ['list'],
         [
@@ -54,7 +55,7 @@ export default defineConfig({
           },
         ],
       ]
-    : [['list']],
+    : [['list']]),
   use: {
     baseURL,
     trace: 'retain-on-failure',

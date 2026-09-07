@@ -6,12 +6,15 @@
  * credential exists, never the Vault pointer. The three RPC wrappers preserve
  * the database custody boundary used by workers and the one-time web write.
  */
-import type { DbHandle } from '../client.js';
-import type { INTEGRATION_PROVIDERS, connectionStatus } from '../schema/enums.js';
+import { INTEGRATION_PROVIDERS, ORG_CAPABILITY_ROLES, OrgActor, OrgRole, Uuid } from '@wizard-ads/shared';
+import type postgres from 'postgres';
+import type { DbHandle, QueryHandle } from '../client.js';
+import type { connectionStatus } from '../schema/enums.js';
 import type { IntegrationConfig } from '../schema/integrations.js';
+import { AgencyAccessDenied } from './authenticated-actor.js';
 import { toDate, toDateOrNull } from './pg-time.js';
 
-export type IntegrationQueryHandle = Pick<DbHandle, 'sql'>;
+export type IntegrationQueryHandle = QueryHandle;
 export type IntegrationProvider = (typeof INTEGRATION_PROVIDERS)[number];
 export type IntegrationConnectionStatus = (typeof connectionStatus.enumValues)[number];
 
@@ -93,7 +96,7 @@ function serializeConfig(config: IntegrationConfig | undefined): string {
 
 /** List one organisation's connections without exposing Vault ids or values. */
 export async function listIntegrationConnections(
-  handle: IntegrationQueryHandle,
+  handle: QueryHandle,
   orgId: string,
 ): Promise<IntegrationConnectionRecord[]> {
   const rows = await handle.sql<IntegrationConnectionRow[]>`
@@ -205,4 +208,152 @@ export async function revokeIntegrationSecret(
     select public.revoke_integration_secret(${connectionId})
   `;
   return rows[0]?.revoke_integration_secret ?? false;
+}
+
+/** Parameter-free failure for a complete credential operation, including COMMIT. */
+export class IntegrationCredentialCommandError extends Error {
+  constructor(readonly code: 'invalid' | 'not_found' | 'unavailable' = 'unavailable') {
+    super(code === 'invalid' ? 'Invalid integration settings'
+      : code === 'not_found' ? 'Integration connection not found'
+        : 'The credential change could not be confirmed. Refresh the connection list before trying again.');
+    this.name = 'IntegrationCredentialCommandError';
+  }
+}
+
+/** One current-manager operation; a clean storage refusal commits a safe error row. */
+export async function connectIntegrationCredentialForActor(
+  handle: Pick<DbHandle, 'sql'>,
+  rawActor: OrgActor,
+  details: Pick<CreateIntegrationConnectionInput, 'provider' | 'label'>,
+  credential: string,
+): Promise<void> {
+  try {
+    if (!INTEGRATION_PROVIDERS.includes(details.provider) || typeof details.label !== 'string'
+      || !details.label.trim() || typeof credential !== 'string' || credential.length === 0) {
+      throw new IntegrationCredentialCommandError('invalid');
+    }
+    // Explicit construction prevents a structurally wider request from supplying
+    // org, creator, config or a Vault pointer to the persistence primitive.
+    const provider = details.provider;
+    const label = details.label.trim();
+    await withCurrentIntegrationManager(handle, rawActor, async (sql, actor) => {
+      const connection = await createIntegrationConnection({ sql }, {
+        orgId: actor.orgId, connectedBy: actor.userId, provider, label,
+      });
+      // The service-only SQL function rolls back recoverable storage failures
+      // inside PostgreSQL. Avoid the driver's client savepoint recovery path:
+      // a backend disconnect there can escape its promise error boundary.
+      const attempt = await sql<{ stored: boolean }[]>`
+        select app.try_store_integration_secret(${connection.id}::uuid,${credential}) as stored`;
+      if (attempt.length !== 1 || typeof attempt[0]?.stored !== 'boolean') throw new IntegrationCredentialCommandError();
+      const stored = attempt[0].stored;
+      if (!stored) {
+        await setIntegrationConnectionStatus({ sql }, {
+          orgId: actor.orgId, connectionId: connection.id, status: 'error',
+          lastError: 'The credential could not be stored in Vault.',
+        });
+      }
+      const confirmed = await sql`select id from public.integration_connections
+        where org_id=${actor.orgId} and id=${connection.id}
+          and status=${stored ? 'active' : 'error'}::public.connection_status
+          and (vault_secret_id is not null)=${stored || connection.hasSecret}`;
+      if (confirmed.length !== 1) throw new IntegrationCredentialCommandError();
+      await auditIntegrationCredential(sql, actor, connection.id,
+        stored ? 'integration.credential_connected' : 'integration.credential_store_failed',
+        { provider, stored });
+    });
+  } catch (error) { throw safeCredentialCommandError(error); }
+}
+
+/** Scopes and locks the connection before the service-only, ID-based Vault RPC. */
+export async function revokeIntegrationCredentialForActor(
+  handle: Pick<DbHandle, 'sql'>,
+  rawActor: OrgActor,
+  connectionId: string,
+): Promise<void> {
+  try {
+    const parsed = Uuid.safeParse(connectionId);
+    if (!parsed.success) throw new IntegrationCredentialCommandError('invalid');
+    await withCurrentIntegrationManager(handle, rawActor, async (sql, actor) => {
+      const owned = await sql`select id from public.integration_connections
+        where org_id=${actor.orgId} and id=${parsed.data} for update`;
+      if (owned.length !== 1) throw new IntegrationCredentialCommandError('not_found');
+      const secretRemoved = await revokeIntegrationSecret({ sql }, parsed.data);
+      const confirmed = await sql`select id from public.integration_connections
+        where org_id=${actor.orgId} and id=${parsed.data} and status='revoked' and vault_secret_id is null`;
+      if (confirmed.length !== 1) throw new IntegrationCredentialCommandError();
+      await auditIntegrationCredential(sql, actor, parsed.data, 'integration.credential_revoked', { secretRemoved });
+    });
+  } catch (error) { throw safeCredentialCommandError(error); }
+}
+
+/** Private to complete credential commands; never export a privileged callback. */
+async function withCurrentIntegrationManager<T>(
+  handle: Pick<DbHandle, 'sql'>,
+  rawActor: OrgActor,
+  operation: (sql: postgres.TransactionSql, actor: Readonly<OrgActor>) => Promise<T>,
+): Promise<T> {
+  const actor = Object.freeze(OrgActor.parse(rawActor));
+  const result = await handle.sql.begin(async (sql) => {
+    const [prior] = await sql<{
+      role: string; claims: string | null; subject: string | null; claim_role: string | null; service: boolean;
+    }[]>`select current_setting('role') as role,
+      current_setting('request.jwt.claims', true) as claims,
+      current_setting('request.jwt.claim.sub', true) as subject,
+      current_setting('request.jwt.claim.role', true) as claim_role,
+      app.is_service_role() as service`;
+    if (!prior?.service) throw new IntegrationCredentialCommandError();
+    await sql`select set_config('request.jwt.claims', ${JSON.stringify({ sub: actor.userId, role: 'authenticated' })}, true),
+      set_config('request.jwt.claim.sub', ${actor.userId}, true), set_config('request.jwt.claim.role', 'authenticated', true)`;
+    await sql`set local role authenticated`;
+    await sql`select app.lock_org_editor(${actor.orgId}::uuid)`;
+    // The command already holds FOR SHARE. Direct authenticated row-lock SQL
+    // would require the intentionally revoked org_members UPDATE privilege.
+    const [membership] = await sql<{ role: string }[]>`select role::text as role from public.org_members
+      where org_id=${actor.orgId} and user_id=auth.uid()`;
+    const role = OrgRole.safeParse(membership?.role);
+    if (!role.success || !(ORG_CAPABILITY_ROLES.manageConnection as readonly string[]).includes(role.data)) {
+      throw new AgencyAccessDenied();
+    }
+    // Restore the actual caller, never fabricate service claims or RESET ROLE
+    // to a stronger session default. Missing custom GUCs normalize to empty.
+    await sql`select set_config('role', ${prior.role}, true)`;
+    await sql`select set_config('request.jwt.claims', ${prior.claims ?? ''}, true),
+      set_config('request.jwt.claim.sub', ${prior.subject ?? ''}, true),
+      set_config('request.jwt.claim.role', ${prior.claim_role ?? ''}, true)`;
+    const [restored] = await sql<{ valid: boolean }[]>`select
+      current_setting('role')=${prior.role}
+      and coalesce(current_setting('request.jwt.claims', true),'')=${prior.claims ?? ''}
+      and coalesce(current_setting('request.jwt.claim.sub', true),'')=${prior.subject ?? ''}
+      and coalesce(current_setting('request.jwt.claim.role', true),'')=${prior.claim_role ?? ''}
+      and app.is_service_role() as valid`;
+    if (!restored?.valid) throw new IntegrationCredentialCommandError();
+    // Subsequent SQL is privileged. Each complete command derives its scope
+    // from this actor and holds the membership lock through its final audit.
+    return { value: await operation(sql, actor) };
+  });
+  return result.value;
+}
+
+async function auditIntegrationCredential(
+  sql: postgres.TransactionSql,
+  actor: OrgActor,
+  connectionId: string,
+  action: 'integration.credential_connected' | 'integration.credential_store_failed' | 'integration.credential_revoked',
+  payload: { provider: IntegrationProvider; stored: boolean } | { secretRemoved: boolean },
+): Promise<void> {
+  const rows = await sql`insert into public.audit_log
+    (org_id,actor_type,actor_id,action,target_type,target_id,payload,source)
+    values (${actor.orgId},'user',${actor.userId},${action},'integration_connection',${connectionId},
+      ${JSON.stringify(payload)}::jsonb,'web') returning id`;
+  if (rows.length !== 1) throw new IntegrationCredentialCommandError();
+}
+
+function safeCredentialCommandError(error: unknown): Error {
+  if (error instanceof IntegrationCredentialCommandError || error instanceof AgencyAccessDenied) return error;
+  if (typeof error === 'object' && error !== null && 'code' in error && error.code === '42501') {
+    return new AgencyAccessDenied();
+  }
+  // Never retain a driver object, message, properties, cause or submitted value.
+  return new IntegrationCredentialCommandError();
 }

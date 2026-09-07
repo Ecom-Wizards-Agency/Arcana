@@ -27,7 +27,7 @@ import {
   type CreativeMappingProvenance,
   type Placement,
 } from '@wizard-ads/shared';
-import type { DbHandle } from '../client.js';
+import type { DbHandle, QueryHandle } from '../client.js';
 import {
   adCreativeAssetMappings,
   creativeAssets,
@@ -583,7 +583,7 @@ const CREATIVE_SYNC_JOB_STATUSES: readonly CreativeSyncJobStatus[] = [
 
 /** Latest Creative queue evidence for one exact tenant/profile. */
 export async function readLatestCreativeSyncJobState(
-  handle: Pick<DbHandle, 'sql'>,
+  handle: QueryHandle,
   scope: { orgId: string; profileId: string },
 ): Promise<CreativeSyncJobState | null> {
   const rows = await handle.sql<{
@@ -613,7 +613,7 @@ export async function readLatestCreativeSyncJobState(
 
 /** Latest counted observation for one tenant/profile, without reading mapping rows. */
 export async function readLatestCreativeSyncSnapshot(
-  handle: Pick<DbHandle, 'sql'>,
+  handle: QueryHandle,
   scope: { orgId: string; profileId: string },
 ): Promise<CreativeSyncSnapshot | null> {
   const rows = await handle.sql<CreativeSnapshotRow[]>`
@@ -634,7 +634,7 @@ export async function readLatestCreativeSyncSnapshot(
 
 /** Read only mappings still attached to this exact observation snapshot. */
 export async function readCreativeSyncSnapshotEvidence(
-  handle: Pick<DbHandle, 'sql'>,
+  handle: QueryHandle,
   scope: { orgId: string; profileId: string; snapshotId: string },
 ): Promise<CreativeSyncSnapshotEvidence> {
   const snapshots = await handle.sql<CreativeSnapshotEvidenceRow[]>`
@@ -834,7 +834,7 @@ interface DrilldownRow {
 
 /** Aggregate by authoritative Asset ID while retaining exact ad-level drilldown. */
 export async function readCreativePerformance(
-  handle: Pick<DbHandle, 'sql'>,
+  handle: QueryHandle,
   filter: CreativePerformanceFilter,
 ): Promise<CreativePerformanceAsset[]> {
   const aggregates = await handle.sql<AggregateRow[]>`
