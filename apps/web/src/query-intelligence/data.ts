@@ -1,4 +1,4 @@
-import type { RequestDatabase, WeeklyPpcQueryRecord } from '@wizard-ads/db';
+import type { QueryHandle, WeeklyPpcQueryRecord } from '@wizard-ads/db';
 import {
   QueryVocabularyEntry,
   SqpWeeklyFact,
@@ -45,7 +45,7 @@ function number(value: string | number | null): number {
 }
 
 export async function listQueryIntelligenceScopes(
-  handle: Pick<RequestDatabase, 'sql'>,
+  handle: QueryHandle,
   input: { orgId: string; profileId: string },
 ): Promise<QueryIntelligenceScope[]> {
   const rows = await handle.sql<{
@@ -84,7 +84,7 @@ export async function listQueryIntelligenceScopes(
 }
 
 async function readFacts(
-  handle: Pick<RequestDatabase, 'sql'>,
+  handle: QueryHandle,
   input: { orgId: string; profileId: string; marketplaceId: string; weekStart: string },
 ): Promise<SqpWeeklyFactType[]> {
   const rows = await handle.sql<{
@@ -154,7 +154,7 @@ async function readFacts(
 }
 
 async function readPpc(
-  handle: Pick<RequestDatabase, 'sql'>,
+  handle: QueryHandle,
   input: {
     orgId: string;
     profileId: string;
@@ -226,7 +226,7 @@ async function readPpc(
 }
 
 async function readVocabulary(
-  handle: Pick<RequestDatabase, 'sql'>,
+  handle: QueryHandle,
   input: { orgId: string; marketplaceId: string },
 ): Promise<QueryVocabularyEntryType[]> {
   const rows = await handle.sql<{
@@ -263,7 +263,7 @@ async function readVocabulary(
 }
 
 async function readPromotionEvidence(
-  handle: Pick<RequestDatabase, 'sql'>,
+  handle: QueryHandle,
   input: { orgId: string; profileId: string; marketplaceId: string; weekStart: string },
 ): Promise<SqpPromotionEvidence[]> {
   const rows = await handle.sql<{
@@ -304,7 +304,7 @@ async function readPromotionEvidence(
 }
 
 export async function loadQueryIntelligenceSource(
-  handle: Pick<RequestDatabase, 'sql'>,
+  handle: QueryHandle,
   input: {
     orgId: string;
     profileId: string;
@@ -313,11 +313,10 @@ export async function loadQueryIntelligenceSource(
     weekEnd: string;
   },
 ): Promise<QueryIntelligenceSource> {
-  const [facts, ppc, vocabulary, promotionRuns] = await Promise.all([
-    readFacts(handle, input),
-    readPpc(handle, input),
-    readVocabulary(handle, input),
-    readPromotionEvidence(handle, input),
-  ]);
+  // Settle each read before the caller enters its recoverable review savepoint.
+  const facts = await readFacts(handle, input);
+  const ppc = await readPpc(handle, input);
+  const vocabulary = await readVocabulary(handle, input);
+  const promotionRuns = await readPromotionEvidence(handle, input);
   return { facts, ppc, vocabulary, promotionRuns };
 }
