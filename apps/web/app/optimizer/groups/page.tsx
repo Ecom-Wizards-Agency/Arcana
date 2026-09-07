@@ -1,3 +1,4 @@
+import { withAuthenticatedActor } from '@wizard-ads/db';
 import type { ReactNode } from 'react';
 import { redirect } from 'next/navigation';
 import { readOptimizationWorkspace } from '@wizard-ads/db';
@@ -30,9 +31,10 @@ export default async function OptimizationGroupsPage({ searchParams }: PageProps
 
   const { handle, context } = entry;
   const orgId = context.active?.orgId ?? '';
+  const actor = { orgId, userId: context.user.id };
   const params = await searchParams;
   const profileId = await requestedProfileId(params.profile);
-  const profiles = await listProfiles(handle, orgId);
+  const profiles = await withAuthenticatedActor(handle, actor, (sql) => listProfiles({ sql }, orgId));
   const profile = selectProfile(profiles, profileId);
 
   if (profile === null) {
@@ -51,7 +53,7 @@ export default async function OptimizationGroupsPage({ searchParams }: PageProps
   if (canonical !== null) redirect(canonical);
 
   const [workspace, previewReadiness] = await Promise.all([
-    readOptimizationWorkspace(handle, { orgId, profileId: profile.id }),
+    withAuthenticatedActor(handle, actor, (sql) => readOptimizationWorkspace({ sql }, { orgId, profileId: profile.id })),
     resolveOptimizerPreviewReadiness(handle),
   ]);
 

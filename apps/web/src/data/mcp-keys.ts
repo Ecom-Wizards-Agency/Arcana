@@ -21,6 +21,8 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import type { Sql } from '@wizard-ads/db';
+import { McpKeyMetadata } from '@wizard-ads/shared';
+export { listMcpKeyMetadata as listMcpKeys } from '@wizard-ads/db';
 import {
   DEFAULT_MCP_KEY_EXPIRY_DAYS,
   isMcpKeyExpiryDays,
@@ -43,18 +45,7 @@ function hashToken(token: string): string {
   return createHash('sha256').update(token, 'utf8').digest('hex');
 }
 
-export interface McpKeyRecord {
-  id: string;
-  label: string;
-  keyPrefix: string;
-  scope: string;
-  /** Null is retained only for keys issued before profile allowlists were required. */
-  profileIds: string[] | null;
-  expiresAt: string | null;
-  revokedAt: string | null;
-  lastUsedAt: string | null;
-  createdAt: string;
-}
+export type McpKeyRecord = McpKeyMetadata;
 
 export interface IssuedMcpKey {
   record: McpKeyRecord;
@@ -75,30 +66,17 @@ interface KeyRow {
 }
 
 function toRecord(row: KeyRow): McpKeyRecord {
-  return {
+  return McpKeyMetadata.parse({
     id: row.id,
     label: row.label,
     keyPrefix: row.key_prefix,
     scope: row.scope,
     profileIds: row.profile_ids,
-    expiresAt: row.expires_at,
-    revokedAt: row.revoked_at,
-    lastUsedAt: row.last_used_at,
-    createdAt: row.created_at,
-  };
-}
-
-/** Every key an org has, newest first — active and revoked alike. */
-export async function listMcpKeys(handle: SqlHandle, orgId: string): Promise<McpKeyRecord[]> {
-  const rows = await handle.sql<KeyRow[]>`
-    select id, label, key_prefix, scope::text as scope, profile_ids,
-           expires_at::text as expires_at, revoked_at::text as revoked_at,
-           last_used_at::text as last_used_at, created_at::text as created_at
-      from mcp.api_keys
-     where org_id = ${orgId}
-     order by created_at desc
-  `;
-  return rows.map(toRecord);
+    expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
+    revokedAt: row.revoked_at === null ? null : new Date(row.revoked_at).toISOString(),
+    lastUsedAt: row.last_used_at === null ? null : new Date(row.last_used_at).toISOString(),
+    createdAt: new Date(row.created_at).toISOString(),
+  });
 }
 
 export interface IssueMcpKeyInput {

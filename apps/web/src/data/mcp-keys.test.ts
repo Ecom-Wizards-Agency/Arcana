@@ -5,6 +5,7 @@ import {
   issueMcpKey,
   listMcpKeys,
 } from './mcp-keys';
+import { withAuthenticatedActor } from '@wizard-ads/db';
 import { MCP_KEY_EXPIRY_DAY_OPTIONS } from '../mcp-key-policy';
 
 const available = await databaseAvailable();
@@ -54,7 +55,7 @@ describe.skipIf(!available)('MCP key data safety', () => {
     expect(issued.record.scope).toBe('read');
     expect(issued.record.profileIds).toEqual([profileA]);
     expect(new Date(issued.record.expiresAt ?? 0).toISOString()).toBe('2026-09-28T00:00:00.000Z');
-    const listed = await listMcpKeys(database, orgA);
+    const listed = await withAuthenticatedActor(database, { orgId: orgA, userId: USER_A }, (sql) => listMcpKeys({ sql }, orgA));
     expect(listed).toHaveLength(1);
     expect(listed[0]?.profileIds).toEqual([profileA]);
   });
@@ -72,7 +73,7 @@ describe.skipIf(!available)('MCP key data safety', () => {
       }),
     ).rejects.toThrow(/expiry must be/i);
 
-    const before = await listMcpKeys(database, orgA);
+    const before = await withAuthenticatedActor(database, { orgId: orgA, userId: USER_A }, (sql) => listMcpKeys({ sql }, orgA));
     await expect(
       issueMcpKey(database, {
         orgId: orgA,
@@ -80,7 +81,7 @@ describe.skipIf(!available)('MCP key data safety', () => {
         profileIds: [profileA, profileB],
       }),
     ).rejects.toThrow(/belong to the active organization/i);
-    const after = await listMcpKeys(database, orgA);
+    const after = await withAuthenticatedActor(database, { orgId: orgA, userId: USER_A }, (sql) => listMcpKeys({ sql }, orgA));
     expect(after).toHaveLength(before.length);
   });
 });

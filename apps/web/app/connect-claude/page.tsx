@@ -1,3 +1,4 @@
+import { withAuthenticatedActor } from '@wizard-ads/db';
 /**
  * `/connect-claude` — the AI (MCP) surface.
  *
@@ -41,10 +42,12 @@ export default async function ConnectClaudePage(): Promise<ReactNode> {
   const org = context.active;
   if (!org) return null;
 
-  const [keys, profiles] = await Promise.all([
-    listMcpKeys(handle, org.orgId),
-    listProfiles(handle, org.orgId),
-  ]);
+  const [keys, profiles] = await withAuthenticatedActor(
+    handle, { orgId: org.orgId, userId: context.user.id }, (sql) => Promise.all([
+      listMcpKeys({ sql }, org.orgId),
+      listProfiles({ sql }, org.orgId),
+    ]),
+  );
   const canManage = can(org.role, 'manageConnection');
   const endpoint = mcpEndpoint();
 

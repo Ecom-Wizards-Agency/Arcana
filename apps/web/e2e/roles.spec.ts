@@ -97,6 +97,11 @@ test('a viewer sees the roster and can change nothing', async ({ page }) => {
   await expect(page.getByTestId('connect-integration-keepa')).toHaveCount(0);
   await expect(page.getByTestId('revoke-integration-keepa')).toHaveCount(0);
 
+  await page.goto('/connect-claude');
+  await expect(page.getByRole('heading', { name: 'Connect AI (MCP)', exact: true })).toBeVisible();
+  await expect(page.getByTestId('issue-forbidden')).toBeVisible();
+  await expect(page.getByTestId('issue-key')).toHaveCount(0);
+
   const response = await page.request.get('/api/amazon/oauth/start', { maxRedirects: 0 });
   expect(response.status()).toBe(403);
 });

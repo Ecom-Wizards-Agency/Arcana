@@ -1,3 +1,4 @@
+import { withAuthenticatedActor } from '@wizard-ads/db';
 import type { CSSProperties, ReactNode } from 'react';
 import type { DaypartingScheduleProposal } from '@wizard-ads/shared';
 import { gate } from '../../src/auth/guard';
@@ -51,7 +52,8 @@ export default async function DaypartingPage({ searchParams }: PageProps): Promi
 
   const params = await searchParams;
   const orgId = entry.context.active?.orgId ?? '';
-  const profiles = await listProfiles(entry.handle, orgId);
+  const actor = { orgId, userId: entry.context.user.id };
+  const profiles = await withAuthenticatedActor(entry.handle, actor, (sql) => listProfiles({ sql }, orgId));
   const profile = selectProfile(profiles, await requestedProfileId(params.profile));
   if (profile === null) {
     return (
@@ -75,12 +77,12 @@ export default async function DaypartingPage({ searchParams }: PageProps): Promi
   const metric = isDaypartingMetric(params.metric) ? params.metric : 'roas';
   const showAllEvidence = params.evidence === 'all';
   const campaignId = nonempty(params.campaign);
-  const workspace = await readDaypartingWorkspace(entry.handle, {
+  const workspace = await withAuthenticatedActor(entry.handle, actor, (sql) => readDaypartingWorkspace({ sql }, {
     orgId,
     profileId: profile.id,
     fromUtcHour: `${from}T00:00:00.000Z`,
     toUtcHour: `${to}T23:59:59.999Z`,
-  });
+  }));
   const allSummary = summarizeDaypartingFacts(workspace.facts);
   const campaignChoices = campaignId !== null && !allSummary.campaigns.includes(campaignId)
     ? [campaignId, ...allSummary.campaigns]
