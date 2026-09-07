@@ -7,6 +7,7 @@ import { GET as start } from '../../app/api/amazon/oauth/start/route';
 import { GET as callback } from '../../app/api/amazon/oauth/callback/route';
 import { GET as status, POST as cancel } from '../../app/api/amazon/connections/[operationId]/route';
 import { createState, nonceCookieName, verifyState } from './state';
+import { ORG_COOKIE } from '../cookies';
 import { bulkSetSync, toggleSync } from '../../app/settings/profiles/actions';
 
 let db: TestDatabase;
@@ -95,6 +96,11 @@ describe.skipIf(!available)('web consent admission and status on actual authenti
     cookieOrg = other.orgId;
     const response = await callback(requestFor(f.state, f.nonce));
     expect(new URL(response.headers.get('location')!).searchParams.get('org')).toBe(f.actor.orgId);
+    const selectionCookie = response.headers.getSetCookie().find((value) => value.startsWith(ORG_COOKIE + '='));
+    expect(selectionCookie).toContain(ORG_COOKIE + '=' + f.actor.orgId);
+    expect(selectionCookie).toContain('HttpOnly');
+    expect(selectionCookie).toContain('SameSite=lax');
+    expect(response.headers.getSetCookie().some((value) => value.startsWith(nonceCookieName(false) + '=') && value.includes('Max-Age=0'))).toBe(true);
     expect(await db.sql`select org_id from app.amazon_connection_operations where state='queued' and initiated_by=${f.actor.userId}`)
       .toEqual([{ org_id: f.actor.orgId }]);
     expect(await status(routeRequest(other.orgId, f.operationId), context(f.operationId))).toHaveProperty('status', 404);
@@ -107,7 +113,9 @@ describe.skipIf(!available)('web consent admission and status on actual authenti
     expect((await cancel(routeRequest(f.actor.orgId, f.operationId, 'POST'), context(f.operationId))).status).toBe(403);
     const attempted = await start(new Request(origin + '/api/amazon/oauth/start?org=' + f.actor.orgId));
     expect(attempted.status).toBe(403);
-    expect((await callback(requestFor(f.state, f.nonce))).headers.get('location')).toContain('different+session');
+    const refusedCallback = await callback(requestFor(f.state, f.nonce));
+    expect(refusedCallback.headers.get('location')).toContain('different+session');
+    expect(refusedCallback.headers.getSetCookie().some((value) => value.startsWith(ORG_COOKIE + '='))).toBe(false);
     expect(await db.sql`select state from app.amazon_connection_operations where id=${f.operationId}`)
       .toEqual([{ state: 'awaiting_consent' }]);
     expect(globalThis.fetch).not.toHaveBeenCalled();

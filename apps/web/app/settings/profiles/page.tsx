@@ -237,7 +237,7 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
             </Button>
             {/* A link, not a reset: the filter lives in the URL, so clearing it
                 means going to the unfiltered URL, not blanking the inputs. */}
-            <a className="wa-btn wa-btn--ghost" href="/settings/profiles">
+            <a className="wa-btn wa-btn--ghost" href={`/settings/profiles?${new URLSearchParams({ org: org.orgId })}`}>
               Clear
             </a>
           </Toolbar>
@@ -332,7 +332,7 @@ export default async function ProfilesPage({ searchParams }: Props): Promise<Rea
                     Connect Amazon Ads
                   </a>
                 ) : (
-                  <a className="wa-btn wa-btn--sm" href="/settings/profiles">
+                  <a className="wa-btn wa-btn--sm" href={`/settings/profiles?${new URLSearchParams({ org: org.orgId })}`}>
                     Clear the filter
                   </a>
                 )

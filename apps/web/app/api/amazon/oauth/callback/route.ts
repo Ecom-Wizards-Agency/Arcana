@@ -6,6 +6,7 @@ import { cancelAmazonConnection, submitAmazonConnection } from '@wizard-ads/db';
 import { amazonConnectionsEnabled, secureCookies, stateSigningKey } from '../../../../../src/env';
 import { can } from '../../../../../src/auth/roles';
 import { authOrigin } from '../../../../../src/auth/origin';
+import { ORG_COOKIE } from '../../../../../src/cookies';
 import {
   authorizeOperatorRole,
   currentOperatorIdentity,
@@ -73,7 +74,7 @@ export async function GET(request: Request): Promise<Response> {
     // Never echo provider descriptions. They may contain request identifiers.
     try { await cancelAmazonConnection(handle, actor, operationId); }
     catch { return finish(secure, failure('The connection could not be reconciled; check Connections')); }
-    return finish(secure, destination);
+    return finish(secure, destination, actor.orgId);
   }
   const code = url.searchParams.get('code');
   if (!code || code.length > 8192) return finish(secure, failure('Amazon returned no usable authorization code'));
@@ -85,12 +86,17 @@ export async function GET(request: Request): Promise<Response> {
     // The commit may have succeeded. The durable status page is the recovery
     // destination; never repeat the exchange or serialize a query error here.
   }
-  return finish(secure, destination);
+  return finish(secure, destination, actor.orgId);
 }
 
 /** Redirect, always clearing the nonce. Never a body: the code is in the URL. */
-function finish(secure: boolean, location: string): Response {
+function finish(secure: boolean, location: string, verifiedOrgId?: string): Response {
   const response = NextResponse.redirect(absolute(location), 303);
+  if (verifiedOrgId !== undefined) {
+    response.cookies.set(ORG_COOKIE, verifiedOrgId, {
+      httpOnly: true, sameSite: 'lax', secure, path: '/', maxAge: 60 * 60 * 24 * 365,
+    });
+  }
   response.headers.set('Cache-Control', 'no-store, max-age=0');
   response.headers.set('Referrer-Policy', 'no-referrer');
   response.headers.append('Set-Cookie', clearedNonceCookie(secure));
