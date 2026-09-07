@@ -55,6 +55,7 @@ build_recommendation_worker_artifact() (
   bundle_args=(
     --bundle --platform=node --format=esm --target=node22
     "--alias:@wizard-ads/db/recommendation-worker=$repo_root/packages/db/src/recommendation-worker.ts"
+    "--alias:@wizard-ads/db/worker=$repo_root/packages/db/src/worker.ts"
     "--alias:@wizard-ads/core=$repo_root/packages/core/src/index.ts"
     "--alias:@wizard-ads/db=$repo_root/packages/db/src/index.ts"
     "--alias:@wizard-ads/shared=$repo_root/packages/shared/src/index.ts"
