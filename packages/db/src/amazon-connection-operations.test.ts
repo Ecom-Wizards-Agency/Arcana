@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AmazonConnectionBegin, OrgActor } from '@wizard-ads/shared';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from './testing/harness.js';
 import { asUser } from './testing/rls.js';
-import { AmazonConsentStoreError, beginAmazonConnection, cancelAmazonConnection, readAmazonConnection, submitAmazonConnection } from './queries/amazon-connection-operations.js';
+import { AmazonConsentStoreError, beginAmazonConnection, cancelAmazonConnection, latestAmazonConnection, readAmazonConnection, submitAmazonConnection } from './queries/amazon-connection-operations.js';
 
 const available = await databaseAvailable();
 const nonceHash = 'c'.repeat(64);
@@ -68,6 +68,20 @@ describe.skipIf(!available)('organization consent custody', () => {
       await expect(sql`select * from app.amazon_connection_operations`).rejects.toMatchObject({ code: '42501' });
       await expect(sql`select app.reconcile_amazon_connection_operation(${operation.operationId})`).rejects.toMatchObject({ code: '42501' });
     });
+  });
+
+  it('resumes only the selected agency latest operation without exposing custody', async () => {
+    const actor = await agency(); const foreign = await agency();
+    const first = await beginAmazonConnection(db, actor, request());
+    expect(await latestAmazonConnection(db, actor)).toEqual(first);
+    expect(await latestAmazonConnection(db, foreign)).toBeNull();
+    await expect(latestAmazonConnection(db, { ...foreign, orgId: actor.orgId })).rejects.toThrow('Resource not found');
+    await cancelAmazonConnection(db, actor, first.operationId);
+    const next = await beginAmazonConnection(db, actor, request());
+    expect(await latestAmazonConnection(db, actor)).toEqual(next);
+    expect(await readAmazonConnection(db, actor, first.operationId)).toMatchObject({ state: 'cancelled' });
+    await db.sql`delete from public.org_members where org_id=${actor.orgId} and user_id=${actor.userId}`;
+    await expect(latestAmazonConnection(db, actor)).rejects.toThrow('Resource not found');
   });
 
   it('stores a single short-lived code across racing callback retries with no secret in status or audit', async () => {

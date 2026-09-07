@@ -71,3 +71,14 @@ export async function readAmazonConnection(
     return rows[0]!.operation === null ? null : AmazonConnectionOperation.parse(rows[0]!.operation);
   });
 }
+
+/** Settings can resume the last operation without retaining its identifier in a browser. */
+export async function latestAmazonConnection(
+  handle: Handle, actor: OrgActor,
+): Promise<AmazonConnectionOperation | null> {
+  return withAuthenticatedActor(handle, actor, async (sql: QuerySql) => {
+    const rows = await sql<{ operation: unknown }[]>`select app.latest_amazon_connection(${actor.orgId}) as operation`;
+    if (rows.length !== 1) throw new Error('Connection read response count mismatch');
+    return rows[0]!.operation === null ? null : AmazonConnectionOperation.parse(rows[0]!.operation);
+  });
+}

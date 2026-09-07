@@ -253,11 +253,19 @@ as $$
       and app.has_org_role(p_org_id, array['owner','admin','analyst','viewer']);
 $$;
 
+create function app.latest_amazon_connection(p_org_id uuid)
+returns jsonb language sql stable security definer set search_path = pg_catalog, public, pg_temp
+as $$
+  select app.amazon_connection_view(o) from app.amazon_connection_operations o
+    where o.org_id = p_org_id and app.has_org_role(p_org_id, array['owner','admin','analyst','viewer'])
+    order by o.created_at desc, o.id desc limit 1;
+$$;
+
 revoke all on function app.amazon_connection_view(app.amazon_connection_operations),
   app.lock_amazon_connection_operation(uuid), app.finish_amazon_connection_operation(uuid,text,text),
   app.reconcile_amazon_connection_operation(uuid), app.begin_amazon_connection(uuid,uuid,text,text,text,text),
   app.submit_amazon_connection(uuid,uuid,text,text), app.cancel_amazon_connection(uuid,uuid),
-  app.read_amazon_connection(uuid,uuid) from public, anon, authenticated, service_role;
+  app.read_amazon_connection(uuid,uuid), app.latest_amazon_connection(uuid) from public, anon, authenticated, service_role;
 grant execute on function app.begin_amazon_connection(uuid,uuid,text,text,text,text),
   app.submit_amazon_connection(uuid,uuid,text,text), app.cancel_amazon_connection(uuid,uuid),
-  app.read_amazon_connection(uuid,uuid) to authenticated;
+  app.read_amazon_connection(uuid,uuid), app.latest_amazon_connection(uuid) to authenticated;
