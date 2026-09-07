@@ -24,7 +24,7 @@
  */
 import { classifyCampaignCategory } from '@wizard-ads/core';
 import { readLatestBidSeriesByTargetIds } from '@wizard-ads/db';
-import type { DbHandle } from '@wizard-ads/db';
+import type { QueryHandle } from '@wizard-ads/db';
 import type { EntityLevel, GridRow } from '@wizard-ads/ui';
 import type { Period } from './periods.js';
 import { withServerTiming } from './server-timing.js';
@@ -105,7 +105,7 @@ export interface GridPayload {
 }
 
 /** The grid query needs no Drizzle client or connection lifecycle capability. */
-type GridDataHandle = Pick<DbHandle, 'sql'>;
+type GridDataHandle = QueryHandle;
 
 export async function loadGridRows(
   handle: GridDataHandle,

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import { createRequestDatabase } from '@wizard-ads/db';
-import type { RequestDatabase } from '@wizard-ads/db';
+import type { QueryHandle, RequestDatabase } from '@wizard-ads/db';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import type { GridRow } from '@wizard-ads/ui';
 import { createGridRowsGet, GET, parseGridRowsQuery } from '../app/api/grid/rows/route.js';
@@ -15,7 +15,6 @@ import {
 import { GRID_SERVER_TIMING_SPANS } from '../app/api/grid/rows/server-timing.js';
 import { RequestAuthError } from './server/request-context.js';
 import {
-  createGridRequestAuthorizer,
   resolveGridReadReceipt,
 } from './grid/request-context.js';
 import { listMemberships } from './data/orgs.js';
@@ -159,30 +158,100 @@ describe('Grid rows route runtime', () => {
 
   function database() {
     const close = vi.fn(async () => {});
-    const sql = vi.fn() as unknown as RequestDatabase['sql'];
-    return { handle: { sql, close }, close };
+    const transaction = { sql: vi.fn(async () => []) as unknown as QueryHandle['sql'] };
+    const begin = vi.fn(async (operation: (sql: QueryHandle['sql']) => Promise<unknown>) => operation(transaction.sql));
+    const sql = Object.assign(vi.fn(), { begin }) as unknown as RequestDatabase['sql'];
+    return { handle: { sql, close }, close, transaction, begin };
   }
 
+  function gate() {
+    let release = () => {};
+    const promise = new Promise<void>((resolve) => { release = resolve; });
+    return { promise, release };
+  }
+
+  it.each(['commit', 'rollback'] as const)('awaits %s and one close before releasing a response', async (settlement) => {
+    const db = database();
+    const entered = gate();
+    const settle = gate();
+    const closing = gate();
+    const close = gate();
+    db.begin.mockImplementation(async (operation) => {
+      const outcome = await Promise.allSettled([operation(db.transaction.sql)]);
+      entered.release();
+      await settle.promise;
+      const result = outcome[0]!;
+      if (result.status === 'rejected') throw result.reason;
+      return result.value;
+    });
+    db.close.mockImplementation(async () => { closing.release(); await close.promise; });
+    const get = createGridRowsGet({
+      identify: async () => ({ userId: USER_A, organization: { mode: 'preferred', orgId: null } }),
+      openDatabase: () => db.handle,
+      resolveReceipt: async () => ({ orgId: USER_A, role: 'viewer', profileId: UNKNOWN_PROFILE, currencyCode: 'GBP' }),
+      enforceAssurance: async () => {},
+      loadRows: async () => {
+        if (settlement === 'rollback') throw new Error('synthetic private row failure');
+        return { rows: [], rowCount: 0, truncated: false };
+      },
+    });
+    let completed = false;
+    const pending = get(request()).then((response) => { completed = true; return response; });
+    await entered.promise;
+    expect(completed).toBe(false);
+    expect(db.close).not.toHaveBeenCalled();
+    settle.release();
+    await closing.promise;
+    expect(completed).toBe(false);
+    close.release();
+    const response = await pending;
+    expect(response.status).toBe(settlement === 'commit' ? 200 : 500);
+    expect(response.headers.has('server-timing')).toBe(settlement === 'commit');
+    expect(await response.text()).not.toContain('synthetic private');
+    expect(db.begin).toHaveBeenCalledTimes(1);
+    expect(db.close).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['commit', 'close'] as const)('refuses a prepared successful payload when %s fails', async (failure) => {
+    const db = database();
+    if (failure === 'commit') db.begin.mockImplementation(async (operation) => {
+      await operation(db.transaction.sql);
+      throw new Error('synthetic private commit failure');
+    });
+    else db.close.mockRejectedValue(new Error('synthetic private close failure'));
+    const get = createGridRowsGet({
+      identify: async () => ({ userId: USER_A, organization: { mode: 'preferred', orgId: null } }),
+      openDatabase: () => db.handle,
+      resolveReceipt: async () => ({ orgId: USER_A, role: 'viewer', profileId: UNKNOWN_PROFILE, currencyCode: 'GBP' }),
+      enforceAssurance: async () => {},
+      loadRows: async () => ({ rows: [], rowCount: 0, truncated: false }),
+    });
+    const response = await get(request());
+    expect(response.status).toBe(500);
+    expect(response.headers.has('server-timing')).toBe(false);
+    expect(await response.json()).toEqual({ error: 'Could not load Grid rows' });
+    expect(db.close).toHaveBeenCalledTimes(1);
+  });
+
   it('passes one request handle and only receipt-owned scope to the row loader, then closes once', async () => {
-    const { handle, close } = database();
+    const { handle, close, transaction } = database();
     const seen: unknown[] = [];
     const get = createGridRowsGet({
-      authorizeRequest: createGridRequestAuthorizer({
-        identify: async () => ({
-          userId: USER_A,
-          organization: { mode: 'preferred' as const, orgId: null },
-        }),
-        openDatabase: () => handle,
-        resolveReceipt: async (received, _subject, candidateProfileId) => {
-          seen.push(received, candidateProfileId);
-          return {
-            orgId: '45454545-4545-4545-8545-454545454545',
-            role: 'viewer',
-            profileId: UNKNOWN_PROFILE,
-            currencyCode: 'GBP',
-          };
-        },
+      identify: async () => ({
+        userId: USER_A,
+        organization: { mode: 'preferred' as const, orgId: null },
       }),
+      openDatabase: () => handle,
+      resolveReceipt: async (received, _subject, candidateProfileId) => {
+        seen.push(received, candidateProfileId);
+        return {
+          orgId: '45454545-4545-4545-8545-454545454545',
+          role: 'viewer',
+          profileId: UNKNOWN_PROFILE,
+          currencyCode: 'GBP',
+        };
+      },
+      enforceAssurance: async () => {},
       loadRows: async (received, entity, options) => {
         seen.push(received, entity, options);
         return { rows: [], rowCount: 0, truncated: false };
@@ -191,9 +260,9 @@ describe('Grid rows route runtime', () => {
 
     const response = await get(request());
     expect(response.status).toBe(200);
-    expect(seen[0]).toBe(handle);
+    expect(seen[0]).toEqual(transaction);
     expect(seen[1]).toBe(UNKNOWN_PROFILE);
-    expect(seen[2]).toBe(handle);
+    expect(seen[2]).toBe(seen[0]);
     expect(seen[3]).toBe('targets');
     expect(seen[4]).toMatchObject({
       orgId: '45454545-4545-4545-8545-454545454545',
@@ -209,27 +278,25 @@ describe('Grid rows route runtime', () => {
     const loadRows = vi.fn();
     const location = '/auth/mfa/challenge?next=%2Fgrid';
     const get = createGridRowsGet({
-      authorizeRequest: createGridRequestAuthorizer({
-        identify: async () => ({
-          userId: USER_A,
-          organization: { mode: 'preferred' as const, orgId: null },
-        }),
-        openDatabase: () => handle,
-        resolveReceipt: async () => ({
-          orgId: '45454545-4545-4545-8545-454545454545',
-          role: 'viewer',
-          profileId: UNKNOWN_PROFILE,
-          currencyCode: 'GBP',
-        }),
-        enforceAssurance: async () => {
-          throw new RequestAuthError(
-            'Additional authentication required',
-            403,
-            'additional_authentication_required',
-            location,
-          );
-        },
+      identify: async () => ({
+        userId: USER_A,
+        organization: { mode: 'preferred' as const, orgId: null },
       }),
+      openDatabase: () => handle,
+      resolveReceipt: async () => ({
+        orgId: '45454545-4545-4545-8545-454545454545',
+        role: 'viewer',
+        profileId: UNKNOWN_PROFILE,
+        currencyCode: 'GBP',
+      }),
+      enforceAssurance: async () => {
+        throw new RequestAuthError(
+          'Additional authentication required',
+          403,
+          'additional_authentication_required',
+          location,
+        );
+      },
       loadRows,
     });
 
@@ -250,15 +317,14 @@ describe('Grid rows route runtime', () => {
     const identityDatabase = database();
     const identityOpen = vi.fn(() => identityDatabase.handle);
     const identityGet = createGridRowsGet({
-      authorizeRequest: createGridRequestAuthorizer({
-        identify: async () => {
-          throw new RequestAuthError('Authentication required', 401);
-        },
-        openDatabase: identityOpen,
-        resolveReceipt: async () => {
-          throw new Error('authorization must not run');
-        },
-      }),
+      identify: async () => {
+        throw new RequestAuthError('Authentication required', 401);
+      },
+      openDatabase: identityOpen,
+      resolveReceipt: async () => {
+        throw new Error('authorization must not run');
+      },
+      enforceAssurance: async () => {},
       loadRows: async () => {
         throw new Error('rows must not run');
       },
@@ -269,16 +335,15 @@ describe('Grid rows route runtime', () => {
 
     const membershipDatabase = database();
     const membershipGet = createGridRowsGet({
-      authorizeRequest: createGridRequestAuthorizer({
-        identify: async () => ({
-          userId: USER_A,
-          organization: { mode: 'preferred' as const, orgId: null },
-        }),
-        openDatabase: () => membershipDatabase.handle,
-        resolveReceipt: async () => {
-          throw new RequestAuthError('Resource not found', 403);
-        },
+      identify: async () => ({
+        userId: USER_A,
+        organization: { mode: 'preferred' as const, orgId: null },
       }),
+      openDatabase: () => membershipDatabase.handle,
+      resolveReceipt: async () => {
+        throw new RequestAuthError('Resource not found', 403);
+      },
+      enforceAssurance: async () => {},
       loadRows: async () => {
         throw new Error('rows must not run');
       },
@@ -289,22 +354,21 @@ describe('Grid rows route runtime', () => {
 
     const inputDatabase = database();
     const inputGet = createGridRowsGet({
-      authorizeRequest: createGridRequestAuthorizer({
-        identify: async () => ({
-          userId: USER_A,
-          organization: { mode: 'preferred' as const, orgId: null },
-        }),
-        openDatabase: () => inputDatabase.handle,
-        resolveReceipt: async (_handle, _subject, candidateProfileId) => {
-          expect(candidateProfileId).toBeNull();
-          return {
-            orgId: '45454545-4545-4545-8545-454545454545',
-            role: 'viewer',
-            profileId: null,
-            currencyCode: null,
-          };
-        },
+      identify: async () => ({
+        userId: USER_A,
+        organization: { mode: 'preferred' as const, orgId: null },
       }),
+      openDatabase: () => inputDatabase.handle,
+      resolveReceipt: async (_handle, _subject, candidateProfileId) => {
+        expect(candidateProfileId).toBeNull();
+        return {
+          orgId: '45454545-4545-4545-8545-454545454545',
+          role: 'viewer',
+          profileId: null,
+          currencyCode: null,
+        };
+      },
+      enforceAssurance: async () => {},
       loadRows: async () => {
         throw new Error('rows must not run');
       },
@@ -315,19 +379,18 @@ describe('Grid rows route runtime', () => {
 
     const profileDatabase = database();
     const profileGet = createGridRowsGet({
-      authorizeRequest: createGridRequestAuthorizer({
-        identify: async () => ({
-          userId: USER_A,
-          organization: { mode: 'preferred' as const, orgId: null },
-        }),
-        openDatabase: () => profileDatabase.handle,
-        resolveReceipt: async () => ({
-          orgId: '45454545-4545-4545-8545-454545454545',
-          role: 'viewer',
-          profileId: null,
-          currencyCode: null,
-        }),
+      identify: async () => ({
+        userId: USER_A,
+        organization: { mode: 'preferred' as const, orgId: null },
       }),
+      openDatabase: () => profileDatabase.handle,
+      resolveReceipt: async () => ({
+        orgId: '45454545-4545-4545-8545-454545454545',
+        role: 'viewer',
+        profileId: null,
+        currencyCode: null,
+      }),
+      enforceAssurance: async () => {},
       loadRows: async () => {
         throw new Error('rows must not run');
       },

@@ -18,7 +18,7 @@ describe('protected assurance boundary', () => {
       expect(contents).toContain('currentOperatorIdentity');
       expect(contents).toContain('authorizeOperatorRole');
     }
-    expect(files[1]).toContain('enforceAssurance: enforceGridAssurance');
+    expect(await source('app/api/grid/rows/route.ts')).toContain('enforceAssurance: enforceGridAssurance');
   });
 
   it('keeps direct and authenticated page reads on the structured auth continuation', async () => {

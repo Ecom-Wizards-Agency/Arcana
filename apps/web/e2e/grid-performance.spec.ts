@@ -56,6 +56,11 @@ async function seedRows(): Promise<string> {
     if (count !== EXPECTED_ROWS) {
       throw new Error(`Seeded ${EXPECTED_ROWS} Grid rows, wrote ${count}`);
     }
+    // Model a loaded account with known planner statistics without waiting for
+    // auto-analyze in this disposable database. The read/usable budgets remain
+    // unchanged; this fixture does not claim cold-statistics latency.
+    await database.sql`analyze public.fact_search_term_daily, public.keywords, public.targets,
+      public.campaigns, public.ad_groups, public.org_members, public.orgs, public.ad_profiles`;
     return state.fixtureProfileId;
   } finally {
     await database.close();

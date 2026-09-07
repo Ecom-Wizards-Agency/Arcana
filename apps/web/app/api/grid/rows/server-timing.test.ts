@@ -26,25 +26,16 @@ describe('GridServerTiming', () => {
     expect(timing.header()).toBe('actor;dur=0.00, total;dur=0.00');
   });
 
-  it('awaits teardown before finalizing the success header and total', async () => {
+  it('includes already-settled transaction and teardown time in the final stamp', () => {
     let now = 0;
-    let releaseClose: (() => void) | undefined;
-    const closeGate = new Promise<void>((resolve) => {
-      releaseClose = resolve;
-    });
     const response = new Response('{}');
     const timing = new GridServerTiming(() => now);
     timing.mark('actor');
-
-    const finalizing = finalizeTimedGridResponse(response, timing, async () => {
-      await closeGate;
-      now = 5_000;
-    });
     expect(response.headers.has('server-timing')).toBe(false);
 
-    releaseClose?.();
-    await finalizing;
-
+    // The route owns and awaits teardown; this module only formats its timing.
+    now = 5_000;
+    finalizeTimedGridResponse(response, timing);
     expect(response.headers.get('server-timing')).toBe(
       'actor;dur=0.00, close;dur=5000.00, total;dur=5000.00',
     );
