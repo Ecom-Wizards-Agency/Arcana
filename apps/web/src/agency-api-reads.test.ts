@@ -54,7 +54,10 @@ describe.skipIf(!available)('agency API reads', () => {
     } });
   }
   function read(kind: Kind, actor: Agency, target: Agency, orgId = actor.orgId): Promise<Response> {
-    if (kind === 'bids') return bids(request(`/api/bid-history?profile=${target.profileId}&target=kw-1&from=${date}&to=${date}`, actor, orgId));
+    if (kind === 'bids') {
+      const query = new URLSearchParams({ profile: target.profileId, target: 'kw-1', from: date, to: date });
+      return bids(request(`/api/bid-history?${query}`, actor, orgId));
+    }
     if (kind === 'experiments') return experiments(request(`/api/experiments?profile=${target.profileId}`, actor, orgId));
     if (kind === 'experiment') return experiment(request(`/api/experiments/${target.experimentId}`, actor, orgId), { params: Promise.resolve({ experimentId: target.experimentId }) });
     if (kind === 'options') return options(request(`/api/experiments/scope-options?profile=${target.profileId}`, actor, orgId));
