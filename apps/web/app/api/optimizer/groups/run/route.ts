@@ -1,7 +1,6 @@
-import { PostgresRecommendationRunStore } from '@wizard-ads/worker';
-import { createDb } from '@wizard-ads/db';
-import { requestActor, errorResponse } from '../../../../../src/server/request-context';
-import { requireCapability } from '../../../../../src/server/org-role';
+import { PostgresManualRecommendationAdmission } from '@wizard-ads/worker';
+import { mutationBody, mutationUuid } from '../../../../../src/server/authenticated-mutation';
+import { optimizerMutation } from '../../../../../src/optimizer/mutation-http';
 import {
   OPTIMIZER_PREVIEW_UNAVAILABLE_MESSAGE,
   resolveOptimizerPreviewReadiness,
@@ -11,20 +10,10 @@ export const runtime = 'nodejs';
 
 /** Queue an OpenSpell preview for one group. No Amazon write occurs. */
 export async function POST(request: Request): Promise<Response> {
-  const connectionString = process.env['DATABASE_URL'];
-  if (!connectionString) return Response.json({ error: 'Database is not configured' }, { status: 503 });
-  const database = createDb({ connectionString, max: 1, statementTimeoutSeconds: 15 });
-  try {
-    const actor = await requestActor(request.headers);
-    await requireCapability(database, actor, 'editTargets');
-    const body = await request.json() as { profileId?: unknown; groupId?: unknown };
-    if (typeof body.profileId !== 'string' || body.profileId.length === 0) {
-      throw new Error('profileId is required');
-    }
-    if (typeof body.groupId !== 'string' || body.groupId.length === 0) {
-      throw new Error('groupId is required');
-    }
-    // Same fresh legacy-or-fenced decision as the batch route; see there.
+  return optimizerMutation(request, async (database, actor) => {
+    const body = await mutationBody(request);
+    const profileId = mutationUuid(body['profileId'], 'profileId');
+    const groupId = mutationUuid(body['groupId'], 'groupId');
     const readiness = await resolveOptimizerPreviewReadiness(database);
     if (!readiness.ready) {
       return Response.json(
@@ -32,16 +21,7 @@ export async function POST(request: Request): Promise<Response> {
         { status: 503 },
       );
     }
-    const queued = await new PostgresRecommendationRunStore(database).enqueueRecommendationRun({
-      orgId: actor.orgId,
-      profileId: body.profileId,
-      groupId: body.groupId,
-      source: 'web',
-    });
+    const queued = await new PostgresManualRecommendationAdmission(database).enqueueGroup(actor, { profileId, groupId });
     return Response.json({ ...queued, mode: readiness.mode }, { status: 202 });
-  } catch (error) {
-    return errorResponse(error);
-  } finally {
-    await database.close();
-  }
+  });
 }

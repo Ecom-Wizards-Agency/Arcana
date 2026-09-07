@@ -1,17 +1,6 @@
-import {
-  PostgresRecommendationRunStore,
-  RecommendationPreviewError,
-} from '@wizard-ads/worker';
-import { createDb } from '@wizard-ads/db';
-import {
-  errorResponse,
-  requestActor,
-} from '../../../../src/server/request-context';
-import { requireCapability } from '../../../../src/server/org-role';
-import {
-  OptimizerPreviewHttpError,
-  readOptimizerPreviewRequest,
-} from '../../../../src/optimizer/preview-http';
+import { PostgresManualRecommendationAdmission } from '@wizard-ads/worker';
+import { readOptimizerPreviewRequest } from '../../../../src/optimizer/preview-http';
+import { optimizerMutation } from '../../../../src/optimizer/mutation-http';
 import {
   OPTIMIZER_PREVIEW_UNAVAILABLE_MESSAGE,
   resolveOptimizerPreviewReadiness,
@@ -21,16 +10,10 @@ export const runtime = 'nodejs';
 
 /** Queue one read-only, immutable campaign-scoped recommendation preview batch. */
 export async function POST(request: Request): Promise<Response> {
-  const connectionString = process.env['DATABASE_URL'];
-  if (!connectionString) return Response.json({ error: 'Database is not configured' }, { status: 503 });
-  const database = createDb({ connectionString, max: 1, statementTimeoutSeconds: 15 });
-  try {
-    const actor = await requestActor(request.headers);
-    await requireCapability(database, actor, 'editTargets');
+  return optimizerMutation(request, async (database, actor) => {
     const body = await readOptimizerPreviewRequest(request);
-    // Fresh evidence on every request: legacy mode is admitted only while the
-    // database authority is still legacy, so an unset flag after the fenced
-    // cutover fails closed with its reason instead of re-opening the old lane.
+    // An unset flag after cutover cannot reopen the legacy lane. New job
+    // admission is also checked by the database inside the domain transaction.
     const readiness = await resolveOptimizerPreviewReadiness(database);
     if (!readiness.ready) {
       return Response.json(
@@ -38,31 +21,7 @@ export async function POST(request: Request): Promise<Response> {
         { status: 503 },
       );
     }
-    const accepted = await new PostgresRecommendationRunStore(database)
-      .enqueueRecommendationPreviewBatch({
-        orgId: actor.orgId,
-        profileId: body.profileId,
-        actorId: actor.userId,
-        clientRequestId: body.clientRequestId,
-        scope: body.scope,
-      });
+    const accepted = await new PostgresManualRecommendationAdmission(database).enqueuePreviewBatch(actor, body);
     return Response.json({ ...accepted, mode: readiness.mode }, { status: 202 });
-  } catch (error) {
-    return previewErrorResponse(error);
-  } finally {
-    await database.close();
-  }
-}
-
-function previewErrorResponse(error: unknown): Response {
-  if (error instanceof OptimizerPreviewHttpError) {
-    return Response.json({ error: error.message }, { status: error.status });
-  }
-  if (error instanceof RecommendationPreviewError) {
-    return Response.json(
-      { error: error.message, code: error.code },
-      { status: error.httpStatus },
-    );
-  }
-  return errorResponse(error);
+  });
 }

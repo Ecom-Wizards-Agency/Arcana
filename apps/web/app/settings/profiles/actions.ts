@@ -13,10 +13,11 @@
  * being remembered at every call site.
  */
 import { revalidatePath } from 'next/cache';
-import { withAuthenticatedActor } from '@wizard-ads/db';
+import { withAuthenticatedOrgEditor } from '@wizard-ads/db';
 import { Uuid } from '@wizard-ads/shared';
 import { authorize } from '../../../src/auth/roles';
 import { gateAction } from '../../../src/auth/guard';
+import { requireCapability } from '../../../src/server/org-role';
 import {
   setProfileSyncEnabled,
   setProfilesSyncEnabled,
@@ -29,7 +30,7 @@ export async function saveTargets(formData: FormData): Promise<void> {
   authorize(active.role, 'editTargets');
 
   const profileId = requireId(formData.get('profileId'));
-  await withAuthenticatedActor(handle, { orgId: active.orgId, userId }, (sql) => updateProfileTargets({ sql }, active.orgId, profileId, {
+  await withAuthenticatedOrgEditor(handle, { orgId: active.orgId, userId }, (context) => updateProfileTargets(context, context.actor.orgId, profileId, {
     targetAcos: percentToFraction(formData.get('targetAcos')),
     targetTotalAcos: percentToFraction(formData.get('targetTotalAcos')),
     goalLens: text(formData.get('goalLens')),
@@ -45,8 +46,10 @@ export async function toggleSync(formData: FormData): Promise<void> {
 
   const profileId = requireId(formData.get('profileId'));
   const enabled = formData.get('enabled') === '1';
-  await withAuthenticatedActor(handle, { orgId: active.orgId, userId }, (sql) =>
-    setProfileSyncEnabled({ sql }, active.orgId, profileId, enabled));
+  await withAuthenticatedOrgEditor(handle, { orgId: active.orgId, userId }, async (context) => {
+    await requireCapability(context, context.actor, 'toggleSync');
+    await setProfileSyncEnabled(context, context.actor.orgId, profileId, enabled);
+  });
 
   revalidatePath('/settings/profiles');
   revalidatePath('/sync-status');
@@ -70,8 +73,9 @@ export async function bulkSetSync(formData: FormData): Promise<void> {
   if (profileIds.length === 0) throw new Error('no profiles selected');
   const enabled = formData.get('enabled') === '1';
 
-  await withAuthenticatedActor(handle, { orgId: active.orgId, userId }, async (sql) => {
-    const changed = await setProfilesSyncEnabled({ sql }, active.orgId, profileIds, enabled);
+  await withAuthenticatedOrgEditor(handle, { orgId: active.orgId, userId }, async (context) => {
+    await requireCapability(context, context.actor, 'toggleSync');
+    const changed = await setProfilesSyncEnabled(context, context.actor.orgId, profileIds, enabled);
     if (changed !== profileIds.length) throw new Error('Selected profile count did not match; no settings were changed');
   });
 
@@ -91,10 +95,13 @@ export async function saveSchedule(formData: FormData): Promise<void> {
   authorize(active.role, 'toggleSync');
 
   const profileId = requireId(formData.get('profileId'));
-  await withAuthenticatedActor(handle, { orgId: active.orgId, userId }, (sql) => updateProfileSchedule({ sql }, active.orgId, profileId, {
-    timezone: text(formData.get('timezone')),
-    preferredSyncHour: hour(formData.get('preferredSyncHour')),
-  }));
+  await withAuthenticatedOrgEditor(handle, { orgId: active.orgId, userId }, async (context) => {
+    await requireCapability(context, context.actor, 'toggleSync');
+    await updateProfileSchedule(context, context.actor.orgId, profileId, {
+      timezone: text(formData.get('timezone')),
+      preferredSyncHour: hour(formData.get('preferredSyncHour')),
+    });
+  });
 
   revalidatePath('/settings/profiles');
   revalidatePath('/sync-status');
