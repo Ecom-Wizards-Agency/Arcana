@@ -4,7 +4,6 @@ import { insights } from '../schema/analysis.js';
 import { productAds } from '../schema/entities.js';
 import { integrationConnections } from '../schema/integrations.js';
 import {
-  competitorLinks,
   competitorPriceEvents,
   keepaBsrObservations,
 } from '../schema/seams.js';
@@ -245,7 +244,7 @@ export async function listCompetitorLinks(
 }
 
 export async function createCompetitorLink(
-  handle: DbHandle,
+  handle: QueryHandle,
   input: { orgId: string; profileId: string; ourAsin: string; competitorAsin: string },
 ): Promise<CompetitorLinkRecord> {
   const ourAsin = normalizeAsin(input.ourAsin);
@@ -269,13 +268,11 @@ export async function createCompetitorLink(
 }
 
 export async function removeCompetitorLink(
-  handle: DbHandle,
+  handle: QueryHandle,
   input: { orgId: string; id: string },
 ): Promise<void> {
-  const rows = await handle.db
-    .delete(competitorLinks)
-    .where(and(eq(competitorLinks.orgId, input.orgId), eq(competitorLinks.id, input.id)))
-    .returning({ id: competitorLinks.id });
+  const rows = await handle.sql`delete from public.competitor_links
+    where org_id=${input.orgId} and id=${input.id} returning id`;
   if (rows.length !== 1) throw new Error('Competitor link not found');
 }
 

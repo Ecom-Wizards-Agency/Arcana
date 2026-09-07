@@ -41,6 +41,9 @@ export * from './queries/feedback.js';
 export * from './queries/goto.js';
 export {
   IntegrationSecretStoreError,
+  IntegrationCredentialCommandError,
+  connectIntegrationCredentialForActor,
+  revokeIntegrationCredentialForActor,
   createIntegrationConnection,
   listIntegrationConnections,
   revokeIntegrationSecret,

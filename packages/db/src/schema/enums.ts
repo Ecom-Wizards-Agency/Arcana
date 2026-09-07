@@ -19,6 +19,7 @@ import {
   EntityType,
   HistoricalBootstrapStatus,
   HourSettlingState,
+  INTEGRATION_PROVIDERS,
   JobType,
   MarketingStreamDataset,
   MatchType,
@@ -64,7 +65,7 @@ export const connectionStatus = pgEnum('connection_status', [
   'error',
   'revoked',
 ]);
-export const INTEGRATION_PROVIDERS = ['keepa', 'datadive', 'mrp'] as const;
+export { INTEGRATION_PROVIDERS } from '@wizard-ads/shared';
 export const integrationProvider = pgEnum('integration_provider', INTEGRATION_PROVIDERS);
 
 export const adsRegion = pgEnum('ads_region', tuple(Region.options));
