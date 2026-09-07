@@ -9,6 +9,7 @@ import {
   type ContextualNegativeProposal as ContextualNegativeProposalType,
 } from '@wizard-ads/shared';
 import type { DbHandle, QueryHandle, QuerySql } from '../client.js';
+import type { AuthenticatedReadSnapshot } from './authenticated-actor.js';
 
 export const CONTEXTUAL_NEGATIVE_ACTION_LIMIT = 500;
 export const CONTEXTUAL_NEGATIVE_REVIEW_ROW_LIMIT = 5_000;
@@ -458,124 +459,187 @@ export async function loadContextualNegativeReview(
   input: { orgId: string; profileId: string; marketplaceId: string },
 ): Promise<ContextualNegativeReviewLoad> {
   validateScope(input);
-  let observed = measurementsFromStats(undefined);
-  let measurementsAvailable = false;
+  const progress = reviewProgress();
   try {
     return await handle.sql.begin('isolation level repeatable read read only', async (sql) => {
       await sql`set local statement_timeout = '5s'`;
-      const stats = await sql<StatsRow[]>`
-        select count(*)::int as row_count,
-               coalesce(sum(
-                 octet_length(p.org_id::text) + octet_length(p.id::text)
-                 + octet_length(p.profile_id::text) + octet_length(p.marketplace_id)
-                 + octet_length(p.campaign_id) + octet_length(p.ad_group_id)
-                 + octet_length(p.search_term) + octet_length(p.normalized_query)
-                 + octet_length(p.category::text) + octet_length(p.source_group_role)
-                 + octet_length(p.match_type) + octet_length(p.reason)
-                 + octet_length(p.status)
-                 + ${REVIEW_FINGERPRINT_BYTES}
-                 + coalesce(octet_length(decision.payload ->> 'note'), 0)
-                 + coalesce(octet_length(decision.actor_id), 0)
-                 + coalesce(octet_length(
-                     to_char(
-                       decision.created_at at time zone 'UTC',
-                       'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
-                     )
-                   ), 0)
-               ), 0)::bigint as review_bytes,
-               count(*) filter (where p.status = 'proposed')::int as proposed_count,
-               count(*) filter (where p.status = 'accepted')::int as accepted_count,
-               count(*) filter (where p.status = 'dismissed')::int as dismissed_count,
-               count(*) filter (where p.status = 'exported')::int as exported_count
-          from public.contextual_negative_proposals p
-          left join lateral (
-            select a.payload, a.actor_id, a.created_at
-              from public.audit_log a
-             where a.org_id = p.org_id
-               and a.target_type = 'contextual_negative_proposal'
-               and a.target_id = p.id::text
-               and a.action in (
-                 'query_negative.accepted',
-                 'query_negative.dismissed',
-                 'query_negative.reopened'
-               )
-             order by a.created_at desc, a.id desc
-             limit 1
-          ) decision on true
-         where p.org_id = ${input.orgId}
-           and p.profile_id = ${input.profileId}
-           and p.marketplace_id = ${input.marketplaceId}
-      `;
-      observed = measurementsFromStats(stats[0]);
-      measurementsAvailable = true;
-      if (observed.rowCount > CONTEXTUAL_NEGATIVE_REVIEW_ROW_LIMIT) {
-        return capacity('row_limit', observed);
-      }
-      if (observed.reviewBytes > CONTEXTUAL_NEGATIVE_REVIEW_BYTE_LIMIT) {
-        return capacity('byte_limit', observed);
-      }
-
-      const rows = await sql<ProposalRow[]>`
-        select p.org_id, p.id, p.profile_id, p.marketplace_id, p.campaign_id,
-               p.ad_group_id, p.search_term, p.normalized_query, p.category,
-               p.source_group_role, p.match_type, p.reason, p.status,
-               p.created_at, p.updated_at,
-               decision.payload ->> 'note' as decision_note,
-               decision.actor_id as decided_by,
-               decision.created_at as decided_at
-          from public.contextual_negative_proposals p
-          left join lateral (
-            select a.payload, a.actor_id, a.created_at
-              from public.audit_log a
-             where a.org_id = p.org_id
-               and a.target_type = 'contextual_negative_proposal'
-               and a.target_id = p.id::text
-               and a.action in (
-                 'query_negative.accepted',
-                 'query_negative.dismissed',
-                 'query_negative.reopened'
-               )
-             order by a.created_at desc, a.id desc
-             limit 1
-          ) decision on true
-         where p.org_id = ${input.orgId}
-           and p.profile_id = ${input.profileId}
-           and p.marketplace_id = ${input.marketplaceId}
-         order by case p.status
-                    when 'proposed' then 0
-                    when 'accepted' then 1
-                    when 'dismissed' then 2
-                    else 3
-                  end,
-                  p.created_at, p.id::text collate "C"
-      `;
-      const fetchedMeasurements: ContextualNegativeReviewMeasurements = {
-        rowCount: rows.length,
-        reviewBytes: rows.reduce((total, row) => total + proposalReviewBytes(row), 0),
-        statusCounts: {
-          total: rows.length,
-          proposed: rows.filter((row) => row.status === 'proposed').length,
-          accepted: rows.filter((row) => row.status === 'accepted').length,
-          dismissed: rows.filter((row) => row.status === 'dismissed').length,
-          exported: rows.filter((row) => row.status === 'exported').length,
-        },
-      };
-      if (json(fetchedMeasurements) !== json(observed)) {
-        throw new ContextualNegativeReviewError(
-          'Contextual-negative review count or byte assertion failed inside its snapshot',
-        );
-      }
-      const proposals = rows.map(proposalFromRow);
-      if (proposals.length !== observed.rowCount) {
-        throw new ContextualNegativeReviewError('Contextual-negative proposal parse count mismatch');
-      }
-      return { status: 'ready', ...observed, proposals };
+      return readCompleteReview(sql, input, progress);
     });
   } catch (error) {
     if (errorCode(error) === '57014') {
-      return capacity('timeout', observed, measurementsAvailable);
+      return capacity('timeout', progress.observed, progress.measurementsAvailable);
     }
     throw error;
+  }
+}
+
+interface ReviewProgress {
+  observed: ContextualNegativeReviewMeasurements;
+  measurementsAvailable: boolean;
+}
+
+function reviewProgress(): ReviewProgress {
+  return { observed: measurementsFromStats(undefined), measurementsAvailable: false };
+}
+
+async function readCompleteReview(
+  sql: QuerySql,
+  input: { orgId: string; profileId: string; marketplaceId: string },
+  progress: ReviewProgress,
+): Promise<ContextualNegativeReviewLoad> {
+  const stats = await sql<StatsRow[]>`
+    select count(*)::int as row_count,
+           coalesce(sum(
+             octet_length(p.org_id::text) + octet_length(p.id::text)
+             + octet_length(p.profile_id::text) + octet_length(p.marketplace_id)
+             + octet_length(p.campaign_id) + octet_length(p.ad_group_id)
+             + octet_length(p.search_term) + octet_length(p.normalized_query)
+             + octet_length(p.category::text) + octet_length(p.source_group_role)
+             + octet_length(p.match_type) + octet_length(p.reason)
+             + octet_length(p.status)
+             + ${REVIEW_FINGERPRINT_BYTES}
+             + coalesce(octet_length(decision.payload ->> 'note'), 0)
+             + coalesce(octet_length(decision.actor_id), 0)
+             + coalesce(octet_length(
+                 to_char(
+                   decision.created_at at time zone 'UTC',
+                   'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+                 )
+               ), 0)
+           ), 0)::bigint as review_bytes,
+           count(*) filter (where p.status = 'proposed')::int as proposed_count,
+           count(*) filter (where p.status = 'accepted')::int as accepted_count,
+           count(*) filter (where p.status = 'dismissed')::int as dismissed_count,
+           count(*) filter (where p.status = 'exported')::int as exported_count
+      from public.contextual_negative_proposals p
+      left join lateral (
+        select a.payload, a.actor_id, a.created_at
+          from public.audit_log a
+         where a.org_id = p.org_id
+           and a.target_type = 'contextual_negative_proposal'
+           and a.target_id = p.id::text
+           and a.action in (
+             'query_negative.accepted',
+             'query_negative.dismissed',
+             'query_negative.reopened'
+           )
+         order by a.created_at desc, a.id desc
+         limit 1
+      ) decision on true
+     where p.org_id = ${input.orgId}
+       and p.profile_id = ${input.profileId}
+       and p.marketplace_id = ${input.marketplaceId}
+  `;
+  progress.observed = measurementsFromStats(stats[0]);
+  progress.measurementsAvailable = true;
+  if (progress.observed.rowCount > CONTEXTUAL_NEGATIVE_REVIEW_ROW_LIMIT) {
+    return capacity('row_limit', progress.observed);
+  }
+  if (progress.observed.reviewBytes > CONTEXTUAL_NEGATIVE_REVIEW_BYTE_LIMIT) {
+    return capacity('byte_limit', progress.observed);
+  }
+
+  const rows = await sql<ProposalRow[]>`
+    select p.org_id, p.id, p.profile_id, p.marketplace_id, p.campaign_id,
+           p.ad_group_id, p.search_term, p.normalized_query, p.category,
+           p.source_group_role, p.match_type, p.reason, p.status,
+           p.created_at, p.updated_at,
+           decision.payload ->> 'note' as decision_note,
+           decision.actor_id as decided_by,
+           decision.created_at as decided_at
+      from public.contextual_negative_proposals p
+      left join lateral (
+        select a.payload, a.actor_id, a.created_at
+          from public.audit_log a
+         where a.org_id = p.org_id
+           and a.target_type = 'contextual_negative_proposal'
+           and a.target_id = p.id::text
+           and a.action in (
+             'query_negative.accepted',
+             'query_negative.dismissed',
+             'query_negative.reopened'
+           )
+         order by a.created_at desc, a.id desc
+         limit 1
+      ) decision on true
+     where p.org_id = ${input.orgId}
+       and p.profile_id = ${input.profileId}
+       and p.marketplace_id = ${input.marketplaceId}
+     order by case p.status
+                when 'proposed' then 0
+                when 'accepted' then 1
+                when 'dismissed' then 2
+                else 3
+              end,
+              p.created_at, p.id::text collate "C"
+  `;
+  const fetchedMeasurements: ContextualNegativeReviewMeasurements = {
+    rowCount: rows.length,
+    reviewBytes: rows.reduce((total, row) => total + proposalReviewBytes(row), 0),
+    statusCounts: {
+      total: rows.length,
+      proposed: rows.filter((row) => row.status === 'proposed').length,
+      accepted: rows.filter((row) => row.status === 'accepted').length,
+      dismissed: rows.filter((row) => row.status === 'dismissed').length,
+      exported: rows.filter((row) => row.status === 'exported').length,
+    },
+  };
+  if (json(fetchedMeasurements) !== json(progress.observed)) {
+    throw new ContextualNegativeReviewError(
+      'Contextual-negative review count or byte assertion failed inside its snapshot',
+    );
+  }
+  const proposals = rows.map(proposalFromRow);
+  if (proposals.length !== progress.observed.rowCount) {
+    throw new ContextualNegativeReviewError('Contextual-negative proposal parse count mismatch');
+  }
+  return { status: 'ready', ...progress.observed, proposals };
+}
+
+/** Complete review with recoverable timeout inside an authenticated snapshot. */
+export async function loadContextualNegativeReviewSnapshot(
+  snapshot: AuthenticatedReadSnapshot,
+  scope: { profileId: string; marketplaceId: string },
+): Promise<ContextualNegativeReviewLoad> {
+  const input = { ...scope, orgId: snapshot.actor.orgId };
+  validateScope(input);
+  const progress = reviewProgress();
+  const [settings] = await snapshot.sql<{ timeout: string }[]>`
+    select current_setting('statement_timeout') as timeout
+  `;
+  if (settings === undefined) throw new ContextualNegativeReviewError('Review settings are unavailable');
+  let reviewTimedOut = false;
+  try {
+    return await snapshot.sql.savepoint(async (sql) => {
+      await sql`set local statement_timeout = '5s'`;
+      let result: ContextualNegativeReviewLoad;
+      try {
+        result = await readCompleteReview(sql, input, progress);
+      } catch (error) {
+        reviewTimedOut = errorCode(error) === '57014';
+        throw error;
+      }
+      // Successful savepoints retain SET LOCAL. Restore every ready/capacity path.
+      await sql`select set_config('statement_timeout', ${settings.timeout}, true)`;
+      return result;
+    });
+  } catch (error) {
+    if (!reviewTimedOut || errorCode(error) !== '57014') throw error;
+    // Awaited ROLLBACK TO must leave the outer snapshot usable and unchanged.
+    // A failed recovery is a page failure, never successful timeout capacity.
+    const [restored] = await snapshot.sql<{
+      timeout: string; role: string; subject: string; isolation: string; read_only: string;
+    }[]>`
+      select current_setting('statement_timeout') as timeout, current_user as role,
+             auth.uid()::text as subject, current_setting('transaction_isolation') as isolation,
+             current_setting('transaction_read_only') as read_only
+    `;
+    if (restored?.timeout !== settings.timeout || restored.role !== 'authenticated' ||
+        restored.subject !== snapshot.actor.userId || restored.isolation !== 'repeatable read' ||
+        restored.read_only !== 'on') {
+      throw new ContextualNegativeReviewError('Review snapshot recovery could not be verified');
+    }
+    return capacity('timeout', progress.observed, progress.measurementsAvailable);
   }
 }
 
@@ -607,7 +671,7 @@ function exportSummaryFromRow(row: ExportRow): ContextualNegativeExportSummary {
 }
 
 export async function listContextualNegativeExports(
-  handle: ContextualNegativeQueryHandle,
+  handle: QueryHandle,
   input: { orgId: string; profileId: string; marketplaceId: string },
 ): Promise<ContextualNegativeExportSummary[]> {
   validateScope(input);
