@@ -12,13 +12,13 @@
  * rather than from the proposals — the ledger is the record, the proposal table
  * is where the record came from.
  */
-import { getExportBatch, getRecommendationRun } from '@wizard-ads/db';
+import { getExportBatch, getRecommendationRun, withAuthenticatedActor, type RequestDatabase } from '@wizard-ads/db';
+import { Uuid } from '@wizard-ads/shared';
 import {
-  errorResponse,
   openWebDatabase,
   requestActor,
-  requireOrgMembership,
 } from '../../../../../src/server/request-context';
+import { DownloadRequestError, downloadErrorResponse, downloadResponse } from '../../../../../src/server/download-response';
 import {
   buildBulkWorkbook,
   capsConfig,
@@ -42,37 +42,42 @@ export async function GET(
   request: Request,
   context: { params: Promise<{ batchId: string }> },
 ): Promise<Response> {
-  const database = openWebDatabase();
+  let database: RequestDatabase | null = null;
   try {
     const actor = await requestActor(request.headers);
-    await requireOrgMembership(database, actor);
+    database = openWebDatabase();
 
     const { batchId } = await context.params;
+    if (!Uuid.safeParse(batchId).success) throw new DownloadRequestError('A valid batch id is required');
     const requested = new URL(request.url).searchParams.get('format') ?? 'rows';
     if (!(FORMATS as readonly string[]).includes(requested)) {
-      throw new Error(`format must be one of: ${FORMATS.join(', ')}`);
+      throw new DownloadRequestError(`format must be one of: ${FORMATS.join(', ')}`);
     }
     const format = requested as Format;
 
-    const batch = await getExportBatch(database, { orgId: actor.orgId, batchId });
-    if (batch === null) throw new Error('Not found');
+    const { batch, run } = await withAuthenticatedActor(database, actor, async (sql) => {
+      const batch = await getExportBatch({ sql }, { orgId: actor.orgId, batchId });
+      if (batch === null) throw new DownloadRequestError('Not found', 404);
+      const runId = format === 'caps' ? batch.proposals[0]?.runId ?? null : null;
+      const run = runId === null ? null : await getRecommendationRun({ sql }, { orgId: actor.orgId, runId });
+      if (run !== null && run.profileId !== batch.profileId) throw new DownloadRequestError('Not found', 404);
+      return { batch, run };
+    });
     const files = exportFilenames(batch.tag);
 
     if (format === 'rows') {
-      return new Response(serializeApplyRows(batch.rows), {
+      return downloadResponse(new Response(serializeApplyRows(batch.rows), {
         headers: {
           'content-type': 'application/json; charset=utf-8',
           'content-disposition': attachment(files.rows),
         },
-      });
+      }));
     }
 
     if (format === 'caps') {
       // The caps come from the run's own strategy snapshot, not from today's
       // document: a batch validated against thresholds it was never computed
       // under is a check that proves nothing.
-      const runId = batch.proposals[0]?.runId ?? null;
-      const run = runId === null ? null : await getRecommendationRun(database, { orgId: actor.orgId, runId });
       const caps = resolveExportCaps(run?.strategySnapshot ?? null, batch.optGroup);
       const config = capsConfig({
         tag: batch.tag,
@@ -82,12 +87,12 @@ export async function GET(
         maxDecrease: caps.maxDecrease,
         targetAcos: caps.targetAcos,
       });
-      return new Response(serializeCapsConfig(config), {
+      return downloadResponse(new Response(serializeCapsConfig(config), {
         headers: {
           'content-type': 'application/json; charset=utf-8',
           'content-disposition': attachment(files.caps),
         },
-      });
+      }));
     }
 
     const proposals: BulkProposal[] = batch.proposals.map((proposal) => ({
@@ -102,7 +107,7 @@ export async function GET(
       campaignKnown: proposal.campaignKnown,
     }));
     const workbook = buildBulkWorkbook(proposals);
-    return new Response(new Uint8Array(workbook.bytes), {
+    return downloadResponse(new Response(new Uint8Array(workbook.bytes), {
       headers: {
         'content-type':
           'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -111,10 +116,10 @@ export async function GET(
         // a binary body has nowhere to put it.
         'x-wizard-ads-skipped-rows': String(workbook.warnings.length),
       },
-    });
+    }));
   } catch (error) {
-    return errorResponse(error);
+    return downloadErrorResponse(error);
   } finally {
-    await database.close();
+    await database?.close();
   }
 }

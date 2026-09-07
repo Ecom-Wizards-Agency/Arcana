@@ -225,6 +225,7 @@ describe.skipIf(!available)('contextual-negative web routes', () => {
     expect(response.headers.get('content-length')).toBe(String(stored.bytes.byteLength));
     expect(response.headers.get('x-openspell-exported-rows')).toBe('1');
     expect(response.headers.get('x-openspell-amazon-updated')).toBe('false');
+    expect(response.headers.get('cache-control')).toBe('private, no-store, max-age=0');
     expect(Buffer.from(await response.arrayBuffer())).toEqual(stored.bytes);
 
     const hidden = await download(otherOrgId, OTHER_OWNER);
@@ -252,6 +253,7 @@ describe.skipIf(!available)('contextual-negative web routes', () => {
       { params: Promise.resolve({ exportId: corrupt.id }) },
     );
     expect(response.status).toBe(500);
+    expect(response.headers.get('cache-control')).toBe('private, no-store, max-age=0');
     const payload = await response.json() as { error: string; amazonUpdated: boolean };
     expect(payload).toEqual({
       error: 'Stored contextual-negative evidence failed integrity verification',
