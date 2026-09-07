@@ -363,9 +363,7 @@ export async function getRecommendationRun(
  * set by spend and scanning it. `limit` exists as a safety valve, not as a page
  * size.
  */
-export async function listRecommendations(
-  handle: QueryHandle,
-  options: {
+interface RecommendationListOptions {
     orgId: string;
     runId?: string | null;
     profileId?: string | null;
@@ -374,7 +372,20 @@ export async function listRecommendations(
     /** Only the proposals stamped with this export batch. */
     exportBatchId?: string | null;
     limit?: number;
-  },
+}
+
+export async function listRecommendations(
+  handle: QueryHandle,
+  options: RecommendationListOptions,
+): Promise<RecommendationRecord[]> {
+  return readRecommendations(handle, options, options.limit ?? 20000);
+}
+
+/** Saved artifact reads must include the whole batch, independently of UI limits. */
+async function readRecommendations(
+  handle: QueryHandle,
+  options: RecommendationListOptions,
+  limit: number | null,
 ): Promise<RecommendationRecord[]> {
   const statuses = options.statuses && options.statuses.length > 0 ? [...options.statuses] : null;
   const reasons = options.reasons && options.reasons.length > 0 ? [...options.reasons] : null;
@@ -420,7 +431,7 @@ export async function listRecommendations(
        and (${statuses}::text[] is null or c.status::text = any (${statuses}::text[]))
        and (${reasons}::text[] is null or c.reason::text = any (${reasons}::text[]))
      order by c.created_at, c.id
-     limit ${options.limit ?? 20000}
+     limit ${limit}
   `;
   return rows.map(toRecord);
 }
@@ -859,11 +870,19 @@ export async function getExportBatch(
     return out;
   });
 
-  const proposals = await listRecommendations(handle, {
+  const [expected] = await handle.sql<{ count: number }[]>`
+    select count(*)::int as count from public.recommendations
+     where org_id = ${options.orgId} and profile_id = ${batch.profile_id}
+       and export_batch_id = ${options.batchId}
+  `;
+  const proposals = await readRecommendations(handle, {
     orgId: options.orgId,
     profileId: batch.profile_id,
     exportBatchId: options.batchId,
-  });
+  }, null);
+  if (expected === undefined || proposals.length !== expected.count) {
+    throw new Error('The saved recommendation batch changed while reading. Refresh and try again.');
+  }
 
   return {
     id: batch.id,

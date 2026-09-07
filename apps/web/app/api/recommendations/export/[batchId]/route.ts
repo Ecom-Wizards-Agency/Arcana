@@ -107,6 +107,9 @@ export async function GET(
       campaignKnown: proposal.campaignKnown,
     }));
     const workbook = buildBulkWorkbook(proposals);
+    if (workbook.sheet.rows.length + workbook.warnings.length !== proposals.length) {
+      throw new Error('Workbook row counts do not match the saved batch');
+    }
     return downloadResponse(new Response(new Uint8Array(workbook.bytes), {
       headers: {
         'content-type':
@@ -115,6 +118,7 @@ export async function GET(
         // Rows that could not be written are a fact the caller has to see, and
         // a binary body has nowhere to put it.
         'x-wizard-ads-skipped-rows': String(workbook.warnings.length),
+        'x-wizard-ads-exported-rows': String(workbook.sheet.rows.length),
       },
     }));
   } catch (error) {
