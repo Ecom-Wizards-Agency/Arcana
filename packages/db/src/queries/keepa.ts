@@ -1,5 +1,5 @@
 import { and, desc, eq, getTableColumns, inArray, isNull, ne } from 'drizzle-orm';
-import type { DbHandle } from '../client.js';
+import type { DbHandle, QueryHandle } from '../client.js';
 import { insights } from '../schema/analysis.js';
 import { productAds } from '../schema/entities.js';
 import { integrationConnections } from '../schema/integrations.js';
@@ -202,7 +202,7 @@ export async function latestKeepaObservations(
 }
 
 export async function listCompetitorLinks(
-  handle: DbHandle,
+  handle: QueryHandle,
   orgId: string,
   profileId?: string,
 ): Promise<CompetitorLinkRecord[]> {

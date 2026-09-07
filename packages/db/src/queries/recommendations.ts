@@ -37,7 +37,7 @@ import type {
   OptimizationGroupSnapshot,
   RecommendationInputs,
 } from '@wizard-ads/shared';
-import type { DbHandle } from '../client.js';
+import type { DbHandle, QueryHandle } from '../client.js';
 import { lockCurrentApplyStates, resolveCurrentApplyStates } from './apply-state.js';
 import type { JsonValue } from './goto.js';
 import { toDate, toDateOrNull } from './pg-time.js';
@@ -297,7 +297,7 @@ function toRunSummary(row: RunRow): RecommendationRunSummary {
  * it is the cross-profile view the incumbent does not have.
  */
 export async function listRecommendationRuns(
-  handle: RecommendationQueryHandle,
+  handle: QueryHandle,
   options: { orgId: string; profileId?: string | null; limit?: number },
 ): Promise<RecommendationRunSummary[]> {
   const limit = options.limit ?? 20;
@@ -312,7 +312,7 @@ export async function listRecommendationRuns(
                from (
                  select status::text as status, count(*)::int as count
                    from public.recommendations c
-                  where c.run_id = r.id
+                  where c.org_id = r.org_id and c.profile_id = r.profile_id and c.run_id = r.id
                   group by status
                ) s
            ) as counts
@@ -327,7 +327,7 @@ export async function listRecommendationRuns(
 
 /** One run plus the doctrine snapshot it was computed under. */
 export async function getRecommendationRun(
-  handle: RecommendationQueryHandle,
+  handle: QueryHandle,
   options: { orgId: string; runId: string },
 ): Promise<RecommendationRunDetail | null> {
   const rows = await handle.sql<(RunRow & { strategy_snapshot: JsonValue | null })[]>`
@@ -342,7 +342,7 @@ export async function getRecommendationRun(
                from (
                  select status::text as status, count(*)::int as count
                    from public.recommendations c
-                  where c.run_id = r.id
+                  where c.org_id = r.org_id and c.profile_id = r.profile_id and c.run_id = r.id
                   group by status
                ) s
            ) as counts
@@ -364,7 +364,7 @@ export async function getRecommendationRun(
  * size.
  */
 export async function listRecommendations(
-  handle: RecommendationQueryHandle,
+  handle: QueryHandle,
   options: {
     orgId: string;
     runId?: string | null;
@@ -394,14 +394,14 @@ export async function listRecommendations(
       -- through both rather than leaving the campaign unknown and refusing the
       -- export row later for a reason that is not true.
       left join public.campaigns camp
-        on camp.profile_id = c.profile_id
+        on camp.org_id = c.org_id and camp.profile_id = c.profile_id
        and camp.amazon_id = coalesce(
              c.campaign_id,
              case when c.entity_type = 'campaign' then c.entity_id end
            )
       left join public.ad_groups ag
-        on ag.profile_id = c.profile_id and ag.amazon_id = c.ad_group_id
-      left join public.apply_batches batch on batch.id = c.export_batch_id
+        on ag.org_id = c.org_id and ag.profile_id = c.profile_id and ag.amazon_id = c.ad_group_id
+      left join public.apply_batches batch on batch.org_id = c.org_id and batch.profile_id = c.profile_id and batch.id = c.export_batch_id
       left join lateral (
         select a.payload
           from public.audit_log a
@@ -802,7 +802,7 @@ export interface ExportBatchRecord {
 
 /** Re-read a batch so its files can be produced again without re-deciding. */
 export async function getExportBatch(
-  handle: RecommendationQueryHandle,
+  handle: QueryHandle,
   options: { orgId: string; batchId: string },
 ): Promise<ExportBatchRecord | null> {
   const batches = await handle.sql<

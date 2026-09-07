@@ -6,7 +6,7 @@
  * credential exists, never the Vault pointer. The three RPC wrappers preserve
  * the database custody boundary used by workers and the one-time web write.
  */
-import type { DbHandle } from '../client.js';
+import type { DbHandle, QueryHandle } from '../client.js';
 import type { INTEGRATION_PROVIDERS, connectionStatus } from '../schema/enums.js';
 import type { IntegrationConfig } from '../schema/integrations.js';
 import { toDate, toDateOrNull } from './pg-time.js';
@@ -93,7 +93,7 @@ function serializeConfig(config: IntegrationConfig | undefined): string {
 
 /** List one organisation's connections without exposing Vault ids or values. */
 export async function listIntegrationConnections(
-  handle: IntegrationQueryHandle,
+  handle: QueryHandle,
   orgId: string,
 ): Promise<IntegrationConnectionRecord[]> {
   const rows = await handle.sql<IntegrationConnectionRow[]>`

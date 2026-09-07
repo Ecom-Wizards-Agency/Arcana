@@ -14,7 +14,7 @@ import {
   type AdProduct,
   type ScheduledOptimizationGroup as OptimizationGroupValue,
 } from '@wizard-ads/shared';
-import type { DbHandle, QuerySql } from '../client.js';
+import type { DbHandle, QueryHandle, QuerySql } from '../client.js';
 
 export type OptimizationGroupSettings = Omit<
   OptimizationGroupValue,
@@ -120,7 +120,7 @@ export class OptimizationGroupPersistenceError extends Error {
 
 /** One bounded read for the settings screen and Strategy Overview. */
 export async function readOptimizationWorkspace(
-  handle: Pick<DbHandle, 'sql'>,
+  handle: QueryHandle,
   input: { orgId: string; profileId: string },
 ): Promise<OptimizationWorkspace> {
   const [groups, campaigns, profiles] = await Promise.all([
