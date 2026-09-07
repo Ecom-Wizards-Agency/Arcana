@@ -1,5 +1,7 @@
 import { AgencyAccessDenied } from '@wizard-ads/db';
 import { errorResponse, RequestAuthError } from './request-context';
+import { privateResponse as downloadResponse } from './private-response';
+export { privateResponse as downloadResponse } from './private-response';
 
 /** Only explicit request validation messages may be sent to an artifact caller. */
 export class DownloadRequestError extends Error {
@@ -7,17 +9,6 @@ export class DownloadRequestError extends Error {
     super(message);
     this.name = 'DownloadRequestError';
   }
-}
-
-/** Apply to errors as well as files: authorization is rechecked on every fetch. */
-export function downloadResponse(response: Response): Response {
-  response.headers.set('Cache-Control', 'private, no-store, max-age=0');
-  const vary = new Set((response.headers.get('Vary') ?? '').split(',').map((value) => value.trim()).filter(Boolean));
-  vary.add('Cookie');
-  vary.add('Authorization');
-  response.headers.set('Vary', [...vary].join(', '));
-  response.headers.set('X-Content-Type-Options', 'nosniff');
-  return response;
 }
 
 export function downloadErrorResponse(error: unknown): Response {

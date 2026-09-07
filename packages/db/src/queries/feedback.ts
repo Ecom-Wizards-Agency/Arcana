@@ -244,10 +244,10 @@ export async function getFeedbackItem(
     select i.id, i.org_id, i.author_id, i.type::text as type, i.title, i.body,
            i.severity::text as severity, i.status::text as status, i.admin_note,
            i.duplicate_of, i.dedup_checked_at, i.page_context,
-           (select count(*) from public.feedback_votes v where v.item_id = i.id) as votes,
+           (select count(*) from public.feedback_votes v where v.org_id = i.org_id and v.item_id = i.id) as votes,
            exists(
              select 1 from public.feedback_votes v
-              where v.item_id = i.id and v.user_id = ${viewerId}::uuid
+              where v.org_id = i.org_id and v.item_id = i.id and v.user_id = ${viewerId}::uuid
            ) as viewer_has_voted,
            i.created_at, i.updated_at, i.status_changed_at
       from public.feedback_items i
@@ -269,10 +269,10 @@ export async function listFeedbackItems(
     select i.id, i.org_id, i.author_id, i.type::text as type, i.title, i.body,
            i.severity::text as severity, i.status::text as status, i.admin_note,
            i.duplicate_of, i.dedup_checked_at, i.page_context,
-           (select count(*) from public.feedback_votes v where v.item_id = i.id) as votes,
+           (select count(*) from public.feedback_votes v where v.org_id = i.org_id and v.item_id = i.id) as votes,
            exists(
              select 1 from public.feedback_votes v
-              where v.item_id = i.id and v.user_id = ${viewerId}::uuid
+              where v.org_id = i.org_id and v.item_id = i.id and v.user_id = ${viewerId}::uuid
            ) as viewer_has_voted,
            i.created_at, i.updated_at, i.status_changed_at
       from public.feedback_items i
@@ -283,7 +283,7 @@ export async function listFeedbackItems(
      -- One statement rather than two, so the projection cannot drift between
      -- the two orderings. The CASE collapses to a constant per query.
      order by (case when ${sort} = 'votes'
-                    then (select count(*) from public.feedback_votes v where v.item_id = i.id)
+                    then (select count(*) from public.feedback_votes v where v.org_id = i.org_id and v.item_id = i.id)
                     else 0 end) desc,
               i.created_at desc, i.id
      limit ${limit}
@@ -392,10 +392,10 @@ export async function findSimilarOpenBugs(
     select i.id, i.org_id, i.author_id, i.type::text as type, i.title, i.body,
            i.severity::text as severity, i.status::text as status, i.admin_note,
            i.duplicate_of, i.dedup_checked_at, i.page_context,
-           (select count(*) from public.feedback_votes v where v.item_id = i.id) as votes,
+           (select count(*) from public.feedback_votes v where v.org_id = i.org_id and v.item_id = i.id) as votes,
            exists(
              select 1 from public.feedback_votes v
-              where v.item_id = i.id and v.user_id = ${viewerId}::uuid
+              where v.org_id = i.org_id and v.item_id = i.id and v.user_id = ${viewerId}::uuid
            ) as viewer_has_voted,
            i.created_at, i.updated_at, i.status_changed_at
       from public.feedback_items i
@@ -404,7 +404,7 @@ export async function findSimilarOpenBugs(
        and i.status in ('new', 'triaged', 'planned', 'in_progress')
        and i.duplicate_of is null
        and i.title ilike ${pattern} escape '\\'
-     order by (select count(*) from public.feedback_votes v where v.item_id = i.id) desc,
+     order by (select count(*) from public.feedback_votes v where v.org_id = i.org_id and v.item_id = i.id) desc,
               i.created_at desc, i.id
      limit ${limit}
   `;

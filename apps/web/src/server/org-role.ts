@@ -2,12 +2,11 @@
  * The actor's role in the org they are acting in.
  *
  * `requireOrgMembership` in `request-context.ts` answers "is this actor in this
- * org"; feedback triage needs the next question, "as what". Kept next to it
- * rather than inside it because WP-08 owns that file and this is additive: the
- * lookup is one statement and the decision it feeds is WP-04's capability
- * table, not a second rule invented here.
+ * org"; capability checks also need the current role. The lookup accepts an
+ * authenticated transaction and feeds the shared application capability table.
+ * Mutation admission must independently check its required authority at commit.
  */
-import type { RequestDatabase } from '@wizard-ads/db';
+import type { QueryHandle } from '@wizard-ads/db';
 import { isOrgRole } from '../auth/roles';
 import type { Capability, OrgRole } from '../auth/roles';
 import { authorize } from '../auth/roles';
@@ -22,7 +21,7 @@ import type { RequestActor } from './request-context';
  * from outside.
  */
 export async function requireOrgRole(
-  handle: Pick<RequestDatabase, 'sql'>,
+  handle: QueryHandle,
   actor: RequestActor,
 ): Promise<OrgRole> {
   const rows = await handle.sql<{ role: string }[]>`
@@ -38,7 +37,7 @@ export async function requireOrgRole(
 
 /** Resolve the role and assert a capability, as one call. */
 export async function requireCapability(
-  handle: Pick<RequestDatabase, 'sql'>,
+  handle: QueryHandle,
   actor: RequestActor,
   capability: Capability,
 ): Promise<OrgRole> {
