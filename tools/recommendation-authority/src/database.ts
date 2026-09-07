@@ -1,9 +1,13 @@
 import postgres from 'postgres';
 import { brokerResult, type AuthorityCommand } from './command.js';
 import { validateAuthorityDatabaseUrl } from './credential.js';
+import { recommendationDatabaseTls } from '../../../docs/deploy/openspell-recommendation-database-trust.mjs';
 
 export function connectAuthority(databaseUrl: string) {
-  return postgres(validateAuthorityDatabaseUrl(databaseUrl), {
+  const credential = validateAuthorityDatabaseUrl(databaseUrl);
+  const ssl = recommendationDatabaseTls(credential);
+  return postgres(credential, {
+    ...(ssl === undefined ? {} : { ssl }),
     max: 1, prepare: false, connect_timeout: 5, idle_timeout: 1, max_lifetime: 30,
     onnotice: () => {}, debug: false,
     connection: { application_name: 'openspell-recommendation-authority', statement_timeout: 5000, lock_timeout: 3000 },

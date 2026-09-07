@@ -37,6 +37,13 @@ first activation. Its separate infrastructure credential never enters the worker
 broker and every independent readback attempt have a fixed process deadline, including
 when a transport loses the COMMIT response while leaving its socket open.
 
+For a database with a private CA, first install the reviewed public certificate using
+the [fixed database CA procedure](recommendation-authority.md#database-certificate-trust).
+The dedicated worker and readback helpers require `sslmode=verify-full` and Node22.19
+or newer when that file is present. They preserve the normal Node trust roots, reject
+ambient TLS overrides and load no certificate from an environment-selected path.
+This configuration applies only to these dedicated preview processes.
+
 ## Immutable stage
 
 Staging requires its own exact authorization. From a clean checkout whose `HEAD` and `origin/main`

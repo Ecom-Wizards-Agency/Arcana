@@ -23,6 +23,8 @@ describe('immutable authority bundle', () => {
     expect(launcher).toContain('/usr/bin/env -i LANG=C ');
     expect(ARTIFACT_FILES).toHaveLength(8);
     expect(await readFile(join(release, 'SOURCE_INPUTS'), 'utf8')).not.toMatch(/packages\/(db|ads-api)|apps\/worker/u);
+    expect(await readFile(join(release, 'SOURCE_INPUTS'), 'utf8')).toContain('docs/deploy/openspell-recommendation-database-trust.mjs');
+    expect(await readFile(join(release, 'SOURCE_INPUTS'), 'utf8')).toContain('docs/deploy/install-recommendation-database-ca.sh');
   });
 
   it('refuses changed bytes, extra files, symlinks and writable code', async () => {
