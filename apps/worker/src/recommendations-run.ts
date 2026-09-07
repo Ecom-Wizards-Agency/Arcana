@@ -16,7 +16,7 @@
  * for an account-wide note would turn narrative into an exportable fake action.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import type { ClaimRef, DbHandle, QuerySql } from '@wizard-ads/db';
+import type { ClaimRef, DbHandle, QueryHandle, QuerySql } from '@wizard-ads/db';
 import type { RecommendationWorkerDatabase } from '@wizard-ads/db/recommendation-worker';
 import {
   buildRecommendations,
@@ -2386,98 +2386,7 @@ implements RecommendationRunStore, RecommendationScheduleStore {
   async getRecommendationPreviewBatchStatus(
     scope: RecommendationPreviewBatchScope,
   ): Promise<RecommendationPreviewBatchStatus | null> {
-    if (!UUID_PATTERN.test(scope.orgId) || !UUID_PATTERN.test(scope.profileId) ||
-        !UUID_PATTERN.test(scope.batchId)) {
-      throw new RecommendationPreviewError('invalid_request', 400, 'Preview status identity is invalid.');
-    }
-    const batches = await this.handle.sql<{
-      id: string;
-      scope_count: number;
-      child_count: number;
-      execution_snapshot: unknown;
-    }[]>`
-      select id, scope_count, child_count, execution_snapshot
-        from public.recommendation_preview_batches
-       where id = ${scope.batchId} and org_id = ${scope.orgId} and profile_id = ${scope.profileId}
-    `;
-    const batch = batches[0];
-    if (batch === undefined) return null;
-    const rows = await this.handle.sql<{
-      run_id: string;
-      run_status: string;
-      proposals_count: number;
-      scope_count: number | null;
-      actual_scope_count: number;
-      group_id: string | null;
-      group_snapshot: unknown;
-      job_status: string | null;
-      narrative: unknown;
-    }[]>`
-      select run.id as run_id, run.status::text as run_status,
-             run.proposals_count, run.scope_count, run.group_id, run.group_snapshot,
-             job.status::text as job_status,
-             (select event.payload -> 'narrative' from public.audit_log event
-               where event.org_id = run.org_id and event.target_type = 'recommendation_run'
-                 and event.target_id = run.id::text and event.action = 'recommendation.run.succeeded'
-               order by event.created_at desc, event.id desc limit 1) as narrative,
-             (select count(*)::integer
-                from public.recommendation_run_campaigns run_campaign
-               where run_campaign.org_id = run.org_id
-                 and run_campaign.profile_id = run.profile_id
-                 and run_campaign.run_id = run.id) as actual_scope_count
-        from public.recommendation_runs run
-        left join public.sync_jobs job
-          on job.org_id = run.org_id and job.profile_id = run.profile_id and job.id = run.job_id
-       where run.org_id = ${scope.orgId}
-         and run.profile_id = ${scope.profileId}
-         and run.batch_id = ${scope.batchId}
-       order by run.group_id nulls last, run.id
-    `;
-    if (
-      rows.length !== Number(batch.child_count) ||
-      rows.reduce((sum, row) => sum + Number(row.scope_count ?? 0), 0) !== Number(batch.scope_count) ||
-      rows.some((row) => row.job_status === null || row.scope_count !== row.actual_scope_count)
-    ) {
-      throw new RecommendationScopeIntegrityError();
-    }
-    const children = rows.map((row) => {
-      let groupName: string | null = null;
-      if (row.group_id !== null) {
-        try {
-          const snapshot = normalizeOptimizationGroupSnapshot(row.group_snapshot);
-          if (snapshot.group.id !== row.group_id) throw new Error('group mismatch');
-          groupName = snapshot.group.name;
-        } catch {
-          throw new RecommendationScopeIntegrityError();
-        }
-      }
-      const status = recommendationPreviewChildStatus(row.run_status, row.job_status!);
-      return {
-        runId: row.run_id,
-        groupName,
-        status,
-        campaignCount: Number(row.scope_count),
-        proposalsCount: Number(row.proposals_count),
-        ...previewResultDetails(status, Number(row.proposals_count), row.narrative),
-      };
-    });
-    const hasFailedChild = children.some((child) => child.status === 'failed');
-    const hasActiveChild = children.some((child) => child.status === 'running');
-    const status = children.every((child) => child.status === 'queued')
-      ? 'queued' as const
-      : hasActiveChild || children.some((child) => child.status === 'queued')
-        ? 'running' as const
-        : hasFailedChild
-          ? 'failed' as const
-          : 'succeeded' as const;
-    return RecommendationPreviewBatchStatus.parse({
-      batchId: batch.id,
-      status,
-      campaignCount: Number(batch.scope_count),
-      proposalsCount: children.reduce((sum, child) => sum + child.proposalsCount, 0),
-      children,
-      ...(batch.execution_snapshot == null ? {} : { executionSnapshot: OneTimeRpcSnapshot.parse(batch.execution_snapshot) }),
-    });
+    return readRecommendationPreviewBatchStatus(this.handle, scope);
   }
 
   async enqueueRecommendationRun(input: QueueRecommendationRunInput): Promise<QueuedRecommendationRun> {
@@ -3292,4 +3201,103 @@ async function readGroupRecommendationSafety(
       ? 'No prior exported recommendation requires observation.'
       : 'Every active exported recommendation has complete continue evidence.',
   };
+}
+
+/** Read-only status assembly shared by the worker store and authenticated web reads. */
+export async function readRecommendationPreviewBatchStatus(
+  handle: QueryHandle,
+  scope: RecommendationPreviewBatchScope,
+): Promise<RecommendationPreviewBatchStatus | null> {
+  if (!UUID_PATTERN.test(scope.orgId) || !UUID_PATTERN.test(scope.profileId) ||
+      !UUID_PATTERN.test(scope.batchId)) {
+    throw new RecommendationPreviewError('invalid_request', 400, 'Preview status identity is invalid.');
+  }
+  const batches = await handle.sql<{
+    id: string;
+    scope_count: number;
+    child_count: number;
+    execution_snapshot: unknown;
+  }[]>`
+    select id, scope_count, child_count, execution_snapshot
+      from public.recommendation_preview_batches
+     where id = ${scope.batchId} and org_id = ${scope.orgId} and profile_id = ${scope.profileId}
+  `;
+  const batch = batches[0];
+  if (batch === undefined) return null;
+  const rows = await handle.sql<{
+    run_id: string;
+    run_status: string;
+    proposals_count: number;
+    scope_count: number | null;
+    actual_scope_count: number;
+    group_id: string | null;
+    group_snapshot: unknown;
+    job_status: string | null;
+    narrative: unknown;
+  }[]>`
+    select run.id as run_id, run.status::text as run_status,
+           run.proposals_count, run.scope_count, run.group_id, run.group_snapshot,
+           job.status::text as job_status,
+           (select event.payload -> 'narrative' from public.audit_log event
+             where event.org_id = run.org_id and event.target_type = 'recommendation_run'
+               and event.target_id = run.id::text and event.action = 'recommendation.run.succeeded'
+             order by event.created_at desc, event.id desc limit 1) as narrative,
+           (select count(*)::integer
+              from public.recommendation_run_campaigns run_campaign
+             where run_campaign.org_id = run.org_id
+               and run_campaign.profile_id = run.profile_id
+               and run_campaign.run_id = run.id) as actual_scope_count
+      from public.recommendation_runs run
+      left join public.sync_jobs job
+        on job.org_id = run.org_id and job.profile_id = run.profile_id and job.id = run.job_id
+     where run.org_id = ${scope.orgId}
+       and run.profile_id = ${scope.profileId}
+       and run.batch_id = ${scope.batchId}
+     order by run.group_id nulls last, run.id
+  `;
+  if (
+    rows.length !== Number(batch.child_count) ||
+    rows.reduce((sum, row) => sum + Number(row.scope_count ?? 0), 0) !== Number(batch.scope_count) ||
+    rows.some((row) => row.job_status === null || row.scope_count !== row.actual_scope_count)
+  ) {
+    throw new RecommendationScopeIntegrityError();
+  }
+  const children = rows.map((row) => {
+    let groupName: string | null = null;
+    if (row.group_id !== null) {
+      try {
+        const snapshot = normalizeOptimizationGroupSnapshot(row.group_snapshot);
+        if (snapshot.group.id !== row.group_id) throw new Error('group mismatch');
+        groupName = snapshot.group.name;
+      } catch {
+        throw new RecommendationScopeIntegrityError();
+      }
+    }
+    const status = recommendationPreviewChildStatus(row.run_status, row.job_status!);
+    return {
+      runId: row.run_id,
+      groupName,
+      status,
+      campaignCount: Number(row.scope_count),
+      proposalsCount: Number(row.proposals_count),
+      ...previewResultDetails(status, Number(row.proposals_count), row.narrative),
+    };
+  });
+  const hasFailedChild = children.some((child) => child.status === 'failed');
+  const hasActiveChild = children.some((child) => child.status === 'running');
+  const status = children.every((child) => child.status === 'queued')
+    ? 'queued' as const
+    : hasActiveChild || children.some((child) => child.status === 'queued')
+      ? 'running' as const
+      : hasFailedChild
+        ? 'failed' as const
+        : 'succeeded' as const;
+  return RecommendationPreviewBatchStatus.parse({
+    batchId: batch.id,
+    status,
+    campaignCount: Number(batch.scope_count),
+    proposalsCount: children.reduce((sum, child) => sum + child.proposalsCount, 0),
+    children,
+    ...(batch.execution_snapshot == null ? {} : { executionSnapshot: OneTimeRpcSnapshot.parse(batch.execution_snapshot) }),
+  });
 }
