@@ -24,7 +24,7 @@ describe('experiment contracts', () => {
   it('keeps deliberate broad scopes and rejects malformed selectors instead of dropping them', () => {
     expect(ExperimentScopeInput.parse({ campaignIds: [' c-1 ', 'c-1', 'c-2'] })).toEqual({ campaignIds: ['c-1', 'c-2'] });
     expect(ExperimentScopeInput.parse({})).toEqual({});
-    expect(ExperimentScopeInput.parse({ campaignIds: [] })).toEqual({ campaignIds: [] });
+    expect(ExperimentScopeInput.parse({ campaignIds: [], note: '  ' })).toEqual({});
     for (const scope of [null, [], { campaignIds: 'c-1' }, { campaignIds: [false] },
       { campaignIds: ['c-1', ''] }, { campaignIds: [' '] }, { campagnIds: ['c-1'] }]) {
       expect(ExperimentCommand.safeParse({ ...create, scope }).success).toBe(false);
@@ -32,7 +32,7 @@ describe('experiment contracts', () => {
   });
 
   it('parses valid start dates without accepting invalid dates or out-of-range timestamps', () => {
-    for (const startAt of ['2026-09-07', '2026-09-07T00:00:00Z', '2026-09-07T07:00:00+07:00', new Date('2026-09-07T00:00:00Z')]) {
+    for (const startAt of ['2026-09-07', '2026-09-07T00:00:00', '2026-09-07T00:00:00Z', '2026-09-07T07:00:00+07:00', new Date('2026-09-07T00:00:00Z')]) {
       expect(ExperimentCommand.parse({ ...create, startAt })).toMatchObject({ startAt: new Date('2026-09-07T00:00:00Z') });
     }
     for (const startAt of ['2026-02-30', '2026-02-30T00:00:00Z', 'infinity', '', 'tomorrow', 0, new Date(NaN)]) {
@@ -63,5 +63,15 @@ describe('experiment contracts', () => {
     expect(ExperimentCommandResult.safeParse({ kind: 'created', item, event: null }).success).toBe(false);
     expect(ExperimentCommandResult.safeParse({ kind: 'updated', item, event }).success).toBe(false);
     expect(ExperimentCommandResult.safeParse({ kind: 'transitioned', item, event: null }).success).toBe(true);
+    const otherId = '22222222-2222-4222-8222-222222222222';
+    for (const patch of [{ experimentId: otherId }, { orgId: otherId }, { toStatus: 'running' }]) {
+      const mismatched = { item, event: { ...event, ...patch } };
+      expect(ExperimentCommandResult.safeParse({ kind: 'created', ...mismatched }).success).toBe(false);
+      expect(ExperimentMutationResponse.safeParse(JSON.parse(JSON.stringify(mismatched))).success).toBe(false);
+    }
+    expect(ExperimentCommandResult.safeParse({ kind: 'created', item, event: { ...event, fromStatus: 'running' } }).success).toBe(false);
+    expect(ExperimentCommandResult.safeParse({ kind: 'transitioned', item, event }).success).toBe(false);
+    expect(ExperimentCommandResult.safeParse({ kind: 'transitioned', item: { ...item, status: 'running' },
+      event: { ...event, fromStatus: 'planned', toStatus: 'running' } }).success).toBe(true);
   });
 });

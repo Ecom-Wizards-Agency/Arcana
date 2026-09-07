@@ -35,12 +35,23 @@ const identifiers = z.array(z.string().trim().min(1)).transform((values) => [...
 export const ExperimentScopeInput = z.object({
   campaignIds: identifiers.optional(), adGroupIds: identifiers.optional(), targetIds: identifiers.optional(),
   asins: identifiers.optional(), searchTerms: identifiers.optional(), note: ExperimentText.optional(),
-}).strict();
+}).strict().transform((scope) => {
+  for (const key of ['campaignIds', 'adGroupIds', 'targetIds', 'asins', 'searchTerms'] as const) {
+    if (scope[key]?.length === 0) delete scope[key];
+  }
+  if (scope.note === '') delete scope.note;
+  return scope;
+});
+export type ExperimentScopeInput = z.infer<typeof ExperimentScopeInput>;
 
-/** New commands accept real ISO days/timestamps or already parsed Dates. */
+/** ISO timestamps without an offset are interpreted as UTC. */
 export const ExperimentStart = z.union([
   z.date(), z.iso.date(), z.iso.datetime({ offset: true, local: true }),
-]).transform((value) => value instanceof Date ? value : new Date(value)).pipe(z.date());
+]).transform((value) => {
+  if (value instanceof Date) return value;
+  const utc = value.includes('T') && !/(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? `${value}Z` : value;
+  return new Date(utc);
+}).pipe(z.date());
 
 const editable = {
   name: ExperimentName.optional(), hypothesis: ExperimentText.optional(), type: ExperimentType.optional(),
@@ -78,12 +89,30 @@ export const ExperimentEventRecord = z.object({
 }).strict();
 export type ExperimentEventRecord = z.infer<typeof ExperimentEventRecord>;
 
+function checkEventLink(
+  value: { item: Pick<ExperimentRecord, 'id' | 'orgId' | 'status'>; event: Pick<ExperimentEventRecord, 'experimentId' | 'orgId' | 'toStatus'> | null },
+  ctx: z.RefinementCtx,
+): void {
+  if (!value.event) return;
+  for (const [eventKey, itemKey] of [['experimentId', 'id'], ['orgId', 'orgId'], ['toStatus', 'status']] as const) {
+    if (value.event[eventKey] !== value.item[itemKey]) {
+      ctx.addIssue({ code: 'custom', path: ['event', eventKey], message: 'The event must match the returned experiment' });
+    }
+  }
+}
+
 /** Actual item/event readback; this is not a durable replay receipt. */
 export const ExperimentCommandResult = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('created'), item: ExperimentRecord, event: ExperimentEventRecord }).strict(),
   z.object({ kind: z.literal('updated'), item: ExperimentRecord, event: z.null() }).strict(),
   z.object({ kind: z.literal('transitioned'), item: ExperimentRecord, event: ExperimentEventRecord.nullable() }).strict(),
-]);
+]).superRefine((value, ctx) => {
+  checkEventLink(value, ctx);
+  if (value.event && ((value.kind === 'created' && value.event.fromStatus !== null)
+    || (value.kind === 'transitioned' && value.event.fromStatus === null))) {
+    ctx.addIssue({ code: 'custom', path: ['event', 'fromStatus'], message: 'The event must match the command lifecycle' });
+  }
+});
 export type ExperimentCommandResult = z.infer<typeof ExperimentCommandResult>;
 
 const iso = z.iso.datetime({ offset: true });
@@ -94,5 +123,5 @@ export const ExperimentHttpEvent = ExperimentEventRecord.extend({ createdAt: iso
 /** Additive event/null preserves the existing item response and JSON timestamps. */
 export const ExperimentMutationResponse = z.object({
   item: ExperimentHttpRecord, event: ExperimentHttpEvent.nullable(),
-}).strict();
+}).strict().superRefine(checkEventLink);
 export type ExperimentMutationResponse = z.infer<typeof ExperimentMutationResponse>;
