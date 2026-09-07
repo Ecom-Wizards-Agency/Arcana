@@ -35,7 +35,7 @@ describe.skipIf(!available)('page data under current-user database authority', (
       agencies.push({ orgId, userId, profileId, marker, cost });
       await issueMcpKey(database, { orgId, label: marker, profileIds: [profileId], createdBy: userId });
       const revoked = await issueMcpKey(database, { orgId, label: marker + ' revoked', profileIds: [profileId], createdBy: userId });
-      expect(await revokeMcpKey(database, orgId, revoked.record.id)).toBe(true);
+      expect(await revokeMcpKey(database, { orgId, userId }, revoked.record.id)).toBe(true);
       await database.sql`update public.ad_profiles set account_name=${marker} where id=${profileId}`;
       await database.sql`insert into public.fact_profile_daily(org_id,profile_id,date,currency_code,impressions,clicks,cost,sales_7d,purchases_7d,provisional)
         values (${orgId},${profileId},${date},'USD',100,5,${cost},44.56,2,true)

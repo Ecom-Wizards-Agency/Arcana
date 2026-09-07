@@ -301,3 +301,41 @@ test('sync status renders the ledgers', async ({ page }) => {
   await expect(page.getByTestId('report-row')).toHaveCount(1);
   await expect(page.getByTestId('report-row').first()).toContainText('yes');
 });
+
+test('an admin issues one scoped MCP key, loses the plaintext on reload and revokes it', async ({ page }) => {
+  await signIn(page, 'admin');
+  const state = await readState();
+  const handle = createDb({ connectionString: state.connectionString, max: 1 });
+  try {
+    const [before] = await handle.sql<{ n: number }[]>`select count(*)::int as n from mcp.api_keys where org_id=${state.orgId}`;
+    await page.goto('/connect-claude');
+    await page.getByTestId('key-label-input').fill('Synthetic browser key');
+    await page.getByTestId(`profile-option-${state.fixtureProfileId}`).check();
+    await page.getByTestId('key-expiry-select').selectOption('7');
+    const issuedResponse = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/mcp-keys' && response.request().method() === 'POST');
+    await page.getByTestId('issue-key').click();
+    const response = await issuedResponse;
+    expect(response.status()).toBe(201);
+    expect(response.headers()['cache-control']).toBe('no-store, max-age=0');
+    await expect(page.getByTestId('issued-token')).toBeVisible();
+    const row = page.getByTestId('key-row').filter({ hasText: 'Synthetic browser key' });
+    await expect(row).toBeVisible();
+    const id = await row.getAttribute('data-key-id');
+    expect(id).toBeTruthy();
+    const keys = await handle.sql<{ id: string; profile_ids: string[]; scope: string }[]>`
+      select id,profile_ids,scope::text from mcp.api_keys where org_id=${state.orgId} and id=${id}`;
+    expect(keys).toEqual([{ id, profile_ids: [state.fixtureProfileId], scope: 'read' }]);
+    const [after] = await handle.sql<{ n: number }[]>`select count(*)::int as n from mcp.api_keys where org_id=${state.orgId}`;
+    expect(after!.n - before!.n).toBe(1);
+    await page.reload();
+    await expect(page.getByTestId('issued-token')).toHaveCount(0);
+    await expect(row).toBeVisible();
+    await page.getByTestId(`revoke-key-${id}`).click();
+    await expect(row).toContainText('revoked');
+    await page.reload();
+    await expect(row).toContainText('revoked');
+    const audits = await handle.sql<{ action: string }[]>`select action from public.audit_log
+      where org_id=${state.orgId} and target_id=${id} order by created_at,id`;
+    expect(audits.map((audit) => audit.action)).toEqual(['mcp_key.issued', 'mcp_key.revoked']);
+  } finally { await handle.close(); }
+});

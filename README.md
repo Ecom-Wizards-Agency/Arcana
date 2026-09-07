@@ -73,6 +73,10 @@ the Advertising API connection.
    [hosted-history bundle tool](tools/hosted-migration-bundle/README.md) is not a fresh
    database initializer. Development seeds are synthetic test data, not a production
    first-owner installer.
+   Keep the exposed API schemas as declared in [supabase/config.toml](supabase/config.toml).
+   The `app`, `mcp` and `vault` schemas must remain unexposed: server-only manager
+   commands rely on the web application's verified session and authenticator checks
+   before their independent database membership checks.
 2. **Configure Vercel.** Build the `@wizard-ads/web` workspace with its locked monorepo
    dependencies. Set `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
    server-only `DATABASE_URL` and the exact HTTPS `WIZARD_ADS_APP_URL` through deployment

@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import { POST } from '../app/api/mcp-keys/route';
+import { POST as REVOKE } from '../app/api/mcp-keys/[keyId]/revoke/route';
+import { issueMcpKey } from './data/mcp-keys';
 
 const available = await databaseAvailable();
 const USER_A = '30303030-3030-4030-8030-303030303030';
@@ -11,27 +13,30 @@ const BRIDGE_SECRET = 'synthetic-mcp-key-route-bridge-secret';
 describe.skipIf(!available)('MCP key issue route', () => {
   let database: TestDatabase;
   let orgA = '';
+  let orgB = '';
   let profileA = '';
   let profileB = '';
   const previous = {
     databaseUrl: process.env['DATABASE_URL'],
+    appUrl: process.env['WIZARD_ADS_APP_URL'],
     bridgeSecret: process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET'],
     bridgeEnabled: process.env['WIZARD_ADS_E2E_AUTH_BRIDGE'],
   };
 
-  const request = (body: unknown) =>
-    POST(
-      new Request('http://localhost/api/mcp-keys', {
+  function input(body: unknown, origin: string | null = 'http://localhost:3000') {
+    return new Request('http://localhost:3000/api/mcp-keys', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
+          ...(origin === null ? {} : { origin }),
           'x-wizard-ads-auth-bridge': BRIDGE_SECRET,
           'x-wizard-ads-user-id': USER_A,
           'x-wizard-ads-org-id': orgA,
         },
         body: JSON.stringify(body),
-      }),
-    );
+      });
+  }
+  const request = (body: unknown) => POST(input(body));
 
   beforeAll(async () => {
     database = await createTestDatabase('wp54d_mcp_keys_route');
@@ -42,6 +47,7 @@ describe.skipIf(!available)('MCP key issue route', () => {
       select app.seed_tenant_fixture('mcp-key-route-bravo', ${USER_B}, 'owner')
     `;
     orgA = a?.seed_tenant_fixture ?? '';
+    orgB = b?.seed_tenant_fixture ?? '';
     const [ownProfile] = await database.sql<{ id: string }[]>`
       select id from public.ad_profiles where org_id = ${orgA} limit 1
     `;
@@ -51,11 +57,14 @@ describe.skipIf(!available)('MCP key issue route', () => {
     profileA = ownProfile?.id ?? '';
     profileB = foreignProfile?.id ?? '';
     process.env['DATABASE_URL'] = database.connectionString;
+    process.env['WIZARD_ADS_APP_URL'] = 'http://localhost:3000';
     process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET'] = BRIDGE_SECRET;
     process.env['WIZARD_ADS_E2E_AUTH_BRIDGE'] = '1';
   }, 60_000);
 
   afterAll(async () => {
+    if (previous.appUrl === undefined) delete process.env['WIZARD_ADS_APP_URL'];
+    else process.env['WIZARD_ADS_APP_URL'] = previous.appUrl;
     if (previous.databaseUrl === undefined) delete process.env['DATABASE_URL'];
     else process.env['DATABASE_URL'] = previous.databaseUrl;
     if (previous.bridgeSecret === undefined) delete process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET'];
@@ -73,6 +82,8 @@ describe.skipIf(!available)('MCP key issue route', () => {
       scope: 'write',
     });
     expect(response.status).toBe(201);
+    expect(response.headers.get('cache-control')).toBe('no-store, max-age=0');
+    expect(response.headers.get('vary')).toBe('Cookie, Authorization');
     const body = (await response.json()) as {
       key: { scope: string; profileIds: string[]; expiresAt: string };
       token: string;
@@ -112,5 +123,37 @@ describe.skipIf(!available)('MCP key issue route', () => {
       select count(*)::int as count from mcp.api_keys where org_id = ${orgA}
     `;
     expect(after).toBe(before);
+  });
+
+  it('refuses missing or foreign origins for issuance and revocation without mutation', async () => {
+    const [before] = await database.sql`select count(*)::int as n from mcp.api_keys where org_id=${orgA}`;
+    for (const origin of [null, 'https://outside.invalid']) {
+      const issued = await POST(input({ label: 'Synthetic refused key', profileIds: [profileA] }, origin));
+      const revoked = await REVOKE(input({}, origin), { params: Promise.resolve({ keyId: profileA }) });
+      for (const response of [issued, revoked]) {
+        expect(response.status).toBe(403);
+        expect(response.headers.get('cache-control')).toBe('no-store, max-age=0');
+        expect(await response.json()).toEqual({ error: 'Request origin refused' });
+      }
+    }
+    const [after] = await database.sql`select count(*)::int as n from mcp.api_keys where org_id=${orgA}`;
+    expect(after).toEqual(before);
+  });
+
+  it('revokes an owned key idempotently and conceals a guessed foreign key', async () => {
+    const own = await issueMcpKey(database, { orgId: orgA, createdBy: USER_A, label: 'Synthetic revoke', profileIds: [profileA] });
+    const foreign = await issueMcpKey(database, { orgId: orgB, createdBy: USER_B, label: 'Synthetic foreign', profileIds: [profileB] });
+    const denied = await REVOKE(input({}), { params: Promise.resolve({ keyId: foreign.record.id }) });
+    expect(denied.status).toBe(404);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await REVOKE(input({}), { params: Promise.resolve({ keyId: own.record.id }) });
+      expect(response.status).toBe(200);
+      expect(response.headers.get('cache-control')).toBe('no-store, max-age=0');
+      expect(await response.json()).toEqual({ revoked: true });
+    }
+    const [foreignRow] = await database.sql`select revoked_at from mcp.api_keys where id=${foreign.record.id}`;
+    expect(foreignRow!.revoked_at).toBeNull();
+    const [audit] = await database.sql`select count(*)::int as n from public.audit_log where org_id=${orgA} and target_id=${own.record.id} and action='mcp_key.revoked'`;
+    expect(audit!.n).toBe(1);
   });
 });

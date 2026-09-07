@@ -20,8 +20,8 @@
  * never recovered.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import type { Sql } from '@wizard-ads/db';
-import { McpKeyMetadata } from '@wizard-ads/shared';
+import { issueManagedMcpReadKey, revokeManagedMcpKey, type DbHandle } from '@wizard-ads/db';
+import type { McpKeyMetadata, OrgActor } from '@wizard-ads/shared';
 export { listMcpKeyMetadata as listMcpKeys } from '@wizard-ads/db';
 import {
   DEFAULT_MCP_KEY_EXPIRY_DAYS,
@@ -30,9 +30,7 @@ import {
 } from '../mcp-key-policy';
 
 /** Structural handle: both the pooled `DbHandle` and the per-request one fit. */
-export interface SqlHandle {
-  sql: Sql;
-}
+export type SqlHandle = Pick<DbHandle, 'sql'>;
 
 const TOKEN_PREFIX = 'wza_';
 const STORED_PREFIX_LENGTH = 12;
@@ -53,32 +51,6 @@ export interface IssuedMcpKey {
   token: string;
 }
 
-interface KeyRow {
-  id: string;
-  label: string;
-  key_prefix: string;
-  scope: string;
-  profile_ids: string[] | null;
-  expires_at: string | null;
-  revoked_at: string | null;
-  last_used_at: string | null;
-  created_at: string;
-}
-
-function toRecord(row: KeyRow): McpKeyRecord {
-  return McpKeyMetadata.parse({
-    id: row.id,
-    label: row.label,
-    keyPrefix: row.key_prefix,
-    scope: row.scope,
-    profileIds: row.profile_ids,
-    expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
-    revokedAt: row.revoked_at === null ? null : new Date(row.revoked_at).toISOString(),
-    lastUsedAt: row.last_used_at === null ? null : new Date(row.last_used_at).toISOString(),
-    createdAt: new Date(row.created_at).toISOString(),
-  });
-}
-
 export interface IssueMcpKeyInput {
   orgId: string;
   label: string;
@@ -86,10 +58,8 @@ export interface IssueMcpKeyInput {
   profileIds: readonly string[];
   /** Accepted only when it is one of `MCP_KEY_EXPIRY_DAY_OPTIONS`. */
   expiresInDays?: number;
-  /** Test seam for deterministic expiry assertions. */
-  now?: Date;
   /** The auth user issuing it, recorded for the audit trail. */
-  createdBy?: string | null;
+  createdBy: string;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -113,41 +83,12 @@ export async function issueMcpKey(handle: SqlHandle, input: IssueMcpKeyInput): P
   if (!isMcpKeyExpiryDays(expiresInDays)) {
     throw new Error(`Key expiry must be ${MCP_KEY_EXPIRY_DAY_OPTIONS.join(', ')} days.`);
   }
-  const now = input.now ?? new Date();
-  if (!Number.isFinite(now.getTime())) throw new Error('The key issue time is invalid.');
-  const expiresAt = new Date(now.getTime() + expiresInDays * 24 * 60 * 60 * 1_000);
-
-  const ownedProfiles = await handle.sql<{ id: string }[]>`
-    select id
-      from public.ad_profiles
-     where org_id = ${input.orgId}
-       and id = any(${handle.sql.array(profileIds)}::uuid[])
-  `;
-  if (ownedProfiles.length !== profileIds.length) {
-    throw new Error('Every selected profile must belong to the active organization.');
-  }
-
   const token = generateToken();
-  const rows = await handle.sql<KeyRow[]>`
-    insert into mcp.api_keys
-      (org_id, label, key_prefix, token_hash, scope, profile_ids, expires_at, created_by)
-    values (
-      ${input.orgId},
-      ${label},
-      ${token.slice(0, STORED_PREFIX_LENGTH)},
-      ${hashToken(token)},
-      'read',
-      ${handle.sql.array(profileIds)}::uuid[],
-      ${expiresAt.toISOString()}::timestamptz,
-      ${input.createdBy ?? null}
-    )
-    returning id, label, key_prefix, scope::text as scope, profile_ids,
-              expires_at::text as expires_at, revoked_at::text as revoked_at,
-              last_used_at::text as last_used_at, created_at::text as created_at
-  `;
-  const row = rows[0];
-  if (row === undefined) throw new Error('The key could not be stored.');
-  return { record: toRecord(row), token };
+  const record = await issueManagedMcpReadKey(handle, { orgId: input.orgId, userId: input.createdBy }, {
+    label, profileIds, expiresInDays,
+    keyPrefix: token.slice(0, STORED_PREFIX_LENGTH), tokenHash: hashToken(token),
+  });
+  return { record, token };
 }
 
 /**
@@ -155,12 +96,6 @@ export async function issueMcpKey(handle: SqlHandle, input: IssueMcpKeyInput): P
  * tenant-scoped, so one org can never revoke another's key by pasting an id.
  * Returns false when no key with that id belongs to the org.
  */
-export async function revokeMcpKey(handle: SqlHandle, orgId: string, keyId: string): Promise<boolean> {
-  const rows = await handle.sql<{ id: string }[]>`
-    update mcp.api_keys
-       set revoked_at = coalesce(revoked_at, now())
-     where id = ${keyId} and org_id = ${orgId}
-     returning id
-  `;
-  return rows.length > 0;
+export async function revokeMcpKey(handle: SqlHandle, actor: OrgActor, keyId: string): Promise<boolean> {
+  return revokeManagedMcpKey(handle, actor, keyId);
 }

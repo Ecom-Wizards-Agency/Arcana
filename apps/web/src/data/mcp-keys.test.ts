@@ -42,19 +42,17 @@ describe.skipIf(!available)('MCP key data safety', () => {
   });
 
   it('stores a read-only allowlist and the selected bounded expiry', async () => {
-    const now = new Date('2026-08-29T00:00:00.000Z');
     const issued = await issueMcpKey(database, {
       orgId: orgA,
       label: 'Synthetic client',
       profileIds: [profileA],
       expiresInDays: 30,
-      now,
       createdBy: USER_A,
     });
 
     expect(issued.record.scope).toBe('read');
     expect(issued.record.profileIds).toEqual([profileA]);
-    expect(new Date(issued.record.expiresAt ?? 0).toISOString()).toBe('2026-09-28T00:00:00.000Z');
+    expect(new Date(issued.record.expiresAt!).getTime() - new Date(issued.record.createdAt).getTime()).toBe(30 * 86_400_000);
     const listed = await withAuthenticatedActor(database, { orgId: orgA, userId: USER_A }, (sql) => listMcpKeys({ sql }, orgA));
     expect(listed).toHaveLength(1);
     expect(listed[0]?.profileIds).toEqual([profileA]);
@@ -62,12 +60,13 @@ describe.skipIf(!available)('MCP key data safety', () => {
 
   it('rejects missing profiles, unbounded expiry, and a profile from another org', async () => {
     await expect(
-      issueMcpKey(database, { orgId: orgA, label: 'No profiles', profileIds: [] }),
+      issueMcpKey(database, { orgId: orgA, label: 'No profiles', profileIds: [], createdBy: USER_A }),
     ).rejects.toThrow(/at least one profile/i);
     await expect(
       issueMcpKey(database, {
         orgId: orgA,
         label: 'Bad expiry',
+        createdBy: USER_A,
         profileIds: [profileA],
         expiresInDays: Math.max(...MCP_KEY_EXPIRY_DAY_OPTIONS) + 1,
       }),
@@ -78,9 +77,10 @@ describe.skipIf(!available)('MCP key data safety', () => {
       issueMcpKey(database, {
         orgId: orgA,
         label: 'Foreign profile',
+        createdBy: USER_A,
         profileIds: [profileA, profileB],
       }),
-    ).rejects.toThrow(/belong to the active organization/i);
+    ).rejects.toThrow(/unavailable profile/i);
     const after = await withAuthenticatedActor(database, { orgId: orgA, userId: USER_A }, (sql) => listMcpKeys({ sql }, orgA));
     expect(after).toHaveLength(before.length);
   });

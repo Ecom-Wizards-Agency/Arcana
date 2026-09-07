@@ -11,14 +11,17 @@ import {
   DEFAULT_MCP_KEY_EXPIRY_DAYS,
   isMcpKeyExpiryDays,
 } from '../../../src/mcp-key-policy';
-import { errorResponse, openWebDatabase, requestActor } from '../../../src/server/request-context';
+import { openWebDatabase, requestActor } from '../../../src/server/request-context';
 import { requireCapability } from '../../../src/server/org-role';
+import { mcpKeyError, mcpKeyResponse, requireMcpKeyOrigin } from '../../../src/server/mcp-key-response';
 
 export const runtime = 'nodejs';
 
 export async function POST(request: Request): Promise<Response> {
-  const database = openWebDatabase();
+  let database: ReturnType<typeof openWebDatabase> | undefined;
   try {
+    requireMcpKeyOrigin(request);
+    database = openWebDatabase();
     const actor = await requestActor(request.headers);
     await requireCapability(database, actor, 'manageConnection');
 
@@ -49,10 +52,10 @@ export async function POST(request: Request): Promise<Response> {
       expiresInDays,
       createdBy: actor.userId,
     });
-    return Response.json({ key: issued.record, token: issued.token }, { status: 201 });
+    return mcpKeyResponse(Response.json({ key: issued.record, token: issued.token }, { status: 201 }));
   } catch (error) {
-    return errorResponse(error);
+    return mcpKeyError(error);
   } finally {
-    await database.close();
+    await database?.close();
   }
 }
