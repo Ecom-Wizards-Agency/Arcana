@@ -3,8 +3,10 @@ import type { SyncWorker } from './worker.js';
 import { MARKETING_STREAM_SUSTAINED_FAILURE_THRESHOLD } from './marketing-stream-sqs.js';
 import type { WorkerClaimProtocol, WorkerDeploymentRole } from './deployment-role.js';
 import type { JobType } from '@wizard-ads/shared';
+import type { AmazonConnectionLoop } from './amazon-connections.js';
 
 export interface WorkerHealthComponents {
+  amazonConnections?: Pick<AmazonConnectionLoop, 'status'>;
   deployment: {
     revision: string;
     role: WorkerDeploymentRole;
@@ -41,9 +43,13 @@ export function startHealthServer(
       || (marketingStream.consecutiveFailures ?? 0) >= MARKETING_STREAM_SUSTAINED_FAILURE_THRESHOLD
     );
     const workerStatus = worker.status();
+    const amazonConnections = components.amazonConnections?.status()
+      ?? { enabled: false, running: false, stopping: false, inFlight: 0, consecutiveFailures: 0, lastSuccessAt: null };
+    const connectionsDead = amazonConnections.enabled && (!amazonConnections.running
+      || amazonConnections.stopping || amazonConnections.consecutiveFailures >= 3);
     const workerDead = !workerStatus.claimLoop.ready
       || (workerStatus.settlementFailure ?? null) !== null;
-    const degraded = streamDead || workerDead;
+    const degraded = streamDead || workerDead || connectionsDead;
     const body = JSON.stringify({
       status: degraded ? 'degraded' : 'ok',
       worker: {
@@ -58,6 +64,7 @@ export function startHealthServer(
       },
       components: {
         marketingStream,
+        amazonConnections,
       },
     });
     response.writeHead(degraded ? 503 : 200, {
