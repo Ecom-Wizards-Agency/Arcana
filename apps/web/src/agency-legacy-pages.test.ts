@@ -90,6 +90,9 @@ describe.skipIf(!available)('actual legacy pages under authenticated agency read
       })();
       // Inspect the actual server element's serialized props, without executing
       // presentation components or replacing any loader with a mock.
+      if (page === 'roadmap' && orgId === actor.orgId && 'planned' in element.props) {
+        expect(element.key).toBe(`${actor.orgId}:${actor.userId}`);
+      }
       return JSON.stringify(element);
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'digest' in error) return String(error.digest);

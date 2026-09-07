@@ -9,7 +9,8 @@
  * second vote lands on the wrong card. The new order is what the next load
  * shows.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { FeedbackCommandResult } from '@wizard-ads/shared';
 import { FeedbackTriageControls } from '../../src/feedback/triage-controls';
 import type { FeedbackTriageChanges } from '../../src/feedback/triage-controls';
 import type { UiFeedbackItem } from '../../src/feedback/ui';
@@ -35,37 +36,64 @@ export function RoadmapBoardView(initial: BoardProps) {
   const [board, setBoard] = useState<BoardProps>(initial);
   const [message, setMessage] = useState('');
   const [ready, setReady] = useState(false);
+  const pendingVotes = useRef(new Set<string>());
+  const [voteStates, setVoteStates] = useState<Record<string, 'pending' | 'unconfirmed'>>({});
   useEffect(() => setReady(true), []);
 
   const vote = async (item: UiFeedbackItem) => {
+    if (pendingVotes.current.has(item.id)) return;
+    pendingVotes.current.add(item.id);
+    setVoteStates((current) => ({ ...current, [item.id]: 'pending' }));
     setMessage('');
+    const finish = () => {
+      pendingVotes.current.delete(item.id);
+      setVoteStates((current) => { const next = { ...current }; delete next[item.id]; return next; });
+    };
+    const apply = (saved: { voted: boolean; votes: number }) => {
+      const update = (items: UiFeedbackItem[]) => items.map((row) => row.id === item.id
+        ? { ...row, votes: saved.votes, viewerHasVoted: saved.voted } : row);
+      setBoard((current) => ({ ...current, planned: update(current.planned), inProgress: update(current.inProgress),
+        shipped: update(current.shipped), declined: update(current.declined) }));
+    };
     try {
       const response = await fetch(`/api/feedback/${item.id}/vote`, { method: 'POST' });
-      const payload = (await response.json().catch(() => null)) as {
-        voted?: boolean;
-        votes?: number;
-        error?: string;
-      } | null;
-      if (!response.ok || payload?.votes === undefined) {
-        throw new Error(payload?.error ?? `Vote failed (${response.status})`);
+      const payload: unknown = await response.json().catch(() => null);
+      const saved = voteReadback(payload, item.id, false);
+      if (response.ok && saved !== null) { apply(saved); finish(); return; }
+      if (response.status >= 400 && response.status < 500) {
+        setMessage('The vote was refused. Reload to check your access to this item.');
+        finish(); return;
       }
-      const apply = (items: UiFeedbackItem[]) =>
-        items.map((row) =>
-          row.id === item.id
-            ? { ...row, votes: payload.votes ?? row.votes, viewerHasVoted: payload.voted ?? false }
-            : row,
-        );
-      setBoard((current) => ({
-        planned: apply(current.planned),
-        inProgress: apply(current.inProgress),
-        shipped: apply(current.shipped),
-        declined: apply(current.declined),
-        canTriage: current.canTriage,
-      }));
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Vote failed');
-    }
+    } catch { /* A network failure does not establish whether the toggle committed. */ }
+    setMessage('Checking the saved vote…');
+    try {
+      const response = await fetch(`/api/feedback/${item.id}`, { cache: 'no-store' });
+      const saved = voteReadback(await response.json().catch(() => null), item.id, true);
+      if (response.ok && saved !== null) {
+        apply(saved);
+        setVoteStates((current) => ({ ...current, [item.id]: 'unconfirmed' }));
+        setMessage('Showing the current saved vote. The change is still unconfirmed; reload before voting again.');
+        return;
+      }
+    } catch { /* Keep the item blocked until a server reload can reconcile it. */ }
+    setVoteStates((current) => ({ ...current, [item.id]: 'unconfirmed' }));
+    setMessage('The vote could not be confirmed. Reload to check its saved state.');
   };
+
+  // A GET reports current state; it does not prove that a particular POST committed.
+  function voteReadback(value: unknown, itemId: string, fromItem: boolean) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+    const payload = value as Record<string, unknown>;
+    let candidate: unknown = { ...payload, kind: 'vote' };
+    if (fromItem) {
+      const item = payload['item'];
+      if (item === null || typeof item !== 'object' || Array.isArray(item)) return null;
+      const row = item as Record<string, unknown>;
+      candidate = { kind: 'vote', itemId: row['id'], voted: row['viewerHasVoted'], votes: row['votes'] };
+    }
+    const parsed = FeedbackCommandResult.safeParse(candidate);
+    return parsed.success && parsed.data.kind === 'vote' && parsed.data.itemId === itemId ? parsed.data : null;
+  }
 
   const triage = async (item: UiFeedbackItem, changes: FeedbackTriageChanges): Promise<void> => {
     setMessage('');
@@ -139,6 +167,7 @@ export function RoadmapBoardView(initial: BoardProps) {
                     onVote={vote}
                     onTriage={triage}
                     canTriage={initial.canTriage}
+                    voteState={voteStates[item.id]}
                   />
                 ))}
               </ul>
@@ -160,6 +189,7 @@ export function RoadmapBoardView(initial: BoardProps) {
               onVote={vote}
               onTriage={triage}
               canTriage={initial.canTriage}
+              voteState={voteStates[item.id]}
               declined
             />
           ))}
@@ -176,12 +206,14 @@ function RoadmapCard({
   onTriage,
   canTriage,
   declined = false,
+  voteState,
 }: {
   item: UiFeedbackItem;
   onVote: (item: UiFeedbackItem) => Promise<void>;
   onTriage: (item: UiFeedbackItem, changes: FeedbackTriageChanges) => Promise<void>;
   canTriage: boolean;
   declined?: boolean;
+  voteState?: 'pending' | 'unconfirmed' | undefined;
 }) {
   return (
     <li
@@ -201,6 +233,8 @@ function RoadmapCard({
           type="button"
           aria-label={`Vote for ${item.title}`}
           data-testid="vote-button"
+          disabled={voteState !== undefined}
+          aria-busy={voteState === 'pending'}
           onClick={() => void onVote(item)}
           style={{
             ...button,
