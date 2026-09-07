@@ -18,7 +18,8 @@ import {
 } from '@wizard-ads/db';
 import type { ExperimentMetric, ExperimentStatus, ExperimentType } from '@wizard-ads/db';
 import { openWebDatabase, requestActor, RequestAuthError } from '../../../../src/server/request-context';
-import { requireCapability, requireOrgRole } from '../../../../src/server/org-role';
+import { requireCapability } from '../../../../src/server/org-role';
+import { authenticatedRead, readUuid } from '../../../../src/server/authenticated-read';
 import { experimentErrorResponse } from '../../../../src/experiments/http';
 
 export const runtime = 'nodejs';
@@ -26,19 +27,13 @@ export const runtime = 'nodejs';
 type RouteContext = { params: Promise<{ experimentId: string }> };
 
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
-  const database = openWebDatabase();
-  try {
-    const actor = await requestActor(request.headers);
-    await requireOrgRole(database, actor);
+  return authenticatedRead(request, async (database, actor) => {
     const { experimentId } = await context.params;
+    readUuid(experimentId, 'experimentId');
     const item = await getExperiment(database, { orgId: actor.orgId, experimentId });
     if (!item) return Response.json({ error: 'Experiment not found' }, { status: 404 });
     return Response.json({ item });
-  } catch (error) {
-    return experimentErrorResponse(error);
-  } finally {
-    await database.close();
-  }
+  });
 }
 
 export async function PATCH(request: Request, context: RouteContext): Promise<Response> {

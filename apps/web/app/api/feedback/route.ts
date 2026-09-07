@@ -20,6 +20,7 @@ import { feedbackErrorResponse } from '../../../src/feedback/http';
 import { pageContext } from '../../../src/feedback/page-context';
 import { toUiItem } from '../../../src/feedback/ui';
 import { can } from '../../../src/auth/roles';
+import { authenticatedRead } from '../../../src/server/authenticated-read';
 
 export const runtime = 'nodejs';
 
@@ -34,9 +35,7 @@ const asStatus = (value: string | null): FeedbackStatus | null =>
     : null;
 
 export async function GET(request: Request): Promise<Response> {
-  const database = openWebDatabase();
-  try {
-    const actor = await requestActor(request.headers);
+  return authenticatedRead(request, async (database, actor) => {
     const role = await requireOrgRole(database, actor);
     const query = new URL(request.url).searchParams;
     const [items, counts] = await Promise.all([
@@ -57,11 +56,7 @@ export async function GET(request: Request): Promise<Response> {
       role,
       canTriage: can(role, 'triageFeedback'),
     });
-  } catch (error) {
-    return feedbackErrorResponse(error);
-  } finally {
-    await database.close();
-  }
+  });
 }
 
 export async function POST(request: Request): Promise<Response> {

@@ -1,6 +1,7 @@
 import {
   readOptimizationWorkspace,
   saveOptimizationGroup,
+  profileBelongsToOrg,
   type OptimizationGroupSettings,
 } from '@wizard-ads/db';
 import {
@@ -9,26 +10,24 @@ import {
   OptimizationWeekdays,
 } from '@wizard-ads/shared';
 import { openWebDatabase, requestActor, errorResponse } from '../../../../src/server/request-context';
-import { requireCapability, requireOrgRole } from '../../../../src/server/org-role';
+import { requireCapability } from '../../../../src/server/org-role';
+import { ApiReadError, authenticatedRead, readUuid } from '../../../../src/server/authenticated-read';
 
 export const runtime = 'nodejs';
 
 export async function GET(request: Request): Promise<Response> {
-  const database = openWebDatabase();
-  try {
-    const actor = await requestActor(request.headers);
-    await requireOrgRole(database, actor);
+  return authenticatedRead(request, async (database, actor) => {
     const profileId = new URL(request.url).searchParams.get('profileId');
-    if (!profileId) throw new Error('profileId is required');
+    if (!profileId) throw new ApiReadError('profileId is required');
+    readUuid(profileId, 'profileId');
+    if (!(await profileBelongsToOrg(database, { orgId: actor.orgId, profileId }))) {
+      return Response.json({ error: 'Profile not found' }, { status: 404 });
+    }
     return Response.json(await readOptimizationWorkspace(database, {
       orgId: actor.orgId,
       profileId,
     }));
-  } catch (error) {
-    return errorResponse(error);
-  } finally {
-    await database.close();
-  }
+  });
 }
 
 export async function POST(request: Request): Promise<Response> {

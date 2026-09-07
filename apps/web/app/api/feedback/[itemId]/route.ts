@@ -19,17 +19,16 @@ import type { FeedbackSeverity, FeedbackStatus } from '@wizard-ads/db';
 import { requestActor, openWebDatabase } from '../../../../src/server/request-context';
 import { requireCapability, requireOrgRole } from '../../../../src/server/org-role';
 import { feedbackErrorResponse } from '../../../../src/feedback/http';
+import { authenticatedRead, readUuid } from '../../../../src/server/authenticated-read';
 
 export const runtime = 'nodejs';
 
 type RouteContext = { params: Promise<{ itemId: string }> };
 
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
-  const database = openWebDatabase();
-  try {
-    const actor = await requestActor(request.headers);
-    await requireOrgRole(database, actor);
+  return authenticatedRead(request, async (database, actor) => {
     const { itemId } = await context.params;
+    readUuid(itemId, 'itemId');
     const item = await getFeedbackItem(database, {
       orgId: actor.orgId,
       itemId,
@@ -37,11 +36,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
     });
     if (!item) return Response.json({ error: 'Feedback item not found' }, { status: 404 });
     return Response.json({ item });
-  } catch (error) {
-    return feedbackErrorResponse(error);
-  } finally {
-    await database.close();
-  }
+  });
 }
 
 export async function PATCH(request: Request, context: RouteContext): Promise<Response> {
