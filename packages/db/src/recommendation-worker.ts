@@ -363,3 +363,6 @@ function serializeJson(value: unknown): string {
   if (serialized === undefined) throw new Error('value is not JSON serializable');
   return serialized;
 }
+
+/** Narrow lane exports for the recommendation worker: experiment scopes for EXPERIMENT_LOCK holds. */
+export { readMethodExperiments, normalizeScope } from './queries/experiments.js';

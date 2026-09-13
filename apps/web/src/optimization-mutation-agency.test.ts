@@ -14,7 +14,7 @@ const revision = 'c'.repeat(40);
 const routes = { groupSave, groupPreview, batchPreview, oneTimePreview };
 type Kind = keyof typeof routes;
 interface Agency { orgId: string; userId: string; profileId: string; groupId: string }
-const configuration = { version: 1, method: 'rpc', targetAcos: 0.37, bidFloor: 0.11, bidCeiling: 4.3,
+const configuration = { version: 1, method: 'sp.reference-efficiency', targetAcos: 0.37, bidFloor: 0.11, bidCeiling: 4.3,
   bidIncreaseCap: 0.23, bidDecreaseCap: 0.41, window: { start: '2026-08-01', end: '2026-08-26' } };
 
 describe.skipIf(!available)('agency optimization mutations through actual HTTP handlers', () => {

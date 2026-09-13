@@ -1,5 +1,6 @@
 /** Explicit settings for one read-only run. No tenant policy defaults live here. */
 import { z } from 'zod';
+import { MethodId, MethodVersion } from './methods.js';
 import { Uuid } from './primitives.js';
 
 export const ONE_TIME_PREVIEW_CAMPAIGN_MAX = 10_000;
@@ -20,12 +21,13 @@ export type OneTimeOptimizationWindow = z.infer<typeof OneTimeOptimizationWindow
 
 /**
  * Ratios are fractions (not display percentages); bids use the profile currency.
- * Every value is deliberate. A missing setting cannot resolve from a saved group
- * later, and this document never changes that group's strategy or schedule.
+ * Run values fill settings not defined by the assigned group.
+ * This document never changes that group's strategy or schedule.
  */
 export const OneTimeRpcConfiguration = z.strictObject({
   version: z.literal(1),
-  method: z.literal('rpc'),
+  method: z.union([MethodId, z.literal('rpc')]).transform((method) =>
+    method === 'rpc' ? 'sp.reference-efficiency' as const : method),
   targetAcos: z.number().positive(),
   bidFloor: z.number().nonnegative(),
   bidCeiling: z.number().positive(),
@@ -63,6 +65,8 @@ export type OneTimeRpcPreviewRequest = z.infer<typeof OneTimeRpcPreviewRequest>;
 
 /** Admission freezes the timezone and date, so queue delays cannot move a run. */
 export const OneTimeRpcSnapshot = z.strictObject({
+  methodId: MethodId.optional(),
+  methodVersion: MethodVersion.optional(),
   version: z.literal(1),
   configuration: OneTimeRpcConfiguration,
   profileTimezone: z.string().min(1),
@@ -78,3 +82,8 @@ export const ONE_TIME_RPC_BID_FIELDS = [
   'targetAcos', 'bidFloor', 'bidCeiling', 'bidIncreaseCap', 'bidDecreaseCap',
 ] as const;
 export type OneTimeRpcBidSettings = Pick<OneTimeRpcConfiguration, typeof ONE_TIME_RPC_BID_FIELDS[number]>;
+
+/** Legacy input is accepted only at parsing boundaries; output is always canonical. */
+export function oneTimeMethodId(method: MethodId | 'rpc'): MethodId {
+  return OneTimeRpcConfiguration.shape.method.parse(method);
+}

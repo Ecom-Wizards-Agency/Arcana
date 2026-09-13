@@ -72,7 +72,7 @@ describe('toProposalView', () => {
       assignments: new Map([['c-1', 'Rank']]),
       executionSnapshot: {
         version: 1,
-        configuration: { version: 1, method: 'rpc', targetAcos: 0.37, bidFloor: 0.15, bidCeiling: 1.6, bidIncreaseCap: 0.12, bidDecreaseCap: 0.18, window: { start: '2026-07-01', end: '2026-07-28' } },
+        configuration: { version: 1, method: 'sp.reference-efficiency', targetAcos: 0.37, bidFloor: 0.15, bidCeiling: 1.6, bidIncreaseCap: 0.12, bidDecreaseCap: 0.18, window: { start: '2026-07-01', end: '2026-07-28' } },
         profileTimezone: 'UTC', profileToday: '2026-08-01', admittedAt: '2026-08-01T00:00:00.000Z',
       },
     });
@@ -175,4 +175,21 @@ describe('grouping and coverage', () => {
     ]);
     expect(queue[2]?.reasons.map((group) => group.reason)).toEqual(['high_acos', 'flag']);
   });
+});
+
+it('renders saved group precedence and ordered calculation steps', () => {
+  const steps = ['Inputs', 'RPC', 'Target ACOS', 'Raw bid', 'Ceiling: manual_max_bid', 'Rounding: initial'].map((label, index) => ({
+    index, label, formula: index === 3 ? 'RPC * target ACOS' : 'saved calculation',
+    inputs: [{ name: 'source', value: 'group', unit: 'source' }], intermediateValue: 0.73, boundApplied: null, result: 0.72,
+  }));
+  const view = toProposalView(record('high_acos', { inputs: { ...inputsFor('high_acos'),
+    methodId: 'sp.reference-efficiency', methodVersion: 'reference.1',
+    settingSources: { targetAcos: { value: 0.41, source: 'group', sourceLabel: 'Synthetic group' } },
+    trace: { steps, finalResult: 0.72, roundingStep: steps[5]! },
+  } }), { strategySnapshot: SNAPSHOT });
+  expect(view.provenance.find((line) => line.key === 'setting:targetAcos')?.value).toBe('0.41 · group: Synthetic group');
+  expect(view.provenance.filter((line) => line.key.startsWith('trace:')).map((line) => line.label)).toEqual(steps.map((step) => `${step.index + 1}. ${step.label}`));
+  expect(view.strategy.targetAcos).toBe(0.41);
+  expect(view.strategyLabel).toContain('Synthetic group');
+  expect(view.changeReason).toBe('RPC * target ACOS');
 });

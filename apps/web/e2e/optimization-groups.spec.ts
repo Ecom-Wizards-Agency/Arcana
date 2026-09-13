@@ -13,7 +13,7 @@ const WORKER_REVISION = '0'.repeat(40);
 const WORKER_ID = 'e2e-recommendation-worker';
 const ONE_TIME_ENDPOINT = '/api/optimizer/runs/one-time';
 const ONE_TIME_CONFIGURATION: OneTimeRpcConfiguration = {
-  version: 1, method: 'rpc', targetAcos: 0.37, bidFloor: 0.11, bidCeiling: 4.3,
+  version: 1, method: 'sp.reference-efficiency', targetAcos: 0.37, bidFloor: 0.11, bidCeiling: 4.3,
   bidIncreaseCap: 0.23, bidDecreaseCap: 0.41,
   window: { start: '2026-08-01', end: '2026-08-26' },
 };
@@ -148,7 +148,7 @@ test('selects filtered campaigns across a filter and polls the exact read-only p
   const dialog = page.getByRole('dialog', { name: 'Confirm one-time preview' });
   await expect(dialog).toBeVisible();
   await expect(dialog).toHaveJSProperty('open', true);
-  await expect(dialog.getByText('3 campaigns · RPC · USD', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('3 campaigns · SP reference efficiency · USD', { exact: true })).toBeVisible();
   await expect(dialog.getByLabel('Target ACOS (%)', { exact: true })).toHaveValue('');
   await expect(dialog.getByText('Some settings are mixed or missing.', { exact: false })).toBeVisible();
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();

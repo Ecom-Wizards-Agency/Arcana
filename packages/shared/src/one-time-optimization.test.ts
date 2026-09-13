@@ -7,7 +7,7 @@ import {
 
 const configuration = {
   version: 1,
-  method: 'rpc',
+  method: 'sp.reference-efficiency',
   targetAcos: 0.37,
   bidFloor: 0.13,
   bidCeiling: 4.7,

@@ -12,12 +12,13 @@
  * "because the config said so" is not.
  */
 
-export type Layer = 'defaults' | 'goal_lens' | 'tenant' | 'profile';
+import type { StrategyProvenance } from '@wizard-ads/shared';
+export type Layer = StrategyProvenance[string];
 
 export const LAYER_ORDER: Layer[] = ['defaults', 'goal_lens', 'tenant', 'profile'];
 
 /** Path (dot-joined) to the layer that supplied the value living there. */
-export type Provenance = Record<string, Layer>;
+export type Provenance = StrategyProvenance;
 
 type Plain = Record<string, unknown>;
 

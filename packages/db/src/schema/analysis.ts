@@ -25,7 +25,8 @@ import {
 } from 'drizzle-orm/pg-core';
 import type {
   OptimizationGroupSnapshot,
-  OptimizationRunScheduleContext,
+  RecommendationRunAdmissionContext,
+  MethodId, MethodVersion,
   OneTimeRpcSnapshot,
   RecommendationInputs,
   TenantStrategy,
@@ -110,7 +111,7 @@ export const recommendationRuns = pgTable(
     groupRole: optimizationGroupRole('group_role'),
     groupSnapshot: jsonb('group_snapshot').$type<OptimizationGroupSnapshot>(),
     dueAt: ts('due_at'),
-    scheduleContext: jsonb('schedule_context').$type<OptimizationRunScheduleContext>(),
+    scheduleContext: jsonb('schedule_context').$type<RecommendationRunAdmissionContext>(),
     batchId: uuid('batch_id'),
     scopeVersion: smallint('scope_version'),
     scopeCount: integer('scope_count'),
@@ -119,6 +120,8 @@ export const recommendationRuns = pgTable(
     jobId: uuid('job_id'),
     /** Queue execution is fenced; human lineage is the exact jobless N-gram proposal path. */
     executionLineage: text('execution_lineage').$type<'queue' | 'human'>(),
+    methodId: text('method_id').$type<MethodId>(),
+    methodVersion: text('method_version').$type<MethodVersion>(),
     engineVersion: text('engine_version'),
     proposalsCount: integer('proposals_count').notNull().default(0),
     startedAt: ts('started_at'),

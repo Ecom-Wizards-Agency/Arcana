@@ -28,3 +28,5 @@ export * from './bidding/index.js';
 export * from './market/deals.js';
 export * from './query-intelligence/index.js';
 export * from './optimization/index.js';
+export * from './methods/registry.js';
+export * from './methods/reference.js';
