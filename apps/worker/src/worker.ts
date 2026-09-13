@@ -97,13 +97,8 @@ type LongLivedClaimPass =
   | { kind: 'rpc_success'; jobs: readonly ClaimedJob[] }
   | { kind: 'rpc_failure'; error: unknown };
 
-/** A failure retrying cannot fix. Goes straight to `dead` with its attempts unspent. */
-export class PermanentJobError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'PermanentJobError';
-  }
-}
+export { PermanentJobError } from './permanent-job-error.js';
+import { PermanentJobError } from './permanent-job-error.js';
 
 /** A provider failure that should return to the queue after a known delay. */
 export class RetryableJobError extends Error {
@@ -504,7 +499,7 @@ export class SyncWorker {
     if (isPermanentJobFailure(error)) {
       const terminalDetail = error instanceof ReportCreateOutcomeUnknownError
         ? 'report create outcome unknown; attended reconciliation required'
-        : 'report lifecycle stopped after a non-retryable failure';
+        : errorMessage(error).slice(0, 4_000);
       await this.failTerminalReportIfPresent(
         job,
         terminalDetail,
@@ -797,35 +792,48 @@ export class SyncWorker {
     const ledger = await this.store.ensureReportRequest(job.id, payload);
     let amazonReportId = ledger.amazonReportId;
     if (!amazonReportId) {
-      const created = await this.buckets.run(profile.region, () => adsApi.createReport({
-        profile,
-        reportType: payload.reportType,
-        startDate: payload.startDate,
-        endDate: payload.endDate,
-      }));
-      amazonReportId = created.reportId;
-      const persistence = {
-        reportRequestId: ledger.id,
-        orgId: payload.orgId,
-        profileId: payload.profileId,
-        amazonReportId,
-        nextPollAt: addMinutes(this.now(), 5),
-        claim: job.claim,
-      };
       try {
-        await this.store.setReportCreated(persistence);
-      } catch {
-        // A commit followed by a lost database reply is recoverable only by an
-        // exact tenant/provider-id/claim readback below.
-      }
-      let confirmed = false;
-      try {
-        confirmed = await this.store.confirmReportCreated(persistence);
-      } catch {
-        // Readback unavailability is an unknown provider-effect outcome too.
-      }
-      if (!confirmed) {
-        throw new ReportCreateOutcomeUnknownError('provider-id-persistence', null);
+        const created = await this.buckets.run(profile.region, () => adsApi.createReport({
+          profile,
+          reportType: payload.reportType,
+          startDate: payload.startDate,
+          endDate: payload.endDate,
+        }));
+        amazonReportId = created.reportId;
+        const persistence = {
+          reportRequestId: ledger.id,
+          orgId: payload.orgId,
+          profileId: payload.profileId,
+          amazonReportId,
+          nextPollAt: addMinutes(this.now(), 5),
+          claim: job.claim,
+        };
+        try {
+          await this.store.setReportCreated(persistence);
+        } catch {
+          // A commit followed by a lost database reply is recoverable only by an
+          // exact tenant/provider-id/claim readback below.
+        }
+        let confirmed = false;
+        try {
+          confirmed = await this.store.confirmReportCreated(persistence);
+        } catch {
+          // Readback unavailability is an unknown provider-effect outcome too.
+        }
+        if (!confirmed) {
+          throw new ReportCreateOutcomeUnknownError('provider-id-persistence', null);
+        }
+      } catch (error) {
+        if (error instanceof ReportCreateOutcomeUnknownError) {
+          try {
+            await this.store.quarantineReportCreate(job, {
+              phase: error.phase, status: error.status, amazonReportId,
+            });
+          } catch {
+            this.logger.error('ambiguous report evidence persistence unavailable', { jobId: job.id });
+          }
+        }
+        throw error;
       }
     }
     const pollPayload: Extract<JobPayload, { type: 'report.poll' }> = {
@@ -956,12 +964,12 @@ export class SyncWorker {
       if (ledger.reportType === 'sbAds') {
         sbReport ??= parseSbAdsReportProbe([]);
         if (sbReport.sourceRows !== downloaded.rowsParsed) {
-          throw new Error('sbAds parser chunk accounting did not match the downloaded rows');
+          throw new PermanentJobError('sbAds parser chunk accounting did not match the downloaded rows');
         }
       } else {
         parsedBatch ??= parseReportRows(ledger.reportType, [], profile, ledger.id);
         if (parsedBatch.sourceRows !== downloaded.rowsParsed) {
-          throw new Error('report parser chunk accounting did not match the downloaded rows');
+          throw new PermanentJobError('report parser chunk accounting did not match the downloaded rows');
         }
       }
       return await this.finishFetchedReport(
@@ -1077,7 +1085,7 @@ export class SyncWorker {
     // profile grain by design, so the identity does not hold there.
     const accounted = batch.kind === 'sp_target' || batch.kind === 'search_term';
     if (accounted && batch.sourceRows !== parsed + skipped) {
-      throw new Error(
+      throw new PermanentJobError(
         `report ${ledger.id}: ${batch.sourceRows} source rows but ${parsed} parsed + ${skipped} skipped`,
       );
     }
@@ -1163,7 +1171,7 @@ export class SyncWorker {
     const refusedRows = staged.reduce((total, date) => total + date.refusedRows, 0);
     const factRows = staged.reduce((total, date) => total + date.promotedRows, 0);
     if (sourceRows !== batch.sourceRows || sourceRows !== parsedSourceRows + refusedRows) {
-      throw new Error(
+      throw new PermanentJobError(
         `report ${ledger.id} source accounting drifted: ${sourceRows} source, ` +
         `${parsedSourceRows} parsed, ${refusedRows} refused`,
       );
@@ -1203,13 +1211,13 @@ export class SyncWorker {
     }
 
     if (staged.length !== promotedDates + alreadyPromotedDates + supersededDates) {
-      throw new Error('report date outcomes do not reconcile');
+      throw new PermanentJobError('report date outcomes do not reconcile');
     }
     if (factRows !== acceptedFactRows + supersededFactRows) {
-      throw new Error('report fact outcomes do not reconcile');
+      throw new PermanentJobError('report fact outcomes do not reconcile');
     }
     if (acceptedFactRows !== canonicalRows) {
-      throw new Error(
+      throw new PermanentJobError(
         `accepted ${acceptedFactRows} fact rows but verified ${canonicalRows} canonical rows`,
       );
     }

@@ -146,7 +146,7 @@ describe.skipIf(!available)('page data under current-user database authority', (
       expect(result.days).toEqual([]);
       expect(result.provisional).toEqual([]);
       expect(result.ledger).toEqual([]);
-      expect(result.sync).toEqual({ freshness: [], jobs: [], reports: [] });
+      expect(result.sync).toEqual({ freshness: [], jobs: [], reports: [], deadLetters: [], lifecycle: [] });
       expect(result.creative).toEqual([]);
       expect(result.latestJob).toBeNull();
       expect(result.snapshot).toBeNull();

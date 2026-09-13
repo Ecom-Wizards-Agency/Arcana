@@ -12,6 +12,7 @@ import { withAuthenticatedActor } from '@wizard-ads/db';
 import type { ReactNode } from 'react';
 import { gate } from '../../src/auth/guard';
 import { loadSyncStatus, reportAccountingLabel } from '../../src/data/sync-status';
+import { ReportLifecycleTables } from './report-lifecycle-tables';
 import { Shell } from '../../src/ui/shell';
 import { banner, colors, heading, muted, page, subheading, table, td, th } from '../../src/ui/tokens';
 
@@ -87,6 +88,8 @@ export default async function SyncStatusPage({ searchParams }: Props): Promise<R
           </tbody>
         </table>
         {status.freshness.length === 0 ? <p style={muted}>No profiles yet.</p> : null}
+
+        <ReportLifecycleTables deadLetters={status.deadLetters} lifecycle={status.lifecycle} />
 
         <h2 style={subheading}>Jobs</h2>
         <table style={table}>

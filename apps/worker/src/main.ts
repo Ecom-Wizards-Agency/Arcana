@@ -1,4 +1,4 @@
-import { createDb } from '@wizard-ads/db';
+import { createDb, loadReportHealth } from '@wizard-ads/db';
 import { createAdsApiClientFromEnv } from './ads-api.js';
 import { AmazonConnectionLoop } from './amazon-connections.js';
 import { createAmazonConnectionProvider, createAmazonConnectionStore } from './amazon-connection-adapters.js';
@@ -52,6 +52,10 @@ const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
 ]);
 
 const config = configFromEnv();
+const reportStaleHours = Number(process.env['WORKER_REPORT_STALE_HOURS'] ?? 6);
+if (!Number.isFinite(reportStaleHours) || reportStaleHours <= 0) {
+  throw new Error('WORKER_REPORT_STALE_HOURS must be positive');
+}
 const handle = createDb({ connectionString: config.databaseUrl, max: config.maxConcurrentJobs + 2 });
 const store = new PostgresWorkerStore(handle, undefined, {
   claimProtocol: config.claimProtocol,
@@ -132,6 +136,7 @@ const worker = new SyncWorker({
 marketingStream?.start();
 amazonConnections?.start();
 const health = await startHealthServer(worker, config.port, {
+  reports: () => loadReportHealth(handle, reportStaleHours),
   deployment: {
     revision: config.revision,
     role: config.deploymentRole,

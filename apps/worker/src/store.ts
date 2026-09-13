@@ -1,3 +1,4 @@
+import { PermanentJobError } from './permanent-job-error.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
   adGroups,
@@ -17,6 +18,8 @@ import {
   recordEntityChanges,
   reconcileEntityChangeLinks,
   reportRequests,
+  quarantineReportCreate,
+  type ReportCreateEvidence,
   promoteReportDate as promoteDbReportDate,
   requeueStaleSyncJobs,
   targets,
@@ -143,6 +146,7 @@ export interface WorkerStore {
    * that does not exist — retrying five times only delays the human.
    */
   deadLetter(jobId: string, error: string): Promise<void>;
+  quarantineReportCreate(job: ClaimedJob, evidence: ReportCreateEvidence): Promise<void>;
   /** Permanently finish exactly one opaque fenced claim. */
   deadLetterClaim?(claim: ClaimRef, error: string): Promise<void>;
   release(workerId: string): Promise<number>;
@@ -234,7 +238,7 @@ export interface WorkerStore {
   ): Promise<void>;
 }
 
-export class ParsedLoadedMismatch extends Error {
+export class ParsedLoadedMismatch extends PermanentJobError {
   constructor(readonly parsed: number, readonly loaded: number) {
     super(`report parsed ${parsed} rows but loaded ${loaded}`);
     this.name = 'ParsedLoadedMismatch';
@@ -315,6 +319,10 @@ export class PostgresWorkerStore implements WorkerStore {
   async deferClaim(claim: ClaimRef, retryIn: string): Promise<void> {
     const decision = await deferSyncJobFenced(this.handle, claim, retryIn);
     if (decision.decision === 'stale_claim') throw new ClaimOwnershipLost();
+  }
+
+  quarantineReportCreate(job: ClaimedJob, evidence: ReportCreateEvidence): Promise<void> {
+    return quarantineReportCreate(this.handle, job, evidence);
   }
 
   async deadLetter(jobId: string, error: string): Promise<void> {

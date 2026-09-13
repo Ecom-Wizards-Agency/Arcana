@@ -15,7 +15,7 @@
  *
  * Styling is WP-06's job. This is a table.
  */
-import type { QueryHandle } from '@wizard-ads/db';
+import { loadReportLifecycle, type QueryHandle, type DeadReportJob, type ReportLifecycleCounts } from '@wizard-ads/db';
 import { operatorFailureLabel } from '../security/operator-failure';
 
 export interface JobRow {
@@ -66,6 +66,8 @@ export interface ProfileFreshness {
 }
 
 export interface SyncStatus {
+  deadLetters: DeadReportJob[];
+  lifecycle: ReportLifecycleCounts[];
   freshness: ProfileFreshness[];
   jobs: JobRow[];
   reports: ReportRow[];
@@ -192,7 +194,10 @@ export async function loadSyncStatus(
      limit ${REPORT_LIMIT}
   `;
 
+  const { deadLetters, lifecycle } = await loadReportLifecycle(handle, orgId, scope);
   return {
+    deadLetters: deadLetters.map((job) => ({ ...job, lastError: reportFailureLabel(job.lastError) })),
+    lifecycle,
     freshness: freshness.map((row) => ({
       profileId: row.profile_id,
       profileLabel: row.label,
@@ -214,7 +219,7 @@ export async function loadSyncStatus(
       runAfter: row.run_after,
       startedAt: row.started_at,
       finishedAt: row.finished_at,
-      lastError: operatorFailureLabel(row.last_error),
+      lastError: reportFailureLabel(row.last_error),
     })),
     reports: reports.map((row) => ({
       id: row.id,
@@ -234,7 +239,7 @@ export async function loadSyncStatus(
       promotedRows: row.promoted_rows === null ? null : Number(row.promoted_rows),
       unpromotedRows: row.unpromoted_rows === null ? null : Number(row.unpromoted_rows),
       accountingComplete: row.accounting_complete,
-      error: operatorFailureLabel(row.error),
+      error: reportFailureLabel(row.error),
     })),
   };
 }
@@ -256,4 +261,13 @@ export function reportAccountingLabel(report: Pick<
   if (report.accountingComplete === false) return 'incomplete attribution accounting';
   if (report.countsMatch === null) return '—';
   return report.countsMatch ? 'yes · exact row counts' : 'no · row-count mismatch';
+}
+
+/** Preserve safe accounting detail without exposing arbitrary provider/SQL text. */
+export function reportFailureLabel(error: string | null): string | null {
+  if (error && /^report parsed \d+ rows but loaded \d+$/.test(error)) return error;
+  if (error && /parser chunk accounting did not match|source accounting drifted|report (?:date|fact) outcomes do not reconcile/.test(error)) {
+    return 'Report accounting failed. The job requires review before retrying.';
+  }
+  return operatorFailureLabel(error);
 }
