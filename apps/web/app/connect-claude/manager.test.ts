@@ -15,7 +15,7 @@ describe('Connect AI setup safety', () => {
     const endpoint = "https://mcp.example.test/mcp?q=one&label='two'&literal=$(printf changed)";
     // The shell function records arguments; no Codex command or network runs.
     const args = execFileSync('sh', ['-c', `codex() { printf '%s\\n' "$@"; };\n${codexSnippet(endpoint)}`], { encoding: 'utf8' }).trimEnd().split('\n');
-    expect(args).toEqual(['mcp', 'add', 'openspell', '--url', endpoint, '--bearer-token-env-var', 'WIZARD_ADS_MCP_TOKEN']);
+    expect(args).toEqual(['mcp', 'add', 'arcana', '--url', endpoint, '--bearer-token-env-var', 'WIZARD_ADS_MCP_TOKEN']);
   });
 
   it('generates secret-free Claude and Codex setup for the configured endpoint', () => {
@@ -24,11 +24,11 @@ describe('Connect AI setup safety', () => {
     const codex = codexSnippet(ENDPOINT);
 
     expect(claude).toContain(ENDPOINT);
-    expect(claude).toContain('"openspell"');
+    expect(claude).toContain('"arcana"');
     expect(claude).not.toContain('"wizard-ads"');
     expect(claude).toContain('Bearer ${WIZARD_ADS_MCP_TOKEN}');
     expect(codex).toContain(`--url '${ENDPOINT}'`);
-    expect(codex).toContain('codex mcp add openspell');
+    expect(codex).toContain('codex mcp add arcana');
     expect(codex).not.toContain('codex mcp add wizard-ads');
     expect(codex).toContain('--bearer-token-env-var WIZARD_ADS_MCP_TOKEN');
     expect(codex.split('\n').every((line) => !line.startsWith('+'))).toBe(true);

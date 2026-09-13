@@ -30,9 +30,9 @@ export class GatedError extends ToolError {
   constructor(tool: string) {
     super(
       'gated',
-      `${tool} is unavailable through OpenSpell MCP. This service exposes analytical reads only; ` +
+      `${tool} is unavailable through Arcana MCP. This service exposes analytical reads only; ` +
         'Amazon changes require an exact operator approval in the web app and worker-side audit. ' +
-        'Use get_recommendations here, then review the batch in OpenSpell.',
+        'Use get_recommendations here, then review the batch in Arcana.',
     );
     this.name = 'GatedError';
   }

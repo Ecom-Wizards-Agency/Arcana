@@ -1,7 +1,7 @@
 /**
  * `@wizard-ads/mcp` (owned by WP-09).
  *
- * OpenSpell's own MCP server: authenticated analytical reads over Streamable HTTP,
+ * Arcana's own MCP server: authenticated analytical reads over Streamable HTTP,
  * per-org API keys that are hashed, scoped, expirable and revocable, and every
  * call written to `audit_log` with its parameters.
  *

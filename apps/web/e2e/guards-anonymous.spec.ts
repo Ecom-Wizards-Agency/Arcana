@@ -18,7 +18,7 @@ test('the index sends an anonymous visitor directly to sign in', async ({ page }
   await expect(nav.getByRole('link', { name: 'Dashboard' })).toHaveCount(0);
   await expect(page.getByTestId('feedback-entry')).toHaveCount(0);
   await expect(page.getByTestId('home-signin')).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'OpenSpell' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Arcana' })).toBeVisible();
 });
 
 test('every guarded screen sends an anonymous visitor to the login page', async ({ page }) => {

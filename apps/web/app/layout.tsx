@@ -46,9 +46,9 @@ const metadataBase = socialOrigin();
  */
 export const metadata: Metadata = {
   ...(metadataBase === undefined ? {} : { metadataBase }),
-  title: 'OpenSpell',
+  title: 'Arcana',
   description: 'Amazon Advertising operator workspace',
-  applicationName: 'OpenSpell',
+  applicationName: 'Arcana',
   icons: {
     icon: [
       { url: '/icon.png', type: 'image/png', sizes: '512x512' },
@@ -58,13 +58,13 @@ export const metadata: Metadata = {
   },
   openGraph: {
     type: 'website',
-    siteName: 'OpenSpell',
-    title: 'OpenSpell',
+    siteName: 'Arcana',
+    title: 'Arcana',
     description: 'Amazon Advertising operator workspace',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'OpenSpell',
+    title: 'Arcana',
     description: 'Amazon Advertising operator workspace',
   },
 };

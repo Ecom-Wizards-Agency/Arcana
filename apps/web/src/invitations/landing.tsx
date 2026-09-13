@@ -45,7 +45,7 @@ export async function InvitationLanding({ kind, token, authToken, error, acceptA
             {validAuthInvitationToken(authToken) && invitation.state === 'pending' ? (
               <form action={verifyAction}>
                 <input type="hidden" name="auth_token_hash" value={authToken} />
-                <p>Verify your email, then choose a password for OpenSpell.</p>
+                <p>Verify your email, then choose a password for Arcana.</p>
                 <Button type="submit">Continue with email invitation</Button>
               </form>
             ) : (

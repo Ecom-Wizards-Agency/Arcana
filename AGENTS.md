@@ -1,4 +1,4 @@
-# OpenSpell
+# Arcana
 
 This file is the single source of truth for agent behavior in this repository, for
 every assistant. Task-specific instructions add detail; where a task brief and this
@@ -7,18 +7,20 @@ source guides are linked from [README.md](README.md).
 
 ## What this is
 
-**OpenSpell** is an in-house Amazon Advertising platform: profile and entity sync,
+**Arcana** is an in-house Amazon Advertising platform: profile and entity sync,
 Reporting v3 ingestion, analytics, and bid recommendations, plus the pieces the
 commercial tools do not have (search-query-versus-PPC analysis, rank reconciliation,
 BSR proximity alerts, a creative hub, off-Amazon placement control).
 
-The repository is `openspell`. Package scopes remain `@wizard-ads/*` until a separately
-planned infrastructure migration changes those stable internal identifiers. User-facing
-product copy, metadata, and connection guidance use **OpenSpell**.
+The repository is `Arcana`. Package scopes remain `@wizard-ads/*`; environment names
+(`OPENSPELL_*`, `WIZARD_ADS_*`), systemd unit and deploy script names (`openspell-*`),
+the `openspell-internal` private repository name, localStorage keys, and database
+identifiers also stay until a separately planned infrastructure migration. User-facing
+product copy, metadata, and connection guidance use **Arcana**.
 
 Three facts shape every design decision in here:
 
-1. **OpenSpell may write through the Amazon Advertising API.** Supported campaign
+1. **Arcana may write through the Amazon Advertising API.** Supported campaign
    creation and approved bid, budget, placement, targeting, and state changes may be
    applied directly by the worker. Read-only preview remains the default; no write is
    implicit in viewing, analysing, syncing, or generating a recommendation.
@@ -80,7 +82,7 @@ Three rules inside that, each one load-bearing rather than stylistic:
 `eslint.config.js` enforces all three with `no-restricted-imports`. A violation is a
 lint failure, not a code review comment.
 
-OpenSpell consumes nothing from any sibling project at runtime.
+Arcana consumes nothing from any sibling project at runtime.
 
 ## Contract authority
 

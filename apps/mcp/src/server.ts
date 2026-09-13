@@ -45,7 +45,8 @@ import { ALL_METRICS } from './metrics.js';
 import { FILTER_OPERATORS } from './sql.js';
 import type { DateWindow, FactQuerySpec, FilterCondition, SortSpec } from './sql.js';
 
-export const SERVER_NAME = 'openspell';
+export const SERVER_NAME = 'arcana';
+// Frozen health product label compared by deployed hosts.
 export const PRODUCT_NAME = 'OpenSpell';
 export const SERVER_VERSION = '0.1.0';
 
@@ -322,7 +323,7 @@ export function createMcpServer(context: ServerContext): McpServer {
     {
       capabilities: { tools: {}, resources: {} },
       instructions:
-        'OpenSpell: read-only Amazon Advertising analytics for one org. Read the ' +
+        'Arcana: read-only Amazon Advertising analytics for one org. Read the ' +
         'wizardads://instructions resource first, then list_profiles. Every call is audit-logged.',
     },
   );

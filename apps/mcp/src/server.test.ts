@@ -150,7 +150,7 @@ describe.skipIf(!available)('the MCP server', () => {
     const client = await connect(server, tokenA);
     try {
       expect(client.getServerVersion()).toMatchObject({
-        name: 'openspell',
+        name: 'arcana',
         version: '0.1.0',
       });
       const { tools } = await client.listTools();
@@ -424,7 +424,7 @@ describe.skipIf(!available)('the MCP server', () => {
     try {
       const instructions = await client.readResource({ uri: 'wizardads://instructions' });
       const text = textOf(instructions.contents[0]);
-      expect(text).toContain('# OpenSpell MCP');
+      expect(text).toContain('# Arcana MCP');
       expect(text).toContain('read-only');
       expect(text).toContain('never averaged');
 

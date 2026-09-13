@@ -110,7 +110,7 @@ export default async function DaypartingPage({ searchParams }: PageProps): Promi
 
       <div className="wa-stack">
         <Banner tone="info" role="status">
-          Marketing Stream evidence is read-only. Schedules below are proposals for export; OpenSpell does not apply bid or budget changes in the current release.
+          Marketing Stream evidence is read-only. Schedules below are proposals for export; Arcana does not apply bid or budget changes in the current release.
         </Banner>
         {!workspace.maturityPolicyConfigured ? (
           <Banner tone="warn" role="status">

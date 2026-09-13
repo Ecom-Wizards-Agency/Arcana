@@ -8,7 +8,7 @@ import {
 
 export const runtime = 'nodejs';
 
-/** Queue an OpenSpell preview for one group. No Amazon write occurs. */
+/** Queue an Arcana preview for one group. No Amazon write occurs. */
 export async function POST(request: Request): Promise<Response> {
   return optimizerMutation(request, async (database, actor) => {
     const body = await mutationBody(request);

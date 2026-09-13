@@ -1,4 +1,4 @@
-# OpenSpell report worker on Evo X1
+# Arcana report worker on Evo X1
 
 The Evo report worker owns exactly four queue types after an attended handoff:
 
@@ -75,7 +75,7 @@ service state. Review the retained revision, `public.conf`, `WORKSPACE_MANIFEST.
 
 First verify `wizard-ads-worker.service` is either absent or exactly inactive and disabled. The
 activation script checks this state and never stops or disables the legacy unit. The immutable
-launcher binds OpenSpell health to `127.0.0.1:3000`.
+launcher binds Arcana health to `127.0.0.1:3000`.
 
 Follow WP-158's no-overlap order while Evo remains stopped: set
 `OPENSPELL_EVO_REPORT_LANE_READY=1` on Vercel and redeploy the exact compatible source. Record the
