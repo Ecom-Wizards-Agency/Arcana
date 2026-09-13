@@ -71,6 +71,7 @@ describe('report request bodies', () => {
     expect(REPORT_SPECS.sbCampaigns.adProduct).toBe('SPONSORED_BRANDS');
     expect(REPORT_SPECS.sdCampaigns.adProduct).toBe('SPONSORED_DISPLAY');
     expect(REPORT_SPECS.spTargeting.groupBy).toEqual(['targeting']);
+    expect(REPORT_SPECS.spTargeting.columns).toContain('topOfSearchImpressionShare');
     expect(REPORT_SPECS.spSearchTerm.groupBy).toEqual(['searchTerm']);
   });
 
@@ -165,7 +166,11 @@ describe('createReport', () => {
     });
 
     expect(report).toMatchObject({ reportId: REPORT_ID, status: 'PENDING', url: null });
+    expect(server.requestsFor('/reporting/reports')).toHaveLength(1);
     const request = server.requestsFor('/reporting/reports')[0];
+    expect(request?.json).toMatchObject({
+      configuration: { columns: expect.arrayContaining(['topOfSearchImpressionShare']) },
+    });
     expect(request?.headers['content-type']).toBe('application/vnd.createasyncreportrequest.v3+json');
     expect(request?.headers['amazon-advertising-api-scope']).toBe(PROFILE_ID);
     expect((request?.json as { startDate?: string } | null)?.startDate).toBe('2026-08-01');

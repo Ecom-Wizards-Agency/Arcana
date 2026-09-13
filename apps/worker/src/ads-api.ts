@@ -11,6 +11,7 @@ import {
   type UnifiedReportOutcome,
   type CreativeAssetProbePage,
   type ReportMetadata,
+  type CreateReportInput as ProviderCreateReportInput,
   type SbAdProbePage,
 } from '@wizard-ads/ads-api';
 import {
@@ -20,7 +21,7 @@ import {
   listActiveConnectionIdsForRegion,
   type DbHandle,
 } from '@wizard-ads/db';
-import type { AdsConnectionCredentialBinding, EntityRow, Region, WorkerReportType } from '@wizard-ads/shared';
+import type { AdsConnectionCredentialBinding, EntityRow, Region } from '@wizard-ads/shared';
 
 /** The profile routing information every Amazon call needs. */
 export interface AdsProfileContext {
@@ -32,11 +33,8 @@ export interface AdsProfileContext {
   timezone: string;
 }
 
-export interface CreateReportInput {
+export interface CreateReportInput extends ProviderCreateReportInput {
   profile: AdsProfileContext;
-  reportType: WorkerReportType;
-  startDate: string;
-  endDate: string;
 }
 
 export interface AdsReportStatus {
@@ -351,6 +349,10 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
         reportType: input.reportType,
         startDate: input.startDate,
         endDate: input.endDate,
+        ...(input.columns === undefined ? {} : { columns: input.columns }),
+        ...(input.filters === undefined ? {} : { filters: input.filters }),
+        ...(input.name === undefined ? {} : { name: input.name }),
+        ...(input.timeUnit === undefined ? {} : { timeUnit: input.timeUnit }),
       });
       return { reportId: meta.reportId };
     } catch (error) {
