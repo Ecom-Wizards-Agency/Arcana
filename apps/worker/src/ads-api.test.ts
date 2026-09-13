@@ -1,3 +1,7 @@
+import { batchSpBidRecommendationIds, parseSpBidRecommendationResponse } from '@wizard-ads/ads-api';
+import { bidRecommendationTargetKey, type BidRecommendationTarget } from '@wizard-ads/shared';
+import type { NewBidSeriesRow } from '@wizard-ads/db';
+import { syncBidSeriesForProfile } from './bid-series.js';
 /**
  * The adapter that maps the real `@wizard-ads/ads-api` client onto the worker's
  * narrow `AdsApiClient`. Driven entirely through a mock underlying client and a
@@ -73,14 +77,13 @@ function underlying(overrides: Partial<UnderlyingClient> = {}): UnderlyingClient
     getReport: async () => reportMeta('PENDING'),
     createUnifiedReports: async () => unifiedCreatedBatch('unified-created'),
     retrieveUnifiedReports: async () => unifiedObservedBatch('unified-observed'),
-    getSpKeywordBidRecommendations: async () => emptyRecommendations(),
-    getSpTargetBidRecommendations: async () => emptyRecommendations(),
+    getSpBidRecommendations: async () => emptyRecommendations(),
   };
   return { ...base, ...overrides };
 }
 
 function emptyRecommendations() {
-  return { items: [], errors: [], submitted: 0, batches: 0 };
+  return { items: [], errors: [], submitted: 0, batches: 0, offered: 0, eligible: 0, requested: 0, returned: 0, refused: 0, unmatched: 0 };
 }
 
 function reportMeta(status: string, extra: Partial<ReportMetadata> = {}): ReportMetadata {
@@ -678,53 +681,74 @@ describe('DbAdsApiClient.listProfiles', () => {
 });
 
 describe('DbAdsApiClient.getSpSuggestedBids', () => {
-  const corridor = (targetId: string, low: number, median: number, high: number) => ({
-    kind: 'keywords' as const,
-    index: 0,
-    targetId,
-    low,
-    median,
-    high,
-    suggestedBid: median,
-    raw: {},
+  const target = (index: number): BidRecommendationTarget => ({
+    targetId: `target-${index}`, campaignId: 'campaign-one', adGroupId: 'group-one', isKeyword: true,
+    targetingExpression: { type: 'KEYWORD_EXACT_MATCH', value: `synthetic keyword ${index}` },
+  });
+  function readResult(inputs: BidRecommendationTarget[], rows: unknown[]) {
+    const batch = batchSpBidRecommendationIds(inputs).flat();
+    const parsed = parseSpBidRecommendationResponse({ bidRecommendations: [{ theme: 'CONVERSION_OPPORTUNITIES',
+      bidRecommendationsForTargetingExpressions: rows }] }, batch);
+    return { ...parsed, offered: inputs.length };
+  }
+  const row = (input: BidRecommendationTarget, values: unknown[] = [0.5, 0.8, 1.2]) => ({
+    targetingExpression: input.targetingExpression, bidValues: values.map((suggestedBid) => ({ suggestedBid })),
   });
 
-  it('reads both endpoints and keys the corridor by target, counting returns and errors', async () => {
-    const client = underlying({
-      getSpKeywordBidRecommendations: async () => ({
-        items: [corridor('kw-1', 0.5, 0.8, 1.2)],
-        errors: [{ kind: 'keywords', index: 1, targetId: 'kw-2', code: 'X', details: null, raw: {} }],
-        submitted: 2,
-        batches: 1,
-      }),
-      getSpTargetBidRecommendations: async () => ({
-        items: [{ ...corridor('tg-1', 0.3, 0.4, 0.6), kind: 'targets' as const }],
-        errors: [],
-        submitted: 1,
-        batches: 1,
-      }),
-    });
-    const { adapter } = makeAdapter(client);
-    const result = await adapter.getSpSuggestedBids(profile, {
-      keywordIds: ['kw-1', 'kw-2'],
-      targetIds: ['tg-1'],
-    });
-    expect(result.submitted).toBe(3);
-    expect(result.returned).toBe(2);
-    expect(result.errors).toBe(1);
-    expect(result.byTarget.get('kw-1')).toEqual({ targetId: 'kw-1', low: 0.5, median: 0.8, high: 1.2 });
-    expect(result.byTarget.get('tg-1')?.high).toBe(0.6);
+  it('reads the theme endpoint and keys the corridor by full target identity, counting returns and refusals', async () => {
+    const inputs = [target(0), target(1), { ...target(2), isKeyword: false, targetingExpression: { type: 'CLOSE_MATCH' as const } }];
+    const getSpBidRecommendations = vi.fn(async () => readResult(inputs, [row(inputs[0]!), row(inputs[1]!, []), row(inputs[2]!, [0.3, 0.4, 0.6])]));
+    const { adapter } = makeAdapter(underlying({ getSpBidRecommendations }));
+    const result = await adapter.getSpSuggestedBids(profile, { targets: inputs });
+    expect(getSpBidRecommendations).toHaveBeenCalledExactlyOnceWith(profile.amazonProfileId, inputs);
+    expect(result).toMatchObject({ offered: 3, eligible: 3, requested: 3, returned: 2, refused: 1, unmatched: 0 });
+    expect(result.byTarget.get(bidRecommendationTargetKey(inputs[0]!))).toMatchObject({ targetId: 'target-0', low: 0.5, median: 0.8, high: 1.2 });
+    expect(result.byTarget.get(bidRecommendationTargetKey(inputs[2]!))?.high).toBe(0.6);
   });
 
-  it('skips an endpoint with no ids to read', async () => {
-    const keywords = vi.fn(async () => ({ items: [corridor('kw-1', 0.5, 0.8, 1.2)], errors: [], submitted: 1, batches: 1 }));
-    const targets = vi.fn(async () => ({ items: [], errors: [], submitted: 0, batches: 0 }));
-    const client = underlying({ getSpKeywordBidRecommendations: keywords, getSpTargetBidRecommendations: targets });
-    const { adapter } = makeAdapter(client);
-    const result = await adapter.getSpSuggestedBids(profile, { keywordIds: ['kw-1'], targetIds: [] });
-    expect(keywords).toHaveBeenCalledOnce();
-    expect(targets).not.toHaveBeenCalled();
-    expect(result.submitted).toBe(1);
+  it('skips the endpoint with no targets to read', async () => {
+    const getSpBidRecommendations = vi.fn(async () => emptyRecommendations());
+    const { adapter } = makeAdapter(underlying({ getSpBidRecommendations }));
+    const result = await adapter.getSpSuggestedBids(profile, { targets: [] });
+    expect(getSpBidRecommendations).not.toHaveBeenCalled();
+    expect(result).toEqual({ byTarget: new Map(), offered: 0, eligible: 0, requested: 0, returned: 0, refused: 0, unmatched: 0 });
+  });
+
+  it('reconciles all seven counts through parsing, the adapter, and the daily history writer', async () => {
+    const inputs = [target(0), target(1), target(2), target(3), { ...target(4), targetingExpression: null }];
+    const providerResult = readResult(inputs, [row(inputs[1]!, [0.3, null, 0.9]), row(inputs[0]!), row(inputs[2]!, []), row(target(99))]);
+    const { adapter } = makeAdapter(underlying({ getSpBidRecommendations: async () => providerResult }));
+    const written: NewBidSeriesRow[] = [];
+    const counts = await syncBidSeriesForProfile(profile, {
+      client: adapter,
+      store: {
+        listSyncEnabledProfiles: async () => [profile], hasSeriesForDate: async () => false,
+        listBidSeriesTargets: async () => inputs.map((t) => ({ ...t, bid: 0.7, cpc: 0.4, placementModifiers: [] })),
+        upsertBidSeries: async (rows) => { written.push(...rows); return rows.length; },
+      },
+    });
+    expect(counts).toEqual({ offered: 5, eligible: 4, requested: 4, returned: 2, refused: 2, written: 5, unmatched: 1, targets: 5, corridors: 1 });
+    expect(written).toHaveLength(inputs.length);
+    expect(written[0]).toMatchObject({ suggestedBidLow: 0.5, suggestedBidMedian: 0.8, suggestedBidHigh: 1.2 });
+    expect(written[1]).toMatchObject({ suggestedBidLow: 0.3, suggestedBidMedian: null, suggestedBidHigh: 0.9 });
+    for (const saved of written.slice(2)) expect(saved).toMatchObject({ suggestedBidLow: null, suggestedBidMedian: null, suggestedBidHigh: null });
+    expect(written.map((saved) => saved.targetId)).toEqual(inputs.map((input) => input.targetId));
+  });
+
+  it('keeps overlapping numeric ids in different ad groups separate and rejects dropped or misidentified results', async () => {
+    const inputs = [target(0), { ...target(0), adGroupId: 'group-two' }];
+    const batches = batchSpBidRecommendationIds(inputs);
+    const results = batches.map((batch) => parseSpBidRecommendationResponse({ bidRecommendations: [{ theme: 'CONVERSION_OPPORTUNITIES',
+      bidRecommendationsForTargetingExpressions: [row(batch[0]!.target)] }] }, batch));
+    const result = { ...results[0]!, items: results.flatMap((r) => r.items), offered: 2, eligible: 2, requested: 2, returned: 2, submitted: 2, batches: 2 };
+    const getSpBidRecommendations = vi.fn(async () => result);
+    const { adapter } = makeAdapter(underlying({ getSpBidRecommendations }));
+    expect((await adapter.getSpSuggestedBids(profile, { targets: inputs })).byTarget.size).toBe(2);
+    for (const items of [[result.items[0]!], [result.items[0]!, result.items[0]!],
+      [result.items[0]!, { ...result.items[1]!, adGroupId: 'wrong-group' }]]) {
+      getSpBidRecommendations.mockResolvedValueOnce({ ...result, items });
+      await expect(adapter.getSpSuggestedBids(profile, { targets: inputs })).rejects.toThrow(/bid recommendation/);
+    }
   });
 });
 

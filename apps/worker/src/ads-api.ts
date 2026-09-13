@@ -21,7 +21,7 @@ import {
   listActiveConnectionIdsForRegion,
   type DbHandle,
 } from '@wizard-ads/db';
-import type { AdsConnectionCredentialBinding, EntityRow, Region } from '@wizard-ads/shared';
+import { BidRecommendationReadCounts, bidRecommendationTargetKey, type BidRecommendationCorridor, type BidRecommendationTarget, type AdsConnectionCredentialBinding, type EntityRow, type Region } from '@wizard-ads/shared';
 
 /** The profile routing information every Amazon call needs. */
 export interface AdsProfileContext {
@@ -122,28 +122,15 @@ export type UnifiedReportRetrieveResult =
   | { kind: 'refused'; codes: readonly (string | null)[] };
 
 /** One target's Amazon suggested-bid corridor for the day (WP-27 read). */
-export interface SuggestedBidRead {
-  targetId: string;
-  low: number;
-  median: number;
-  high: number;
-}
+export type SuggestedBidRead = BidRecommendationCorridor;
 
-/** The SP keyword and product-target ids to read a suggested-bid corridor for. */
 export interface SuggestedBidRequest {
-  keywordIds: readonly string[];
-  targetIds: readonly string[];
+  targets: readonly BidRecommendationTarget[];
 }
 
-export interface SuggestedBidResult {
-  /** By Amazon target id, the corridor Amazon answered with. */
+export interface SuggestedBidResult extends BidRecommendationReadCounts {
+  /** Full campaign/ad-group/kind/id identity, not just the numeric target id. */
   byTarget: Map<string, SuggestedBidRead>;
-  /** Ids submitted across both endpoints. */
-  submitted: number;
-  /** Ids Amazon returned a corridor for. */
-  returned: number;
-  /** Ids Amazon returned an error for (still counted, just not corridors). */
-  errors: number;
 }
 
 /**
@@ -228,10 +215,7 @@ export type UnderlyingClient = Pick<
   | 'getReport'
   | 'createUnifiedReports'
   | 'retrieveUnifiedReports'
-  // INTEGRATE (WP-28): the two WP-27 suggested-bid reads the bid-series sync
-  // drives. Added to the Pick so a unit test can mock only these without HTTP.
-  | 'getSpKeywordBidRecommendations'
-  | 'getSpTargetBidRecommendations'
+  | 'getSpBidRecommendations'
 > & Partial<Pick<
   UnderlyingAdsApiClient,
   'probeSbAdsPage' | 'probeCreativeAssetsPage'
@@ -447,49 +431,44 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
     return toByteStream(body, signal);
   }
 
-  /**
-   * Read Amazon's daily suggested-bid corridor for a profile's SP keywords and
-   * product targets (WP-27 endpoints). A read, despite being a POST: the client
-   * marks it idempotent, so a transport failure retries safely.
-   *
-   * Errored ids are counted but not corridors — Amazon can answer some ids in a
-   * batch and error others, and the sync writes a corridor only where one came
-   * back. The two endpoints are hit sequentially for the same reason
-   * `listEntities` is: one profile must not fire simultaneous requests past the
-   * region concurrency cap the caller wraps this in.
-   */
+  /** Carry complete scope and expression identity through the theme-based read. */
   async getSpSuggestedBids(
     profile: AdsProfileContext,
-    ids: SuggestedBidRequest,
+    request: SuggestedBidRequest,
   ): Promise<SuggestedBidResult> {
+    if (request.targets.length === 0) return {
+      byTarget: new Map(), offered: 0, eligible: 0, requested: 0, returned: 0, refused: 0, unmatched: 0,
+    };
     const client = await this.clientForProfile(profile);
+    const result = await this.guard(profile.region, () =>
+      client.getSpBidRecommendations(profile.amazonProfileId, request.targets));
+    const counts = BidRecommendationReadCounts.parse(result);
     const byTarget = new Map<string, SuggestedBidRead>();
-    let submitted = 0;
-    let returned = 0;
-    let errors = 0;
-
-    const reads: Array<{ ids: readonly string[]; run: () => Promise<{ items: readonly { targetId: string; low: number; median: number; high: number }[]; errors: readonly unknown[] }> }> = [
-      { ids: ids.keywordIds, run: () => client.getSpKeywordBidRecommendations(profile.amazonProfileId, ids.keywordIds) },
-      { ids: ids.targetIds, run: () => client.getSpTargetBidRecommendations(profile.amazonProfileId, ids.targetIds) },
-    ];
-
-    for (const read of reads) {
-      if (read.ids.length === 0) continue;
-      submitted += read.ids.length;
-      const result = await this.guard(profile.region, read.run);
-      for (const item of result.items) {
-        byTarget.set(item.targetId, {
-          targetId: item.targetId,
-          low: item.low,
-          median: item.median,
-          high: item.high,
-        });
-        returned += 1;
+    const seen = new Set<number>();
+    for (const item of result.items) {
+      const expected = request.targets[item.index];
+      if (expected === undefined || seen.has(item.index)
+        || bidRecommendationTargetKey(expected) !== bidRecommendationTargetKey(item)
+        || expected.targetingExpression?.type !== item.targetingExpression?.type
+        || expected.targetingExpression?.value !== item.targetingExpression?.value) {
+        throw new AdsApiParseError('bid recommendations returned an unexpected or duplicate target');
       }
-      errors += result.errors.length;
+      seen.add(item.index);
+      byTarget.set(bidRecommendationTargetKey(item), item);
     }
-
-    return { byTarget, submitted, returned, errors };
+    for (const refusal of result.errors) {
+      const expected = request.targets[refusal.index];
+      if (expected === undefined || seen.has(refusal.index) || expected.targetId !== refusal.targetId
+        || expected.isKeyword !== (refusal.kind === 'keywords')) {
+        throw new AdsApiParseError('bid recommendations returned an unexpected or duplicate refusal');
+      }
+      seen.add(refusal.index);
+    }
+    if (counts.offered !== request.targets.length || byTarget.size !== counts.returned
+      || result.errors.length !== counts.refused || seen.size !== counts.requested) {
+      throw new AdsApiParseError('bid recommendation adapter counts do not reconcile');
+    }
+    return { ...counts, byTarget };
   }
 
   async listProfiles(region: Region): Promise<readonly string[]> {

@@ -103,6 +103,7 @@ they do not prove a profile's current availability or a hosted release's readine
 | [Entity endpoints](src/endpoints.ts) | Legacy SP entity graph; SB and SD campaign/ad-group listing | Preserve each endpoint's dialect and pagination; deeper SB/SD resources are not implied. |
 | [Reporting v3](src/reports.ts) | Typed report specifications and parsers; SP target requests include `topOfSearchImpressionShare`; worker forwards column/filter/name/time-unit overrides | Target impression share awaits live verification (`pnpm smoke --reportType spTargeting`); withheld values remain null. Supported columns, attribution window and grain must match the actual report. |
 | [Unified Reporting](src/unified-reporting.ts) | Create/retrieve protocol and counted outcomes | Separate from Unified campaign management and from canonical report promotion. |
+| [Bid recommendations](src/suggested-bids.ts) | Theme-based SP v3 reads, scoped per campaign/ad group, at most 100 keyword/auto expressions per request; counted reconciliation into daily history | contract rewritten to spec, live verification pending |
 | [Budget usage](src/budgets.ts) | Product-specific SP/SB/SD endpoints with counted indexed results | Client support is not application pacing integration or proven provider availability. |
 | [SP writes](src/writes.ts) | Counted create/update/archive responses | Application authority, persistence, conflict checks and observation are worker responsibilities. |
 | [SB ad/asset probe](src/sb-ad-assets.ts) | Narrow observed ad-to-asset data and search responses | Page-scoped evidence does not prove a complete asset catalog or eligibility. |
@@ -161,3 +162,69 @@ Those flags are not an authorization mechanism. Do not use the raw-client smoke 
 a shortcut around the worker-only immutable preview, explicit scoped authority,
 idempotent execution, audit and observation requirements in
 [AGENTS.md](../../AGENTS.md). Live write proof must use that guarded path.
+
+### Bid recommendation probe
+
+```bash
+pnpm --filter @wizard-ads/ads-api smoke --mode bid-recommendations "$smoke_config_path"
+```
+
+This mode makes one recommendation request for one existing ad group and prints
+its raw HTTP status and JSON body shape (array lengths and the first three item
+shapes). It does not write history, request reports, or run mutations. A non-2xx
+response exits nonzero. It rejects `--writes` and `--reportType` combinations.
+The config needs `lwa`, `region`, `profileId`, and this additional object; `date`
+is optional in this mode:
+
+```json
+{
+  "bidRecommendations": {
+    "campaignId": "<campaign-id>",
+    "adGroupId": "<ad-group-id>",
+    "targetingExpressions": [
+      { "type": "KEYWORD_EXACT_MATCH", "value": "synthetic keyword" }
+    ]
+  }
+}
+```
+
+The vendored SP contract uses `POST /sp/targets/bid/recommendations`, media type
+`application/vnd.spthemebasedbidrecommendation.v3+json`, and
+`recommendationType: BIDS_FOR_EXISTING_AD_GROUP` for both keywords and auto
+expressions. Each request accepts at most 100 expressions. Manual product
+expressions require v4. The unsupported separate keyword recommendation path has been removed. The
+legacy keyword/product/target method names now call the same theme endpoint and
+require scoped targets; flat ID arrays fail before HTTP. Production and smoke
+use the same request builder and endpoint constants. The probe prints the raw
+status and body shape before response reconciliation.
+
+### Daily corridor reconciliation
+
+Production selects the `CONVERSION_OPPORTUNITIES` theme. Seasonal themes do not
+replace the daily corridor. Responses match the exact expression type and value
+within the submitted campaign/ad-group batch, regardless of response order.
+Duplicate request identities or expressions and duplicate returned matches fail
+before history is written. Unknown returned expressions are counted and excluded.
+
+| Count | Meaning |
+| --- | --- |
+| `offered` | Active SP mirror targets supplied to the read. |
+| `eligible` | Targets with complete scope and a supported v3 expression. Manual product targets, refinements, and missing keyword text are excluded. |
+| `requested` | Eligible target expressions sent, across all batches. |
+| `returned` | Requested expressions matched to at least one available bid value. |
+| `refused` | Requested expressions omitted by Amazon or returned without any bid values. HTTP failures throw and fail the profile pass. |
+| `written` | Daily context rows stored, including rows without a corridor. |
+| `unmatched` | Extra response expressions in the base theme that match no requested target in that batch. |
+
+For completed profile reads, `offered >= eligible = requested`,
+`requested = returned + refused`, and `written = offered`. The worker logs these
+counts and aggregates completed profiles; failed profiles are logged separately.
+The daily gate and history grain remain unchanged. Refused or ineligible targets
+retain their bid/CPC context with null corridor values.
+
+The three `bidValues` slots map to low, median, and high in order. Missing slots
+or missing `suggestedBid` values stay null; zero is retained only when Amazon
+returns zero. No midpoint or chosen suggestion is inferred. Numeric strings in
+the vendored examples are accepted, while negative, nonnumeric, and descending
+corridors fail parsing. A v4 manual-product integration needs a separate contract
+change and live verification.
