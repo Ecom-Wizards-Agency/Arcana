@@ -142,7 +142,7 @@ const DECISION_LANES: ReadonlyArray<{
   {
     id: 'ready_to_export',
     label: 'Ready to export',
-    description: 'Accepted proposals that can leave OpenSpell as files.',
+    description: 'Accepted proposals that can leave Arcana as files.',
     statuses: new Set(['accepted']),
   },
   {

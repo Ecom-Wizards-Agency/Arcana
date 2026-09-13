@@ -1,6 +1,6 @@
 # AdLabs history backfill CLI
 
-Loads operator-supplied AdLabs CSV exports into OpenSpell with source provenance and
+Loads operator-supplied AdLabs CSV exports into Arcana with source provenance and
 row/total reconciliation. It does not contact AdLabs or Amazon. Export acquisition
 is a separate operator action; downloaded files and their account data stay outside
 Git. See the public [export contract](../../docs/adlabs-export-contract.md).

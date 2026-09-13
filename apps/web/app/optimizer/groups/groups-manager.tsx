@@ -223,7 +223,7 @@ export function OptimizationGroupsManager({
       const body = await response.json() as { error?: string; runId?: string };
       if (!response.ok || !body.runId) throw new Error(body.error ?? 'Could not queue preview');
       await refresh(draft.id);
-      setMessage('Preview queued. OpenSpell will evaluate this group only; Amazon is unchanged.');
+      setMessage('Preview queued. Arcana will evaluate this group only; Amazon is unchanged.');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not queue preview');
     } finally {
@@ -438,7 +438,7 @@ export function OptimizationGroupsManager({
 
           <div className="wa-editor-actions">
             <div>
-              <p className="wa-hint">OpenSpell settings only. Saving or running a preview does not update Amazon.</p>
+              <p className="wa-hint">Arcana settings only. Saving or running a preview does not update Amazon.</p>
               {canManage && !previewReady ? (
                 <p className="wa-hint">
                   Recommendation previews are temporarily unavailable. Group settings can still be saved.

@@ -21,7 +21,6 @@ import { verifyApiKey } from './keys.js';
 import {
   createMcpServer,
   PRODUCT_NAME,
-  SERVER_NAME,
   SERVER_VERSION,
 } from './server.js';
 import type { McpConfig } from './config.js';
@@ -153,7 +152,8 @@ export async function startHttpServer(options: StartOptions): Promise<RunningSer
 function healthPayload(config: McpConfig, status: 'ready' | 'not_ready') {
   return {
     status,
-    service: SERVER_NAME,
+    // Deployment health checks retain their identity until the hosted migration.
+    service: 'openspell',
     product: PRODUCT_NAME,
     version: SERVER_VERSION,
     revision: publicRevision(config.revision),

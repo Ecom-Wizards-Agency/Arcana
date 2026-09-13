@@ -1,7 +1,7 @@
 import { withAuthenticatedActor } from '@wizard-ads/db';
 /**
  * `/optimizer` — the Campaign Optimizer, laid out like AdLabs' "Bid Optimizer"
- * (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/04-optimizer.md`).
+ * (`https://github.com/Ecom-Wizards-Agency/Arcana/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/04-optimizer.md`).
  *
  * This is the AdLabs-style *presentation* of the recommendations the engine
  * (WP-07) already produces. It reads them — it does not compute them — and lays

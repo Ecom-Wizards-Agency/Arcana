@@ -87,7 +87,7 @@ describe('optimization groups manager', () => {
     expect(markup).toContain('Target ACOS 23.0%');
     expect(markup).toContain('Assigned campaign');
     expect(markup).toContain('Unassigned campaign');
-    expect(markup).toContain('OpenSpell settings only');
+    expect(markup).toContain('Arcana settings only');
     expect(markup).toContain('does not update Amazon');
     expect(markup).toContain('Run group preview');
     expect(markup).toContain('Review schedule');

@@ -1,6 +1,6 @@
-# OpenSpell MCP on Evo X1
+# Arcana MCP on Evo X1
 
-OpenSpell MCP runs as one host-local Node service behind one Cloudflare Tunnel
+Arcana MCP runs as one host-local Node service behind one Cloudflare Tunnel
 connector. Both processes are locked systemd services. The MCP service listens
 only on `127.0.0.1:8787`; Evo X1 exposes no inbound port.
 
@@ -133,7 +133,7 @@ Activation verifies and installs the unit definitions retained with the release,
 atomically switches the `current` symlink, explicitly restarts the MCP service,
 waits for exact local health, restarts the tunnel, and then verifies exact
 public health. If the new services fail, it stops them and restores both the
-previous OpenSpell release link and its retained unit definitions when one
+previous Arcana release link and its retained unit definitions when one
 exists. During the first cutover, restart only a separately reviewed legacy
 fallback; never reuse a revoked tunnel credential.
 
@@ -182,10 +182,10 @@ Claude Code:
 Codex stores the environment-variable name, not the token:
 
 ```bash
-codex mcp add openspell \
+codex mcp add arcana \
   --url https://mcp.ecomwizards.agency/mcp \
   --bearer-token-env-var WIZARD_ADS_MCP_TOKEN
-codex mcp get openspell
+codex mcp get arcana
 ```
 
 Claude Code uses the same private environment reference:
@@ -193,7 +193,7 @@ Claude Code uses the same private environment reference:
 ```json
 {
   "mcpServers": {
-    "openspell": {
+    "arcana": {
       "type": "http",
       "url": "https://mcp.ecomwizards.agency/mcp",
       "headers": {

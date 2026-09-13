@@ -37,7 +37,7 @@ export function claudeSnippet(endpoint: string): string {
   return [
     '{',
     '  "mcpServers": {',
-    '    "openspell": {',
+    '    "arcana": {',
     '      "type": "http",',
     `      "url": "${endpoint}",`,
     '      "headers": {',
@@ -53,7 +53,7 @@ export function claudeSnippet(endpoint: string): string {
 export function codexSnippet(endpoint: string): string {
   const shellUrl = `'${endpoint.replaceAll("'", "'\\''")}'`;
   return [
-    'codex mcp add openspell \\',
+    'codex mcp add arcana \\',
     `  --url ${shellUrl} \\`,
     '  --bearer-token-env-var WIZARD_ADS_MCP_TOKEN',
   ].join('\n');

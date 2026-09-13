@@ -24,7 +24,7 @@ export default async function LoginPage({
 
   return (
     <main style={{ ...page, maxWidth: '28rem' }}>
-      <h1 style={heading}>OpenSpell</h1>
+      <h1 style={heading}>Arcana</h1>
       <p style={muted}>Sign in to your workspace.</p>
 
       {error ? <p style={banner('bad')}>{error}</p> : null}

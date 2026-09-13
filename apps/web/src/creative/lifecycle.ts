@@ -55,7 +55,7 @@ export function creativeLifecycle(evidence: CreativeLifecycleEvidence): Creative
         state: 'inactive',
         eyebrow: 'Automatic sync inactive',
         title: 'Creative sync is not active for this profile',
-        body: 'OpenSpell has not been enabled to inventory Sponsored Brands Video ads and Amazon Asset IDs for this profile.',
+        body: 'Arcana has not been enabled to inventory Sponsored Brands Video ads and Amazon Asset IDs for this profile.',
       };
     }
     return {
@@ -63,7 +63,7 @@ export function creativeLifecycle(evidence: CreativeLifecycleEvidence): Creative
       state: 'awaiting_schedule',
       eyebrow: 'Automatic sync ready',
       title: 'Waiting for the first scheduled Creative sync',
-      body: 'OpenSpell will queue the first Sponsored Brands Video observation automatically. No manual sync command is required.',
+      body: 'Arcana will queue the first Sponsored Brands Video observation automatically. No manual sync command is required.',
     };
   }
 
@@ -81,7 +81,7 @@ export function creativeLifecycle(evidence: CreativeLifecycleEvidence): Creative
       state: 'blocked',
       eyebrow: 'Attribution blocked',
       title: 'Creative evidence needs review',
-      body: 'OpenSpell retained this observation, but did not promote its facts because the mapping or report counts did not reconcile.',
+      body: 'Arcana retained this observation, but did not promote its facts because the mapping or report counts did not reconcile.',
     };
   }
   if (snapshot.status === 'report_pending') {
@@ -90,7 +90,7 @@ export function creativeLifecycle(evidence: CreativeLifecycleEvidence): Creative
       state: 'report_pending',
       eyebrow: 'Report in progress',
       title: 'Asset mappings are ready while performance loads',
-      body: 'The authoritative ad-level report is still pending. OpenSpell will not substitute campaign or ad-group totals.',
+      body: 'The authoritative ad-level report is still pending. Arcana will not substitute campaign or ad-group totals.',
     };
   }
   if (allAdsUnsupported(snapshot)) {
@@ -98,8 +98,8 @@ export function creativeLifecycle(evidence: CreativeLifecycleEvidence): Creative
       ...base,
       state: 'unsupported',
       eyebrow: 'Unsupported evidence',
-      title: 'Amazon returned ads OpenSpell cannot attribute safely',
-      body: 'Every observed ad used an unsupported creative shape. OpenSpell retained the counts and promoted no creative performance.',
+      title: 'Amazon returned ads Arcana cannot attribute safely',
+      body: 'Every observed ad used an unsupported creative shape. Arcana retained the counts and promoted no creative performance.',
     };
   }
   if (snapshot.status === 'mapping_only') {
@@ -108,7 +108,7 @@ export function creativeLifecycle(evidence: CreativeLifecycleEvidence): Creative
       state: 'mapping_ready',
       eyebrow: 'Mapping captured',
       title: 'Asset identity is ready; mapped performance is not',
-      body: 'OpenSpell observed the current ad-to-asset mapping, but this observation was not eligible for automatic ad-level report attribution.',
+      body: 'Arcana observed the current ad-to-asset mapping, but this observation was not eligible for automatic ad-level report attribution.',
     };
   }
   if (snapshot.mappedFactRows === 0) {
@@ -145,8 +145,8 @@ function jobLifecycle(
         ? 'A new Creative observation is queued'
         : 'The first Creative observation is queued',
       body: hasPreviousEvidence
-        ? 'OpenSpell will refresh the ad-to-asset mapping automatically. Previous evidence remains visible until the new observation reconciles.'
-        : 'OpenSpell will inventory Sponsored Brands Video ads and Amazon Asset IDs automatically when the report worker claims this job.',
+        ? 'Arcana will refresh the ad-to-asset mapping automatically. Previous evidence remains visible until the new observation reconciles.'
+        : 'Arcana will inventory Sponsored Brands Video ads and Amazon Asset IDs automatically when the report worker claims this job.',
     };
   }
   if (job.status === 'running') {
@@ -154,7 +154,7 @@ function jobLifecycle(
       ...base,
       state: 'mapping_pending',
       eyebrow: 'Mapping in progress',
-      title: 'OpenSpell is inventorying ads and Amazon Asset IDs',
+      title: 'Arcana is inventorying ads and Amazon Asset IDs',
       body: hasPreviousEvidence
         ? 'The current evidence remains visible while the new observation reconciles.'
         : 'The first automatic observation is running. Performance appears only after the mapping and ad-level report both reconcile.',
@@ -170,7 +170,7 @@ function blockedJob(base: LifecycleBase, hasPreviousEvidence: boolean): Creative
     eyebrow: 'Sync needs review',
     title: 'The latest Creative sync did not produce a current observation',
     body: hasPreviousEvidence
-      ? 'OpenSpell retained the previous evidence. Check Sync status before relying on it as current.'
+      ? 'Arcana retained the previous evidence. Check Sync status before relying on it as current.'
       : 'Check Sync status for the failed or incomplete automatic job. No reconciled Creative observation is available yet.',
   };
 }

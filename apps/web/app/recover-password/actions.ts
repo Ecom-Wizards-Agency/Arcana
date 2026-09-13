@@ -41,7 +41,7 @@ export async function completePasswordRecovery(
     const { error } = await (await supabaseServerClient()).auth.updateUser({
       [PASSWORD_FIELD]: passphrase,
     });
-    if (!error) return { status: 'ok', message: 'Password saved. You can continue to OpenSpell.' };
+    if (!error) return { status: 'ok', message: 'Password saved. You can continue to Arcana.' };
   } catch {
     // A lost response can follow a committed password change. Never retry here
     // or expose provider error bodies; ordinary sign-in can reconcile it.

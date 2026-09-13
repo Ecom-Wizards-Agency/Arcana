@@ -1,7 +1,7 @@
 /**
  * The Supabase Auth client, server side.
  *
- * Auth only. OpenSpell reads its data over a direct Postgres connection
+ * Auth only. Arcana reads its data over a direct Postgres connection
  * (`@wizard-ads/db`), the same way `/crosscheck` already does, so this client
  * handles password sign-in, invitations/recovery, optional providers and account
  * security, and verifies the session identity. Nothing here queries a table.

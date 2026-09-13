@@ -24,7 +24,7 @@ export function ProfileAwareBrand(): React.ReactElement {
         className="wa-brand-mark"
         data-release-artifact={RELEASE_ARTIFACT.brandMark}
       />
-      <span className="wa-brand-label">OpenSpell</span>
+      <span className="wa-brand-label">Arcana</span>
     </a>
   );
 }

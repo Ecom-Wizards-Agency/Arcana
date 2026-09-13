@@ -1,6 +1,6 @@
-# OpenSpell
+# Arcana
 
-OpenSpell is an Amazon Advertising application for connecting advertising accounts,
+Arcana is an Amazon Advertising application for connecting advertising accounts,
 syncing entities and reports, reviewing performance, and preparing campaign and
 optimization changes. Preview is the default. Amazon writes require explicit operator
 authority, immutable scope, worker execution, counted responses and resynchronization.
