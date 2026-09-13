@@ -87,6 +87,8 @@ function asDate(value: Date | string): Date {
 }
 
 export interface EntitySyncOptions {
+  /** Unlisted kinds are not refreshed or tombstoned; requires an ad-product scope. */
+  excludedEntityTypes?: readonly EntityRow['entityType'][];
   adProduct?: 'SP' | 'SB' | 'SD';
   /**
    * A full pass re-lists every entity the profile has, so an id the mirror
@@ -263,6 +265,7 @@ type ExistingEntity = { amazonId: string; deletedAt: Date | string | null; snaps
 
 export class PostgresWorkerStore implements WorkerStore {
   private readonly logger: StoreLogger;
+  private readonly reportedDisabledSbKeywords = new Set<string>();
   private readonly claimProtocol: 'legacy' | 'fenced';
 
   constructor(
@@ -387,6 +390,13 @@ export class PostgresWorkerStore implements WorkerStore {
     options: EntitySyncOptions = {},
   ): Promise<EntitySyncCounts> {
     const { adProduct, full = false } = options;
+    const excluded = new Set(options.excludedEntityTypes ?? []);
+    if (excluded.size > 0 && adProduct === undefined) {
+      throw new Error('Excluded entity kinds require an ad-product scope');
+    }
+    if (entities.some((entity) => excluded.has(entity.entityType))) {
+      throw new Error('Entity listing contains an excluded kind');
+    }
     for (const entity of entities) {
       if (entity.profileId !== profile.id) {
         throw new Error(`entity ${entity.amazonId} belongs to profile ${entity.profileId}, expected ${profile.id}`);
@@ -400,6 +410,23 @@ export class PostgresWorkerStore implements WorkerStore {
     const entityTypes = ['portfolio', 'campaign', 'ad_group', 'product_ad', 'keyword', 'target', 'negative'] as const;
 
     for (const entityType of entityTypes) {
+      if (excluded.has(entityType)) {
+        if (adProduct === 'SB' && entityType === 'keyword'
+          && !this.reportedDisabledSbKeywords.has(profile.id)) {
+          const [stored] = await this.handle.sql<{ present: boolean }[]>`
+            select exists (
+              select 1 from public.keywords
+               where org_id = ${profile.orgId} and profile_id = ${profile.id}
+                 and ad_product = 'SB' and deleted_at is null
+            ) as present
+          `;
+          if (stored?.present) {
+            this.logger.info('SB keywords are present but sync is disabled', { profileId: profile.id });
+            this.reportedDisabledSbKeywords.add(profile.id);
+          }
+        }
+        continue;
+      }
       // Collapse before diffing or writing. The negatives mirror merges three
       // Amazon endpoints into one `(profile_id, amazon_id)` key, so a listing
       // can legitimately carry the same id twice — and Postgres refuses to let

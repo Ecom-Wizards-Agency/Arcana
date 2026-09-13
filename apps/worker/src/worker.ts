@@ -707,6 +707,9 @@ export class SyncWorker {
       const counts = await this.store.syncEntities(profile, productRows, {
         adProduct: product,
         full: payload.full,
+        ...(listing.excludedEntityTypes?.[product] === undefined ? {} : {
+          excludedEntityTypes: listing.excludedEntityTypes[product],
+        }),
       });
       // Program rule 4: the artifact, not the exit code. A listing that
       // upserted fewer rows than it listed lost some — unless the shortfall is

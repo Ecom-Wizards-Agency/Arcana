@@ -217,6 +217,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@wizard-ads/campaigns':
+        specifier: workspace:*
+        version: link:../campaigns
       '@wizard-ads/shared':
         specifier: workspace:*
         version: link:../shared

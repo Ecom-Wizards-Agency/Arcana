@@ -7,6 +7,7 @@
  * asset before this boundary and retain non-attributable rows under their
  * explicit attribution state.
  */
+import { keywordFromCampaignName, NAMING_PRESETS, type NamingSettings } from '@wizard-ads/campaigns';
 import {
   and,
   eq,
@@ -743,6 +744,8 @@ function parseCreativeSnapshot(row: CreativeSnapshotRow): CreativeSyncSnapshot {
 }
 
 export interface CreativePerformanceDrilldown {
+  keywordText: string | null;
+  keywordProvenance: 'synced' | 'from_campaign_name' | 'unresolved';
   campaignId: string;
   adGroupId: string;
   adId: string;
@@ -836,6 +839,7 @@ interface DrilldownRow {
 export async function readCreativePerformance(
   handle: QueryHandle,
   filter: CreativePerformanceFilter,
+  namingPresets: readonly NamingSettings[] = Object.values(NAMING_PRESETS),
 ): Promise<CreativePerformanceAsset[]> {
   const aggregates = await handle.sql<AggregateRow[]>`
     select
@@ -912,12 +916,42 @@ export async function readCreativePerformance(
     order by sum(f.cost) desc, f.campaign_id, f.ad_group_id, f.ad_id
   `;
 
+  // One row per campaign, separate from fact aggregation: multiple keywords
+  // must never multiply performance totals or silently select the first keyword.
+  const campaignKeywords = await handle.sql<{
+    campaign_id: string;
+    campaign_name: string | null;
+    keyword_texts: string[];
+  }[]>`
+    select f.campaign_id, max(c.name) as campaign_name,
+           coalesce(array_agg(distinct k.keyword_text order by k.keyword_text)
+             filter (where k.keyword_text is not null), '{}'::text[]) as keyword_texts
+      from (
+        select distinct campaign_id from public.fact_creative_daily
+         where org_id = ${filter.orgId} and profile_id = ${filter.profileId}
+           and ad_product = 'SB'
+           and date between ${filter.from}::date and ${filter.to}::date
+      ) f
+      left join public.campaigns c
+        on c.org_id = ${filter.orgId} and c.profile_id = ${filter.profileId}
+       and c.amazon_id = f.campaign_id and c.ad_product = 'SB'
+      left join public.keywords k
+        on k.org_id = ${filter.orgId} and k.profile_id = ${filter.profileId}
+       and k.campaign_id = f.campaign_id and k.ad_product = 'SB'
+     group by f.campaign_id
+  `;
+  const keywordsByCampaign = new Map(campaignKeywords.map((row) => [row.campaign_id,
+    resolveCreativeKeyword(row.keyword_texts, row.campaign_name, namingPresets)]));
+
   const detailsByIdentity = new Map<string, CreativePerformanceDrilldown[]>();
   for (const row of details) {
     const key = attributionIdentity(row.amazon_asset_id, row.attribution_state);
     const current = detailsByIdentity.get(key) ?? [];
     current.push({
       campaignId: row.campaign_id,
+      ...(keywordsByCampaign.get(row.campaign_id) ?? {
+        keywordText: null, keywordProvenance: 'unresolved' as const,
+      }),
       adGroupId: row.ad_group_id,
       adId: row.ad_id,
       creativeId: row.creative_id,
@@ -969,6 +1003,23 @@ export async function readCreativePerformance(
       drilldown: detailsByIdentity.get(attributionIdentity(row.amazon_asset_id, row.attribution_state)) ?? [],
     };
   });
+}
+
+/** Conflicting synchronized keywords cannot be repaired by guessing from a name. */
+export function resolveCreativeKeyword(
+  syncedKeywords: readonly string[],
+  campaignName: string | null,
+  presets: readonly NamingSettings[] = Object.values(NAMING_PRESETS),
+): Pick<CreativePerformanceDrilldown, 'keywordText' | 'keywordProvenance'> {
+  const distinct = [...new Set(syncedKeywords)];
+  if (distinct.length === 1 && distinct[0]!.trim() !== '') {
+    return { keywordText: distinct[0]!, keywordProvenance: 'synced' };
+  }
+  if (distinct.length !== 0) return { keywordText: null, keywordProvenance: 'unresolved' };
+  const keyword = campaignName === null ? null : keywordFromCampaignName(campaignName, presets);
+  return keyword === null
+    ? { keywordText: null, keywordProvenance: 'unresolved' }
+    : { keywordText: keyword, keywordProvenance: 'from_campaign_name' };
 }
 
 function validateWriteBatch(batch: CreativePerformanceWriteBatch): void {

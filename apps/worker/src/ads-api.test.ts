@@ -784,3 +784,34 @@ describe('createAdsApiClientFromEnv', () => {
     );
   });
 });
+
+describe('SB keyword sync gate and accounting', () => {
+  const keyword: MirrorRow<KeywordRow> = {
+    entityType: 'keyword', amazonId: 'kw-sb', adProduct: 'SB', name: 'blue widget', state: 'enabled',
+    campaignId: 'campaign-sb', adGroupId: 'group-sb', keywordText: 'blue widget', matchType: 'phrase', bid: 1,
+  };
+  it.each([undefined, false, true])('lists keywords only with explicit enablement: %j', async (enabled) => {
+    const listSbKeywords = vi.fn(async () => ({ ...emptyList(), raw: [{}], items: [keyword] }));
+    const { adapter } = makeAdapter(underlying({ listSbKeywords }), { sbKeywordSyncEnabled: enabled });
+    const result = await adapter.listEntities(profile, false);
+    expect(listSbKeywords).toHaveBeenCalledTimes(enabled === true ? 1 : 0);
+    expect(result.excludedEntityTypes).toEqual(enabled === true ? undefined : { SB: ['keyword'] });
+    expect(result.rows).toHaveLength(enabled === true ? 1 : 0);
+    if (enabled) expect(result.rows[0]).toMatchObject({ ...keyword, profileId: profile.id });
+    expect(result.failures).toHaveLength(0);
+  });
+  it.each([
+    { raw: [{}, {}], items: [keyword], skipped: [{ index: 1, id: null, reason: 'invalid' }] },
+    { raw: [{}, {}], items: [keyword], skipped: [] },
+    { raw: [{}], items: [keyword], truncated: true },
+  ])('refuses an incomplete SB product listing', async (result) => {
+    const { adapter } = makeAdapter(underlying({
+      listSbKeywords: async () => ({ ...emptyList(), ...result }),
+    }), { sbKeywordSyncEnabled: true });
+    const listed = await adapter.listEntities(profile, true);
+    expect(listed.rows).toHaveLength(0);
+    expect(listed.succeeded).toEqual(['SP', 'SD']);
+    expect(listed.failures).toHaveLength(1);
+    expect(listed.failures[0]?.message).toMatch(/SB keywords: listed/);
+  });
+});

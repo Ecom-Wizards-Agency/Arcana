@@ -8,6 +8,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { AdsApiClient, type MappedListResult } from './client.js';
+import { mapKeywords } from './mappers.js';
+import { LIST_ENDPOINTS } from './endpoints.js';
 import { AdsApiParseError } from './errors.js';
 import { createMockServer, lwaRoute } from './__fixtures__/server.js';
 import {
@@ -368,5 +370,56 @@ describe('response envelopes', () => {
     const result = await client.listSpCampaigns(PROFILE_ID);
     expect(result.pages).toBe(1);
     expect(result.items).toHaveLength(0);
+  });
+});
+
+describe('unverified Sponsored Brands keywords', () => {
+  const keyword = { keywordId: 'kw-synthetic', campaignId: 'campaign-synthetic',
+    adGroupId: 'group-synthetic', keywordText: 'blue widget', matchType: 'PHRASE', state: 'ENABLED', bid: 1 };
+
+  it('keeps endpoint verification explicit and parameterizes keyword mapping without changing SP defaults', () => {
+    expect(LIST_ENDPOINTS['sb.keywords'].verificationStatus).toBe('unverified');
+    for (const product of ['SP', 'SB'] as const) {
+      const mapped = mapKeywords([keyword, {}], product);
+      expect(mapped.rows).toHaveLength(1);
+      expect(mapped.skipped).toHaveLength(1);
+      expect(mapped.rows[0]?.adProduct).toBe(product);
+    }
+    expect(mapKeywords([keyword]).rows[0]?.adProduct).toBe('SP');
+  });
+
+  it('uses the candidate dialect and counts every mapped or refused row across pages', async () => {
+    const { client, server } = clientFor([{ method: 'POST', match: '/sb/keywords/list', responses: [
+      { status: 200, json: { keywords: [keyword], nextToken: 'second' } },
+      { status: 200, json: { keywords: [{ ...keyword, keywordId: 'kw-second' }, {}] } },
+    ] }]);
+    const result = await client.listSbKeywords(PROFILE_ID);
+    expect(result.pages).toBe(2);
+    expect(result.raw).toHaveLength(3);
+    expect(result.items).toHaveLength(2);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.items.every((row) => row.adProduct === 'SB')).toBe(true);
+    expectAccountedFor(result);
+    const requests = server.requestsFor('/sb/keywords/list');
+    expect(requests[0]?.headers['accept']).toBe('application/vnd.sbkeywordresource.v3+json');
+    expect(requests[0]?.headers['content-type']).toBe('application/vnd.sbkeywordresource.v3+json');
+    expect(requests[0]?.json).toEqual({ maxResults: 100 });
+    expect(requests[1]?.json).toEqual({ maxResults: 100, nextToken: 'second' });
+  });
+
+  it.each([{ wrongKey: [keyword] }, { keywords: [null] }, [keyword], { keywords: [], nextToken: 'more' }])('fails closed for malformed envelopes', async (json) => {
+    const { client } = clientFor([{ method: 'POST', match: '/sb/keywords/list', responses: [{ status: 200, json }] }]);
+    await expect(client.listSbKeywords(PROFILE_ID)).rejects.toBeInstanceOf(AdsApiParseError);
+  });
+
+  it('probes one page and exposes raw keys even when the expected key is wrong', async () => {
+    const { client, server } = clientFor([{ method: 'POST', match: '/sb/keywords/list', responses: [
+      { status: 200, json: { unexpectedKeywords: [keyword], nextToken: 'do-not-follow' } },
+    ] }]);
+    expect(await client.probeSbKeywordsPage(PROFILE_ID)).toEqual({
+      responseKeys: ['nextToken', 'unexpectedKeywords'], arrayCounts: { unexpectedKeywords: 1 }, expectedKeyIsArray: false,
+    });
+    expect(server.requestsFor('/sb/keywords/list')).toHaveLength(1);
+    expect(server.requestsFor('/sb/keywords/list')[0]?.json).toEqual({ maxResults: 1 });
   });
 });

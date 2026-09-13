@@ -1,3 +1,4 @@
+import { sbKeywordSyncEnabledFromEnv } from './config.js';
 import {
   AdsApiClient as UnderlyingAdsApiClient,
   AdsApiHttpError,
@@ -66,6 +67,8 @@ export interface EntityListFailure {
  * winners and records the losers rather than throwing everything away.
  */
 export interface EntityListing {
+  /** Unlisted kinds must be excluded from both mirror refresh and tombstoning. */
+  excludedEntityTypes?: Partial<Record<AdProductCode, readonly EntityRow['entityType'][]>>;
   rows: readonly EntityRow[];
   succeeded: readonly AdProductCode[];
   failures: readonly EntityListFailure[];
@@ -218,13 +221,14 @@ export type UnderlyingClient = Pick<
   | 'getSpBidRecommendations'
 > & Partial<Pick<
   UnderlyingAdsApiClient,
-  'probeSbAdsPage' | 'probeCreativeAssetsPage'
+  'probeSbAdsPage' | 'probeCreativeAssetsPage' | 'listSbKeywords'
 >>;
 
 /** The subset of `fetch` the report download needs. */
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface AdsApiAdapterDeps {
+  sbKeywordSyncEnabled?: boolean;
   /** Match organization, profile, provider identity and region before credential access. */
   resolveProfileBinding(profile: AdsProfileContext): Promise<AdsConnectionCredentialBinding | null>;
   /** A fresh binding for health probes without a selected profile. */
@@ -293,7 +297,18 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
           () => client.listSpNegativeTargets(p),
         ],
       },
-      { product: 'SB', steps: [() => client.listSbCampaigns(p), () => client.listSbAdGroups(p)] },
+      { product: 'SB', steps: [
+        () => client.listSbCampaigns(p),
+        () => client.listSbAdGroups(p),
+        ...(this.deps.sbKeywordSyncEnabled === true ? [async () => {
+          if (!client.listSbKeywords) throw new Error('SB keyword listing capability is missing');
+          const listed = await client.listSbKeywords(p);
+          if (listed.truncated || listed.skipped.length !== 0 || listed.items.length !== listed.raw.length) {
+            throw new Error(`SB keywords: listed ${listed.raw.length}, mapped ${listed.items.length}, skipped ${listed.skipped.length}, truncated ${listed.truncated}`);
+          }
+          return listed;
+        }] : []),
+      ] },
       { product: 'SD', steps: [() => client.listSdCampaigns(p), () => client.listSdAdGroups(p)] },
     ];
 
@@ -323,7 +338,12 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
         failures.push({ adProduct: group.product, message: errorText(error), error });
       }
     }
-    return { rows, succeeded, failures };
+    return {
+      rows, succeeded, failures,
+      ...(this.deps.sbKeywordSyncEnabled === true ? {} : {
+        excludedEntityTypes: { SB: ['keyword'] as const },
+      }),
+    };
   }
 
   async createReport(input: CreateReportInput): Promise<{ reportId: string }> {
@@ -707,6 +727,7 @@ export function createAdsApiClientFromEnv(
   const userAgent = env['AMAZON_ADS_USER_AGENT'];
 
   return new DbAdsApiClient({
+    sbKeywordSyncEnabled: sbKeywordSyncEnabledFromEnv(env),
     resolveProfileBinding: (profile) => getProfileCredentialBinding(
       handle, profile.orgId, profile.id, profile.amazonProfileId, profile.region,
     ),

@@ -228,3 +228,24 @@ returns zero. No midpoint or chosen suggestion is inferred. Numeric strings in
 the vendored examples are accepted, while negative, nonnumeric, and descending
 corridors fail parsing. A v4 manual-product integration needs a separate contract
 change and live verification.
+
+### SB keyword verification
+
+`listSbKeywords` uses the candidate `POST /sb/keywords/list` contract with
+`application/vnd.sbkeywordresource.v3+json` and response key `keywords`.
+`LIST_ENDPOINTS['sb.keywords'].verificationStatus` is `unverified`. No vendored
+SB keyword specification was available in the operator's main checkout `_local/`
+directory during WP-246. Path, media type, response key, filters and pagination
+remain subject to operator verification; synthetic tests are not provider evidence.
+
+```bash
+pnpm --filter @wizard-ads/ads-api smoke sb-keywords "$smoke_config_path"
+```
+
+This mode uses the config's single profile, requests one page with `maxResults: 1`,
+and prints the endpoint's verification status, raw response keys and array counts.
+It does not enumerate profiles, create reports, follow pagination or mutate Amazon.
+Keys are printed before checking the candidate response key. A mismatch fails the
+command. Supply credentials through the external runtime secret file described
+above. Record sanitized live evidence and correct the endpoint contract before
+marking it verified and enabling worker sync. This smoke mode was not run in WP-246.

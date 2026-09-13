@@ -313,7 +313,7 @@ export function mapAdGroups(
   return result(rows, skipped, raw.length);
 }
 
-export function mapKeywords(raw: readonly unknown[]): MapResult<MirrorRow<KeywordRow>> {
+export function mapKeywords(raw: readonly unknown[], adProduct: 'SP' | 'SB' = 'SP'): MapResult<MirrorRow<KeywordRow>> {
   const rows: MirrorRow<KeywordRow>[] = [];
   const skipped: SkippedEntity[] = [];
 
@@ -342,7 +342,7 @@ export function mapKeywords(raw: readonly unknown[]): MapResult<MirrorRow<Keywor
     rows.push({
       entityType: 'keyword',
       amazonId,
-      adProduct: 'SP',
+      adProduct,
       name: keywordText,
       state,
       campaignId,

@@ -23,6 +23,7 @@
     "measure:read-path": "tsx scripts/measure-read-path.ts"
   },
   "dependencies": {
+    "@wizard-ads/campaigns": "workspace:*",
     "@wizard-ads/shared": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "postgres": "^3.4.9"

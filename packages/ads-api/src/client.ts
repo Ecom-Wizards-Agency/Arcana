@@ -348,6 +348,11 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
       pages += 1;
 
       const parsed = this.json(result, `${endpoint.method} ${endpoint.path}`);
+      if (kind === 'sb.keywords' && (!isRecord(parsed)
+        || !Array.isArray(parsed[endpoint.responseKey])
+        || (parsed[endpoint.responseKey] as unknown[]).some((row) => !isRecord(row)))) {
+        throw new AdsApiParseError('SB keyword response must contain the configured array of objects');
+      }
       const page = this.readPage(parsed, endpoint.responseKey, endpoint.path);
       items.push(...page.rows);
 
@@ -358,6 +363,9 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
       }
 
       nextToken = page.nextToken;
+      if (kind === 'sb.keywords' && nextToken !== null && page.rows.length === 0) {
+        throw new AdsApiParseError('SB keywords returned an empty page with a continuation token');
+      }
       if (nextToken === null || page.rows.length === 0) {
         return { items, pages, truncated: false, nextToken: null };
       }
@@ -470,6 +478,36 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
 
   listSbAdGroups(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<AdGroupRow>>> {
     return this.listMapped(profileId, 'sb.adGroups', options, (raw) => mapAdGroups('SB', raw));
+  }
+
+  /** Unverified SB keyword dialect; worker admission is default-off. */
+  listSbKeywords(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<KeywordRow>>> {
+    return this.listMapped(profileId, 'sb.keywords', options, (raw) => mapKeywords(raw, 'SB'));
+  }
+
+  /** One read page, before response-key interpretation. Never returns entity values. */
+  async probeSbKeywordsPage(profileId: string): Promise<{
+    responseKeys: string[];
+    arrayCounts: Record<string, number>;
+    expectedKeyIsArray: boolean;
+  }> {
+    const endpoint = LIST_ENDPOINTS['sb.keywords'];
+    const response = await httpRequest(this.ctx, {
+      method: endpoint.method,
+      url: `${hostFor(this.region)}${endpoint.path}`,
+      path: endpoint.path,
+      headers: this.headers({ profileId, contentType: endpoint.mediaType, accept: endpoint.mediaType }),
+      body: JSON.stringify({ maxResults: 1 }),
+      idempotent: true,
+    });
+    const parsed = this.json(response, endpoint.path);
+    if (!isRecord(parsed)) throw new AdsApiParseError('SB keyword probe expected an object response');
+    return {
+      responseKeys: Object.keys(parsed).sort(),
+      arrayCounts: Object.fromEntries(Object.entries(parsed)
+        .filter(([, value]) => Array.isArray(value)).map(([key, value]) => [key, (value as unknown[]).length])),
+      expectedKeyIsArray: Array.isArray(parsed[endpoint.responseKey]),
+    };
   }
 
   listSdCampaigns(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<CampaignRow>>> {

@@ -175,3 +175,79 @@ export function resolveNaming(
     custom2Value: input?.custom2Value ?? preset.custom2Value,
   };
 }
+
+export interface ParsedCampaignName {
+  slots: Partial<Record<string, string>>;
+  confidence: 'exact' | 'partial' | 'none';
+}
+
+/**
+ * Reverse the preset grammar. Empty optional slots may have been dropped by
+ * the builder. Keep only values shared by every valid alignment; never shift
+ * an arbitrary word into the Keyword slot to make an incomplete name fit.
+ */
+export function parseCampaignName(name: string, preset: NamingSettings): ParsedCampaignName {
+  const none: ParsedCampaignName = { slots: {}, confidence: 'none' };
+  const order = preset.variableOrder;
+  if (!name.trim() || !preset.delimiter || order.length === 0
+    || new Set(order).size !== order.length) return none;
+  const parts = name.split(preset.delimiter);
+  if (parts.length > order.length || (order.length > 1 && parts.length === 1)) return none;
+  const optional = new Set(['Keyword', 'Counter', 'CampCounter', 'Custom1', 'Custom2']);
+  const free = new Set(['Goal', 'CampaignType', 'TriggerWord', 'ProductName', 'Keyword', 'TargetDescriptor']);
+  const accepts = (slot: string, value: string): boolean => {
+    if (!value || value !== value.trim()) return false;
+    if (free.has(slot)) return true;
+    switch (slot) {
+      case 'SP': return value === 'SP';
+      case 'AdType': return ['SP', 'SB', 'SB Video', 'SD'].includes(value);
+      case 'MatchType': return Object.values(MATCH_TYPE_LABELS).includes(value) || value === 'Auto';
+      case 'EW': return value === (preset.suffix || 'EW');
+      case 'Counter':
+      case 'CampCounter': return /^\d{2,}$/.test(value);
+      case 'Date': return /^\d{8}$/.test(value);
+      case 'Custom1': return value === preset.custom1Value;
+      case 'Custom2': return value === preset.custom2Value;
+      default: return value === slot;
+    }
+  };
+  // Memoized suffix alignments avoid exponential work for many optional slots.
+  const memo = new Map<string, Partial<Record<string, string>> | null>();
+  const align = (slotIndex: number, partIndex: number): Partial<Record<string, string>> | null => {
+    const key = `${slotIndex}:${partIndex}`;
+    if (memo.has(key)) return memo.get(key)!;
+    if (slotIndex === order.length) return partIndex === parts.length ? {} : null;
+    const slot = order[slotIndex]!;
+    const value = parts[partIndex];
+    const candidates: Partial<Record<string, string>>[] = [];
+    if (value !== undefined && (value === '' || accepts(slot, value))) {
+      const tail = align(slotIndex + 1, partIndex + 1);
+      if (tail !== null) candidates.push(value === '' ? tail : { ...tail, [slot]: value });
+    }
+    if (optional.has(slot)) {
+      const tail = align(slotIndex + 1, partIndex);
+      if (tail !== null) candidates.push(tail);
+    }
+    const first = candidates[0];
+    const common = first === undefined ? null : Object.fromEntries(
+      Object.entries(first).filter(([field, token]) => candidates.every((candidate) => candidate[field] === token)),
+    );
+    memo.set(key, common);
+    return common;
+  };
+  const slots = align(0, 0);
+  if (slots === null || Object.keys(slots).length === 0) return none;
+  return {
+    slots,
+    confidence: parts.length === order.length && Object.keys(slots).length === order.length ? 'exact' : 'partial',
+  };
+}
+
+/** A keyword is usable only when every matching preset identifies the same slot. */
+export function keywordFromCampaignName(name: string, presets: readonly NamingSettings[]): string | null {
+  const matches = presets.map((preset) => parseCampaignName(name, preset))
+    .filter((parsed) => parsed.confidence !== 'none');
+  const keyword = matches[0]?.slots['Keyword'];
+  return keyword !== undefined && matches.every((parsed) => parsed.slots['Keyword'] === keyword)
+    ? keyword : null;
+}
