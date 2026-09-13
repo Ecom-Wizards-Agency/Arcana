@@ -6,6 +6,7 @@
 import { gzipSync } from 'node:zlib';
 import {
   AdsApiHttpError,
+  buildReportRequestBody,
   AdsApiParseError,
   AdsThrottleError,
   DuplicateReportError,
@@ -320,6 +321,40 @@ describe('DbAdsApiClient.listEntities', () => {
 
 describe('DbAdsApiClient.createReport', () => {
   const input = { profile, reportType: 'spCampaigns' as const, startDate: '2026-08-01', endDate: '2026-08-07' };
+
+  it.each([false, true])('forwards optional overrides only when supplied (%s)', async (supplied) => {
+    const overrides = {
+      columns: ['campaignId', 'impressions'],
+      filters: [{ field: 'campaignStatus', values: ['ENABLED'] }],
+      name: 'synthetic report override',
+      timeUnit: 'SUMMARY' as const,
+    };
+    const createReport = vi.fn<UnderlyingClient['createReport']>(async () => reportMeta('PENDING'));
+    const { adapter } = makeAdapter(underlying({ createReport }));
+    await adapter.createReport({ ...input, ...(supplied ? overrides : {}) });
+    expect(createReport).toHaveBeenCalledTimes(1);
+    const forwarded = createReport.mock.calls[0]?.[1];
+    expect(createReport.mock.calls[0]?.[0]).toBe(profile.amazonProfileId);
+    expect(forwarded).toStrictEqual({
+      reportType: input.reportType, startDate: input.startDate, endDate: input.endDate,
+      ...(supplied ? overrides : {}),
+    });
+    if (forwarded === undefined) throw new Error('missing request');
+    const body = buildReportRequestBody(forwarded);
+    const configuration = body['configuration'] as Record<string, unknown>;
+    if (supplied) {
+      expect(body['name']).toBe(overrides.name);
+      expect(configuration['columns']).toEqual(overrides.columns);
+      expect(configuration['filters']).toEqual(overrides.filters);
+      expect(configuration['timeUnit']).toBe(overrides.timeUnit);
+    } else {
+      for (const key of Object.keys(overrides)) expect(forwarded).not.toHaveProperty(key);
+      expect(configuration).not.toHaveProperty('filters');
+      expect(configuration['timeUnit']).toBe('DAILY');
+      expect(configuration['columns']).toContain('date');
+      expect(body['name']).toBe('wizard-ads spCampaigns 2026-08-01..2026-08-07');
+    }
+  });
 
   it('returns the minted report id', async () => {
     const client = underlying({ createReport: async () => reportMeta('PENDING', { reportId: 'r-42' }) });

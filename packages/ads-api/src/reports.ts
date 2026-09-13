@@ -87,6 +87,7 @@ export const REPORT_SPECS: Readonly<Record<WorkerReportType, ReportSpec>> = {
       'adKeywordStatus',
       ...SP_CORE,
       ...SP_ATTRIBUTION,
+      'topOfSearchImpressionShare',
     ],
     timeUnit: 'DAILY',
   },

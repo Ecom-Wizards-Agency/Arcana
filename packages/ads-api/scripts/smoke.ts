@@ -12,6 +12,7 @@
  *
  *     pnpm smoke                       # uses _local/ads-api.config.json
  *     pnpm smoke path/to/config.json   # or an explicit path
+ *     pnpm smoke --reportType spTargeting # target report, including impression-share counts
  *     pnpm smoke --writes              # DANGEROUS: configured sandbox writes
  *
  * The configuration is gitignored; only `_local/ads-api.config.TEMPLATE.json`
@@ -225,15 +226,24 @@ async function runConfiguredWrites(
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const writesEnabled = args.includes('--writes');
-  const unknownFlags = args.filter((arg) => arg.startsWith('--') && arg !== '--writes');
-  if (unknownFlags.length > 0) die(`unknown option(s): ${unknownFlags.join(', ')}`);
-  const positional = args.filter((arg) => !arg.startsWith('--'));
+  let writesEnabled = false;
+  let reportTypeOverride: string | undefined;
+  const positional: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === '--writes') writesEnabled = true;
+    else if (arg === '--reportType') {
+      const value = args[++index];
+      if (value === undefined || value.startsWith('--')) die('--reportType requires a value, e.g. spTargeting');
+      reportTypeOverride = reportTypeOf(value);
+    } else if (arg?.startsWith('--')) die(`unknown option: ${arg}`);
+    else if (arg !== undefined) positional.push(arg);
+  }
   if (positional.length > 1) die('pass at most one config path');
   const configPath = positional[0] ?? DEFAULT_CONFIG;
   const config = loadConfig(configPath);
   const region = assertRegion(config.region);
-  const reportType = reportTypeOf(config.reportType);
+  const reportType = reportTypeOf(reportTypeOverride ?? config.reportType);
   const spec: ReportSpec = REPORT_SPECS[reportType];
   const pollIntervalMs = (config.pollIntervalSeconds ?? 20) * 1_000;
   const deadline = Date.now() + (config.maxWaitMinutes ?? 45) * 60_000;
@@ -324,6 +334,12 @@ async function main(): Promise<void> {
   }
   if (download.rows.length > 0) {
     console.log(`  first raw row keys: ${Object.keys(download.rows[0] ?? {}).sort().join(', ')}`);
+  }
+
+  if (reportType === 'spTargeting') {
+    const targets = parseSpTargetingReport(download.rows);
+    const present = targets.rows.filter((row) => row.topOfSearchImpressionShare !== null).length;
+    console.log(`  topOfSearchImpressionShare: ${present} reported, ${targets.rows.length - present} null, ${targets.rows.length} parsed targets`);
   }
 
   // 4. Exports: the campaign-name join -------------------------------------

@@ -101,7 +101,7 @@ they do not prove a profile's current availability or a hosted release's readine
 | --- | --- | --- |
 | [Profiles and LWA](src/auth.ts) | Regional discovery and credential exchange/refresh helpers | Credentials remain worker-owned; an account grant is not write approval. |
 | [Entity endpoints](src/endpoints.ts) | Legacy SP entity graph; SB and SD campaign/ad-group listing | Preserve each endpoint's dialect and pagination; deeper SB/SD resources are not implied. |
-| [Reporting v3](src/reports.ts) | Typed report specifications and parsers | Supported columns, attribution window and grain must match the actual report. |
+| [Reporting v3](src/reports.ts) | Typed report specifications and parsers; SP target requests include `topOfSearchImpressionShare`; worker forwards column/filter/name/time-unit overrides | Target impression share awaits live verification (`pnpm smoke --reportType spTargeting`); withheld values remain null. Supported columns, attribution window and grain must match the actual report. |
 | [Unified Reporting](src/unified-reporting.ts) | Create/retrieve protocol and counted outcomes | Separate from Unified campaign management and from canonical report promotion. |
 | [Budget usage](src/budgets.ts) | Product-specific SP/SB/SD endpoints with counted indexed results | Client support is not application pacing integration or proven provider availability. |
 | [SP writes](src/writes.ts) | Counted create/update/archive responses | Application authority, persistence, conflict checks and observation are worker responsibilities. |
