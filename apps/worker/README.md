@@ -63,8 +63,8 @@ job result reports `reportRows` (what Amazon sent) alongside `parsed`/`loaded` (
 |---|---|
 | Any handler throws | `attempts++`, requeued with exponential backoff, `dead` after `max_attempts` |
 | `AdsApiRetryableError` with `Retry-After` | requeued with exactly that delay |
-| `PermanentJobError`, `ExportContractError`, `ProfileNotFound` | straight to `dead`, attempts unspent |
-| Reporting v3 create may have reached Amazon without returning an id | quarantined in `dead`; attended reconciliation only |
+| `PermanentJobError` (including accounting mismatch), `ExportContractError`, `ProfileNotFound` | straight to `dead` on the current attempt; no further retries |
+| Reporting v3 create may have reached Amazon without returning an id | fenced claim retained in `running` (exit 78); tokenless claim goes to `dead`; attended reconciliation only |
 | General worker SIGKILLed mid-job | the tokenless job sits in `running` until a sweep requeues it |
 | Evo report worker SIGKILLed mid-job | the fenced job remains `running`; elapsed time never authorizes replay |
 
@@ -374,3 +374,86 @@ validate the worker. CI requires its disposable database and fails on an outage.
 Everything above the client is exercised against `AdsApiClient` fakes and a real database;
 `DbAdsApiClient` itself is unit-tested against a mock underlying client and a mock Vault
 (`ads-api.test.ts`, no network, no DB).
+
+## Reconciling ambiguous report creates
+
+A create that may have reached Amazon must never be blindly replayed. The fenced
+worker retains the `running` job and exits 78. A tokenless worker dead-letters it.
+New failures record the phase, HTTP status (when available), known Amazon report
+id, and timestamp in `report_requests.reconciliation`. The client deliberately
+retains no raw provider response. The request UUID is also the original queue job
+UUID; its payload records the profile, type and date window.
+
+Apply the additive report-reconciliation migration before deploying this worker.
+The separate JSON column preserves evidence and the operator audit when ordinary
+polling clears `error`. No existing column or enum changes.
+
+1. Stop the owning worker and confirm its process is gone, including any restarted
+   instance. Pause the producer for the affected scope during investigation. A
+   stale timestamp alone does not prove an Amazon request stopped.
+2. Use an authorized database runtime for the exact organisation. Keep IDs and
+   command output in private operational records. List requests:
+
+   ```bash
+   pnpm --filter @wizard-ads/worker reconcile-reports list --org-id "$ORG_ID"
+   ```
+
+   The output includes a count, request identity, known Amazon id and stored
+   evidence. Older unmarked fenced requests appear as **legacy candidates**.
+   They are not proven ambiguous: confirm the stopped claimant's exit/log evidence
+   before resolving one. The command cannot reconstruct a response that was lost.
+3. Independently obtain Amazon's report id from existing provider evidence or
+   support records. Verify the exact account/profile, report type, date window and
+   create time. Do not submit a new create to discover whether one exists. Adopt
+   only after a match:
+
+   ```bash
+   pnpm --filter @wizard-ads/worker reconcile-reports adopt \
+     --org-id "$ORG_ID" --request-id "$REQUEST_ID" \
+     --amazon-report-id "$AMAZON_REPORT_ID" \
+     --actor "$OPERATOR" --reason "$EVIDENCE_REFERENCE_AND_REASON" --worker-stopped
+   ```
+
+   Adoption records actor/time/reason and the supplied id in the ledger, finishes
+   the original create job, revokes its retained claim and enqueues exactly one
+   `report.poll` atomically. Expected counts: `requests: 1, jobs: 1, polls: 1`.
+   A conflicting known provider id, existing downstream job or repeated resolution
+   is refused; inspect the evidence instead of changing identifiers to force it.
+4. If the request cannot be safely adopted, leave it quarantined or explicitly
+   abandon it with a reason:
+
+   ```bash
+   pnpm --filter @wizard-ads/worker reconcile-reports abandon \
+     --org-id "$ORG_ID" --request-id "$REQUEST_ID" \
+     --actor "$OPERATOR" --reason "$REASON" --worker-stopped
+   ```
+
+   Expected counts: `requests: 1, jobs: 1, polls: 0`. Abandonment fails the ledger
+   row and dead-letters the original job without resetting attempts. It does not
+   cancel or delete anything at Amazon and does not authorize a replacement.
+5. Read back the ledger audit and queue outcome, then restart the worker. An
+   adopted request must progress through polling and fetch to reconciled loaded
+   counts. Restore the producer only after reviewing the affected scope.
+
+These commands never construct an Amazon client, create an Amazon report, or
+queue `report.request`. `--worker-stopped` is an explicit operator attestation,
+not an automatic process check. The supplied actor is recorded as an operator
+statement under the database runtime's authority.
+
+`/healthz.reports` exposes `deadJobsByType`, `staleRequests`,
+`quarantinedRequests`, and `newestCompletedReportDateByType` (the newest completed
+report's end date, not its completion timestamp). `WORKER_REPORT_STALE_HOURS`
+sets the pending/processing age threshold; default 6 hours. Quarantine counts
+include recorded markers; older unmarked candidates require the list command.
+These diagnostics do not change the existing 503 policy. A failed diagnostics
+read, or one that takes more than a second, returns `reports: null, reportsAvailable: false`,
+never fabricated zeroes. Concurrent probes share an outstanding diagnostics read.
+
+The sync-status lifecycle table counts requests with evidence of each stage over
+the whole scoped ledger. Stages overlap; `polled` counts requests with at least
+one poll, and `promoted` counts requests with positive promoted/canonical rows.
+A zero-row completion counts as parsed/loaded but not promoted. `refused` uses
+stored refusal counts or parser-refusal errors. Multiple dead child jobs count
+once per request. The separate dead-letter table shows the newest 100 jobs;
+first/last seen are queue creation/update times. Errors retain the existing
+operator-safe display labels; exact details remain in the private ledger.

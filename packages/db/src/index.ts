@@ -76,3 +76,6 @@ export * from './queries/request-client.js';
 
 export * from './queries/mcp-key-metadata.js';
 export * from './queries/mcp-key-commands.js';
+
+export * from './queries/report-lifecycle.js';
+export * from './queries/report-reconciliation.js';

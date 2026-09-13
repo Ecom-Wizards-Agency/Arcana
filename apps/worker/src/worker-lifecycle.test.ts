@@ -471,6 +471,7 @@ function stubStore(): WorkerStore {
     claim: async () => [],
     finish: async () => {},
     deadLetter: async () => {},
+    quarantineReportCreate: async () => {},
     release: async () => 0,
     requeueStale: async () => 0,
     profile: async () => profile(),

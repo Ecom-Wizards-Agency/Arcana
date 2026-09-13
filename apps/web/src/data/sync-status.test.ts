@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { reportAccountingLabel } from './sync-status';
+import { reportAccountingLabel, reportFailureLabel } from './sync-status';
 
 describe('report accounting labels', () => {
   it('distinguishes complete partial attribution from silent row loss', () => {
@@ -30,5 +30,16 @@ describe('report accounting labels', () => {
     expect(reportAccountingLabel({ ...base, countsMatch: true })).toBe('yes · exact row counts');
     expect(reportAccountingLabel({ ...base, rowsLoaded: 1, countsMatch: false }))
       .toBe('no · row-count mismatch');
+  });
+});
+
+
+describe('report failure detail', () => {
+  it('preserves only bounded accounting reasons and keeps provider details private', () => {
+    expect(reportFailureLabel('report parsed 2 rows but loaded 1')).toBe('report parsed 2 rows but loaded 1');
+    expect(reportFailureLabel('report parser chunk accounting did not match the downloaded rows'))
+      .toBe('Report accounting failed. The job requires review before retrying.');
+    expect(reportFailureLabel('report parsed 2 rows but loaded 1; private provider details'))
+      .not.toContain('private provider details');
   });
 });
