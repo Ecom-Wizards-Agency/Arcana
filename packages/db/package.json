@@ -19,7 +19,8 @@
     "test": "vitest run --passWithNoTests",
     "seed:strategy": "tsx ../../supabase/seed/import-strategy.ts",
     "seed:dev": "tsx ../../supabase/seed/dev-seed.ts",
-    "seed:roadmap": "tsx ../../supabase/seed/seed-roadmap.ts"
+    "seed:roadmap": "tsx ../../supabase/seed/seed-roadmap.ts",
+    "measure:read-path": "tsx scripts/measure-read-path.ts"
   },
   "dependencies": {
     "@wizard-ads/shared": "workspace:*",
