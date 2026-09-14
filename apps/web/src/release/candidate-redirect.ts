@@ -102,8 +102,8 @@ export function canonicalCandidateRedirect(input: {
     return null;
   }
 
-  const expectedPath = input.initialUrl.pathname === '/'
-    ? '/dashboard'
+  const expectedPath = input.initialUrl.pathname === '/dashboard'
+    ? '/'
     : input.initialUrl.pathname;
   if (
     destination.protocol !== 'https:'

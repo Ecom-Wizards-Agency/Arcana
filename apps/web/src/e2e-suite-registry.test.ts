@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import ts from 'typescript';
+import { SCREEN_REGISTRY } from './screens/registry';
 import { describe, expect, it } from 'vitest';
 import {
   E2E_SUITE_DEFINITIONS,
@@ -6,33 +9,16 @@ import {
   runE2ESuiteMatrix,
 } from './e2e-suite-registry.js';
 
-const EXPECTED_REGISTRY = [
-  ['tags-goto', 'production-bridge', 'playwright.tags-goto.config.ts', 'tags-goto', ['campaigns.spec.ts', 'experiments.spec.ts', 'feedback.spec.ts', 'recommendations.spec.ts', 'tags-goto.spec.ts', 'time-machine.spec.ts'], 34],
-  ['grid-performance', 'authenticated-dev', 'playwright.grid-performance.config.ts', 'grid-performance', ['grid-performance.spec.ts'], 1],
-  ['optimization-groups', 'authenticated-dev', 'playwright.optimization-groups.config.ts', 'optimization-groups', ['optimization-groups.spec.ts'], 3],
-  ['profile-context', 'authenticated-dev', 'playwright.profile-context.config.ts', 'profile-context', ['profile-context.spec.ts', 'sidebar-layout.spec.ts'], 8],
-  ['auth-guards-anonymous', 'authenticated-dev', 'playwright.auth-guards-anonymous.config.ts', 'auth-guards-anonymous', ['guards-anonymous.spec.ts'], 2],
-  ['auth-guards-signed-in', 'authenticated-dev', 'playwright.auth-guards-signed-in.config.ts', 'auth-guards-signed-in', ['guards-signed-in.spec.ts'], 3],
-  ['auth', 'authenticated-dev', 'playwright.auth.config.ts', 'auth', ['dashboard.spec.ts', 'grid.spec.ts'], 8],
-  ['auth-members', 'authenticated-dev', 'playwright.auth-members.config.ts', 'auth-members', ['members.spec.ts'], 5],
-  ['auth-oauth', 'authenticated-dev', 'playwright.auth-oauth.config.ts', 'auth-oauth', ['oauth.spec.ts'], 7],
-  ['auth-roles', 'authenticated-dev', 'playwright.auth-roles.config.ts', 'auth-roles', ['roles.spec.ts'], 9],
-  ['route-acceptance', 'authenticated-dev', 'playwright.route-acceptance.config.ts', 'route-acceptance', ['route-acceptance.dashboard.spec.ts'], 3],
-] as const;
-
 describe('web E2E suite registry', () => {
-  it('owns the exact ordered suite-to-process mapping', () => {
-    expect(
-      E2E_SUITE_DEFINITIONS.map((definition) => [
-        definition.name,
-        definition.kind,
-        definition.config,
-        definition.project,
-        [...definition.expectedSpecFiles],
-        definition.expectedTests,
-      ]),
-    ).toEqual(EXPECTED_REGISTRY);
-    expect(E2E_SUITES).toEqual(EXPECTED_REGISTRY.map(([name]) => name));
+  it('owns every browser spec on disk exactly once through screen descriptors', () => {
+    const files = readdirSync(new URL('../e2e/', import.meta.url)).filter((file) => file.endsWith('.spec.ts')).sort();
+    const owned = E2E_SUITE_DEFINITIONS.flatMap((suite) => suite.expectedSpecFiles).sort();
+    expect(owned).toEqual(files);
+    expect(SCREEN_REGISTRY.flatMap((screen) => screen.specs.map((spec) => spec.file)).sort()).toEqual(files);
+    for (const suite of E2E_SUITE_DEFINITIONS) {
+      expect(suite.expectedSpecFiles).toEqual(SCREEN_REGISTRY.flatMap((screen) => screen.specs.filter((spec) => spec.suite === suite.name).map((spec) => spec.file)).sort());
+    }
+    expect(E2E_SUITES).toEqual(E2E_SUITE_DEFINITIONS.map((suite) => suite.name));
   });
 
   it('keeps names, configs, projects and spec ownership unique', () => {
@@ -47,8 +33,11 @@ describe('web E2E suite registry', () => {
     }
   });
 
-  it('conserves all 83 logical test cases and resolves every dispatch entry', () => {
-    expect(E2E_SUITE_DEFINITIONS.reduce((total, suite) => total + suite.expectedTests, 0)).toBe(83);
+  it('counts logical browser tests from owned spec files and resolves every dispatch entry', () => {
+    for (const suite of E2E_SUITE_DEFINITIONS) {
+      const declared = suite.expectedSpecFiles.reduce((count, file) => count + countTests(readFileSync(new URL(`../e2e/${file}`, import.meta.url), 'utf8')), 0);
+      expect(suite.expectedTests, suite.name).toBe(declared);
+    }
     expect(E2E_SUITES.map((suite) => getE2ESuiteDefinition(suite))).toEqual(E2E_SUITE_DEFINITIONS);
   });
 
@@ -73,3 +62,32 @@ describe('web E2E suite registry', () => {
     expect(code).toBe(7);
   });
 });
+
+/** Static calls, not text matches in comments. Guard sweeps are one logical test each. */
+function countTests(source: string): number {
+  const file = ts.createSourceFile('spec.ts', source, ts.ScriptTarget.Latest, true);
+  const arrays = new Map<string, number>();
+  function arrayLength(node: ts.Expression): number | undefined {
+    if (ts.isAsExpression(node) || ts.isParenthesizedExpression(node)) return arrayLength(node.expression);
+    return ts.isArrayLiteralExpression(node) ? node.elements.length : undefined;
+  }
+  function collect(node: ts.Node): void {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      const length = arrayLength(node.initializer);
+      if (length !== undefined) arrays.set(node.name.text, length);
+    }
+    ts.forEachChild(node, collect);
+  }
+  collect(file);
+  function count(node: ts.Node, multiplier = 1): number {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'test') return multiplier;
+    if (ts.isForOfStatement(node)) {
+      const length = ts.isIdentifier(node.expression) ? arrays.get(node.expression.text) : arrayLength(node.expression);
+      return count(node.statement, multiplier * (length ?? 1));
+    }
+    let total = 0;
+    ts.forEachChild(node, (child) => { total += count(child, multiplier); });
+    return total;
+  }
+  return count(file);
+}

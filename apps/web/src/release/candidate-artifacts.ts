@@ -373,8 +373,8 @@ async function verifyDocumentRoute(input: {
     expectedProfileId: input.expectedProfileId,
     request: input.request,
   });
-  const expectedPath = input.route === '/'
-    ? '/dashboard'
+  const expectedPath = input.route === '/dashboard'
+    ? '/'
     : new URL(input.route, input.candidate).pathname;
   if (!validDocumentResponse(response, input.candidate, expectedPath, input.expectedProfileId)) {
     return { passed: false, reason: 'route_identity', missingArtifacts: [] };

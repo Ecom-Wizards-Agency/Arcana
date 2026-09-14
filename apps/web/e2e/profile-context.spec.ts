@@ -11,7 +11,7 @@ import { signIn } from './support/auth';
 import { readState } from './support/fixture';
 
 const ACCOUNT_SURFACES = [
-  { route: '/dashboard', heading: 'Dashboard' },
+  { route: '/', heading: 'Dashboard' },
   { route: '/grid?entity=campaigns', heading: 'Campaigns' },
   { route: '/optimizer', heading: 'Campaign Optimizer' },
   { route: '/creative', heading: 'Creative Performance' },
@@ -72,7 +72,7 @@ test('sidebar, date, entity, back and forward stay in one document and retain th
   test.setTimeout(120_000);
   await signIn(page, 'admin');
   const { fixtureProfileId } = await readState();
-  await page.goto(`/dashboard?profile=${fixtureProfileId}`);
+  await page.goto(`/?profile=${fixtureProfileId}`);
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
 
   await page.evaluate(() => {
@@ -86,12 +86,12 @@ test('sidebar, date, entity, back and forward stay in one document and retain th
   const picker = page.locator('details.wa-date-range');
   await picker.locator('summary').click();
   await picker.getByRole('link', { name: 'Previous month', exact: true }).click();
-  await expect(page).toHaveURL(/\/dashboard\?.*profile=/);
+  await expect(page).toHaveURL(/\/\?.*profile=/);
   await expect(picker).not.toHaveAttribute('open', '');
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
 
-  await page.locator('details.wa-navgroup').filter({ hasText: 'Analyze' }).locator('summary').click();
-  await page.getByRole('link', { name: 'Data Grid', exact: true }).click();
+  await page.locator('details.wa-navgroup').filter({ hasText: 'PERFORMANCE' }).locator('summary').click();
+  await page.getByRole('link', { name: 'Search terms', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Search terms', exact: true })).toBeVisible();
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
 

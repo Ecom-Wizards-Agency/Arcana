@@ -52,6 +52,7 @@ import type { KeyboardEvent, ReactNode } from 'react';
 import { createColumnHelper, getCoreRowModel, useReactTable } from '@tanstack/react-table';
 import type { ColumnDef } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { observeGridOffset, observeGridRect } from './grid/virtualizer-observers.js';
 import type { GridColumn } from './columns.js';
 import { isGroupedRow } from './aggregate.js';
 import type { GroupedRow } from './aggregate.js';
@@ -314,6 +315,8 @@ export function DataGrid({
   const rows = table.getRowModel().rows;
 
   const virtualizer = useVirtualizer({
+    observeElementOffset: observeGridOffset,
+    observeElementRect: observeGridRect,
     count: rows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => resolvedRowHeight,

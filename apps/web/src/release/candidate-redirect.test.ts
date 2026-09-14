@@ -29,22 +29,22 @@ describe('release candidate redirects', () => {
     );
   });
 
-  it('accepts one same-origin root redirect that retains the exact active profile', async () => {
-    const destination = `${CANDIDATE.origin}/dashboard?profile=${PROFILE}`;
+  it('accepts one same-origin dashboard alias redirect that retains the exact active profile', async () => {
+    const destination = `${CANDIDATE.origin}/?profile=${PROFILE}`;
     const request = vi.fn(async (url: URL) => (
-      url.pathname === '/' ? response(307, destination) : response(200)
+      url.pathname === '/dashboard' ? response(307, destination) : response(200)
     ));
 
     const result = await requestCandidateRoute({
       candidate: CANDIDATE,
-      route: '/',
+      route: '/dashboard',
       expectedProfileId: PROFILE,
       request,
     });
 
     expect(request).toHaveBeenCalledTimes(2);
     expect(request.mock.calls.map(([url]) => url.href)).toEqual([
-      `${CANDIDATE.origin}/?profile=${PROFILE}`,
+      `${CANDIDATE.origin}/dashboard?profile=${PROFILE}`,
       destination,
     ]);
     expect(result).toMatchObject({
@@ -57,19 +57,19 @@ describe('release candidate redirects', () => {
   });
 
   it.each([
-    `https://foreign.invalid/dashboard?profile=${PROFILE}`,
-    `${CANDIDATE.origin}/dashboard?profile=${OTHER_PROFILE}`,
-    `${CANDIDATE.origin}/dashboard?profile=${PROFILE}&extra=1`,
+    `https://foreign.invalid/?profile=${PROFILE}`,
+    `${CANDIDATE.origin}/?profile=${OTHER_PROFILE}`,
+    `${CANDIDATE.origin}/?profile=${PROFILE}&extra=1`,
     `${CANDIDATE.origin}/grid?profile=${PROFILE}`,
-    `${CANDIDATE.origin}/dashboard?profile=${PROFILE}#fragment`,
-    `${CANDIDATE.origin}/%64ashboard?profile=${PROFILE}`,
-    ['//', CANDIDATE.hostname, '/dashboard?profile=', PROFILE].join(''),
+    `${CANDIDATE.origin}/?profile=${PROFILE}#fragment`,
+    `${CANDIDATE.origin}/%2f?profile=${PROFILE}`,
+    ['//', CANDIDATE.hostname, '/?profile=', PROFILE].join(''),
   ])('rejects an unsafe or wrong-profile destination without requesting it: %s', async (location) => {
     const request = vi.fn(async () => response(307, location));
 
     const result = await requestCandidateRoute({
       candidate: CANDIDATE,
-      route: '/',
+      route: '/dashboard',
       expectedProfileId: PROFILE,
       request,
     });
@@ -104,12 +104,12 @@ describe('release candidate redirects', () => {
   });
 
   it('bounds redirect chains at one response transition', async () => {
-    const redirect = `/dashboard?profile=${PROFILE}`;
+    const redirect = `/?profile=${PROFILE}`;
     const request = vi.fn(async () => response(307, redirect));
 
     const result = await requestCandidateRoute({
       candidate: CANDIDATE,
-      route: '/',
+      route: '/dashboard',
       expectedProfileId: PROFILE,
       request,
     });
@@ -124,13 +124,13 @@ describe('release candidate redirects', () => {
 
   it('rejects a response curl did not bind to the exact requested URL', async () => {
     const request = vi.fn(async () => ({
-      ...response(307, `/dashboard?profile=${PROFILE}`),
+      ...response(307, `/?profile=${PROFILE}`),
       effectiveUrlMatched: false,
     }));
 
     const result = await requestCandidateRoute({
       candidate: CANDIDATE,
-      route: '/',
+      route: '/dashboard',
       expectedProfileId: PROFILE,
       request,
     });

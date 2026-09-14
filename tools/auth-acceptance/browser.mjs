@@ -68,8 +68,8 @@ export async function browserSuite(stack, application, evidence) {
   });
   await check('native acceptance creates exactly the intended owner membership and audit', async () => {
     await page.getByRole('button', { name: 'Accept invitation', exact: true }).click();
-    await expect(page).toHaveURL(application.origin + '/dashboard');
-    // Next's streamed dashboard needs JavaScript for visibility. Its visible
+    await expect(page).toHaveURL(application.origin + '/');
+    // Next's streamed Home page needs JavaScript for visibility. Its visible
     // state is checked below in a fresh ordinary password-login browser.
     await expect(page.getByText('No profiles yet', { exact: true })).toBeAttached();
     const members = stack.value("select coalesce(json_agg(row_to_json(m)), '[]'::json) from (select org_id, user_id, role from public.org_members) m");
@@ -81,7 +81,7 @@ export async function browserSuite(stack, application, evidence) {
   await check('accepted invitation replay adds no membership or audit', async () => {
     await page.goto(first.result.invitationUrl);
     await page.getByRole('button', { name: 'Open workspace', exact: true }).click();
-    await expect(page).toHaveURL(application.origin + '/dashboard');
+    await expect(page).toHaveURL(application.origin + '/');
     assert.equal(memberCount(stack), 1); assert.equal(auditCount(stack), 1);
     const nativePosts = application.requests.filter((request) => request.method === 'POST' && request.path.startsWith('/agency-invite/'));
     assert.equal(nativePosts.length, 3); assert.ok(nativePosts.every((request) => request.origin === application.origin));
@@ -106,20 +106,20 @@ export async function browserSuite(stack, application, evidence) {
     await anonymous.close();
     return { verificationCalls: 0, wrongAccountActionRefused: true, memberships: 1 };
   });
-  await check('fresh hydrated password login reaches the real dashboard URL and visible agency', async () => {
+  await check('fresh hydrated password login reaches the Home URL and visible agency', async () => {
     const fresh = await application.context(); const signedInPage = await fresh.newPage(); application.page = signedInPage;
     await signedInPage.goto(application.origin + '/login');
     await signedInPage.getByLabel('Email', { exact: true }).fill(first.address);
     await signedInPage.getByLabel('Password', { exact: true }).fill(stack.passphrase);
     await signedInPage.getByRole('button', { name: 'Sign in', exact: true }).click();
     // Checking content alone misses an App Router action that streams the
-    // dashboard while leaving the address at its /auth/continue checkpoint.
-    await expect(signedInPage).toHaveURL(application.origin + '/dashboard');
+    // Home while leaving the address at its /auth/continue checkpoint.
+    await expect(signedInPage).toHaveURL(application.origin + '/');
     await expect(signedInPage.getByText('No profiles yet', { exact: true })).toBeVisible();
     await signedInPage.goto(first.result.invitationUrl);
     await expect(signedInPage.getByRole('button', { name: 'Open workspace', exact: true })).toBeVisible();
     assert.equal(memberCount(stack), 1);
-    return { freshPasswordLogin: true, correctDashboardUrl: true, visibleOwnedAgency: true };
+    return { freshPasswordLogin: true, correctHomeUrl: true, visibleOwnedAgency: true };
   });
   await check('application, Auth, mail and membership counts reconcile', async () => {
     assert.equal(stack.value('select count(*) from public.orgs'), 2);

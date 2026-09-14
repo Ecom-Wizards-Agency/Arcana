@@ -25,7 +25,7 @@
  */
 import type { ReactNode } from 'react';
 import type { SessionUser } from '../auth/session';
-import { NAV_GROUPS, NAV_LINKS } from './nav-links';
+import { NAV_GROUPS, NAV_LINKS, navigationFor } from './nav-links';
 import type { NavGroup, NavLink } from './nav-links';
 import { ProfileAwareBrand } from './profile-aware-brand';
 import { SidebarNav } from './sidebar';
@@ -46,9 +46,10 @@ export interface NavBarProps {
   profiles?: readonly NavProfile[];
   /** The active organisation's name, when one could be resolved. */
   orgName?: string | null;
+  groups?: readonly NavGroup[];
 }
 
-export function NavBar({ user, profiles = [], orgName = null }: NavBarProps): ReactNode {
+export function NavBar({ user, profiles = [], orgName = null, groups = NAV_GROUPS }: NavBarProps): ReactNode {
   if (user === null) {
     return (
       <div data-testid="app-nav" data-auth-state="anonymous">
@@ -77,7 +78,7 @@ export function NavBar({ user, profiles = [], orgName = null }: NavBarProps): Re
       <aside className="wa-sidebar">
         <ProfileAwareBrand />
 
-        <SidebarNav />
+        <SidebarNav groups={groups} />
 
       </aside>
 
@@ -114,5 +115,5 @@ export async function AppNav({ user }: { user: SessionUser | null }): Promise<Re
 
   const { navContext } = await import('./nav-context');
   const context = await navContext(user);
-  return <NavBar user={user} profiles={context.profiles} orgName={context.orgName} />;
+  return <NavBar user={user} profiles={context.profiles} orgName={context.orgName} groups={navigationFor()} />;
 }

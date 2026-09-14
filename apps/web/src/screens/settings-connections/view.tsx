@@ -1,0 +1,153 @@
+import { ConnectionProgress } from '../../oauth/connection-progress';
+
+import { operatorFailureLabel } from '../../security/operator-failure';
+
+import { Shell } from '../../ui/shell';
+
+import { banner, heading, muted, page, subheading, table, td, th } from '../../ui/tokens';
+
+import type { load } from './load';
+
+export type ScreenData = Awaited<ReturnType<typeof load>>;
+
+export default function ScreenView({ data }: { data: ScreenData; }) {
+  if (data === null) return null;
+  switch (data.view) {
+    case 'no-database': return renderNoDatabase(data.props);
+    case 'no-org': return renderNoOrg(data.props);
+    case 'ready': return renderReady(data.props);
+  }
+}
+
+function renderNoDatabase(_props: Extract<ScreenData, { view: 'no-database'; }>['props']) {
+  return (<main style={page}>
+    <h1 style={heading}>Connections</h1>
+    <p style={banner('warn')}>
+      <code>DATABASE_URL</code> is not set, so this instance cannot read its own database.
+    </p>
+  </main>);
+}
+
+function renderNoOrg(_props: Extract<ScreenData, { view: 'no-org'; }>['props']) {
+  return (<main style={page}>
+    <h1 style={heading}>Connections</h1>
+    <p style={banner('warn')}>
+      Your account is not a member of any organisation yet. There is no self-service
+      signup; ask an administrator to add you.
+    </p>
+  </main>);
+}
+
+function renderReady({ context, query, operation, mayConnect, enabled, connections, inProgress, org, connected, roster }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+  return (<main style={page}>
+    <Shell context={context} current="connections">
+      <h1 style={heading}>Connections</h1>
+      <p style={muted}>
+        Connect an Amazon Ads account for this agency, then choose which profiles to synchronize.
+        Only members of this agency can access its profiles.
+      </p>
+
+      {query.oauth_error ? (
+        <p style={banner('bad')} data-testid="oauth-error">
+          {operatorFailureLabel(query.oauth_error)}
+        </p>
+      ) : null}
+
+      {operation ? <ConnectionProgress key={operation.operationId} initial={operation} mayCancel={mayConnect} /> : null}
+      {enabled && query.operation && !operation ? <p style={banner('warn')}>This connection is not available in the selected agency.</p> : null}
+
+      <h2 style={subheading}>Amazon Ads</h2>
+      {connections.length === 0 ? (
+        <p style={muted} data-testid="no-connection">
+          Not connected yet.
+        </p>
+      ) : (
+        <table style={table}>
+          <thead>
+            <tr>
+              <th style={th}>Label</th>
+              <th style={th}>Status</th>
+              <th style={th}>Authorization</th>
+              <th style={th}>Profiles</th>
+              <th style={th}>Connected</th>
+              <th style={th}>Last error</th>
+            </tr>
+          </thead>
+          <tbody>
+            {connections.map((connection) => (
+              <tr key={connection.id} data-testid="connection-row">
+                <td style={td}>{connection.label}</td>
+                <td style={td} data-testid="connection-status">
+                  {connection.status}
+                </td>
+                <td style={td}>{connection.hasCredential ? 'Stored' : 'Missing'}</td>
+                <td style={td}>{connection.profileCount}</td>
+                <td style={td}>{connection.connectedAt ?? '—'}</td>
+                <td style={td}>{connection.lastError ?? '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <p style={{ marginTop: '1rem' }}>
+        {mayConnect && enabled && !inProgress ? (
+          <a href={`/api/amazon/oauth/start?${new URLSearchParams({ org: org.orgId })}`} data-testid="connect-amazon">
+            {connected ? 'Reconnect Amazon Ads' : 'Connect Amazon Ads'}
+          </a>
+        ) : (
+          <span style={muted} data-testid="connect-forbidden">
+            {!mayConnect ? 'Connecting Amazon Ads requires the admin or owner role.'
+              : !enabled ? 'Amazon connections are temporarily unavailable. Contact your installation operator.'
+                : 'A connection is already in progress. Finish or cancel it before starting another.'}
+          </span>
+        )}
+      </p>
+
+      <h2 style={subheading}>More connections</h2>
+      <p style={muted}>
+        Additional Amazon integrations are planned.
+      </p>
+      <div className="wa-row" style={{ gap: '0.5rem', marginTop: '0.5rem' }}>
+        <button
+          type="button"
+          className="wa-btn wa-btn--sm"
+          aria-disabled="true"
+          disabled
+          data-testid="connect-amc"
+          title="Amazon Marketing Cloud — coming soon"
+        >
+          Connect AMC
+          <span className="wa-badge" style={{ marginLeft: '0.375rem' }}>
+            Coming soon
+          </span>
+        </button>
+        <button
+          type="button"
+          className="wa-btn wa-btn--sm"
+          aria-disabled="true"
+          disabled
+          data-testid="connect-spapi"
+          title="Seller / Vendor Central (SP-API) — coming soon"
+        >
+          Connect Seller / Vendor Central
+          <span className="wa-badge" style={{ marginLeft: '0.375rem' }}>
+            Coming soon
+          </span>
+        </button>
+      </div>
+
+      <h2 style={subheading}>Profiles by region</h2>
+      {roster.total === 0 ? (
+        <p style={muted}>No profiles yet.</p>
+      ) : (
+        <p style={muted} data-testid="region-summary">
+          {Object.entries(roster.regionCounts)
+            .map(([region, count]) => `${region}: ${count}`)
+            .join(' · ')}{' '}
+          · total {roster.total}
+        </p>
+      )}
+    </Shell>
+  </main>);
+}

@@ -1,6 +1,15 @@
-/** `/settings` has no content of its own; connections is the first screen. */
-import { redirect } from 'next/navigation';
+import { descriptor } from '../../src/screens/settings/descriptor';
+import { pageRead } from '../../src/server/page-read';
+import type { ScreenSearchParams } from '../../src/screens/types';
 
-export default function SettingsIndex(): never {
-  redirect('/settings/connections');
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+export default async function Page({ searchParams, params }: {
+  searchParams?: Promise<ScreenSearchParams>;
+  params?: Promise<Record<string, string>>;
+} = {}) {
+  const data = await pageRead(descriptor, searchParams, params);
+  const Screen = await descriptor.client();
+  return Screen({ data });
 }
