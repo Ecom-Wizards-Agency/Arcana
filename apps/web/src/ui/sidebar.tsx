@@ -155,23 +155,26 @@ function NavLinkRow({
   profile: string | null;
   entity: string;
 }): ReactNode {
-  const evidence = useShellEvidence();
-  const count = link.badgeSource === undefined ? null : evidence?.badges[link.badgeSource];
   const current = !link.disabled && pathname !== null && isCurrent(link.href, pathname, entity);
   const content = <>
     <span aria-hidden="true" className="wa-navlink-icon"><NavIcon icon={link.icon} /></span>
     <span className="wa-navlink-label">{link.label}</span>
     {link.tag === undefined ? null : <span className="wa-navlink-tag">{link.tag}</span>}
-    {link.badgeSource === undefined ? null : <span className="wa-shell-badge" data-badge-source={link.badgeSource}
-      aria-label={count == null ? 'Count unavailable' : `${count} ${link.badgeSource === 'timeline' ? 'active experiments' : 'pending review'}`}>
-      {count ?? '—'}
-    </span>}
+    {link.badgeSource === undefined ? null : <NavBadge source={link.badgeSource} />}
   </>;
   return <li>
     {link.disabled ? <span className="wa-navlink" aria-disabled="true" title="Planned">{content}</span> :
       <Link href={withProfile(link.href, profile)} prefetch={link.prefetch ? null : false}
         className="wa-navlink" title={link.label} aria-current={current ? 'page' : undefined}>{content}</Link>}
   </li>;
+}
+
+function NavBadge({ source }: { source: 'change-queue' | 'timeline' }) {
+  const count = useShellEvidence()?.badges[source];
+  return <span className="wa-shell-badge" data-badge-source={source}
+    aria-label={count == null ? 'Count unavailable' : `${count} ${source === 'timeline' ? 'active experiments' : 'pending review'}`}>
+    {count ?? '—'}
+  </span>;
 }
 
 /** Reflect the collapse state onto the root so CSS can resize the whole frame. */

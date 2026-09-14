@@ -52,7 +52,6 @@ export function filterNavProfiles(
 }
 
 export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] }): ReactNode {
-  const evidence = useShellEvidence();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -128,7 +127,7 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
           <strong>{active?.label ?? 'Advertising profile'}</strong>
           <small>{active?.countryCode}{active?.currencyCode ? ` · ${active.currencyCode}` : ''} · {active?.syncEnabled ? active.syncLabel ?? 'Sync enabled' : 'Sync off'}</small>
         </span>
-        <span className="wa-profile-sync" data-tone={evidence?.freshness?.tone ?? 'muted'} title={evidence?.freshness?.headline ?? 'Freshness unavailable'}><StatusDot /></span>
+        <ProfileSyncStatus />
         <svg aria-hidden="true" viewBox="0 0 10 10" className="wa-profile-caret">
           <path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
         </svg>
@@ -191,6 +190,11 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
       ) : null}
     </div>
   );
+}
+
+function ProfileSyncStatus() {
+  const evidence = useShellEvidence();
+  return <span className="wa-profile-sync" data-tone={evidence?.freshness?.tone ?? 'muted'} title={evidence?.freshness?.headline ?? 'Freshness unavailable'}><StatusDot /></span>;
 }
 
 /**
@@ -282,13 +286,17 @@ export function ScreenTopbar({ screens, today, profiles = [], now }: {
   const comparison = validShellDate(search.get('compareFrom') ?? undefined) && validShellDate(search.get('compareTo') ?? undefined) && search.get('compareFrom')! <= search.get('compareTo')!
     ? periodFromParams({ from: search.get('compareFrom')!, to: search.get('compareTo')! }, today)
     : precedingPeriod(period);
-  const evidence = useShellEvidence();
-  const loading = useShellEvidenceLoading();
   return <>
     <span className="wa-shell-title" data-testid="shell-title">{screen?.title ?? 'Arcana'}</span>
     <ShellDateControls path={pathname} period={period} comparison={comparison} today={profileToday} preserved={preserved} includeToday={includeToday} />
-    <ShellStatusChips freshness={evidence?.freshness ?? null} crosscheck={evidence?.crosscheck ?? null} loading={loading} />
+    <EvidenceStatusChips />
   </>;
+}
+
+function EvidenceStatusChips() {
+  const evidence = useShellEvidence();
+  const loading = useShellEvidenceLoading();
+  return <ShellStatusChips freshness={evidence?.freshness ?? null} crosscheck={evidence?.crosscheck ?? null} loading={loading} />;
 }
 
 function validShellDate(value: string | undefined): value is string {

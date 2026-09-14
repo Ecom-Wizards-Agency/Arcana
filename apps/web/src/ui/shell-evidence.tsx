@@ -13,24 +13,24 @@ export interface ShellEvidence {
   badges: { 'change-queue': number | null; timeline: number | null };
 }
 export type ReadShellEvidence = (profileId: string | null, signal: AbortSignal) => Promise<ShellEvidence | null>;
-const Evidence = createContext<ShellEvidence | null>(null);
-const Loading = createContext<boolean | null>(null);
+const Evidence = createContext<{ store: ShellEvidenceStore; key: string | null } | null>(null);
 const Refresh = createContext<() => void>(() => {});
+const subscribeEmpty = () => () => {};
+const emptySnapshot = () => INITIAL_SHELL_EVIDENCE;
+function useEvidenceSnapshot() {
+  const context = useContext(Evidence);
+  const snapshot = useSyncExternalStore(context?.store.subscribe ?? subscribeEmpty,
+    context?.store.getSnapshot ?? emptySnapshot, emptySnapshot);
+  return { context, snapshot };
+}
 export function useShellEvidenceLoading() {
-  const loading = useContext(Loading);
-  const hydrated = useSyncExternalStore(subscribeHydration, clientSnapshot, serverSnapshot);
-  return loading !== null && (!hydrated || loading);
+  const { context, snapshot } = useEvidenceSnapshot();
+  return context !== null && (snapshot.key !== context.key || snapshot.loading);
 }
 export const useRefreshShellEvidence = () => useContext(Refresh);
-const subscribeHydration = () => () => {};
-const clientSnapshot = () => true;
-const serverSnapshot = () => false;
 export function useShellEvidence(): ShellEvidence | null {
-  const evidence = useContext(Evidence);
-  // A streamed island may hydrate after the shell read has completed. Its first
-  // client render must still agree with the unavailable server snapshot.
-  const hydrated = useSyncExternalStore(subscribeHydration, clientSnapshot, serverSnapshot);
-  return hydrated ? evidence : null;
+  const { context, snapshot } = useEvidenceSnapshot();
+  return context !== null && snapshot.key === context.key ? snapshot.value : null;
 }
 
 /** One shell read per profile selection. A late response can never label another profile. */
@@ -69,7 +69,6 @@ function ActiveShellEvidenceProvider({ children, read }: {
   const query = search.toString();
   const [store] = useState(() => new ShellEvidenceStore(read));
   useEffect(() => { store.setRead(read); }, [store, read]);
-  const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, () => INITIAL_SHELL_EVIDENCE);
   useEffect(() => { store.select(requested); }, [store, requested, query]);
   useEffect(() => {
     const focus = () => store.refresh();
@@ -82,10 +81,11 @@ function ActiveShellEvidenceProvider({ children, read }: {
     };
   }, [store]);
   const refresh = useMemo(() => () => store.refresh(true), [store]);
-  const matches = snapshot.key === requested;
-  return <Refresh.Provider value={refresh}><Loading.Provider value={!matches || snapshot.loading}>
-    <Evidence.Provider value={matches ? snapshot.value : null}>{children}</Evidence.Provider>
-  </Loading.Provider></Refresh.Provider>;
+  // Only evidence consumers subscribe to changes; the page tree keeps a stable context.
+  const context = useMemo(() => ({ store, key: requested }), [store, requested]);
+  return <Refresh.Provider value={refresh}>
+    <Evidence.Provider value={context}>{children}</Evidence.Provider>
+  </Refresh.Provider>;
 }
 
 export function ShellFreshnessBanner({ children }: { children?: ReactNode }) {

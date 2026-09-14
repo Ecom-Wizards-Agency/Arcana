@@ -1,3 +1,4 @@
+import { SHELL_FETCH_ACTIVITY_SCRIPT } from '../src/ui/shell-fetch-activity';
 import { SCREEN_REGISTRY } from '../src/screens/registry-metadata';
 import { ShellEvidenceActionProvider, type ShellEvidence } from '../src/ui/shell-evidence';
 import type { Metadata, Viewport } from 'next';
@@ -126,6 +127,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
           have an apology.
         */}
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
+        {user !== null ? <script dangerouslySetInnerHTML={{ __html: SHELL_FETCH_ACTIVITY_SCRIPT }} /> : null}
       </head>
       <body>
         <ToastProvider>

@@ -35,6 +35,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 async function idle() {
+  await act(() => vi.advanceTimersByTimeAsync(500));
   await act(async () => {
     const callbacks = [...idleCallbacks.values()];
     idleCallbacks.clear();
@@ -58,6 +59,7 @@ it('paints loading chips, waits for load, then waits for idle before reading', a
   await idle();
   expect(read).not.toHaveBeenCalled();
   fireEvent(window, new Event('load'));
+  await act(() => vi.advanceTimersByTimeAsync(500));
   expect(window.requestIdleCallback).toHaveBeenCalledWith(expect.any(Function), { timeout: 1000 });
   expect(read).not.toHaveBeenCalled();
   await idle();
@@ -74,14 +76,14 @@ it('uses the timeout fallback only after load and cancels it on unmount', async 
   await act(() => vi.advanceTimersByTimeAsync(5000));
   expect(read).not.toHaveBeenCalled();
   fireEvent(window, new Event('load'));
-  await act(() => vi.advanceTimersByTimeAsync(999));
+  await act(() => vi.advanceTimersByTimeAsync(499));
   expect(read).not.toHaveBeenCalled();
   view.unmount();
   await act(() => vi.advanceTimersByTimeAsync(1));
   expect(read).not.toHaveBeenCalled();
   render(<ShellEvidenceProvider read={read} enabled><Probe /></ShellEvidenceProvider>);
   fireEvent(window, new Event('load'));
-  await act(() => vi.advanceTimersByTimeAsync(1000));
+  await act(() => vi.advanceTimersByTimeAsync(501));
   expect(read).toHaveBeenCalledTimes(1);
 });
 
@@ -89,6 +91,7 @@ it('keeps a 60-second per-profile cache across query navigation and refreshes on
   const read = vi.fn(async (id: string | null) => value(id!));
   const view = render(<ShellEvidenceProvider read={read} enabled><Probe /></ShellEvidenceProvider>);
   await idle();
+  const firstReadAt = Date.now();
   navigation.query = 'profile=first&entity=campaigns&from=2026-08-01';
   view.rerender(<ShellEvidenceProvider read={read} enabled><Probe /></ShellEvidenceProvider>);
   fireEvent.focus(window);
@@ -104,7 +107,7 @@ it('keeps a 60-second per-profile cache across query navigation and refreshes on
   expect(screen.getByText('first')).toBeTruthy();
   await idle();
   expect(read).toHaveBeenCalledTimes(2);
-  await act(() => vi.advanceTimersByTimeAsync(SHELL_EVIDENCE_TTL_MS - 1));
+  vi.setSystemTime(firstReadAt + SHELL_EVIDENCE_TTL_MS - 1);
   fireEvent.focus(window);
   await idle();
   expect(read).toHaveBeenCalledTimes(2);
@@ -158,6 +161,7 @@ it('cancels obsolete profile reads and pagehide work without publishing late evi
 it('cancels load and idle subscriptions on unmount, including Strict Mode replay', async () => {
   const read = vi.fn(async () => value('first'));
   const view = render(<StrictMode><ShellEvidenceProvider read={read} enabled><Probe /></ShellEvidenceProvider></StrictMode>);
+  await act(() => vi.advanceTimersByTimeAsync(500));
   expect(idleCallbacks.size).toBe(1);
   await idle();
   expect(read).toHaveBeenCalledTimes(1);
@@ -229,4 +233,17 @@ it('retains cached evidence when the layout receives a new reader reference', as
   fireEvent.click(screen.getByText('Refresh evidence'));
   await idle();
   expect(replacement).toHaveBeenCalledTimes(1);
+});
+
+it('does not render the page subtree when shell evidence arrives', async () => {
+  let finish!: (value: ShellEvidence) => void;
+  const read = vi.fn(() => new Promise<ShellEvidence>((resolve) => { finish = resolve; }));
+  const pageRender = vi.fn();
+  function Page() { pageRender(); return <main>Page content</main>; }
+  render(<ShellEvidenceProvider read={read} enabled><Page /><Probe /></ShellEvidenceProvider>);
+  await idle();
+  const before = pageRender.mock.calls.length;
+  await act(async () => finish(value('first')));
+  expect(screen.getByText('first')).toBeTruthy();
+  expect(pageRender).toHaveBeenCalledTimes(before);
 });
