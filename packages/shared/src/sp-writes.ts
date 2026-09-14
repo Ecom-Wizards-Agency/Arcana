@@ -418,9 +418,27 @@ export const SpWritePlanCounts = z.object({
 }).strict();
 export type SpWritePlanCounts = z.infer<typeof SpWritePlanCounts>;
 
+/** A restore is a selected, observed inverse of a recorded export, never a new recommendation. */
+export const SpWriteRestoreProposalSource = z.object({
+  kind: z.literal('restore_proposal'),
+  /** Complete original export, verified against the source batch hash before narrowing. */
+  sourceArtifactText: z.string().min(1),
+  sourceBatchId: SpWriteUuid,
+  sourceRowIds: z.array(SpWriteUuid).min(1).max(500),
+  rows: z.array(z.object({ sourceRowId: SpWriteUuid, entityId: z.string().min(1),
+    current: SpMoney, readAt: SpWriteInstant, restoreTo: SpMoney }).strict()).min(1).max(500),
+}).strict().superRefine((source, context) => {
+  if (new Set(source.sourceRowIds).size !== source.sourceRowIds.length
+    || JSON.stringify(source.sourceRowIds) !== JSON.stringify(source.rows.map(row => row.sourceRowId))) {
+    context.addIssue({code:'custom',message:'restore selection must name each recorded source row exactly once'});
+  }
+});
+export type SpWriteRestoreProposalSource = z.infer<typeof SpWriteRestoreProposalSource>;
+
 export const SpForwardWriteSource = z.object({
   kind: z.literal('apply_batch'),
   applyBatchId: SpWriteUuid,
+  restoreProposal: SpWriteRestoreProposalSource.optional(),
   guardrailSnapshotFingerprint: SpWriteSha256,
   provenanceSnapshotFingerprint: SpWriteSha256,
 }).strict();
@@ -577,6 +595,16 @@ export const SpWritePlan = z.object({
 }).strict().superRefine((plan, context) => {
   if ((plan.direction === 'forward') !== (plan.source.kind === 'apply_batch')) {
     context.addIssue({ code: 'custom', path: ['source'], message: 'plan direction and source disagree' });
+  }
+  if (plan.source.kind === 'apply_batch' && plan.source.restoreProposal) {
+    const restore = plan.source.restoreProposal;
+    if (restore.sourceBatchId !== plan.source.applyBatchId || restore.rows.length !== plan.actions.length
+      || restore.rows.some(row => {
+        const action = plan.actions.find(item => item.sources.some(source => source.kind==='apply_row' && source.applyRowId===row.sourceRowId));
+        return !action || action.routeKey!=='sp.v3.keywords.update' || action.entity.keywordId!==row.entityId
+          || JSON.stringify(action.changes.bid?.expected)!==JSON.stringify(row.current)
+          || JSON.stringify(action.changes.bid?.requested)!==JSON.stringify(row.restoreTo);
+      })) context.addIssue({code:'custom',path:['source'],message:'restore rows must bind every action and its exact inverse'});
   }
   if (Date.parse(plan.generatedAt) > Date.parse(plan.frozenAt)
     || Date.parse(plan.frozenAt) >= Date.parse(plan.expiresAt)) {

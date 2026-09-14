@@ -191,10 +191,7 @@ describe.skipIf(!available)('immutable SP keyword bid preview', () => {
     await expect(previewSpWrite(database, { orgId, userId: USER }, request)).rejects.toMatchObject({ code: 'source_changed' });
     expect(await storedCount(request.requestId)).toBe(0);
     const other = await batch();
-    await database.sql`update public.apply_batches set artifact_sha256 = ${'a'.repeat(64)} where id = ${other.batchId}`;
-    await expect(previewSpWrite(database, { orgId, userId: USER }, {
-      ...request, applyBatchId: other.batchId,
-    })).rejects.toMatchObject({ code: 'source_changed' });
+    await expect(database.sql`update public.apply_batches set artifact_sha256 = ${'a'.repeat(64)} where id = ${other.batchId}`).rejects.toMatchObject({detail:'source_changed'});
     expect(await storedCount(request.requestId)).toBe(0);
   });
 

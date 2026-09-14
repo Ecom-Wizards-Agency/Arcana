@@ -542,6 +542,8 @@ describe.skipIf(!available)('WP-30 Time Machine queries', () => {
         source: 'sync',
       }]);
 
+      // The read used to restore must include the linked observation, not only the export.
+      await testCase.update();
       const preview = await getReversionBatchPreview(database, { orgId: orgA, batchId });
       expect(preview?.rows).toHaveLength(1);
       expect(preview?.rows[0]).toMatchObject({ state: 'ready', exportAllowed: true });

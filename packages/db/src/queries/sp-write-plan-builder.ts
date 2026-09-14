@@ -121,6 +121,7 @@ interface SourceRow {
   deleted_at: Date | string | null;
   entity_state: string | null;
   synced_at: Date | string | null;
+  read_at: string | null;
   recommendation_id: string | null;
   proposal_revision_id: string | null;
   run_id: string | null;
@@ -191,6 +192,7 @@ async function assertExposureBaseline(sql: QuerySql, orgId: string, profileId: s
 /** Package-private source builder. Callers own authorization and atomic persistence. */
 export async function buildSpWriteLegacyPreview(
   sql: QuerySql, orgId: string, request: SpWritePreviewRequest,
+  restoreRowIds?: readonly string[],
 ): Promise<{ plan: SpWritePlan; evidence: SpWritePreviewEvidence | SpWriteDependencyPreviewEvidence }> {
   const batches = await sql<BatchSnapshot[]>`
     select b.tag, g.grant_id::text, g.version_id::text as grant_version,
@@ -216,15 +218,18 @@ export async function buildSpWriteLegacyPreview(
   `;
   if (batches.length !== 1) throw new SpWriteApplicationError('not_found');
   const batch = batches[0]!;
-  if (batch.status !== 'staged' || batch.source_batch_id !== null
+  if ((!restoreRowIds && batch.status !== 'staged') || (restoreRowIds && !['staged','applied'].includes(batch.status)) || batch.source_batch_id !== null
     || batch.artifact_sha256 === null || !/^[a-f0-9]{64}$/.test(batch.artifact_sha256)
-    || batch.unsupported_rows !== 0 || batch.reversible_rows < 1 || batch.reversible_rows > 500
-    || (batch.dependency_sets_count === null && batch.exported_proposals !== batch.reversible_rows)
-    || (batch.dependency_sets_count !== null && (batch.dependency_sets_count !== batch.exported_proposals
-      || batch.dependency_sets_count < 1 || batch.dependency_sets_count > batch.reversible_rows))) {
+    || (!restoreRowIds && (batch.unsupported_rows !== 0 || batch.reversible_rows < 1 || batch.reversible_rows > 500
+      || (batch.dependency_sets_count === null && batch.exported_proposals !== batch.reversible_rows)
+      || (batch.dependency_sets_count !== null && (batch.dependency_sets_count !== batch.exported_proposals
+        || batch.dependency_sets_count < 1 || batch.dependency_sets_count > batch.reversible_rows))))) {
     throw new SpWriteApplicationError('unsupported_source');
   }
-  const rows = await sql<SourceRow[]>`
+  if (restoreRowIds && batch.dependency_sets_count !== null) {
+    throw new SpWriteApplicationError('unsupported_source');
+  }
+  const sourceRows = await sql<SourceRow[]>`
     select r.id::text, r.entity_type::text, r.entity_id, r.entity_name, r.field,
            r.old_value #>> '{}' as old_value, r.new_value #>> '{}' as new_value,
            r.old_value::text as old_json, r.new_value::text as new_json,
@@ -236,6 +241,7 @@ export async function buildSpWriteLegacyPreview(
            r.dependency_set_id, r.dependency_step_index,
            (rec.inputs -> 'dependencySet')::text as dependency_set_text,
            snapshot.calculation_snapshot_text, snapshot.calculation_snapshot_count,
+           to_char(mirror.current_synced_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as read_at,
            r.recommendation_id::text, r.proposal_revision_id::text, rec.run_id::text, run.strategy_snapshot::text,
            run.strategy_goal, run.group_id::text, run.group_snapshot::text,
            rec.inputs ->> 'methodId' as method_id, rec.inputs ->> 'methodVersion' as method_version,
@@ -248,6 +254,7 @@ export async function buildSpWriteLegacyPreview(
         on r.entity_type = 'target' and t.org_id = r.org_id and t.profile_id = r.profile_id and t.amazon_id = r.entity_id
       left join public.campaigns c
         on r.entity_type = 'campaign' and c.org_id = r.org_id and c.profile_id = r.profile_id and c.amazon_id = r.entity_id
+      left join lateral app.resolve_apply_current_value(r.org_id,r.profile_id,r.entity_type,r.entity_id,r.field) mirror on true
       left join public.recommendations rec
         on rec.org_id = r.org_id and rec.profile_id = r.profile_id and rec.id = r.recommendation_id
       left join public.recommendation_runs run
@@ -267,7 +274,16 @@ export async function buildSpWriteLegacyPreview(
        and r.batch_id = ${request.applyBatchId}::uuid
      order by rec.created_at, rec.id, r.dependency_step_index
   `;
-  if (rows.length !== batch.reversible_rows) throw new SpWriteApplicationError('source_changed');
+  const sourceArtifactText = serializeApplyRows(sourceRows.map((row): ApplyRow => ({
+    entityType: row.entity_type as ApplyRow['entityType'], entityId: row.entity_id, field: row.field,
+    old: exportScalar(row.old_json), new: exportScalar(row.new_json),
+    ...(row.entity_name === null ? {} : { name: row.entity_name }),
+    ...(row.clicks === null ? {} : { clicks: exportNumber(row.clicks) }),
+    ...(row.revenue === null ? {} : { revenue: exportNumber(row.revenue) }),
+  })));
+  if (sha256(sourceArtifactText) !== batch.artifact_sha256) throw new SpWriteApplicationError('source_changed');
+  const rows = restoreRowIds ? sourceRows.filter(row => restoreRowIds.includes(row.id)) : sourceRows;
+  if (rows.length !== (restoreRowIds?.length ?? batch.reversible_rows)) throw new SpWriteApplicationError('source_changed');
   const scope = SpWriteProviderScope.parse({
     amazonProfileId: batch.amazon_profile_id, connectionId: batch.connection_id,
     region: batch.region, marketplaceId: batch.marketplace_id,
@@ -357,8 +373,8 @@ export async function buildSpWriteLegacyPreview(
       || row.strategy_snapshot === null || row.strategy_goal === null) {
       throw new SpWriteApplicationError('unsupported_source');
     }
-    const expected = decimal(row.old_value);
-    const requested = decimal(row.new_value);
+    const expected = decimal(restoreRowIds ? row.new_value : row.old_value);
+    const requested = decimal(restoreRowIds ? row.old_value : row.new_value);
     if (expected !== decimal(row.current_bid)) throw new SpWriteApplicationError('source_changed');
     if (requested === expected || requested === '0') throw new SpWriteApplicationError('unsupported_source');
     const action = SpWriteAction.parse({
@@ -378,7 +394,6 @@ export async function buildSpWriteLegacyPreview(
     ...(row.clicks === null ? {} : { clicks: exportNumber(row.clicks) }),
     ...(row.revenue === null ? {} : { revenue: exportNumber(row.revenue) }),
   })));
-  if (sha256(artifactText) !== batch.artifact_sha256) throw new SpWriteApplicationError('source_changed');
   const rawEvidence = {
     schemaVersion: coordinated ? 'openspell.sp-write-preview-evidence.v3' : 'openspell.sp-write-preview-evidence.v1', planId: request.requestId,
     guardrails: {
@@ -391,7 +406,7 @@ export async function buildSpWriteLegacyPreview(
       })),
     },
     provenance: {
-      applyBatchId: request.applyBatchId, artifactText, artifactSha256: batch.artifact_sha256,
+      applyBatchId: request.applyBatchId, artifactText, artifactSha256: sha256(artifactText),
       exportedAt: batch.exported_at, tag: batch.tag,
       optGroup: batch.opt_group, lever: batch.lever, note: batch.note,
       ...(coordinated ? { dependencySets: dependencyEvidence } : {}),
@@ -417,6 +432,10 @@ export async function buildSpWriteLegacyPreview(
     orgId: orgId, profileId: request.profileId, providerScope: scope, direction: 'forward',
     source: {
       kind: 'apply_batch', applyBatchId: request.applyBatchId,
+      ...(restoreRowIds ? { restoreProposal: {kind:'restore_proposal',sourceArtifactText,sourceBatchId:request.applyBatchId,
+        sourceRowIds:rows.map(row=>row.id),rows:rows.map(row=>({sourceRowId:row.id,entityId:row.entity_id,
+          current:{amount:decimal(row.current_bid),currencyCode:scope.currencyCode},readAt:row.read_at,
+          restoreTo:{amount:decimal(row.old_value),currencyCode:scope.currencyCode}}))} } : {}),
       guardrailSnapshotFingerprint: sha256(serializeSpWritePreviewGuardrails(evidence)),
       provenanceSnapshotFingerprint: sha256(serializeSpWritePreviewProvenance(evidence)),
     },

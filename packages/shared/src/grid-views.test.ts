@@ -106,3 +106,13 @@ describe('Target 360 saved state', () => {
     expect(GridSavedViewSchema.safeParse({ ...view, target: { ...target, series: { ...target.series, invented: true } } }).success).toBe(false);
   });
 });
+
+
+describe('Change queue saved state', () => {
+  it('round trips source, state and density in its own namespace', () => {
+    const saved = { ...view, changeQueue: { filters: { source: 'queued' as const, state: 'awaiting review' as const }, density: 'comfortable' as const } };
+    expect(parseGridView(serializeGridView(saved))).toEqual(saved);
+    expect(parseGridView(serializeGridView(saved).replace(/^1\./, '2.'))).toBeNull();
+    expect(GridSavedViewSchema.safeParse({ ...saved, changeQueue: { ...saved.changeQueue, filters: { source: 'invented' } } }).success).toBe(false);
+  });
+});

@@ -45,6 +45,7 @@ import { descriptor as tags } from './tags/descriptor';
 import { descriptor as targets } from './targets/descriptor';
 import { descriptor as targets_queue } from './targets/queue/descriptor';
 import { descriptor as time_machine } from './time-machine/descriptor';
+import { descriptor as time_machine_legacy } from './time-machine/legacy/descriptor';
 import { descriptor as timeline } from './timeline/descriptor';
 import { descriptor as translation_status } from './translation-status/descriptor';
 
@@ -95,6 +96,7 @@ export const SCREEN_REGISTRY: readonly ScreenMetadata[] = [
   targets,
   targets_queue,
   time_machine,
+  time_machine_legacy,
   timeline,
   translation_status,
 ];

@@ -10,6 +10,7 @@ export const TimelineViewState = z.object({
 export type TimelineViewState = z.infer<typeof TimelineViewState>;
 
 import { TranslationView } from './translation.js';
+import { ChangeQueueSource, ChangeQueueState } from './time-machine.js';
 
 const strings = z.array(z.string()).readonly();
 /** Base-sum slots may be placeholders only when explicitly marked unmeasured. */
@@ -217,6 +218,11 @@ export const GridSavedView = z.object({
   timeline: TimelineViewState.optional(),
   chart: z.strictObject({ series: z.array(z.enum(['impressions', 'clicks', 'spend', 'sales', 'orders', 'acos', 'cvr', 'cpc'])).max(4).refine((series) => new Set(series).size === series.length) }).optional(),
   translation: TranslationView.optional(),
+  changeQueue: z.object({
+    filters: z.object({ source: ChangeQueueSource.optional(), state: ChangeQueueState.optional(),
+      type: z.string().max(200).optional(), field: z.string().max(200).optional() }).strict(),
+    density: z.enum(['compact', 'normal', 'comfortable']),
+  }).strict().optional(),
   /** Target detail state travels with the originating grid analysis. */
   target: z.object({
     series: z.object({

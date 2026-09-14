@@ -1,4 +1,4 @@
-import { withAuthenticatedActor } from '@wizard-ads/db';
+import { withAuthenticatedActor, countChangeQueue } from '@wizard-ads/db';
 import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
 import { headers } from 'next/headers';
 import { listProfiles } from '../../app/_lib/profiles';
@@ -26,8 +26,8 @@ export async function readShellEvidence(requested: string | null): Promise<Shell
           where org_id = ${actor.orgId} and profile_id = ${profile.id} and status = 'running'
         `;
         return { profileId: profile.id, freshness, crosscheck: panel.chip,
-          // entity_changes has no pending-review state. Unknown must not appear as zero.
-          badges: { 'change-queue': null, timeline: row?.count ?? null } };
+          // Review receipts do not imply an Amazon application.
+          badges: { 'change-queue': await countChangeQueue({ sql }, { orgId: actor.orgId, profileId: profile.id }), timeline: row?.count ?? null } };
       });
     } finally { await database.close(); }
   } catch {

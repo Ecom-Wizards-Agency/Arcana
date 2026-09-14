@@ -1517,3 +1517,18 @@ describe('guarded Sponsored Products write contracts', () => {
     }).success).toBe(false);
   });
 });
+
+it('binds restore selection and read instants to the immutable forward preview fingerprint',()=>{
+  const forward=keywordPlan();
+  const action=forward.actions[0]!;
+  if(action.routeKey!=='sp.v3.keywords.update'||!action.changes.bid||action.sources[0]?.kind!=='apply_row'||forward.source.kind!=='apply_batch') throw new Error('Synthetic keyword source missing');
+  const row={sourceRowId:action.sources[0].applyRowId,entityId:action.entity.keywordId,current:action.changes.bid.expected,
+    restoreTo:action.changes.bid.requested,readAt:'2026-09-01T00:00:00.000001Z'};
+  const source={...forward.source,restoreProposal:{kind:'restore_proposal' as const,sourceArtifactText:'[]\n',sourceBatchId:forward.source.applyBatchId,sourceRowIds:[row.sourceRowId],rows:[row]}};
+  const plan=SpWritePlan.parse({...forward,source});
+  expect(serializeSpWritePlanFingerprint(plan)).not.toBe(serializeSpWritePlanFingerprint(forward));
+  expect(serializeSpWritePlanFingerprint({...plan,source:{...source,restoreProposal:{...source.restoreProposal,rows:[{...row,readAt:'2026-09-01T00:00:00.000002Z'}]}}})).not.toBe(serializeSpWritePlanFingerprint(plan));
+  expect(serializeSpWritePlanFingerprint({...plan,source:{...source,restoreProposal:{...source.restoreProposal,sourceArtifactText:'[{}]'}}})).not.toBe(serializeSpWritePlanFingerprint(plan));
+  expect(SpWritePlan.safeParse({...plan,source:{...source,restoreProposal:{...source.restoreProposal,sourceRowIds:[]}}}).success).toBe(false);
+  expect(SpWritePlan.safeParse({...plan,source:{...source,restoreProposal:{...source.restoreProposal,rows:[{...row,restoreTo:{...row.restoreTo,amount:'999'}}]}}}).success).toBe(false);
+});

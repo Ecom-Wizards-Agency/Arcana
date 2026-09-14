@@ -775,6 +775,14 @@ begin
     values(v_batch,v_org,v_profile,p_user_id);
   end if;
 
+  if to_regclass('public.sp_write_restore_proposals') is not null then
+    -- Inert ledger coverage only. The empty plan artifact cannot pass preview admission.
+    insert into public.sp_write_restore_proposals(plan_id,org_id,profile_id,source_batch_id,created_by)
+      values(v_sp_plan,v_org,v_profile,v_batch,p_user_id);
+    insert into public.sp_write_restore_reviews(plan_id,org_id,profile_id,reviewed_by)
+      values(v_sp_plan,v_org,v_profile,p_user_id);
+  end if;
+
   return v_org;
 end;
 $$;

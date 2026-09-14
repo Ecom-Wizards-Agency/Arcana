@@ -24,16 +24,21 @@
  */
 import { createHash } from 'node:crypto';
 import {
-  ReversionBatchPreview,
+  ChangeQueueRestoreBatchPreview,
+  COORDINATED_RESTORE_UNAVAILABLE,
+  ChangeQueueEntry,
   serializeApplyRows,
 } from '@wizard-ads/shared';
 import type {
   ApplyEntityType,
+  ChangeQueueSource,
+  ChangeQueueState,
   ApplyRow,
   ApplyValue,
-  ReversionBatchPreview as ReversionBatchPreviewType,
+  ChangeQueueRestoreBatchPreview as ReversionBatchPreviewType,
   ReversionRowPreview,
 } from '@wizard-ads/shared';
+import type { AuthenticatedEditorTransaction } from './authenticated-actor.js';
 import type { QueryHandle, QuerySql } from '../client.js';
 import type { JsonValue } from './goto.js';
 import { lockCurrentApplyStates } from './apply-state.js';
@@ -356,6 +361,7 @@ export interface ReversionBatchSummary {
 }
 
 interface ReversionBatchHeaderRow {
+  dependency_sets_count: number | null;
   id: string;
   source_batch_id: string | null;
   active_reversion_batch_id: string | null;
@@ -374,6 +380,7 @@ interface ReversionBatchHeaderRow {
 }
 
 interface ReversionEvidenceRow {
+  coordinated: boolean;
   row_id: string;
   recommendation_id: string | null;
   entity_type: ApplyEntityType;
@@ -424,13 +431,16 @@ function classifyReversionRow(
   const exported = scalar(row.new_value);
   const current = scalar(row.current_value);
   const synchronized = scalar(row.synchronized_value);
-  const synchronizedAt = toDateOrNull(row.synchronized_at);
-  const currentSyncedAt = toDateOrNull(row.current_synced_at);
+  const synchronizedAt = row.synchronized_at === null ? null : TimeMachineInstant.parse(typeof row.synchronized_at === 'string' ? row.synchronized_at : row.synchronized_at.toISOString());
+  const currentSyncedAt = row.current_synced_at === null ? null : TimeMachineInstant.parse(typeof row.current_synced_at === 'string' ? row.current_synced_at : row.current_synced_at.toISOString());
 
   let state: ReversionRowPreview['state'];
   let reason: string;
 
-  if (!original.valid || !exported.valid) {
+  if (row.coordinated) {
+    state = 'unsupported';
+    reason = COORDINATED_RESTORE_UNAVAILABLE;
+  } else if (!original.valid || !exported.valid) {
     state = 'unsupported';
     reason = 'The exported row contains a structured value that the staged-apply bridge cannot invert.';
   } else if (!row.supported) {
@@ -446,10 +456,10 @@ function classifyReversionRow(
       : 'The exported value has not appeared in a uniquely linked synchronization event.';
   } else if (
     currentSyncedAt === null ||
-    currentSyncedAt.getTime() < exportedAt.getTime()
+    currentSyncedAt < TimeMachineInstant.parse(exportedAt.toISOString()) || currentSyncedAt < synchronizedAt
   ) {
-    state = 'conflict';
-    reason = 'The current mirror has not been synchronized since this batch was exported.';
+    state = 'awaiting_sync';
+    reason = 'restore_mirror_stale: The current mirror predates the applied observation.';
   } else if (!current.valid) {
     state = 'unsupported';
     reason = 'The current synchronized value is not a scalar value.';
@@ -478,9 +488,9 @@ function classifyReversionRow(
     proposedValue: exportedValue,
     exportedValue,
     synchronizedValue: synchronizedAt === null || !synchronized.valid ? null : synchronized.value,
-    synchronizedAt: synchronizedAt?.toISOString() ?? null,
+    synchronizedAt,
     currentValue: current.valid ? current.value : null,
-    currentSyncedAt: currentSyncedAt?.toISOString() ?? null,
+    currentSyncedAt,
     inverseValue: originalValue,
     state,
     conflict: state === 'conflict' || state === 'ambiguous',
@@ -505,7 +515,7 @@ export async function listReversionBatches(
              order by child.exported_at desc limit 1) as active_reversion_batch_id,
            profile_id, tag, opt_group, lever, note,
            status::text as status, exported_at, applied_at, artifact_sha256,
-           exported_proposals, reversible_rows, unsupported_rows
+           exported_proposals, reversible_rows, unsupported_rows, dependency_sets_count
       from public.apply_batches
      where org_id = ${input.orgId}
        and profile_id = ${input.profileId}
@@ -546,7 +556,7 @@ export async function getReversionBatchPreview(
              order by child.exported_at desc limit 1) as active_reversion_batch_id,
            profile_id, tag, opt_group, lever, note,
            status::text as status, exported_at, applied_at, artifact_sha256,
-           exported_proposals, reversible_rows, unsupported_rows
+           exported_proposals, reversible_rows, unsupported_rows, dependency_sets_count
       from public.apply_batches
      where org_id = ${input.orgId} and id = ${input.batchId}
        and source_kind = 'legacy_export'
@@ -554,18 +564,21 @@ export async function getReversionBatchPreview(
          join public.sp_write_authorization_receipts r on r.org_id = p.org_id
            and r.profile_id = p.profile_id and r.plan_id = p.plan_id
          where p.org_id = apply_batches.org_id and p.profile_id = apply_batches.profile_id
-           and p.direction = 'forward' and p.artifact #>> '{source,applyBatchId}' = apply_batches.id::text)
+           and p.direction = 'forward' and p.artifact #> '{source,restoreProposal}' is null
+           and p.artifact #>> '{source,applyBatchId}' = apply_batches.id::text)
   `;
   if (header === undefined) return null;
 
   const evidence = await handle.sql<ReversionEvidenceRow[]>`
     select ar.id as row_id, ar.recommendation_id,
+           (b.dependency_sets_count is not null or ar.dependency_set_id is not null or ar.dependency_step_index is not null) as coordinated,
            ar.entity_type::text as entity_type, ar.entity_id, ar.entity_name,
            ar.field, ar.old_value, ar.new_value,
            current_state.supported, current_state.present,
-           current_state.current_value, current_state.current_synced_at,
+           current_state.current_value,
+           to_char(current_state.current_synced_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as current_synced_at,
            linked.new_value as synchronized_value,
-           linked.observed_at as synchronized_at,
+           to_char(linked.observed_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as synchronized_at,
            exists (
              select 1
                from public.entity_changes possible
@@ -587,16 +600,20 @@ export async function getReversionBatchPreview(
         on ar.org_id = b.org_id
        and ar.profile_id = b.profile_id
        and ar.batch_id = b.id
-      cross join lateral app.resolve_apply_current_value(
+      left join lateral app.resolve_apply_current_value(
         b.org_id, b.profile_id, ar.entity_type, ar.entity_id, ar.field
-      ) current_state
+      ) current_state on true
       left join lateral (
         select ec.new_value, ec.observed_at
           from public.entity_changes ec
          where ec.org_id = b.org_id
            and ec.profile_id = b.profile_id
-           and ec.apply_row_id = ar.id
-         order by ec.observed_at, ec.id
+           and ec.apply_row_id = ar.id and ec.apply_batch_id=b.id and ec.source='sync'
+           and ec.entity_type::text=(case when ar.entity_type='placement' then 'campaign' else ar.entity_type::text end)
+           and ec.amazon_id=ar.entity_id
+           and app.canonical_apply_field(ec.entity_type::text,ec.field)=app.canonical_apply_field(ar.entity_type::text,ar.field)
+           and ec.old_value=ar.old_value and ec.new_value=ar.new_value and ec.observed_at>=b.exported_at
+         order by ec.observed_at desc, ec.id desc
          limit 1
       ) linked on true
      where b.org_id = ${input.orgId}
@@ -607,11 +624,14 @@ export async function getReversionBatchPreview(
   const exportedAt = toDate(header.exported_at);
   const rows = evidence.map((row) => classifyReversionRow(header.id, exportedAt, row));
   const readyRows = rows.filter((row) => row.exportAllowed).length;
-  const blockedRows = header.exported_proposals - readyRows;
+  const blockedRows = header.reversible_rows + header.unsupported_rows - readyRows;
   let exportAllowed = true;
   let reason = `${readyRows} synchronized changes are ready for an exact inverse export.`;
 
-  if (header.source_batch_id !== null) {
+  if (header.dependency_sets_count !== null) {
+    exportAllowed = false;
+    reason = COORDINATED_RESTORE_UNAVAILABLE;
+  } else if (header.source_batch_id !== null) {
     exportAllowed = false;
     reason = 'A reversion export is an immutable audit record and cannot itself be inverted here.';
   } else if (header.active_reversion_batch_id !== null) {
@@ -640,7 +660,8 @@ export async function getReversionBatchPreview(
     reason = `${rows.length - readyRows} of ${rows.length} rows are waiting, ambiguous, unsupported, or conflicted.`;
   }
 
-  return ReversionBatchPreview.parse({
+  return ChangeQueueRestoreBatchPreview.parse({
+    dependencySetCount: header.dependency_sets_count,
     batchId: header.id,
     sourceBatchId: header.source_batch_id,
     activeReversionBatchId: header.active_reversion_batch_id,
@@ -800,4 +821,143 @@ async function inTransaction<T>(handle: QueryHandle, operation: (sql: QuerySql) 
   if (!('begin' in handle.sql)) return operation(handle.sql);
   const result = await handle.sql.begin(async (sql) => ({ value: await operation(sql) }));
   return result.value;
+}
+
+/** The ACT queue keeps observation receipts separate from immutable exports. */
+export async function listChangeQueue(
+  handle: TimeMachineReadHandle,
+  input: { orgId: string; profileId: string; from?: string | null; to?: string | null;
+    source?: ChangeQueueSource | null; state?: string | null;
+    entityType?: string | null; field?: string | null; limit?: number;
+    before?: { observedAt: string; id: string } | null },
+): Promise<ChangeQueueEntry[]> {
+  const limit = Math.min(2000, Math.max(1, input.limit ?? 51));
+  const result = await handle.sql<{ artifact: unknown }[]>`
+    with native_roots as (${nativeTimelineRoots(handle.sql, input)}), visible_native_roots as (
+      select * from native_roots n where (${input.from ?? null}::timestamptz is null or n.approved_at>=${input.from ?? null}::timestamptz)
+        and (${input.to ?? null}::timestamptz is null or n.approved_at<=${input.to ?? null}::timestamptz)
+    ), entries as (
+      select 'change:'||ec.id::text as id, ec.observed_at as at, ec.entity_type::text as entity_type,
+        ec.amazon_id as entity_id, coalesce(ec.entity_name,ec.amazon_id) as entity, ec.field,
+        ec.old_value,ec.new_value,'sync'::text as source,
+        case when ec.acknowledged_at is not null then 'acknowledged'
+          when candidates.count>1 then 'unattributed'
+          when ec.apply_row_id is not null then 'confirmed' else 'observed' end as state,
+        case when candidates.count>1 then null else b.id end as batch_id,
+        case when candidates.count>1 then candidates.label else b.tag end as batch_label,
+        case when candidates.count>1 then null else b.reversible_rows+b.unsupported_rows end as batch_count,
+        (candidates.count<=1 and b.experiment_id is not null) as experiment_start, candidates.count as candidate_count,
+        ec.acknowledged_at,ec.acknowledged_by,null::text as review_href
+      from public.entity_changes ec
+      left join public.apply_batches b on b.org_id=ec.org_id and b.profile_id=ec.profile_id and b.id=ec.apply_batch_id
+      cross join lateral (
+        select count(*)::int as count, case when count(distinct cb.id)=1 then min(cb.tag) else null end as label
+        from public.apply_rows ar join public.apply_batches cb on cb.org_id=ar.org_id and cb.profile_id=ar.profile_id and cb.id=ar.batch_id
+        where ar.org_id=ec.org_id and ar.profile_id=ec.profile_id and cb.source_kind='legacy_export'
+          and (case when ar.entity_type='placement' then 'campaign' else ar.entity_type::text end)=ec.entity_type::text
+          and ar.entity_id=ec.amazon_id and app.canonical_apply_field(ar.entity_type::text,ar.field)=app.canonical_apply_field(ec.entity_type::text,ec.field)
+          and ar.old_value=ec.old_value and ar.new_value=ec.new_value and cb.exported_at<=ec.observed_at
+          and cb.status in ('staged','applied') and cb.artifact_sha256 is not null
+          and not exists(select 1 from public.entity_changes prior where prior.org_id=ec.org_id and prior.profile_id=ec.profile_id and prior.apply_row_id=ar.id and prior.id<>ec.id)
+      ) candidates
+      where ec.org_id=${input.orgId}::uuid and ec.profile_id=${input.profileId}::uuid and ec.source='sync'
+        and not exists(select 1 from public.sp_write_mirror_observations m join visible_native_roots n
+          on n.org_id=m.org_id and n.profile_id=m.profile_id and n.execution_id=m.execution_id and n.plan_id=m.plan_id
+          where m.entity_change_id=ec.id and m.change_attribution='write')
+      union all
+      select 'apply:'||ar.id::text,b.exported_at,ar.entity_type::text,ar.entity_id,coalesce(ar.entity_name,ar.entity_id),ar.field,
+        ar.old_value,ar.new_value,'apply',case when exists(select 1 from public.entity_changes ec
+          where ec.org_id=ar.org_id and ec.profile_id=ar.profile_id and ec.apply_row_id=ar.id) then 'confirmed' else 'exported' end,
+        b.id,b.tag,b.reversible_rows+b.unsupported_rows,b.experiment_id is not null,0,null::timestamptz,null::uuid,null::text
+      from public.apply_rows ar join public.apply_batches b on b.org_id=ar.org_id and b.profile_id=ar.profile_id and b.id=ar.batch_id
+      where ar.org_id=${input.orgId}::uuid and ar.profile_id=${input.profileId}::uuid and b.source_kind='legacy_export'
+        and not exists(select 1 from visible_native_roots n where n.direction='forward'
+          and n.preview_artifact #>> '{provenance,applyBatchId}'=b.id::text)
+      union all
+      select 'queued:'||q.id::text,q.created_at,'target',q.target_id,coalesce(q.context->>'targetLabel',q.target_id),'bid',
+        q.request#>'{expectedBid,amount}',q.request#>'{newBid,amount}','queued',
+        case when a.change_id is null then 'awaiting review' else 'approved' end,null::uuid,null::text,null::integer,false,0,
+        null::timestamptz,null::uuid,q.id::text
+      from public.queued_changes q left join public.queued_change_approvals a on a.org_id=q.org_id and a.profile_id=q.profile_id and a.change_id=q.id
+      where q.org_id=${input.orgId}::uuid and q.profile_id=${input.profileId}::uuid
+      union all
+      select 'restore:'||p.plan_id::text,p.created_at,'keyword',p.plan_id::text,
+        'Restore proposal · '||plan.provider_rows::text||' changes','bid',null::jsonb,null::jsonb,'restore',
+        case when review.plan_id is null then 'awaiting review' else 'approved' end,
+        p.source_batch_id,b.tag,plan.provider_rows,false,0,null::timestamptz,null::uuid,
+        '/change-queue?profile='||p.profile_id::text||'&proposal='||p.plan_id::text
+      from public.sp_write_restore_proposals p
+      join public.sp_write_plans plan on plan.org_id=p.org_id and plan.profile_id=p.profile_id and plan.plan_id=p.plan_id
+      left join public.apply_batches b on b.org_id=p.org_id and b.profile_id=p.profile_id and b.id=p.source_batch_id
+      left join public.sp_write_restore_reviews review on review.org_id=p.org_id and review.profile_id=p.profile_id and review.plan_id=p.plan_id
+      where p.org_id=${input.orgId}::uuid and p.profile_id=${input.profileId}::uuid
+        and plan.artifact #>> '{source,restoreProposal,kind}'='restore_proposal'
+    ) select jsonb_build_object('id',id,'when',to_char(at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+      'entity',entity,'entityType',entity_type,'entityId',entity_id,'field',field,'oldValue',old_value,'newValue',new_value,
+      'source',source,'state',state,'batchId',batch_id,'batchLabel',batch_label,'batchCount',batch_count,
+      'experimentStart',experiment_start,'candidateCount',candidate_count,'acknowledgedAt',acknowledged_at,
+      'acknowledgedBy',acknowledged_by,'reviewHref',review_href) as artifact
+    from entries where (${input.source ?? null}::text is null or source=${input.source ?? null})
+      and (${input.state ?? null}::text is null or state=${input.state ?? null})
+      and (${input.field ?? null}::text is null or field=${input.field ?? null})
+      and (${input.entityType ?? null}::text is null or entity_type=${input.entityType ?? null})
+      and (${input.from ?? null}::timestamptz is null or at>=${input.from ?? null}::timestamptz)
+      and (${input.to ?? null}::timestamptz is null or at<=${input.to ?? null}::timestamptz)
+      and (${input.before?.observedAt ?? null}::timestamptz is null or (at,id collate "C")<(${input.before?.observedAt ?? null}::timestamptz,${input.before?.id ?? null}::text collate "C"))
+    order by at desc,id collate "C" desc limit ${limit}
+  `;
+  const entries = result.map(({ artifact }) => ChangeQueueEntry.parse(artifact));
+  for (const row of entries) {
+    if (row.source === 'queued') row.reviewHref = `/targets/${encodeURIComponent(row.entityId)}/queue/${row.reviewHref}?${new URLSearchParams({profile:input.profileId})}`;
+  }
+  if (entries.length !== result.length || new Set(entries.map((row) => row.id)).size !== entries.length) throw new Error('Change queue count mismatch');
+  // Native rows retain their independent provider and observation state. Fetch
+  // another bounded window when a state filter removes candidates from this one.
+  const native: ChangeQueueEntry[] = [];
+  if (input.source == null || input.source === 'apply') {
+    let before = input.before ?? null;
+    for (;;) {
+      const window = await listNativeTimeline(handle.sql, { orgId: input.orgId, profileId: input.profileId,
+        from: input.from, to: input.to, field: input.field, entityTypes: input.entityType ? [input.entityType] : null,
+        before, limit });
+      for (const entry of window) {
+        const write = entry.write;
+        if (write === null) throw new Error('Native history evidence missing');
+        const state: ChangeQueueState = write.phase === 'observed_requested' ? 'observed'
+          : write.phase === 'awaiting_observation' ? 'succeeded'
+          : write.phase === 'awaiting_result' || write.phase === 'ambiguous' ? 'attempted'
+          : write.phase === 'queued' ? (write.execution.admission === 'queued' ? 'admitted' : 'approved') : 'failed';
+        if (input.state && input.state !== state) continue;
+        native.push(ChangeQueueEntry.parse({ id: entry.id, when: entry.observedAtExact, entity: entry.entityName ?? entry.amazonId,
+          entityId: entry.amazonId, entityType: entry.entityType, field: entry.field, oldValue: entry.oldValue, newValue: entry.newValue,
+          source: 'apply', state, batchId: null, batchLabel: entry.batch?.tag ?? null,
+          batchCount: write.execution.receipt.plan.counts.providerRows, experimentStart: false, candidateCount: 0,
+          acknowledgedAt: null, acknowledgedBy: null, reviewHref: null }));
+      }
+      const last = window.at(-1);
+      if (native.length >= limit || window.length < limit || !last) break;
+      before = { observedAt: last.observedAtExact, id: last.id };
+    }
+  }
+  return [...entries,...native].sort((a,b) => a.when < b.when ? 1 : a.when > b.when ? -1 : a.id < b.id ? 1 : a.id > b.id ? -1 : 0).slice(0,limit);
+}
+
+export async function countChangeQueue(handle: TimeMachineReadHandle, scope: { orgId: string; profileId: string }): Promise<number> {
+  const [row] = await handle.sql<{ count: number }[]>`select (
+    (select count(*) from public.queued_changes q where q.org_id=${scope.orgId}::uuid and q.profile_id=${scope.profileId}::uuid
+      and not exists(select 1 from public.queued_change_approvals a where a.org_id=q.org_id and a.profile_id=q.profile_id and a.change_id=q.id))
+    +(select count(*) from public.sp_write_restore_proposals p where p.org_id=${scope.orgId}::uuid and p.profile_id=${scope.profileId}::uuid
+      and not exists(select 1 from public.sp_write_restore_reviews r where r.org_id=p.org_id and r.profile_id=p.profile_id and r.plan_id=p.plan_id))
+    +(select count(*) from public.entity_changes ec where ec.org_id=${scope.orgId}::uuid and ec.profile_id=${scope.profileId}::uuid
+      and ec.source='sync' and ec.acknowledged_at is null))::int as count`;
+  if (row === undefined) throw new Error('Change queue count unavailable');
+  return row.count;
+}
+
+export async function acknowledgeObservedChange(context: AuthenticatedEditorTransaction,
+  input: { profileId: string; changeId: string }): Promise<void> {
+  if (!/^[1-9][0-9]*$/.test(input.changeId)) throw new Error('Invalid observed change identity');
+  const rows = await context.sql<{ id: string }[]>`select app.acknowledge_observed_change(${context.actor.orgId}::uuid,
+    ${input.profileId}::uuid,${input.changeId}::bigint)::text as id`;
+  if (rows.length !== 1 || rows[0]?.id !== input.changeId) throw new Error('Acknowledgement count mismatch');
 }
