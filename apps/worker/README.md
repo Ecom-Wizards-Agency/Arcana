@@ -512,3 +512,26 @@ superseded by newer promotion watermarks. Imported ledger groups retain a separa
 `secondary_import` source.
 The coverage source column is text with a nonempty check, so integrations can publish
 coverage without expanding the enums used by Ads promotion and attribution records.
+
+## Registering an ingestion
+
+`SyncWorkerOptions.sources` receives a registry with a typed `register` method.
+A source supplies its shared descriptor, `plan`, `execute`, `counts`, and a
+coverage target. The registry validates both count equations and calls the
+WP-256 producer itself. A callback cannot replace that producer or claim success
+without a reconciled coverage receipt. Existing `IntegrationHandlers` remain a
+compatibility input; production Keepa, rank, economics and SQP composition uses
+registered sources.
+
+Lane lists derive from `ingestion-sources.ts`. Registration does not enable a
+schedule, provider credential, claim protocol, or deployment gate. Ads request,
+poll and fetch remain separate queue jobs, with fetch completion and coverage in
+the existing database transaction. Control jobs and superseded loads do not
+publish data freshness.
+
+The registry captures each source's payload and plan types at registration. This
+keeps execution under the common tenant checks, claim loop and retry/settlement
+policy. The alternative of giving each source its own worker loop was rejected
+because it would duplicate custody and completion rules. The report completion
+capability preserves the current transaction boundary instead of writing coverage
+after a separately committed ledger update.

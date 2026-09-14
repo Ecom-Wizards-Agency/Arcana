@@ -92,3 +92,32 @@ Do not update this legacy service by mutating its checkout. Migrate it through a
 separately reviewed immutable release package. `SIGTERM` gives the worker up to 25
 seconds to finish in-flight jobs, then releases remaining claims to `queued`. A
 worker rollback never rolls back a database migration by editing production data.
+
+## Source registry
+
+`apps/worker/src/ingestion-sources.ts` declares job ownership through shared
+`IngestionSource` descriptors. `deployment-role.ts` derives its lane lists from
+those descriptors. The explicit deployment allowlist must still match the complete
+Evo report lane; registering a source does not enable its credentials or transfer
+custody. Immutable artifact contracts retain their serialized sets, with a test
+checking those sets against the descriptors.
+
+New ingestions use `SyncWorkerOptions.sources` and register `plan`, `execute`,
+`counts`, and a coverage target. Missing coverage is rejected at registration.
+The registry checks source and load counts, invokes the WP-256 coverage producer,
+and reconciles its write receipt before queue success. Ads report completion keeps
+its existing ledger/coverage transaction; request, poll, superseded and control
+steps do not manufacture a fresh observation.
+
+SP-API onboarding uses the shared provider-connection lifecycle and dedicated
+one-use consent custody. Its application gate defaults off. The worker exchange
+stub throws `NotConfigured` until the provider-specific exchange is supplied;
+this does not enable a connection consumer or a new data source.
+
+The SP-API connection consumer starts only with
+`OPENSPELL_SPAPI_CONNECTIONS_ENABLED=1`, a general worker, both SP-API application
+variables, and `SP_API_OAUTH_ALLOWED_REDIRECT_URIS`. Submission installation values
+must match that deployment allowlist. It uses the same serial connection loop as
+Ads and participates in shutdown. Leave the gate off while the exchange is
+unconfigured. Operator revocation closes credential reads immediately; service
+custody then clears the exact revoked SP-API Vault pointer.

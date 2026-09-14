@@ -33,3 +33,6 @@ export * from './tags.js';
 export * from './recommendation-preview.js';
 
 export * from './methods.js';
+export * from './provider-failure.js';
+export * from './ingestion.js';
+export * from './provider-connections.js';

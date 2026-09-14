@@ -1,5 +1,5 @@
 import { gunzipSync } from 'node:zlib';
-import { SpApiError, SpApiParseError } from './errors.js';
+import { SpApiAmbiguousOutcome, SpApiAuthError, SpApiError, SpApiParseError } from './errors.js';
 import type {
   CreateReportInput,
   SpApiClientOptions,
@@ -55,11 +55,19 @@ export class SpApiClient {
     this.maxRetries = options.maxRetries ?? 3;
   }
 
-  private async request(path: string, init: { method: string; body?: unknown }): Promise<unknown> {
+  private async request(path: string, init: { method: string; body?: unknown; maxRetries?: number; create?: boolean }): Promise<unknown> {
     let authRetried = false;
-    for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
-      const access = await this.options.accessTokenProvider.getAccessToken();
-      const response = await this.fetchImpl(`${this.endpoint}${path}`, {
+    const maxRetries = init.maxRetries ?? this.maxRetries;
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      let access: string;
+      try { access = await this.options.accessTokenProvider.getAccessToken(); }
+      catch (error) {
+        // No Reports request has been sent; the checkpoint may safely retry auth.
+        if (error instanceof SpApiAuthError) throw error;
+        throw new SpApiAuthError('SP-API access credential could not be acquired', 0);
+      }
+      let response: Response;
+      try { response = await this.fetchImpl(`${this.endpoint}${path}`, {
         method: init.method,
         headers: {
           Accept: 'application/json',
@@ -69,15 +77,26 @@ export class SpApiClient {
           'x-amz-date': amazonTimestamp(this.now()),
         },
         body: init.body === undefined ? undefined : JSON.stringify(init.body),
-      });
+      }); } catch (error) {
+        if (init.create) throw new SpApiAmbiguousOutcome('transport');
+        throw error;
+      }
+      if (init.create && (response.status >= 500 || response.status === 408)) {
+        throw new SpApiAmbiguousOutcome('server-response', response.status);
+      }
 
       let body: unknown = null;
-      const text = await response.text();
+      let text: string;
+      try { text = await response.text(); } catch (error) {
+        if (init.create) throw new SpApiAmbiguousOutcome('response-decoding', response.status);
+        throw error;
+      }
       if (text.length > 0) {
         try {
           body = JSON.parse(text) as unknown;
         } catch {
-          throw new SpApiParseError(`SP-API returned non-JSON for ${init.method} ${path}`);
+          if (init.create && response.ok) throw new SpApiAmbiguousOutcome('response-decoding', response.status);
+          if (response.ok) throw new SpApiParseError(`SP-API returned non-JSON for ${init.method} ${path}`);
         }
       }
 
@@ -93,11 +112,12 @@ export class SpApiClient {
         continue;
       }
       const retryable = response.status === 429 || response.status >= 500;
-      if (!retryable || attempt === this.maxRetries) {
-        throw new SpApiError(safeErrorMessage(response.status, body), response.status, retryable);
+      const header = response.headers.get('retry-after');
+      const retryAfter = header === null ? NaN : Number(header);
+      if (!retryable || attempt === maxRetries) {
+        throw new SpApiError(safeErrorMessage(response.status, body), response.status, retryable,
+          Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter : undefined);
       }
-
-      const retryAfter = Number(response.headers.get('retry-after'));
       const delay = Number.isFinite(retryAfter) && retryAfter >= 0
         ? retryAfter * 1_000
         : Math.min(1_000 * 2 ** attempt, 30_000);
@@ -109,6 +129,8 @@ export class SpApiClient {
   async createReport(input: CreateReportInput): Promise<{ reportId: string }> {
     const body = await this.request(`${REPORTS_PATH}/reports`, {
       method: 'POST',
+      maxRetries: 0,
+      create: true,
       body: {
         reportType: input.reportType,
         marketplaceIds: [input.marketplaceId],
@@ -117,8 +139,10 @@ export class SpApiClient {
         ...(input.reportOptions === undefined ? {} : { reportOptions: input.reportOptions }),
       },
     });
-    if (!isRecord(body)) throw new SpApiParseError('createReport returned no object');
-    return { reportId: requiredString(body, 'reportId', 'createReport') };
+    if (!isRecord(body) || typeof body['reportId'] !== 'string' || body['reportId'].length === 0) {
+      throw new SpApiAmbiguousOutcome('response-decoding');
+    }
+    return { reportId: body['reportId'] };
   }
 
   async getReport(reportId: string): Promise<SpApiReport> {
@@ -153,15 +177,21 @@ export class SpApiClient {
   }
 
   /** Pre-signed report URLs receive no SP-API authorization header. */
-  async downloadReportDocument(document: SpApiReportDocument): Promise<unknown> {
+  async downloadReportDocumentText(document: SpApiReportDocument): Promise<string> {
     const response = await this.fetchImpl(document.url, { method: 'GET' });
     if (!response.ok) {
       throw new SpApiError(`report document download failed with ${response.status}`, response.status, response.status >= 500);
     }
     const bytes = new Uint8Array(await response.arrayBuffer());
     const decoded = document.compressionAlgorithm === 'GZIP' ? gunzipSync(bytes) : bytes;
+    return new TextDecoder().decode(decoded);
+  }
+
+  /** JSON reports retain their existing convenience API; TSV uses the text method. */
+  async downloadReportDocument(document: SpApiReportDocument): Promise<unknown> {
+    const text = await this.downloadReportDocumentText(document);
     try {
-      return JSON.parse(new TextDecoder().decode(decoded)) as unknown;
+      return JSON.parse(text) as unknown;
     } catch {
       throw new SpApiParseError('report document is not valid JSON');
     }

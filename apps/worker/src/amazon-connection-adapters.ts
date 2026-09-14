@@ -1,18 +1,16 @@
 import { ADS_SCOPE, AdsAuthError, exchangeAuthorizationCode, listProfilesCounted } from '@wizard-ads/ads-api';
-import { getAdsRefreshTokenForGeneration, type DbHandle } from '@wizard-ads/db';
-import { attachAmazonConnectionGrant, claimAmazonConnection, failAmazonConnectionDiscovery,
-  failAmazonConnectionExchange, readAmazonConnectionWorker, recordAmazonConnectionRegion,
+import { createAdsConnectionLifecycle, getAdsRefreshTokenForGeneration, type DbHandle } from '@wizard-ads/db';
+import { failAmazonConnectionDiscovery,
+  failAmazonConnectionExchange, recordAmazonConnectionRegion,
   startAmazonConnectionRegion } from '@wizard-ads/db/worker';
 import { AmazonConnectionInstallation } from '@wizard-ads/shared';
 import type { AmazonConnectionProvider, AmazonConnectionStore } from './amazon-connections.js';
 
 export function createAmazonConnectionStore(handle: Pick<DbHandle, 'sql'>): AmazonConnectionStore {
   return {
-    claim: (lease) => claimAmazonConnection(handle, lease),
-    attach: (operation, lease, token) => attachAmazonConnectionGrant(handle, operation, lease, token),
+    ...createAdsConnectionLifecycle(handle).custody,
     failExchange: (operation, lease, reason) => failAmazonConnectionExchange(handle, operation, lease, reason),
     failDiscovery: (operation, lease) => failAmazonConnectionDiscovery(handle, operation, lease),
-    read: (operation) => readAmazonConnectionWorker(handle, operation),
     startRegion: (operation, lease, region) => startAmazonConnectionRegion(handle, operation, lease, region),
     recordRegion: (operation, lease, region, input, failure) =>
       recordAmazonConnectionRegion(handle, operation, lease, region, input, failure),

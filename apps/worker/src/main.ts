@@ -1,3 +1,6 @@
+import { ProviderConnectionLoop } from './provider-connection-loop.js';
+import { runSpApiConnectionPass } from './spapi-connections.js';
+import { registerIntegrationSources } from './integration-sources.js';
 import { createDb, loadReportHealth } from '@wizard-ads/db';
 import { createAdsApiClientFromEnv } from './ads-api.js';
 import { AmazonConnectionLoop } from './amazon-connections.js';
@@ -83,6 +86,14 @@ const adsApi = runsAmazonJobs ? createAdsApiClientFromEnv(handle) : undefined;
 const amazonConnections = config.amazonConnectionsEnabled
   ? new AmazonConnectionLoop(createAmazonConnectionStore(handle), createAmazonConnectionProvider(handle))
   : undefined;
+const spApiConnections = config.spApiConnectionsEnabled
+  ? new ProviderConnectionLoop((signal) => runSpApiConnectionPass({
+      handle,
+      enabled: () => process.env['OPENSPELL_SPAPI_CONNECTIONS_ENABLED'] === '1',
+      accepts: (installation) => installation.clientId === config.spApiClientId
+        && config.spApiConnectionRedirects.includes(installation.redirectUri),
+    }, signal))
+  : undefined;
 const unifiedReporting = adsApi && config.unifiedReporting.enabled
   ? new WorkerUnifiedDualRun({
       policy: config.unifiedReporting,
@@ -113,6 +124,13 @@ const sqpRequest = runsSqpJobs && config.spApiClientId && config.spApiClientSecr
 const sqpSchedules = sqpRequest
   ? new PostgresWeeklySqpScheduler(handle, store)
   : undefined;
+const integrations = {
+    economicsSync: createMrpEconomicsSync(handle),
+    rankSync: createDataDiveRankSyncHandler({ handle }),
+    keepaSync: createKeepaSyncHandler(handle),
+    ...(sqpRequest === undefined ? {} : { sqpRequest }),
+    marketingStreamNormalize: createMarketingStreamNormalizeHandler({ handle, queue: store }),
+  };
 const worker = new SyncWorker({
   workerId: config.workerId,
   store,
@@ -122,19 +140,15 @@ const worker = new SyncWorker({
   recommendationsRun: createRecommendationsRunner(recommendationRuns),
   sbVideo,
   unifiedReporting,
-  integrations: {
-    economicsSync: createMrpEconomicsSync(handle),
-    rankSync: createDataDiveRankSyncHandler({ handle }),
-    keepaSync: createKeepaSyncHandler(handle),
-    ...(sqpRequest === undefined ? {} : { sqpRequest }),
-    marketingStreamNormalize: createMarketingStreamNormalizeHandler({ handle, queue: store }),
-  },
+  integrations: { marketingStreamNormalize: integrations.marketingStreamNormalize },
+  sources: (registry) => registerIntegrationSources(registry, integrations),
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,
   pollIntervalMs: config.pollIntervalMs,
 });
 marketingStream?.start();
 amazonConnections?.start();
+spApiConnections?.start();
 const health = await startHealthServer(worker, config.port, {
   reports: () => loadReportHealth(handle, reportStaleHours),
   deployment: {
@@ -189,6 +203,7 @@ async function performShutdown(): Promise<WorkerShutdownEvidence> {
   recommendationObserver?.stop();
   await marketingStream?.stop();
   await amazonConnections?.stop();
+  await spApiConnections?.stop();
   const evidence = await worker.shutdown();
   await closeServer(health);
   await handle.close();
