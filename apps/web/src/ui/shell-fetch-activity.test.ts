@@ -1,7 +1,18 @@
 // @vitest-environment jsdom
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { afterLoadAndIdle } from './shell-evidence-client';
-import { installShellFetchActivity, shellFetchActivity, SHELL_FETCH_ACTIVITY_SCRIPT } from './shell-fetch-activity';
+import { shellFetchActivity } from './shell-fetch-activity';
+
+const bootstrap = readFileSync('src/ui/shell-fetch-bootstrap.js', 'utf8');
+function installShellFetchActivity() {
+  new Function(bootstrap)();
+  return shellFetchActivity()!;
+}
+
+// Synthetic fetches do not produce browser resource entries. Tests exercising
+// that boundary install and drive an observer explicitly below.
+beforeEach(() => vi.stubGlobal('PerformanceObserver', undefined));
 
 afterEach(() => {
   shellFetchActivity()?.dispose();
@@ -10,10 +21,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it('installs the serialized bootstrap before hydration and installs only once', () => {
+it('installs the standalone bootstrap before hydration and installs only once', async () => {
   const fetch = vi.fn();
   vi.stubGlobal('fetch', fetch);
-  new Function(SHELL_FETCH_ACTIVITY_SCRIPT)();
+  await import('./shell-fetch-bootstrap.js');
   const wrapped = window.fetch;
   expect(shellFetchActivity()).toBeDefined();
   expect(installShellFetchActivity()).toBe(shellFetchActivity());
@@ -109,6 +120,29 @@ it('keeps a headers-only read pending until the browser reports the complete res
   expect(activity.pending).toBe(0);
   activity.dispose();
   expect(disconnect).toHaveBeenCalledOnce();
+});
+
+it.each(['json', 'stream', 'empty'] as const)('waits for browser completion after the %s consumer settles', async (kind) => {
+  let delivered!: PerformanceObserverCallback;
+  vi.stubGlobal('PerformanceObserver', class {
+    constructor(callback: PerformanceObserverCallback) { delivered = callback; }
+    observe() {}
+    disconnect() {}
+  });
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(kind === 'empty' ? null : '{}')));
+  const activity = installShellFetchActivity();
+  const start = performance.now();
+  const response = await window.fetch('/body-before-resource');
+  if (kind === 'json') expect(await response.json()).toEqual({});
+  if (kind === 'stream') {
+    const reader = response.body!.getReader();
+    await reader.read();
+    expect((await reader.read()).done).toBe(true);
+  }
+  expect(activity.pending).toBe(1);
+  delivered({ getEntries: () => [{ initiatorType: 'fetch', name: new URL('/body-before-resource', document.baseURI).href,
+    startTime: start + 1 }] } as unknown as PerformanceObserverEntryList, {} as PerformanceObserver);
+  expect(activity.pending).toBe(0);
 });
 
 it('withdraws an idle callback if another page read starts before it runs', async () => {

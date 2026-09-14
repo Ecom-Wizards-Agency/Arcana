@@ -55,16 +55,32 @@ const nextConfig: NextConfig = {
   // fixture, so each partition keeps the bounded heap configured by global
   // setup and releases it at teardown. Normal development and production
   // retain Next's default behavior.
-  experimental:
-    process.env['WIZARD_ADS_E2E_AUTH'] === '1'
+  experimental: {
+    // Resolve named contract imports through the generated barrel. Grid needs
+    // its own schemas, not initialization of every write and method contract.
+    optimizePackageImports: ['@wizard-ads/shared'],
+    ...(process.env['WIZARD_ADS_E2E_AUTH'] === '1'
       ? { devMemoryThresholdRestart: false }
-      : undefined,
-  webpack: (config) => {
+      : {}),
+  },
+  webpack: (config, { isServer, dev }) => {
     config.resolve = config.resolve ?? {};
     config.resolve.extensionAlias = {
       ...(config.resolve.extensionAlias ?? {}),
       '.js': ['.ts', '.tsx', '.js'],
     };
+    // The early tracker is a classic script, shared by every authenticated
+    // document. Emit its content-hashed URL into Next's public static tree,
+    // including when the importing layout belongs to the server compilation.
+    config.module.rules.push({
+      test: /shell-fetch-bootstrap\.js$/,
+      type: 'asset/resource',
+      generator: {
+        filename: 'static/media/[name].[contenthash:8][ext]',
+        publicPath: '/_next/',
+        outputPath: isServer ? (dev ? '../' : '../../') : undefined,
+      },
+    });
     return config;
   },
   /**

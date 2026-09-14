@@ -7,7 +7,8 @@ import { assessFreshness } from '@wizard-ads/ui';
 import { FIGMA_ICON_IDS, NavIcon } from './nav-icons';
 import { SCREEN_REGISTRY, SCREEN_GROUPS } from '../screens/registry-metadata';
 import { ShellDateControls, ShellStatusChips, ScreenTopbar, resolveShellPeriod } from './topbar-controls';
-import { ShellEvidenceProvider, useShellEvidence, type ShellEvidence } from './shell-evidence';
+import { ShellEvidenceProvider, ShellFreshnessBanner, useShellEvidence, type ShellEvidence } from './shell-evidence';
+import { NavFallback } from './nav';
 
 const navigation = vi.hoisted(() => ({ query: '', pathname: '/grid', push: vi.fn() }));
 vi.mock('next/navigation', () => ({
@@ -27,6 +28,32 @@ const comparison = { start: '2026-06-30', end: '2026-07-29' };
 const unavailable = assessFreshness([], { now: new Date('2026-08-29T12:00:00Z') });
 
 describe('Figma shell', () => {
+  it('keeps a reserved freshness slot through the delayed shell read without inventing coverage', async () => {
+    navigation.query = 'profile=synthetic-profile';
+    let resolve!: (value: ShellEvidence) => void;
+    const read = vi.fn(() => new Promise<ShellEvidence>((done) => { resolve = done; }));
+    render(<ShellEvidenceProvider read={read} enabled><ShellFreshnessBanner /></ShellEvidenceProvider>);
+    const pending = await screen.findByText('Loading data freshness…');
+    const slot = pending.parentElement!;
+    expect(slot.style.minHeight).toBe('3rem');
+    expect(screen.queryByRole('region', { name: 'Data freshness' })).toBeNull();
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    resolve({ profileId: 'synthetic-profile', freshness: unavailable, crosscheck: null, badges: { 'change-queue': null, timeline: null } });
+    expect((await screen.findByRole('region', { name: 'Data freshness' })).parentElement).toBe(slot);
+    expect(slot.style.minHeight).toBe('3rem');
+    expect(screen.queryByText('Loading data freshness…')).toBeNull();
+    expect(screen.getByText('No data yet')).toBeTruthy();
+  });
+  it('reserves the loading frame without duplicate navigation controls or a ready screen title', () => {
+    const view = render(<NavFallback user={{ id: 'synthetic-user', email: null }} />);
+    expect(screen.getByRole('status', { name: 'Loading navigation' }).getAttribute('aria-busy')).toBe('true');
+    expect(view.container.querySelector('.wa-sidebar')).not.toBeNull();
+    expect(view.container.querySelector('.wa-topbar')).not.toBeNull();
+    expect(screen.queryByTestId('shell-title')).toBeNull();
+    expect(view.container.querySelectorAll('a, button, input, select')).toHaveLength(0);
+    view.rerender(<NavFallback user={null} />);
+    expect(view.container.childElementCount).toBe(0);
+  });
   it('renders all 20 exported glyphs and refuses unknown icon ids', () => {
     expect(FIGMA_ICON_IDS).toHaveLength(20);
     expect(new Set(FIGMA_ICON_IDS).size).toBe(20);

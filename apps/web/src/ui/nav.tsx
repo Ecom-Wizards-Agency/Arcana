@@ -27,6 +27,15 @@ export interface NavBarProps {
   groups?: readonly NavGroup[];
 }
 
+/** Reserve the shell frame while its roster loads, without a second live nav. */
+export function NavFallback({ user }: { user: NavUser | null }): ReactNode {
+  if (user === null) return null;
+  return <div role="status" aria-label="Loading navigation" aria-busy="true">
+    <aside className="wa-sidebar" aria-hidden="true" />
+    <div className="wa-topbar"><span className="wa-shell-title">Loading navigation…</span></div>
+  </div>;
+}
+
 export function NavBar({ user, profiles = [], groups = NAV_GROUPS }: NavBarProps): ReactNode {
   if (user === null) {
     return (

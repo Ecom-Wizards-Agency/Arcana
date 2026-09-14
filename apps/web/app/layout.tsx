@@ -1,11 +1,10 @@
-import { SHELL_FETCH_ACTIVITY_SCRIPT } from '../src/ui/shell-fetch-activity';
 import { SCREEN_REGISTRY } from '../src/screens/registry-metadata';
 import { ShellEvidenceActionProvider, type ShellEvidence } from '../src/ui/shell-evidence';
 import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
 import { Suspense, type ReactNode } from 'react';
 import '../src/ui/theme.css';
-import { AppNav, NavBar } from '../src/ui/nav';
+import { AppNav, NavFallback } from '../src/ui/nav';
 import { BugWidget } from '../src/ui/bug-widget';
 import { ToastProvider } from '../src/ui/toast';
 import { THEME_SCRIPT } from '../src/ui/theme-script';
@@ -127,7 +126,8 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
           have an apology.
         */}
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
-        {user !== null ? <script dangerouslySetInnerHTML={{ __html: SHELL_FETCH_ACTIVITY_SCRIPT }} /> : null}
+        {/* Parser-blocking: track page requests before any client island hydrates. */}
+        {user !== null ? <script src={new URL('../src/ui/shell-fetch-bootstrap.js', import.meta.url).pathname} /> : null}
       </head>
       <body>
         <ToastProvider>
@@ -139,7 +139,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             authenticated screens get the complete operator frame. Every route
             remains dynamic, which is correct for a per-tenant tool.
           */}
-          <Suspense fallback={<NavBar user={user} />}>
+          <Suspense fallback={<NavFallback user={user} />}>
             <AppNav user={user} />
           </Suspense>
           <div

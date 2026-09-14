@@ -90,5 +90,14 @@ function ActiveShellEvidenceProvider({ children, read }: {
 
 export function ShellFreshnessBanner({ children }: { children?: ReactNode }) {
   const evidence = useShellEvidence();
-  return evidence?.freshness == null ? null : <FreshnessBanner assessment={evidence.freshness}>{children}</FreshnessBanner>;
+  const loading = useShellEvidenceLoading();
+  // The shell read deliberately arrives after the grid is usable. Reserve the
+  // compact banner's space so that arrival cannot move a header during a drag.
+  return <div style={{ minHeight: '3rem' }}>
+    {evidence?.freshness == null
+      ? <p role="status" aria-busy={loading} style={{ margin: 0, padding: '0.5rem 0.75rem', color: 'var(--wa-text-muted)' }}>
+        {loading ? 'Loading data freshness…' : 'Data freshness unavailable'}
+      </p>
+      : <FreshnessBanner assessment={evidence.freshness}>{children}</FreshnessBanner>}
+  </div>;
 }
