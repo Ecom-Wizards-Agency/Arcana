@@ -12,7 +12,7 @@ test('the index opens the signed-in operator dashboard with its active profile',
   const { fixtureProfileId } = await readState();
 
   await page.waitForURL((url) =>
-    url.pathname === '/dashboard' && url.searchParams.get('profile') === fixtureProfileId,
+    url.pathname === '/' && url.searchParams.get('profile') === fixtureProfileId,
   );
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
 

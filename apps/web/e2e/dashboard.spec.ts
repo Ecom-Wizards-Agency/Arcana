@@ -7,7 +7,20 @@ import { readState } from './support/fixture';
 test('dashboard keeps four KPIs primary and configures four independent chart series', async ({ page }) => {
   await signIn(page, 'admin');
   const { fixtureProfileId } = await readState();
-  await page.goto(`/dashboard?profile=${fixtureProfileId}`);
+  const aliasQuery = new URLSearchParams([
+    ['profile', fixtureProfileId],
+    ['from', '2026-08-01'],
+    ['to', '2026-08-31'],
+    ['filter', 'one'],
+    ['filter', 'two'],
+  ]);
+  const alias = await page.request.get(`/dashboard?${aliasQuery}`, { maxRedirects: 0 });
+  expect(alias.status()).toBe(307);
+  const destination = new URL(alias.headers()['location'] ?? '', alias.url());
+  expect(destination.pathname).toBe('/');
+  expect([...destination.searchParams.entries()].sort()).toEqual([...aliasQuery.entries()].sort());
+
+  await page.goto(`/?profile=${fixtureProfileId}`);
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
   await expectDateRangePresets(page);
 

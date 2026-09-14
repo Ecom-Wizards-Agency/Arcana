@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const page = readFileSync(new URL('./page.tsx', import.meta.url), 'utf8');
+const page = readFileSync(new URL('../../src/screens/creative/load.tsx', import.meta.url), 'utf8');
 const explorer = readFileSync(new URL('./creative-performance.tsx', import.meta.url), 'utf8');
 
 describe('Creative Performance read-only boundary', () => {

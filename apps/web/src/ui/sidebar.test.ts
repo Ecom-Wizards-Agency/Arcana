@@ -16,8 +16,8 @@
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { NAV_LINKS } from './nav-links.js';
-import { SidebarNav } from './sidebar.js';
+import { NAV_GROUPS, NAV_LINKS } from './nav-links.js';
+import { SidebarNav, withProfile } from './sidebar.js';
 
 vi.mock('next/navigation', () => ({
   usePathname: () => window.location.pathname,
@@ -35,7 +35,7 @@ function hrefsAt(url: string): string[] {
   document.body.append(host);
   const root = createRoot(host);
   act(() => {
-    root.render(createElement(SidebarNav));
+    root.render(createElement(SidebarNav, { groups: NAV_GROUPS }));
   });
   mounted.push(root);
   // `getAttribute`, not `.href`: the attribute is what ships, and the property
@@ -54,30 +54,30 @@ afterEach(() => {
 
 describe('the sidebar and the chosen profile', () => {
   it('carries the profile on every link when one is chosen', () => {
-    const hrefs = hrefsAt('/dashboard?profile=ENTITY1TEST');
+    const hrefs = hrefsAt('/?profile=ENTITY1TEST');
 
     // Counted against the input rather than spot-checked: a link that quietly
     // stopped rendering would otherwise pass this suite.
     expect(hrefs).toHaveLength(NAV_LINKS.length);
-    expect(hrefs).toEqual(NAV_LINKS.map((link) => `${link.href}?profile=ENTITY1TEST`));
+    expect(hrefs).toEqual(NAV_LINKS.map((link) => withProfile(link.href, 'ENTITY1TEST')));
   });
 
   it('leaves the links bare when no profile is chosen', () => {
-    const hrefs = hrefsAt('/dashboard');
+    const hrefs = hrefsAt('/');
 
     expect(hrefs).toHaveLength(NAV_LINKS.length);
     expect(hrefs).toEqual(NAV_LINKS.map((link) => link.href));
-    expect(hrefs.some((href) => href.includes('?'))).toBe(false);
+    expect(hrefs.every((href) => !new URL(href, 'https://example.test').searchParams.has('profile'))).toBe(true);
   });
 
   it('treats an empty profile parameter as no profile', () => {
-    expect(hrefsAt('/dashboard?profile=')).toEqual(NAV_LINKS.map((link) => link.href));
+    expect(hrefsAt('/?profile=')).toEqual(NAV_LINKS.map((link) => link.href));
   });
 
   it('encodes the profile it carries', () => {
-    const hrefs = hrefsAt(`/dashboard?profile=${encodeURIComponent('a b&c')}`);
+    const hrefs = hrefsAt(`/?profile=${encodeURIComponent('a b&c')}`);
 
-    expect(hrefs).toEqual(NAV_LINKS.map((link) => `${link.href}?profile=a%20b%26c`));
+    expect(hrefs).toEqual(NAV_LINKS.map((link) => withProfile(link.href, 'a b&c')));
   });
 
   it('leaves the other query parameters of the current screen alone', () => {
@@ -91,7 +91,7 @@ describe('the sidebar and the chosen profile', () => {
       ['/grid?profile=ENTITY1TEST', 'entity=search_terms', 'window=30'].join('&'),
     );
 
-    expect(hrefs).toEqual(NAV_LINKS.map((link) => `${link.href}?profile=ENTITY1TEST`));
+    expect(hrefs).toEqual(NAV_LINKS.map((link) => withProfile(link.href, 'ENTITY1TEST')));
   });
 
   it('still marks the current screen while a profile is carried', () => {
@@ -102,7 +102,7 @@ describe('the sidebar and the chosen profile', () => {
     document.body.append(host);
     const root = createRoot(host);
     act(() => {
-      root.render(createElement(SidebarNav));
+      root.render(createElement(SidebarNav, { groups: NAV_GROUPS }));
     });
     mounted.push(root);
 
@@ -118,15 +118,15 @@ describe('the sidebar and the chosen profile', () => {
     document.body.append(host);
     const root = createRoot(host);
     act(() => {
-      root.render(createElement(SidebarNav));
+      root.render(createElement(SidebarNav, { groups: NAV_GROUPS }));
     });
     mounted.push(root);
 
     const openGroups = [...host.querySelectorAll('details.wa-navgroup[open] summary')].map(
       (summary) => summary.textContent?.trim(),
     );
-    expect(openGroups).toEqual(['Optimize']);
-    expect(host.querySelectorAll('details.wa-navgroup')).toHaveLength(3);
+    expect(openGroups).toEqual(['ACT']);
+    expect([...host.querySelectorAll('details.wa-navgroup summary')].map((summary) => summary.textContent?.trim())).toEqual(NAV_GROUPS.filter((group) => group.placement === 'workflow').map((group) => group.label));
     expect(host.querySelector('footer.wa-sidebar-utilities')?.textContent).toContain('Connect AI');
     expect(host.querySelector('footer.wa-sidebar-utilities')?.textContent).toContain('Settings');
   });

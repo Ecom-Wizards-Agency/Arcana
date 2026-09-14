@@ -51,7 +51,7 @@ import { FreshnessBanner, tokens } from '@wizard-ads/ui';
 import type { GridPayload } from '../_lib/grid-data';
 import { BidHistoryModal } from '../../src/ui/bid-history-modal';
 
-export interface GridWorkspaceProps {
+interface GridWorkspaceBaseProps {
   /** Identity supplied by the authenticated server page, never an API override. */
   actor: Readonly<OrgActor>;
   entity: EntityLevel;
@@ -59,7 +59,6 @@ export interface GridWorkspaceProps {
   profileId: string;
   period: { start: string; end: string };
   comparisonPeriod: { start: string; end: string };
-  freshness: FreshnessAssessment;
   /** Streamed server-owned crosscheck state; it never blocks the data grid. */
   crosscheck?: ReactNode;
   /** Campaign deep-link applied as a visible grid filter. */
@@ -68,9 +67,15 @@ export interface GridWorkspaceProps {
   viewStore?: ViewStore | null;
 }
 
-interface ReadyGridWorkspaceProps extends GridWorkspaceProps {
+/** Streamed React content is opaque: it may arrive as a lazy RSC reference. */
+export type GridWorkspaceProps = GridWorkspaceBaseProps & (
+  | { freshness: FreshnessAssessment; freshnessContent?: never }
+  | { freshnessContent: ReactNode; freshness?: never }
+);
+
+type ReadyGridWorkspaceProps = GridWorkspaceProps & {
   rows: readonly GridRow[];
-}
+};
 
 type GridLoadState =
   | { status: 'loading'; scope: string }
@@ -304,9 +309,11 @@ function ScopedGridWorkspace(props: GridWorkspaceProps): ReactNode {
 
   return (
     <div className="wa-embed" style={{ display: 'flex', flexDirection: 'column', gap: tokens.space(3) }}>
-      <FreshnessBanner assessment={props.freshness}>
-        {props.crosscheck ?? null}
-      </FreshnessBanner>
+      {props.freshness === undefined ? props.freshnessContent : (
+        <FreshnessBanner assessment={props.freshness}>
+          {props.crosscheck ?? null}
+        </FreshnessBanner>
+      )}
 
       {current.status === 'loading' ? (
         <section

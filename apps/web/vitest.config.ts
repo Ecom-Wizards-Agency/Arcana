@@ -18,6 +18,7 @@ export default defineConfig({
   // through Next.
   oxc: { jsx: { runtime: 'automatic' } },
   test: {
+    setupFiles: ['./vitest.setup.ts'],
     include: ['src/**/*.test.{ts,tsx}', 'app/**/*.test.{ts,tsx}'],
     exclude: ['e2e/**', '**/node_modules/**', '**/.next/**'],
   },

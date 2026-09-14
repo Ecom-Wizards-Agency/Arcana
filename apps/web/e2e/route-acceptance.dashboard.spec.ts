@@ -136,7 +136,7 @@ test('legacy strategy links land on the dashboard operating status', async ({ pa
 
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
   await page.waitForURL((url) => (
-    url.pathname === '/dashboard'
+    url.pathname === '/'
       && url.searchParams.get('profile') === fixtureProfileId
       && url.hash === '#operating-status'
   ));

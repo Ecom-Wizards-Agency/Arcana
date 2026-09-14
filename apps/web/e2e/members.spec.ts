@@ -84,7 +84,7 @@ test('an existing fixture user accepts and the accepted org becomes active', asy
   await page.goto(outsiderInviteUrl);
   await expect(page.getByRole('button', { name: 'Accept invitation' })).toBeVisible();
   await page.getByRole('button', { name: 'Accept invitation' }).click();
-  await expect(page).toHaveURL(/\/dashboard/);
+  await expect(page).toHaveURL(/\/\?profile=/);
 
   const state = await readState();
   const activeOrg = (await page.context().cookies()).find((cookie) => cookie.name === ORG_COOKIE);

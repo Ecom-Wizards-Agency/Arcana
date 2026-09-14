@@ -48,7 +48,7 @@ const CLOSED_KEY = 'openspell.nav.closed.v2';
 async function openDashboard(page: Page): Promise<void> {
   await signIn(page, 'admin');
   const { fixtureProfileId } = await readState();
-  await page.goto(`/dashboard?profile=${fixtureProfileId}`);
+  await page.goto(`/?profile=${fixtureProfileId}`);
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
 }
 
@@ -111,7 +111,7 @@ for (const viewport of VIEWPORTS) {
 
     // Sync status is the last workflow link, the one that lands under the
     // footer first. Scrolled into view, it must be what a click would reach.
-    const syncStatus = main.getByRole('link', { name: 'Sync status', exact: true });
+    const syncStatus = main.locator('a.wa-navlink').last();
     await syncStatus.scrollIntoViewIfNeeded();
     expect(await isHitAtOwnCenter(syncStatus)).toBe(true);
     expect(intersects(await boxOf(syncStatus), await boxOf(footer))).toBe(false);
@@ -190,7 +190,7 @@ test('the icon rail shows a visible link for every screen and leaves the remembe
   const seen: string[] = [];
   for (const link of NAV_LINKS) {
     const anchor = page.locator(
-      `aside.wa-sidebar a.wa-navlink[href="${link.href}?profile=${fixtureProfileId}"]`,
+      `aside.wa-sidebar a.wa-navlink[href="${link.href}${link.href.includes('?') ? '&' : '?'}profile=${fixtureProfileId}"]`,
     );
     await expect(anchor, link.href).toBeVisible();
     seen.push(link.href);

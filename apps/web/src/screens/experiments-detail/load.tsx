@@ -1,3 +1,7 @@
+import type { ScreenActor } from '../../server/page-read';
+
+import type { ScreenParams } from '../types';
+
 /**
  * `/experiments/[id]` — one experiment, whole.
  *
@@ -9,47 +13,47 @@
  * The comparison is honest about what it is — a rough measurement against the
  * rest of the account, not a randomized test — and the note on it says so.
  */
-import { authenticatedPageRead, pageReadErrorMessage } from '../../../src/server/authenticated-page-read';
+import { pageReadErrorMessage } from '../../server/authenticated-page-read';
+
 import type { QueryHandle } from '@wizard-ads/db';
+
 import type { OrgActor } from '@wizard-ads/shared';
-import { headers } from 'next/headers';
+
 import { notFound, redirect } from 'next/navigation';
+
 import {
   computeComparison,
   getExperiment,
   listEntityChangesInWindow,
   listExperimentEvents,
 } from '@wizard-ads/db';
-import { authenticationDestination } from '../../../src/server/request-context';
-import { requireOrgRole } from '../../../src/server/org-role';
-import { can } from '../../../src/auth/roles';
-import { listProfileOptions, loadExperimentSpendSeries } from '../../../src/experiments/data';
-import { heading, muted, page } from '../../../src/ui/tokens';
-import { ExperimentDetail } from './detail';
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
+import { authenticationDestination } from '../../server/request-context';
 
-type RouteParams = Promise<{ experimentId: string }>;
+import { requireOrgRole } from '../../server/org-role';
+
+import { can } from '../../auth/roles';
+
+import { listProfileOptions, loadExperimentSpendSeries } from '../../experiments/data';
+
+import type { ExperimentDetail } from '../../../app/experiments/[experimentId]/detail';
+
+type RouteParams = Promise<{ experimentId: string; }>;
 
 type DetailProps = Parameters<typeof ExperimentDetail>[0];
 
-export default async function ExperimentDetailPage({ params }: { params: RouteParams }) {
+export async function load(access: ScreenActor, input: ScreenParams) {
+  const params = Promise.resolve(input.params) as RouteParams;
+
   const { experimentId } = await params;
   let detail: DetailProps | null;
   try {
-    detail = await authenticatedPageRead(await headers(), (database, actor) => loadDetail(database, actor, experimentId));
+    detail = await access.read((database, actor) => loadDetail(database, actor, experimentId));
   } catch (error) {
     const authDestination = authenticationDestination(error);
     if (authDestination !== null) redirect(authDestination);
     const message = pageReadErrorMessage(error, 'Experiment is unavailable');
-    return (
-      <main style={page}>
-        <h1 style={heading}>Experiment</h1>
-        <p role="alert">{message}</p>
-        <p style={muted}>Nothing was read; this is the page refusing, not an empty experiment.</p>
-      </main>
-    );
+    return { view: 'error' as const, props: { message } };
   }
 
   // Outside the try on purpose. `notFound()` works by throwing a control-flow
@@ -57,7 +61,7 @@ export default async function ExperimentDetailPage({ params }: { params: RoutePa
   // it and rendered its digest string as the error message — a 404 that read
   // like a crash.
   if (detail === null) notFound();
-  return <ExperimentDetail {...detail} />;
+  return { view: 'ready' as const, props: { detail } };
 }
 
 async function loadDetail(
