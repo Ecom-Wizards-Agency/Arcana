@@ -50,6 +50,8 @@ import {
   COORDINATED_METHOD,
   REFERENCE_METHOD,
   MethodAdmissionSnapshot,
+  type MethodSelection,
+  type OptimizerTargetOutcome,
   RecommendationRunAdmissionContext,
   oneTimeMethodId,
   type MethodEvaluatorInput,
@@ -171,6 +173,7 @@ export interface EnqueueRecommendationPreviewBatchInput extends ProfileScope {
   runAt?: Date;
   oneTimeConfiguration?: OneTimeRpcConfiguration;
   oneTimeReadiness?: OneTimePreviewReadiness;
+  campaignMethods?: Record<string, MethodSelection>;
 }
 
 export interface RecommendationPreviewBatchScope extends ProfileScope {
@@ -327,6 +330,7 @@ export interface RecommendationRunNarrative {
   strategyProvenance?: StrategyProvenance;
   holds?: Hold[];
   calculationSnapshots?: MethodEvaluatorInput[];
+  targetOutcomes?: OptimizerTargetOutcome[];
 }
 
 /** Shared recommendation plus core-only notes persisted through audit_log. */
@@ -576,6 +580,11 @@ export async function runRecommendations(
         reconsiderWhen: 'Resolve the outstanding recommendation observation hold.',
       })) : [])],
       calculationSnapshots: evaluated.calculationSnapshots,
+      targetOutcomes: evaluated.targetOutcomes.map((outcome) => groupSafety?.mayPropose === false && outcome.outcome === 'suggestion'
+        ? { ...outcome, outcome: 'blocked' as const, reasonCode: 'GUARDRAIL_BLOCKED', reason: groupSafety.reason,
+          hold: { reason: 'GUARDRAIL_BLOCKED' as const, prose: groupSafety.reason, affectedScope: [outcome.entityRef],
+            reconsiderWhen: 'Resolve the outstanding recommendation observation hold.' } }
+        : outcome),
       ...(oneTime === null ? {} : { oneTimeConfiguration: oneTime.configuration }),
     };
     let written: number;
@@ -660,6 +669,7 @@ interface BidProposalInput {
 
 function bidProposals(input: BidProposalInput): {
   proposals: AnnotatedRecommendation[]; diagnostics: ProposalDiagnostics; holds: Hold[]; calculationSnapshots: MethodEvaluatorInput[];
+  targetOutcomes: OptimizerTargetOutcome[];
 } {
   const { scope, window, inputs, strategy, resolvedGoal, pacing, group: runGroup, oneTimeConfiguration: oneTime } = input;
   if (oneTime === null && strategy === null) throw new RecommendationScopeIntegrityError();
@@ -669,6 +679,7 @@ function bidProposals(input: BidProposalInput): {
   const proposals: AnnotatedRecommendation[] = [];
   const holds: Hold[] = [];
   const calculationSnapshots: MethodEvaluatorInput[] = [];
+  const targetOutcomes: OptimizerTargetOutcome[] = [];
   const diagnostics: ProposalDiagnostics = {
     targetsRead: inputs.targets.length, targetsConsidered: 0, proposed: 0, suppressed: 0, declined: 0,
     blockedOutOfStock: 0, skippedInactive: 0, skippedMissingStrategy: 0, corridorsAvailable: 0,
@@ -688,12 +699,21 @@ function bidProposals(input: BidProposalInput): {
     const method = resolveMethod(selection.value.id, selection.value.version);
     const campaignTargets = selection.value.id === COORDINATED_METHOD.id
       ? inputs.targets.filter((t) => t.entityRef.campaignId === target.entityRef.campaignId) : [target];
+    const recordTargets = (outcome: OptimizerTargetOutcome['outcome'], reasonCode: string, reason: string, hold?: Hold) => {
+      targetOutcomes.push(...campaignTargets.map((item) => ({ entityRef: item.entityRef,
+        currentBid: item.currentBid ?? item.corridor?.bid ?? null, method: selection.value, outcome, reasonCode, reason,
+        ...(hold === undefined ? {} : { hold }) })));
+    };
+    const retain = (hold: Hold, outcome: 'unchanged' | 'blocked' = 'blocked', reasonCode = hold.reason as string) => {
+      holds.push(hold);
+      recordTargets(outcome, reasonCode, hold.prose, hold);
+    };
     if (selection.value.id === COORDINATED_METHOD.id) {
       coordinatedCampaigns.add(target.entityRef.campaignId ?? '');
       groupedExtraTargets += campaignTargets.length - 1;
       if (campaignTargets.some((t) => t.entityState !== 'enabled' || t.campaignState !== 'enabled' || t.adGroupState !== 'enabled'
         || input.methodAdmission === undefined || experimentLockFor(t, input.methodAdmission.experiments, input.admittedAt) !== null)) {
-        holds.push({ reason: 'GUARDRAIL_BLOCKED', prose: 'A shared campaign control would affect an inactive or experiment-protected target, or experiment evidence is missing.',
+        retain({ reason: 'GUARDRAIL_BLOCKED', prose: 'A shared campaign control would affect an inactive or experiment-protected target, or experiment evidence is missing.',
           affectedScope: campaignTargets.map((t) => t.entityRef), reconsiderWhen: 'Resolve campaign-wide eligibility and capture current experiment evidence.' });
         diagnostics.declined += 1; continue;
       }
@@ -703,7 +723,7 @@ function bidProposals(input: BidProposalInput): {
     if (target.entityState !== 'enabled' || target.campaignState !== 'enabled' || target.adGroupState !== 'enabled') {
       diagnostics.skippedInactive += 1;
       const hold: Hold = { reason: 'ENTITY_INACTIVE', prose: 'Entity, ad group, or campaign is not enabled.', affectedScope: [target.entityRef], reconsiderWhen: 'Enable the affected entity before evaluating a bid.' };
-      holds.push(hold);
+      retain(hold);
       example(diagnostics, target, 'held', hold.prose);
       continue;
     }
@@ -714,7 +734,7 @@ function bidProposals(input: BidProposalInput): {
     if (lock !== null) {
       diagnostics.declined += 1;
       diagnostics.declinedReasons[lock.reason] = (diagnostics.declinedReasons[lock.reason] ?? 0) + 1;
-      holds.push(lock);
+      retain(lock);
       example(diagnostics, target, 'held', lock.prose);
       continue;
     }
@@ -744,14 +764,14 @@ function bidProposals(input: BidProposalInput): {
       group: runGroup === null ? null : { name: runGroup.name, values: runGroup }, run: runFields });
     if (resolution.kind === 'hold') {
       diagnostics.skippedMissingStrategy += 1;
-      holds.push({ ...resolution.hold, affectedScope: campaignTargets.map((t) => t.entityRef) });
+      retain({ ...resolution.hold, affectedScope: campaignTargets.map((t) => t.entityRef) });
       example(diagnostics, target, 'held', resolution.hold.prose);
       continue;
     }
     const settings = resolution.settings;
     if (!method.descriptor.adProducts.includes(target.entityRef.adProduct ?? 'SP')) {
       diagnostics.declined += 1;
-      holds.push({ reason: 'INSUFFICIENT_EVIDENCE', prose: 'The selected method does not support this ad product.', affectedScope: [target.entityRef], reconsiderWhen: 'Select a method compatible with the campaign ad product.' });
+      retain({ reason: 'INSUFFICIENT_EVIDENCE', prose: 'The selected method does not support this ad product.', affectedScope: campaignTargets.map((item) => item.entityRef), reconsiderWhen: 'Select a method compatible with the campaign ad product.' });
       continue;
     }
     diagnostics.targetsConsidered += 1;
@@ -778,7 +798,7 @@ function bidProposals(input: BidProposalInput): {
         run: oneTime?.version === 2 ? oneTime : {},
       });
       if (extras.kind === 'hold') {
-        holds.push({ ...extras.hold, affectedScope: campaignTargets.map((t) => t.entityRef) });
+        retain({ ...extras.hold, affectedScope: campaignTargets.map((t) => t.entityRef) });
         diagnostics.skippedMissingStrategy += 1; continue;
       }
       const sourced = { ...referenceSnapshot.resolvedSettings, ...extras.settings };
@@ -811,17 +831,19 @@ function bidProposals(input: BidProposalInput): {
         diagnostics.declined += 1;
         diagnostics.declinedReasons['explicit_limits_conflict'] = (diagnostics.declinedReasons['explicit_limits_conflict'] ?? 0) + 1;
         const hold: Hold = { reason: 'NO_FEASIBLE_CONTROL_SET', prose: 'The calculated bid cannot satisfy all resolved bid limits.', affectedScope: [target.entityRef], reconsiderWhen: 'Resolve the conflicting floor, ceiling, or change cap.' };
-        holds.push(hold);
+        retain(hold);
         example(diagnostics, target, 'held', hold.prose);
         continue;
       }
       const notes = reference?.kind === 'proposal' ? reference.notes : [];
       proposals.push({ ...recommendation, reason: databaseReason(recommendation.reason), preconditionNotes: notes });
+      recordTargets('suggestion', recommendation.reason, 'A change was proposed by the recorded method.');
       diagnostics.proposed += 1;
       diagnostics.preconditionNotes += notes.length;
       if (notes.length > 0) example(diagnostics, target, 'proposed_with_note', notes.map((note) => note.message).join(' '));
     } else {
-      holds.push(result.hold);
+      retain(result.hold, reference?.kind === 'none' || reference?.kind === 'suppressed' ? 'unchanged' : 'blocked',
+        reference?.kind === 'none' ? reference.reason : reference?.kind === 'suppressed' ? 'suppressed' : result.hold.reason);
       if (reference?.kind === 'blocked') diagnostics.blockedOutOfStock += 1;
       else if (reference?.kind === 'suppressed') {
         diagnostics.suppressed += 1;
@@ -837,7 +859,12 @@ function bidProposals(input: BidProposalInput): {
   if (diagnostics.proposed !== proposals.length || proposals.length + holds.length + groupedExtraTargets !== inputs.targets.length) {
     throw new Error('Method outputs do not reconcile with the target roster');
   }
-  return { proposals, diagnostics, holds, calculationSnapshots };
+  const targetIdentity = (entity: EntityRef) => JSON.stringify([entity.profileId, entity.entityType, entity.entityId]);
+  if (targetOutcomes.length !== inputs.targets.length
+    || new Set(targetOutcomes.map((outcome) => targetIdentity(outcome.entityRef))).size !== inputs.targets.length) {
+    throw new Error('Recorded outcomes do not reconcile with the target roster');
+  }
+  return { proposals, diagnostics, holds, calculationSnapshots, targetOutcomes };
 }
 
 function withinResolvedBidLimits(value: number | string | null, currentBid: number | null, settings: ResolvedBidSettings): boolean {
@@ -1503,6 +1530,7 @@ interface InsertScopedRecommendationRunInput extends ProfileScope {
   group: ScheduledOptimizationGroup | null;
   strategy: ResolvedStrategySnapshot | null;
   executionSnapshot?: OneTimeRpcSnapshot | null;
+  campaignMethods?: Record<string, MethodSelection>;
   lookbackDays: number;
   source: 'schedule' | 'web';
   runAfter: string;
@@ -1529,6 +1557,9 @@ async function insertScopedRecommendationRun(
     version: 1, admittedAt, methodId: executionSnapshot === null ? REFERENCE_METHOD.id : executionSnapshot.configuration.method,
     methodVersion: executionSnapshot === null ? REFERENCE_METHOD.version : methodSelectionFor(executionSnapshot.configuration.method).version,
     strategyProvenance: input.strategy?.provenance ?? {},
+    ...(input.campaignMethods === undefined ? {} : { campaignMethods: Object.fromEntries(
+      campaignIds.filter((id) => input.campaignMethods?.[id] !== undefined).map((id) => [id, input.campaignMethods![id]]),
+    ) }),
     experiments: await readMethodExperiments({ sql }, input.orgId, input.profileId, admittedAt),
   });
   const admissionContext = RecommendationRunAdmissionContext.parse({ ...input.scheduleContext, methodAdmission });
@@ -1611,6 +1642,9 @@ function preparePreviewBatch(
 ): (sql: QuerySql) => Promise<RecommendationPreviewAccepted> {
   const validated = validatePreviewRequest(input);
   const configuration = input.oneTimeConfiguration === undefined ? null : OneTimeRpcConfiguration.parse(input.oneTimeConfiguration);
+  if (configuration === null && input.campaignMethods !== undefined) {
+    throw new RecommendationPreviewError('invalid_request', 400, 'Campaign method selections require an explicit one-time configuration.');
+  }
   if (configuration !== null && input.lookbackDays !== undefined) {
     throw new RecommendationPreviewError('invalid_request', 400, 'One-time previews use explicit dates, not a moving lookback.');
   }
@@ -1619,6 +1653,7 @@ function preparePreviewBatch(
       version: 1, profileId: input.profileId, clientRequestId: input.clientRequestId,
       scope: validated.mode === 'all' ? { mode: 'all' } : { mode: 'selected', campaignIds: validated.campaignIds },
       configuration,
+      ...(input.campaignMethods === undefined ? {} : { campaignMethods: input.campaignMethods }),
     });
   }
   const lookbackDays = configuration === null ? input.lookbackDays ?? DEFAULT_RECOMMENDATION_LOOKBACK_DAYS
@@ -1717,6 +1752,9 @@ function preparePreviewBatch(
       );
     }
     const effectiveIds = bytewiseSorted(eligible.map((row) => row.campaign_id));
+    if (Object.keys(input.campaignMethods ?? {}).some((id) => !effectiveIds.includes(id))) {
+      throw new RecommendationPreviewError('stale_selection', 409, 'A method selection is outside the current campaign scope.');
+    }
     if (new Set(effectiveIds).size !== effectiveIds.length) {
       throw new RecommendationScopeIntegrityError();
     }
@@ -1822,6 +1860,7 @@ function preparePreviewBatch(
         group,
         strategy,
         executionSnapshot,
+        campaignMethods: input.campaignMethods,
         lookbackDays,
         source: 'web',
         runAfter: requestedAt,
@@ -1963,6 +2002,7 @@ export class PostgresManualRecommendationAdmission {
       return preparePreviewBatch({
         profileId: input.profileId, clientRequestId: input.clientRequestId, scope: input.scope,
         oneTimeConfiguration: input.oneTimeConfiguration, oneTimeReadiness: input.oneTimeReadiness,
+        campaignMethods: input.campaignMethods,
         orgId: actor.orgId, actorId: actor.userId,
       })(sql);
     });

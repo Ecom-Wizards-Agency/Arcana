@@ -38,6 +38,8 @@ test('edits a canonical local weekday schedule and still queues a manual preview
   await page.goto(`/optimizer/groups?profile=${fixtureProfileId}`);
 
   await expect(page.getByRole('heading', { name: 'Optimization Groups', exact: true })).toBeVisible();
+  await page.getByRole('link', { name: 'View settings', exact: true }).first().click();
+  await page.getByRole('link', { name: 'Edit group settings', exact: true }).click();
   await expect(page.getByText('UTC · 04:00 local')).toBeVisible();
 
   const weekdayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -79,7 +81,7 @@ test('selects filtered campaigns across a filter and polls the exact read-only p
 
   await signIn(page, 'admin');
   await page.goto(`/optimizer?profile=${state.fixtureProfileId}`);
-  await expect(page.getByRole('heading', { name: 'Campaign Optimizer', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Optimize Now', exact: true })).toBeVisible();
 
   const search = page.getByRole('search', { name: 'Filter optimizer campaigns' });
   await search.getByLabel('Find campaign').fill(FILTERED_CAMPAIGN_PREFIX);
@@ -135,10 +137,9 @@ test('selects filtered campaigns across a filter and polls the exact read-only p
     }).check();
   }
 
-  await expect(page.getByRole('radio', { name: 'Selected campaigns (3)', exact: true }))
-    .toBeChecked();
+  await expect(page.getByTestId('optimizer-selection-count')).toContainText('3 campaigns selected.');
   const run = page.getByTestId('optimizer-run-preview');
-  await expect(run).toHaveText('Run preview · 3 selected');
+  await expect(run).toHaveText('Get suggestions');
 
   const requests: OneTimeRpcPreviewRequest[] = [];
   page.on('request', (request) => {
@@ -148,19 +149,23 @@ test('selects filtered campaigns across a filter and polls the exact read-only p
   });
   const beforePreview = await readPreviewCounts(state);
   await run.click();
-  const dialog = page.getByRole('dialog', { name: 'Confirm one-time preview' });
-  await expect(dialog).toBeVisible();
-  await expect(dialog).toHaveJSProperty('open', true);
-  await expect(dialog.getByText('3 campaigns · SP reference efficiency · USD', { exact: true })).toBeVisible();
-  await expect(dialog.getByLabel('Target ACOS (%)', { exact: true })).toHaveValue('');
-  await expect(dialog.getByText('Some settings are mixed or missing.', { exact: false })).toBeVisible();
-  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await expect(dialog).toHaveCount(0);
+  const settings = page.locator('main').filter({ has: page.getByRole('heading', { name: 'Run settings', exact: true }) });
+  await expect(settings).toBeVisible();
+  await expect(settings.locator('details').filter({ hasText: 'Temporary run fields and limits' })).toHaveJSProperty('open', true);
+  await expect(settings.locator('tbody tr')).toHaveCount(3);
+  await expect(settings).toContainText('USD');
+  await expect(settings.getByRole('button', { name: 'Change method', exact: true })).toBeVisible();
+  await expect(settings.getByLabel('Target ACOS (%)', { exact: true })).toHaveValue('');
+  await expect(settings.getByRole('button', { name: 'Save settings and continue', exact: true })).toBeDisabled();
+  await settings.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(settings).toHaveCount(0);
   expect(requests).toHaveLength(0);
   expect(await readPreviewCounts(state)).toEqual(beforePreview);
 
   await run.click();
-  await fillOneTimeSettings(dialog);
+  await fillOneTimeSettings(settings);
+  await settings.getByRole('button', { name: 'Save settings and continue', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Optimize Now', exact: true })).toBeVisible();
   expect(requests).toHaveLength(0);
   await reportRuntime(state);
 
@@ -183,11 +188,11 @@ test('selects filtered campaigns across a filter and polls the exact read-only p
     const url = new URL(response.url());
     return response.request().method() === 'POST' && url.pathname === ONE_TIME_ENDPOINT;
   });
-  await dialog.getByRole('button', { name: 'Run read-only preview', exact: true }).click();
+  await run.click();
   const response = await responsePromise;
   expect(response.status()).toBe(202);
   const accepted = RecommendationPreviewAccepted.parse(await response.json());
-  await expect(dialog).toHaveCount(0);
+  await expect(settings).toHaveCount(0);
   expect(attempts).toBe(2);
   expect(requests).toHaveLength(2);
   expect(requests[1]).toEqual(requests[0]);
@@ -198,7 +203,7 @@ test('selects filtered campaigns across a filter and polls the exact read-only p
   // Group custody remains partitioned even though both children use the same
   // confirmed one-time settings instead of their saved bidding policy.
   expect(accepted.childCount).toBe(2);
-  await expect(page.getByText(/Preview queued for 3 campaigns across 2 runs\./)).toBeVisible();
+  await expect(page.getByRole('list', { name: 'Preview runs' }).getByRole('listitem')).toHaveCount(accepted.childCount);
 
   const stored = await readStoredScope(state, accepted.batchId);
   expect(stored.batch).toEqual({
@@ -228,25 +233,28 @@ test('selects filtered campaigns across a filter and polls the exact read-only p
   // Emulate worker completion in the queue/run ledgers. The browser must
   // discover this through its bounded polling loop without a manual reload.
   await succeedQueuedRecommendationRuns(state, accepted.childCount);
-  await expect(page.getByText('Preview completed. No changes were recommended.', { exact: true }))
+  await expect(page.getByText('Preview completed. No changes were recommended.', { exact: false }))
     .toBeVisible({ timeout: 10_000 });
-  await expect(page.getByRole('list', { name: 'Preview runs' })
-    .getByRole('link', { name: 'Review 0 recommendations →' }))
-    .toHaveCount(accepted.childCount);
+  const completedUrl = new URL(page.url());
+  expect(completedUrl.pathname).toBe('/optimizer/review/' + accepted.batchId);
+  expect(completedUrl.searchParams.get('profile')).toBe(state.fixtureProfileId);
+  await page.getByRole('tab', { name: 'Run details', exact: true }).click();
+  await expect(page.getByRole('tabpanel').locator('section > details')).toHaveCount(accepted.childCount);
 
   const afterCompletion = await readDatabaseEvidence(state);
   expect(afterCompletion.assignments).toEqual(before.assignments);
   expect(afterCompletion.savedGroups).toEqual(before.savedGroups);
   expect(afterCompletion.applyEvidence).toEqual(before.applyEvidence);
 
-  await page.getByRole('list', { name: 'Preview runs' })
-    .getByRole('link', { name: 'Review 0 recommendations →' }).first().click();
-  await page.waitForURL((url) => url.pathname === '/recommendations');
-  await expect(page.getByRole('heading', { name: 'Recommendations', exact: true })).toBeVisible();
-  await expect(page.getByText('This run proposed nothing', { exact: true })).toBeVisible();
-  await page.getByText('Run details', { exact: true }).click();
-  await expect(page.getByText('Confirmed target ACOS 37%', { exact: false }))
-    .toContainText('2026-08-01 to 2026-08-26 (UTC)');
+  await expect(page.getByRole('heading', { name: 'Review suggestions', exact: true })).toBeVisible();
+  await expect(page.getByText('This run proposed nothing', { exact: false })).toBeVisible();
+  const children = page.getByRole('tabpanel').locator('section > details');
+  await children.first().locator('summary').first().click();
+  await expect(children.first().getByText('Requested run-field target ACOS: 37%', { exact: false }))
+    .toContainText('Assigned group values take precedence.');
+  await expect(children.first().getByText('Requested reporting window:', { exact: false }))
+    .toContainText('2026-08-01 to 2026-08-26 · Timezone: UTC');
+  await expect(page.getByRole('row').filter({ hasText: 'Reconciliation counts' })).toContainText('3 / 3 campaigns; 2 / 2 runs; 0 proposals');
 });
 
 test('explains unavailable readiness and refuses a worker lost after settings were opened', async ({ page }) => {
@@ -262,31 +270,34 @@ test('explains unavailable readiness and refuses a worker lost after settings we
   await page.reload();
   await page.getByRole('checkbox', { name: `Select ${filteredCampaignName(1)} for this preview` }).check();
   await run.click();
-  const dialog = page.getByRole('dialog', { name: 'Confirm one-time preview' });
-  await expect(dialog.getByLabel('Target ACOS (%)', { exact: true })).toHaveValue('20');
-  await fillOneTimeSettings(dialog);
+  const settings = page.locator('main').filter({ has: page.getByRole('heading', { name: 'Run settings', exact: true }) });
+  await expect(settings.getByLabel('Target ACOS (%)', { exact: true })).toHaveValue('20');
+  await fillOneTimeSettings(settings);
+  await settings.getByRole('button', { name: 'Save settings and continue', exact: true }).click();
+  await expect(run).toBeEnabled();
   await reportRuntime(state, false);
   const before = await readPreviewCounts(state);
   const refused = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === ONE_TIME_ENDPOINT);
-  await dialog.getByRole('button', { name: 'Run read-only preview', exact: true }).click();
+  await run.click();
   const response = await refused;
   expect(response.status()).toBe(503);
   expect(await response.json()).toMatchObject({ reason: 'worker_unavailable' });
-  await expect(dialog.getByRole('alert')).toContainText('The recommendation worker is unavailable.');
-  await expect(dialog.getByRole('button', { name: 'Run read-only preview', exact: true })).toBeEnabled();
+  await expect(page.locator('#wa-main').getByRole('alert')).toContainText('The recommendation worker is unavailable.');
+  await expect(run).toBeEnabled();
   expect(await readPreviewCounts(state)).toEqual(before);
-  await expect(dialog.getByLabel('Target ACOS (%)', { exact: true })).toHaveValue('37');
-  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.getByRole('button', { name: 'Edit settings', exact: true }).click();
+  await expect(settings.getByLabel('Target ACOS (%)', { exact: true })).toHaveValue('37');
+  await settings.getByRole('button', { name: 'Cancel', exact: true }).click();
   await reportRuntime(state);
 });
 
-async function fillOneTimeSettings(dialog: Locator): Promise<void> {
+async function fillOneTimeSettings(settings: Locator): Promise<void> {
   for (const [label, value] of [
     ['Target ACOS (%)', '37'], ['Minimum bid (USD)', '0.11'], ['Maximum bid (USD)', '4.3'],
     ['Maximum bid increase (%)', '23'], ['Maximum bid decrease (%)', '41'],
     ['Reporting start', ONE_TIME_CONFIGURATION.window.start], ['Reporting end', ONE_TIME_CONFIGURATION.window.end],
-  ] as const) await dialog.getByLabel(label, { exact: true }).fill(value);
+  ] as const) await settings.getByLabel(label, { exact: true }).fill(value);
 }
 
 function filteredCampaignId(index: number): string {

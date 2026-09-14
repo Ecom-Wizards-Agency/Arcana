@@ -1,6 +1,6 @@
 /** Explicit settings for one read-only run. No tenant policy defaults live here. */
 import { z } from 'zod';
-import { MethodId, MethodVersion, PlacementEvidenceRequirements } from './methods.js';
+import { MethodId, MethodVersion, MethodSelection, PlacementEvidenceRequirements } from './methods.js';
 import { Uuid } from './primitives.js';
 
 export const ONE_TIME_PREVIEW_CAMPAIGN_MAX = 10_000;
@@ -66,6 +66,12 @@ export const OneTimeRpcPreviewRequest = z.strictObject({
   clientRequestId: Uuid,
   scope: OneTimePreviewSelection,
   configuration: OneTimeRpcConfiguration,
+  /** Temporary per-campaign choices, frozen in each child's method admission. */
+  campaignMethods: z.record(z.string().min(1).refine((id) => id === id.trim(), 'Campaign ids must be canonical strings.'), MethodSelection)
+    .refine((selections) => Object.keys(selections).length <= ONE_TIME_PREVIEW_CAMPAIGN_MAX, 'Too many campaign method selections.').optional(),
+}).refine((request) => request.scope.mode === 'all' || Object.keys(request.campaignMethods ?? {})
+  .every((id) => request.scope.mode === 'selected' && request.scope.campaignIds.includes(id)), {
+  path: ['campaignMethods'], message: 'Method selections must belong to the selected campaign scope.',
 });
 export type OneTimeRpcPreviewRequest = z.infer<typeof OneTimeRpcPreviewRequest>;
 

@@ -3,24 +3,7 @@ import type { ScreenActor } from '../../server/page-read';
 
 import type { ScreenParams } from '../types';
 
-/**
- * `/optimizer` — the Campaign Optimizer, laid out like AdLabs' "Bid Optimizer"
- * (`https://github.com/Ecom-Wizards-Agency/Arcana/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/04-optimizer.md`).
- *
- * This is the AdLabs-style *presentation* of the recommendations the engine
- * (WP-07) already produces. It reads them — it does not compute them — and lays
- * them out the way the recon says the incumbent does: a KPI tile row, a
- * daily/weekly/monthly trend chart, the reason-coverage clusters, and a preview
- * grouped into optimization groups, each proposal carrying the change-reasons /
- * limit-reasons split as two separate pill columns. Campaign buckets are named
- * honestly; they do not stand in for the persisted optimization-group model.
- * The three-act QA-and-apply
- * gesture stays where it is tested and trusted, on `/recommendations`; this page
- * links through to it.
- *
- * Entry goes through `pageRead`, the same guard the dashboard and grid use, and
- * every read below is scoped by the org the gate resolved.
- */
+/** Campaign scope and saved context; calculation and execution remain worker-owned. */
 
 
 
@@ -131,6 +114,10 @@ export async function load(access: ScreenActor, input: ScreenParams) {
     proposals,
     true,
   );
+  const savedMethods = Object.fromEntries(campaignRows.flatMap((row) => {
+    const method = optimizationWorkspace.groups.find((record) => record.group.id === row.groupId)?.group.method;
+    return method === undefined ? [] : [[row.campaignId, method]];
+  }));
   const freshness = undefined as FreshnessAssessment | undefined; // The shell owns the coverage read.
 
   const cockpitDays = periodRows.map((row) => ({
@@ -142,5 +129,5 @@ export async function load(access: ScreenActor, input: ScreenParams) {
     orders: row.orders,
   }));
 
-  return { view: 'ready' as const, props: { run, summary, profile, period, today, params, freshness, runs, cockpitDays, tiles, settled, coverageStart, campaignRows, mayRunOptimizer, previewReadiness, coverage, proposals, campaignGroups } };
+  return { view: 'ready' as const, props: { run, summary, profile, period, today, params, freshness, runs, cockpitDays, tiles, settled, coverageStart, campaignRows, savedMethods, mayRunOptimizer, previewReadiness, coverage, proposals, campaignGroups } };
 }

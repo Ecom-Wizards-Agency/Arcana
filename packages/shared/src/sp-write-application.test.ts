@@ -10,6 +10,7 @@ import {
   SpWritePreviewRequest,
   SpWriteRecordedPreview,
   SpWriteRecordedPreviewRequest,
+  spWriteExecutionRequirements,
 } from './sp-write-application.js';
 import { spWritePlanBinding, SpWritePlan } from './sp-writes.js';
 
@@ -72,6 +73,14 @@ function recordedFixture() {
 }
 
 describe('write application boundary', () => {
+  it('describes worker prerequisites without treating approval as dispatch enablement', () => {
+    expect(spWriteExecutionRequirements).toEqual({
+      executor: 'worker',
+      dispatchGate: { environmentVariable: 'OPENSPELL_SP_WRITE_DISPATCH_ENABLED', enabledByDefault: false },
+      profileAuthorization: 'required',
+    });
+  });
+
   it('requires the exact Amazon logical-change count in a confirmed HTTP approval', () => {
     const receipt = operationFixture().receipt;
     const request = {

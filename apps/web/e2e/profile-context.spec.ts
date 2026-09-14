@@ -13,7 +13,7 @@ import { readState } from './support/fixture';
 const ACCOUNT_SURFACES = [
   { route: '/', heading: 'Home' },
   { route: '/grid?entity=campaigns', heading: 'Campaigns' },
-  { route: '/optimizer', heading: 'Campaign Optimizer' },
+  { route: '/optimizer', heading: 'Optimize Now' },
   { route: '/creative', heading: 'Creative Performance' },
   { route: '/recommendations', heading: 'Recommendations' },
   { route: '/campaigns', heading: 'Campaign Builder' },

@@ -23,6 +23,9 @@ export function oneTimePreviewRequestFingerprint(
     profileId: parsed.profileId.toLowerCase(),
     scope,
     configuration: parsed.configuration,
+    ...(parsed.campaignMethods === undefined ? {} : { campaignMethods: Object.fromEntries(
+      Object.entries(parsed.campaignMethods).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0),
+    ) }),
   });
 }
 

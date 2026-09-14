@@ -109,8 +109,9 @@ test('Home renders five KPIs and the two-column decision cards in both budget st
     await database.sql.end();
   }
 
-  // The optimizer retains its own chart surface; Home does not mount it.
-  await page.goto(`/optimizer?profile=${fixtureProfileId}`);
+  // Campaign performance retains the chart and keyboard-accessible period detail.
+  const chartQuery = new URLSearchParams({ entity: 'campaigns', profile: fixtureProfileId });
+  await page.goto(`/grid?${chartQuery}`);
   await expect(page.getByLabel('Spend display')).toBeVisible();
   const period = page.locator('.wa-cockpit__period-hit').first();
   await expect(period).toHaveAttribute('tabindex', '0');

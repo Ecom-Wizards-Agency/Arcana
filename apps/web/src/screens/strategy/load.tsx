@@ -11,10 +11,10 @@ import { listProfiles } from '../../../app/_lib/profiles';
 // state, which would permanently bake a redirect to /login into the artifact.
 export const dynamic = 'force-dynamic';
 
-/** Backward-compatible deep links now land on the integrated dashboard section. */
+/** Backward-compatible deep links now land on the method catalogue. */
 export async function load(access: ScreenActor, input: ScreenParams): Promise<never> {
   // Preserve the same anonymous boundary as every other operator screen before
-  // forwarding old bookmarks to the integrated dashboard section. Otherwise
+  // forwarding old bookmarks to the method catalogue. Otherwise
   // the hash can survive the dashboard's auth redirect as `/login#...`.
   const entry = access.entry;
   const profile = typeof input.searchParams['profile'] === 'string' ? input.searchParams['profile'] : undefined;
@@ -25,9 +25,9 @@ export async function load(access: ScreenActor, input: ScreenParams): Promise<ne
       (sql) => listProfiles({ sql }, orgId));
     const active = access.selectProfile(profiles, requested);
     if (active !== null) {
-      const destination = '/?' + new URLSearchParams({ profile: active.id }).toString();
-      redirect(destination + '#operating-status');
+      const destination = '/settings/strategy?' + new URLSearchParams({ profile: active.id }).toString();
+      redirect(destination);
     }
   }
-  redirect(`/${profile === undefined ? '' : `?profile=${encodeURIComponent(profile)}`}#operating-status`);
+  redirect(`/settings/strategy${profile === undefined ? '' : `?profile=${encodeURIComponent(profile)}`}`);
 }

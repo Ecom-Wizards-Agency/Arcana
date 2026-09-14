@@ -147,7 +147,7 @@ async function freePort(): Promise<number> {
 }
 
 function run(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<number> {
-  const child = spawn(command, args, { cwd: APP_DIRECTORY, stdio: 'inherit', env });
+  const child = spawn(command, command === 'pnpm' ? ['--config.verify-deps-before-run=false', ...args] : args, { cwd: APP_DIRECTORY, stdio: 'inherit', env });
   return new Promise<number>((resolve) => {
     child.on('exit', (code) => resolve(code ?? 1));
   });

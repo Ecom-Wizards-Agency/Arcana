@@ -89,3 +89,5 @@ export { buildRestoreProposal, readRestoreProposal, reviewRestoreProposal } from
 export * from './queries/market-position.js';
 export * from './queries/translation.js';
 export * from './queries/timeline.js';
+export * from './queries/optimization-group-performance.js';
+export * from './queries/optimizer-run.js';

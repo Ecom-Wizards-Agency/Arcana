@@ -7,7 +7,7 @@ export const descriptor = {
   path: "/strategy",
   route: "redirect",
   nav: null,
-  guard: { "kind": "redirect", "pathname": "/", "hash": "#operating-status", "canonicalProfile": true, "artifact": "#operating-status", "heading": "Top campaigns by spend" },
+  guard: { "kind": "redirect", "pathname": "/settings/strategy", "hash": "", "canonicalProfile": true, "artifact": "#identifiers", "heading": "Optimization methods" },
   prefetch: "expensive",
   rollout: { "enabled": true },
   states: ["loading", "error"],

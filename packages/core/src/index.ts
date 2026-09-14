@@ -29,6 +29,7 @@ export * from './market/deals.js';
 export * from './query-intelligence/index.js';
 export * from './optimization/index.js';
 export * from './methods/registry.js';
+export { OPTIMIZATION_METHOD_CATALOGUE } from './methods/catalogue.js';
 export * from './methods/reference.js';
 
 export * from './market-position.js';

@@ -65,6 +65,16 @@ describe('one-time RPC contract', () => {
     expect(OneTimeRpcPreviewRequest.safeParse({ ...request, apply: true }).success).toBe(false);
   });
 
+  it('accepts only registered campaign method pairs within the selected scope', () => {
+    const selected = { ...request, scope: { mode: 'selected', campaignIds: ['synthetic-a'] } };
+    const campaignMethods = { 'synthetic-a': { id: 'sp.coordinated-efficiency', version: 'candidate.1' } };
+    expect(OneTimeRpcPreviewRequest.parse({ ...selected, campaignMethods }).campaignMethods).toEqual(campaignMethods);
+    expect(OneTimeRpcPreviewRequest.safeParse({ ...selected, campaignMethods: { 'synthetic-b': campaignMethods['synthetic-a'] } }).success).toBe(false);
+    expect(OneTimeRpcPreviewRequest.safeParse({ ...request, campaignMethods: { ' synthetic-a': campaignMethods['synthetic-a'] } }).success).toBe(false);
+    expect(OneTimeRpcPreviewRequest.safeParse({ ...selected, campaignMethods: { 'synthetic-a': { id: 'sp.coordinated-efficiency', version: 'reference.1' } } }).success).toBe(false);
+    expect(OneTimeRpcPreviewRequest.safeParse({ ...selected, campaignMethods: { 'synthetic-a': { id: 'sp.discovery', version: 'candidate.1' } } }).success).toBe(false);
+  });
+
   it('freezes completed reporting days independently of a later execution time', () => {
     const snapshot = {
       version: 1,

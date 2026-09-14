@@ -11,6 +11,8 @@ interface RegistryEntry {
   exports: readonly { barrel: string; order: number; clause: string; after: string }[];
 }
 export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
+  {"domain": "queries/optimizer-run", "contract": null, "schema": null, "queries": "queries/optimizer-run.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 104, "clause": "*", "after": ""}]},
+  {"domain": "queries/optimization-group-performance", "contract": null, "schema": null, "queries": "queries/optimization-group-performance.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 103, "clause": "*", "after": ""}]},
   {"domain": "queries/timeline", "contract": null, "schema": null, "queries": "queries/timeline.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 102, "clause": "*", "after": ""}]},
   {"domain": "schema/timeline-events", "contract": null, "schema": "schema/timeline-events.ts", "queries": null, "migrationPrefix": "20260915180000", "exports": [{"barrel": "schema/index.ts", "order": 102, "clause": "*", "after": ""}]},
   {"domain": "schema/target-translations", "contract": null, "schema": "schema/target-translations.ts", "queries": null, "migrationPrefix": "20260915150000", "exports": [{"barrel": "schema/index.ts", "order": 101, "clause": "*", "after": ""}]},

@@ -2,6 +2,7 @@
 import { expect, test } from '@playwright/test';
 import { GUARDED_ROUTES } from '../src/e2e-guard-routes';
 import { signOut } from './support/auth';
+import { guardRoutePath } from './support/guard-route-path';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -34,7 +35,7 @@ test('every guarded screen sends an anonymous visitor to the login page', async 
     // interrupt Playwright's wait for the original document. That is the
     // protected outcome we want, so wait for the destination explicitly while
     // still surfacing every other navigation failure.
-    await page.goto(path).catch((error: unknown) => {
+    await page.goto(guardRoutePath(path)).catch((error: unknown) => {
       if (!String(error).includes('is interrupted by another navigation')) throw error;
     });
     await page.waitForURL('**/login');
