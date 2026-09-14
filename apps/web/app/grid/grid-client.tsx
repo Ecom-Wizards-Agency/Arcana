@@ -17,7 +17,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { ReactNode } from 'react';
-import type { OrgActor } from '@wizard-ads/shared';
+import { parseGridView, serializeGridView, type OrgActor } from '@wizard-ads/shared';
+import { browserViewStore } from './view-store';
 import {
   DataGrid,
   DEFAULT_DENSITY,
@@ -25,7 +26,6 @@ import {
   GridToolbar,
   GridViewport,
   LayoutWriteBuffer,
-  LocalViewStore,
   STATE_COLUMN,
   buildGridModelSafely,
   columnsFor,
@@ -379,6 +379,8 @@ function cachedLayoutFor(
   campaignId: string | null,
   available: readonly GridColumn[],
 ): SavedView | null {
+  const urlView = typeof window === 'undefined' ? null : parseGridView(new URL(window.location.href).searchParams.get('view'));
+  if (urlView?.entity === entity) return withValidGrouping(urlView, available);
   if (campaignId !== null || !hasCachedLayout(store)) return null;
   try {
     const layout = store.cachedLayout(entity);
@@ -398,7 +400,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   const router = useRouter();
   const available = useMemo(() => columnsFor(props.entity), [props.entity]);
   const [browserStore] = useState(() =>
-    typeof window === 'undefined' ? null : new LocalViewStore(window.localStorage, props.actor),
+    typeof window === 'undefined' ? null : browserViewStore(props.actor, props.profileId),
   );
   const store = props.viewStore === undefined ? browserStore : props.viewStore;
   const scopeKey = `${props.entity}\u0000${props.campaignId ?? ''}`;
@@ -421,6 +423,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     };
   });
   const [view, setView] = useState<SavedView>(initialRestore.view);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState<readonly SavedView[]>([]);
   const [restoredScope, setRestoredScope] = useState<{
     key: string;
@@ -451,11 +454,18 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   // before an effect can reset a boolean after a client-side route change.
   const viewReady = restoredScope?.key === scopeKey && restoredScope.store === store;
 
+  useEffect(() => {
+    if (!viewReady) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('view', serializeGridView(view));
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  }, [view, viewReady]);
+
   // Restore the implicit layout AdLabs remembers per user, and list the named
   // views we have that they do not.
   useEffect(() => {
     if (store === null) {
-      setView(defaultView(props.entity, props.campaignId));
+      setView(cachedLayoutFor(null, props.entity, props.campaignId, available) ?? defaultView(props.entity, props.campaignId));
       setSaved([]);
       setSelectedTargetId(null);
       setSelectedRowIds([]);
@@ -602,7 +612,8 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     (name: string) => {
       if (!viewReady || store === null) return;
       const toSave: SavedView = { ...view, groupBy: model.groupBy, id: newViewId(), name };
-      void store.save(toSave).then(() => store.list(props.entity)).then(setSaved);
+      setSaveError(null);
+      void store.save(toSave).then(() => store.list(props.entity)).then(setSaved).catch(() => setSaveError('The view could not be saved. Try again.'));
     },
     [model.groupBy, props.entity, store, view, viewReady],
   );
@@ -610,7 +621,8 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   const handleRemoveView = useCallback(
     (removed: SavedView) => {
       if (!viewReady || store === null) return;
-      void store.remove(removed.id).then(() => store.list(props.entity)).then(setSaved);
+      setSaveError(null);
+      void store.remove(removed.id).then(() => store.list(props.entity)).then(setSaved).catch(() => setSaveError('The view could not be removed.'));
     },
     [props.entity, store, viewReady],
   );
@@ -666,6 +678,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       aria-busy={!viewReady}
       style={{ display: 'flex', flex: '1 1 auto', flexDirection: 'column', gap: tokens.space(3), minHeight: 0 }}
     >
+      {saveError === null ? null : <p role="alert">{saveError}</p>}
       <div data-testid="grid-toolbar-readiness" aria-busy={!viewReady}>
         {viewReady ? (
           <GridToolbar
@@ -685,12 +698,16 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
             filter={view.filter}
             onFilterChange={(filter) => update({ filter })}
             groupBy={model.groupBy}
-            onGroupByChange={(groupBy) => update({ groupBy })}
+            onGroupByChange={(groupBy) => update({ groupBy, collapsedGroupIds: [] })}
             model={model}
             optionRows={props.rows}
             onExport={handleExport}
             views={saved}
-            onApplyView={(applied) => setView(withValidGrouping(applied, available))}
+            onApplyView={(applied) => {
+              const restored = withValidGrouping(applied, available);
+              setView(restored);
+              layoutWrites?.remember(restored);
+            }}
             onSaveView={handleSaveView}
             onRemoveView={handleRemoveView}
             density={density}
@@ -735,6 +752,18 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       {viewReady ? (
         <DataGrid
           model={model}
+          renderCell={props.entity === 'targets' ? {
+            targeting: (row) => {
+              const targetId = row.dimensions['target_id'];
+              if (targetId === null || targetId === undefined) return undefined;
+              const back = `/grid?${new URLSearchParams({ profile: props.profileId, entity: props.entity, from: props.period.start, to: props.period.end, view: serializeGridView(view) })}`;
+              const query = new URLSearchParams({ profile: props.profileId, from: props.period.start, to: props.period.end, back });
+              const path = `/targets/${encodeURIComponent(String(targetId))}`;
+              return <Link href={`${path}?${query}`} prefetch={false} onClick={(event) => event.stopPropagation()}>{String(row.dimensions['targeting'] ?? targetId)}</Link>;
+            },
+          } : {}}
+          collapsedGroupIds={view.collapsedGroupIds ?? []}
+          onCollapsedGroupIdsChange={(collapsedGroupIds) => update({ collapsedGroupIds })}
           columns={visibleColumns}
           currencyCode={props.currencyCode}
           sort={view.sort}

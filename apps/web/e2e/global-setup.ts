@@ -12,6 +12,7 @@
  * production build by design. Running the suite against `next start` would have
  * to disable that guard, which is the guard's whole point.
  */
+import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
@@ -355,6 +356,7 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock): SpawnedWe
         DATABASE_URL: connectionString,
         WIZARD_ADS_APP_URL: BASE_URL,
         WIZARD_ADS_E2E_AUTH: '1',
+        GOTO_LINK_SIGNING_SECRET: randomBytes(32).toString('hex'),
         AMAZON_LWA_CLIENT_ID: 'amzn1.application-oa2-client.e2e',
         AMAZON_OAUTH_REDIRECT_URI: `${BASE_URL}/api/amazon/oauth/callback`,
         AMAZON_OAUTH_STATE_KEY: STATE_KEY,

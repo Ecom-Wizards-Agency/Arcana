@@ -1,3 +1,5 @@
+import { authOrigin } from '../../../src/auth/origin';
+import { restoreGotoView } from '../../../src/server/view-state';
 import { requestActor, openWebDatabase } from '../../../src/server/request-context';
 import { consumeGotoLinkForActor, gotoRedirectLocation } from '@wizard-ads/db';
 import { privateResponse } from '../../../src/server/private-response';
@@ -19,7 +21,10 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
       const link = await consumeGotoLinkForActor(database, actor, { token, signingSecret });
       if (!link) response = notFound();
       else {
-        const location = new URL(gotoRedirectLocation(link.route, link.state), request.url);
+        // Next may expose an internal hostname in request.url behind a proxy.
+        // Use the same configured public origin as authentication links.
+        const origin = process.env['WIZARD_ADS_APP_URL'] === undefined ? request.url : authOrigin();
+        const location = new URL(restoreGotoView(gotoRedirectLocation(link.route, link.state), link.state), origin);
         // Response.redirect has immutable headers; this response must receive
         // private cache headers after the complete transaction and close.
         response = new Response(null, { status: 307, headers: { Location: location.href } });

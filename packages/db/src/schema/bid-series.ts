@@ -60,7 +60,10 @@ export const bidSeriesDaily = pgTable(
       .default([]),
     loadedAt: ts('loaded_at').notNull().defaultNow(),
   },
-  (t) => [index('bid_series_daily_profile_date').on(t.profileId, t.date)],
+  (t) => [
+    index('bid_series_daily_profile_date').on(t.profileId, t.date),
+    index('bid_series_daily_org_profile_target_latest').on(t.orgId, t.profileId, t.targetId, t.date.desc(), t.loadedAt.desc()),
+  ],
 );
 
 export type BidSeriesRow = typeof bidSeriesDaily.$inferSelect;

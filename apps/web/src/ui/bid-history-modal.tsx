@@ -183,9 +183,20 @@ export function BidHistoryModal({
               <p className="wa-empty__body">{state.message}</p>
             </div>
           ) : (
+            <BidHistoryContent payload={state.payload} currencyCode={currencyCode} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Shared metrics and corridor for the drawer and the full target page. */
+export function BidHistoryContent({ payload, currencyCode }: { payload: BidHistoryPayload; currencyCode: string }): ReactNode {
+  return (
             <>
               <section aria-label="Target metrics" className="wa-kpis wa-kpis--dense">
-                {bidHistoryKpiTiles(state.payload.totals).map((tile) => (
+                {bidHistoryKpiTiles(payload.totals).map((tile) => (
                   <KpiTile
                     key={tile.metric}
                     label={tile.label}
@@ -203,15 +214,11 @@ export function BidHistoryModal({
                   title="Bid corridor"
                   ariaLabel="Amazon suggested-bid corridor with bid, CPC and max potential CPC"
                   currencyCode={currencyCode}
-                  points={state.payload.points}
+                  points={payload.points}
                   aggregatable
                   caption={`Suggested-bid band, bid, realized CPC and max potential CPC. In ${currencyCode}.`}
                 />
               </section>
             </>
-          )}
-        </div>
-      </div>
-    </div>
   );
 }

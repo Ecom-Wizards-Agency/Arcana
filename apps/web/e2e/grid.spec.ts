@@ -8,7 +8,7 @@ import { readState, USERS } from './support/fixture';
 
 test.beforeEach(async ({ page }) => applyRequestedCpuThrottle(page));
 
-test('saved Grid names and layouts stay with their signer across account switches on one browser', async ({ page }) => {
+test('saved Grid views are shared within the agency while layouts stay with their signer', async ({ page }) => {
   const { orgId } = await readState();
   await signIn(page, 'admin');
   await page.goto('/grid?entity=campaigns');
@@ -28,25 +28,70 @@ test('saved Grid names and layouts stay with their signer across account switche
   }, { org: orgId, user: USERS.admin });
 
   await signIn(page, 'viewer');
-  await page.reload();
+  await page.goto('/grid?entity=campaigns');
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
   await expect(page.getByLabel('Row density')).toHaveValue('normal');
   const choices = page.getByRole('combobox', { name: 'Saved view', exact: true }).locator('option');
-  await expect(choices).toHaveText(['Saved views…']);
+  await expect(choices).toHaveText(['Saved views…', 'Synthetic owner lens']);
   await page.getByLabel('Row density').selectOption('comfortable');
   await page.getByRole('textbox', { name: 'New view name' }).fill('Synthetic viewer lens');
   await page.getByRole('button', { name: 'Save view', exact: true }).click();
-  await expect(choices).toHaveText(['Saved views…', 'Synthetic viewer lens']);
+  await expect(page.getByRole('alert').filter({ hasText: 'The view could not be saved' })).toHaveCount(1);
+  await expect(choices).toHaveText(['Saved views…', 'Synthetic owner lens']);
   await page.reload();
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
   await expect(page.getByLabel('Row density')).toHaveValue('comfortable');
-  await expect(choices).toHaveText(['Saved views…', 'Synthetic viewer lens']);
+  await expect(choices).toHaveText(['Saved views…', 'Synthetic owner lens']);
 
   await signIn(page, 'admin');
-  await page.reload();
+  await page.goto('/grid?entity=campaigns');
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
   await expect(page.getByLabel('Row density')).toHaveValue('compact');
   await expect(choices).toHaveText(['Saved views…', 'Synthetic owner lens']);
+});
+
+test('collapsed groups persist through the database saved view and a clean reload', async ({ page }) => {
+  await signIn(page, 'admin');
+  const { orgId, connectionString } = await readState();
+  await page.goto('/grid?entity=campaigns');
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await page.getByLabel('Add grouping level').selectOption({ label: 'State' });
+  await page.getByLabel('Add grouping level').selectOption({ label: 'Campaign' });
+  const rows = page.getByTestId('grid-row');
+  await expect(rows).toHaveCount(2);
+  await page.getByRole('button', { name: /^Collapse State/ }).click();
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toHaveAttribute('aria-expanded', 'false');
+  await page.getByRole('textbox', { name: 'New view name' }).fill('Synthetic collapsed lens');
+  await page.getByRole('button', { name: 'Save view', exact: true }).click();
+  const choices = page.getByRole('combobox', { name: 'Saved view', exact: true });
+  await expect(choices.locator('option').filter({ hasText: 'Synthetic collapsed lens' })).toHaveCount(1);
+  const database = createDb({ connectionString, max: 1 });
+  try {
+    const saved = await database.sql<{ view: { collapsedGroupIds: string[]; groupBy: string[] } }[]>`
+      select view from public.grid_views where org_id=${orgId} and owner_id=${USERS.admin}
+        and name='Synthetic collapsed lens'
+    `;
+    expect(saved).toHaveLength(1);
+    expect(saved[0]!.view.groupBy).toEqual(['campaign_state', 'campaign_name']);
+    expect(saved[0]!.view.collapsedGroupIds).toHaveLength(1);
+  } finally { await database.close(); }
+
+  // Remove both browser sources: the next selected layout comes from grid_views.
+  await page.evaluate(() => window.localStorage.clear());
+  await page.goto('/grid?entity=campaigns');
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await expect(page.getByRole('list', { name: 'Ordered grouping levels' }).getByRole('listitem')).toHaveCount(0);
+  await choices.selectOption({ label: 'Synthetic collapsed lens' });
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toHaveAttribute('aria-expanded', 'false');
+  // A clean URL reload also restores the newly applied local layout.
+  await page.goto('/grid?entity=campaigns');
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toHaveAttribute('aria-expanded', 'false');
+  await page.getByRole('button', { name: /^Expand State/ }).click();
+  await expect(rows).toHaveCount(2);
 });
 
 test('grid restores the matching saved filter, grouping, and sort before becoming interactive', async ({ page }) => {

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { parseGridView, serializeGridView } from '@wizard-ads/shared';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -23,6 +24,7 @@ afterEach(() => {
     for (const root of mounted.splice(0)) root.unmount();
   });
   document.body.replaceChildren();
+  window.history.replaceState(null, '', '/');
   navigation.push.mockReset();
   vi.unstubAllGlobals();
 });
@@ -157,6 +159,7 @@ describe('Grid actor ownership', () => {
     await flushGridLoad();
     const next = workspaceProps('campaigns', nextStore);
     next.actor = { ...next.actor, userId: '82828282-8282-4282-8282-828282828282' };
+    window.history.replaceState(null, '', '/grid');
     act(() => root.render(createElement(GridWorkspace, next)));
     await flushGridLoad();
     expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('true');
@@ -187,6 +190,7 @@ describe('Grid actor ownership', () => {
     expect(previous.remembered).toHaveLength(1);
     const next = workspaceProps('campaigns', nextStore);
     next.actor = { ...next.actor, orgId: '83838383-8383-4383-8383-838383838383' };
+    window.history.replaceState(null, '', '/grid');
     act(() => root.render(createElement(GridWorkspace, next)));
     expect(previous.remembered).toHaveLength(2);
     expect(previous.remembered.at(-1)?.sort).toEqual([{ columnId: 'clicks', direction: 'desc' }]);
@@ -567,6 +571,7 @@ describe('grid first paint', () => {
     await flushGridLoad();
     expect(clicksSort()).toBe('ascending');
 
+    window.history.replaceState(null, '', '/grid?campaign=c-1');
     // A campaign deep link does not change the row request, so nothing is
     // remounted: this scope has no cached layout and opens on the scoped
     // default, filter chip and all.
@@ -583,6 +588,7 @@ describe('grid first paint', () => {
     expect(store.asked).toEqual(['campaigns']);
     expect(host.querySelector('[aria-label="Remove filter CAMPAIGN_ID"]')).not.toBeNull();
 
+    window.history.replaceState(null, '', '/grid');
     // Dropping the deep link returns to a scope that was restored once
     // already. It must be read again, or the grid stays on the campaign's
     // view — and silently on its CAMPAIGN_ID filter.
@@ -635,4 +641,33 @@ describe('grid first paint', () => {
     expect(store.remembered).toHaveLength(2);
     expect(store.remembered.at(-1)?.sort).toEqual([{ columnId: 'clicks', direction: 'desc' }]);
   });
+});
+
+
+it('restores URL before an asynchronous local layout and replaces history on changes', async () => {
+  stubGridFetch();
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(600);
+  vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(1200);
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+  const store = new DeferredViewStore();
+  const shared = { ...view([]), entity: 'targets' as const, columns: ['targeting', 'spend'], density: 'compact' as const };
+  window.history.replaceState(null, '', `/grid?view=${serializeGridView(shared)}`);
+  const pushes = vi.spyOn(window.history, 'pushState');
+  const replacements = vi.spyOn(window.history, 'replaceState');
+  const host = document.createElement('div'); document.body.append(host);
+  const root = createRoot(host); mounted.push(root);
+  act(() => root.render(createElement(GridWorkspace, workspaceProps('targets', store))));
+  await flushGridLoad();
+  expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('true');
+  const density = host.querySelector<HTMLSelectElement>('[aria-label="Row density"]')!;
+  expect(density.value).toBe('compact');
+  act(() => { density.value = 'comfortable'; density.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(parseGridView(new URL(window.location.href).searchParams.get('view'))?.density).toBe('comfortable');
+  expect(pushes).not.toHaveBeenCalled();
+  expect(replacements).toHaveBeenCalled();
+  const link = host.querySelector<HTMLAnchorElement>('a[href^="/targets/"]')!;
+  expect(link).not.toBeNull();
+  const back = new URL(link.href).searchParams.get('back')!;
+  expect(parseGridView(new URL(back, window.location.origin).searchParams.get('view'))?.density).toBe('comfortable');
+  vi.restoreAllMocks();
 });
