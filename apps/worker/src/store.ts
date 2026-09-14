@@ -1,6 +1,6 @@
 import type { ReportCoverageObservation } from '@wizard-ads/shared';
-import { mergeKeywordMirror, readKeywordMirrorStart } from '@wizard-ads/db/sp-write-worker';
-import type { KeywordMirrorMergeCounts, KeywordMirrorMergeRequest } from '@wizard-ads/shared/sp-write-mirror';
+import { mergeControlMirror, mergeKeywordMirror, readKeywordMirrorStart } from '@wizard-ads/db/sp-write-worker';
+import type { ControlMirrorMergeCounts, KeywordMirrorMergeCounts, KeywordMirrorMergeRequest } from '@wizard-ads/shared/sp-write-mirror';
 import { PermanentJobError } from './permanent-job-error.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -110,6 +110,7 @@ export interface EntitySyncOptions {
 
 export interface EntitySyncCounts {
   keywordMirror?: KeywordMirrorMergeCounts;
+  controlMirrors?: Partial<Record<'campaign' | 'target', ControlMirrorMergeCounts>>;
   listed: number;
   upserted: number;
   /**
@@ -432,6 +433,12 @@ export class PostgresWorkerStore implements WorkerStore {
       merge: (request: KeywordMirrorMergeRequest) => mergeKeywordMirror(this.handle, request),
     });
     let keywordMirror: KeywordMirrorMergeCounts | undefined;
+    const controlMirrors: Partial<Record<'campaign' | 'target', ControlMirrorMergeCounts>> = {};
+    const [controlSchema] = await this.handle.sql<{ ready: boolean }[]>`
+      select to_regprocedure('app.guard_campaign_control_observation()') is not null as ready`;
+    if (controlSchema?.ready && options.readStartedAt === undefined) {
+      throw new Error('control mirror requires the provider read-start time');
+    }
     const excluded = new Set(options.excludedEntityTypes ?? []);
     if (excluded.size > 0 && adProduct === undefined) {
       throw new Error('Excluded entity kinds require an ad-product scope');
@@ -485,6 +492,17 @@ export class PostgresWorkerStore implements WorkerStore {
           duplicates: collapsed.duplicateIds.length,
           ids: collapsed.duplicateIds.slice(0, MAX_LOGGED_DUPLICATE_IDS),
         });
+      }
+      if ((entityType === 'campaign' || entityType === 'target') && controlSchema?.ready) {
+        const scope = { orgId: profile.orgId, profileId: profile.id,
+          ...(adProduct === undefined ? {} : { adProduct }), full, readStartedAt: options.readStartedAt! };
+        const counts = await mergeControlMirror(this.handle, entityType === 'campaign'
+          ? { ...scope, entityType, rows: incoming.filter(isType('campaign')) }
+          : { ...scope, entityType, rows: incoming.filter(isType('target')) });
+        controlMirrors[entityType] = counts;
+        upserted += counts.upserted;
+        tombstoned += counts.tombstoned;
+        continue;
       }
       if (entityType === 'keyword' && keywordCapability) {
         keywordMirror = await keywordCapability.merge({ orgId: profile.orgId, profileId: profile.id,
@@ -555,8 +573,10 @@ export class PostgresWorkerStore implements WorkerStore {
         `entity sync listed ${entities.length} rows but upserted ${upserted} (${duplicates} duplicates)`,
       );
     }
-    return { listed: entities.length, upserted, duplicates, changes: writtenChanges + (keywordMirror?.changes ?? 0), tombstoned,
-      ...(keywordMirror === undefined ? {} : { keywordMirror }) };
+    return { listed: entities.length, upserted, duplicates, changes: writtenChanges + (keywordMirror?.changes ?? 0)
+        + Object.values(controlMirrors).reduce((sum, counts) => sum + counts.changes, 0), tombstoned,
+      ...(keywordMirror === undefined ? {} : { keywordMirror }),
+      ...(Object.keys(controlMirrors).length === 0 ? {} : { controlMirrors }) };
   }
 
   async ensureReportRequest(

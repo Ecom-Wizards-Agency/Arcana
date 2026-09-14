@@ -85,6 +85,7 @@ describe('SP write persistence facade blast radius', () => {
     }
     expect(consumers.map((path) => path.slice(REPO_ROOT.length)).sort()).toEqual([
       'apps/worker/src/sp-write-outbox/artifacts.ts',
+      'apps/worker/src/sp-write-outbox/coordinated.test.ts',
       'apps/worker/src/sp-write-outbox/live-smoke.ts',
       'apps/worker/src/sp-write-outbox/loop.test.ts',
       'apps/worker/src/sp-write-outbox/loop.ts',

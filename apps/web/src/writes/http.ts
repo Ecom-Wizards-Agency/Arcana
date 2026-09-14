@@ -1,4 +1,8 @@
 import { AgencyAccessDenied, type AuthenticatedEditorTransaction, type AuthenticatedReadSnapshot } from '@wizard-ads/db';
+import { resolveMethod } from '@wizard-ads/core';
+import { MethodSelection } from '@wizard-ads/shared';
+import { SpWriteConfirmedApprovalRequest } from '@wizard-ads/shared/sp-write-application';
+import { SpWriteSourceEvidence } from '@wizard-ads/shared/sp-write-preview-evidence';
 import { SpWriteApplicationError } from '@wizard-ads/db/sp-write-application';
 import { authenticatedMutation } from '../server/authenticated-mutation';
 import { authenticatedRead } from '../server/authenticated-read';
@@ -29,6 +33,21 @@ export function handleSpWriteMutation<T>(request: Request, schema: InputSchema<T
     await requireCapability(context, 'exportBatches');
     const parsed = schema.safeParse(await readJsonMutation(request));
     if (!parsed.success) throw new JsonMutationError(400, 'invalid_request');
+    const approval = SpWriteConfirmedApprovalRequest.safeParse(parsed.data);
+    if (approval.success) {
+      const rows = await context.sql<{ artifact_text: string }[]>`
+        select artifact_text from public.sp_write_preview_evidence
+         where org_id = ${context.actor.orgId}::uuid and profile_id = ${approval.data.profileId}::uuid
+           and plan_id = ${approval.data.approval.plan.planId}::uuid
+      `;
+      for (const row of rows) {
+        const evidence = SpWriteSourceEvidence.parse(JSON.parse(row.artifact_text));
+        if (evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v2') continue;
+        for (const source of evidence.provenance.rows) {
+          if (source.method !== undefined) assertExecutableMethod(source.method.methodId, source.method.methodVersion);
+        }
+      }
+    }
     return Response.json(await command(context, parsed.data));
   }, spWriteHttpFailure);
 }
@@ -43,4 +62,14 @@ export function handleSpWriteRead<T>(request: Request, schema: InputSchema<T>,
     if (!parsed.success) throw new JsonMutationError(400, 'invalid_request');
     return Response.json(await read(context, parsed.data));
   }, spWriteHttpFailure);
+}
+
+/** Resolve release state from the installed catalogue, never from submitted metadata. */
+export function assertExecutableMethod(id: string, version: string): void {
+  const selection = MethodSelection.safeParse({ id, version });
+  if (!selection.success) throw new JsonMutationError(422, 'method_not_executable');
+  let release: string;
+  try { release = resolveMethod(selection.data.id, selection.data.version).descriptor.releaseState; }
+  catch { throw new JsonMutationError(422, 'method_not_executable'); }
+  if (release !== 'pilot' && release !== 'stable') throw new JsonMutationError(422, 'method_not_executable');
 }

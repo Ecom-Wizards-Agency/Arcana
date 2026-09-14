@@ -28,6 +28,8 @@ describe('method contracts', () => {
     expect(ResolvedBidSettings.safeParse({ targetAcos: setting }).success).toBe(false);
     expect(MethodEvaluatorInput.safeParse({}).success).toBe(false);
     expect(MethodAdmissionSnapshot.safeParse({}).success).toBe(false);
+    expect(MethodAdmissionSnapshot.safeParse({ version: 1, admittedAt: '2026-09-10T00:00:00Z',
+      methodId: 'sp.reference-efficiency', methodVersion: 'candidate.1', strategyProvenance: {}, experiments: [] }).success).toBe(false);
   });
   it('loads persisted rpc and sends canonical identity without rewriting historical values', () => {
     const old = { version: 1, method: 'rpc', targetAcos: 0.37, bidFloor: 0.13, bidCeiling: 4.7,

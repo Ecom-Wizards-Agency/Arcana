@@ -18,6 +18,7 @@ export const SP_WRITE_ACTIVATION_FILES = [
   "apps/worker/src/main.ts",
   "apps/worker/src/sp-write-outbox/artifacts.ts",
   "apps/worker/src/sp-write-outbox/composition.ts",
+  "apps/worker/src/sp-write-outbox/guarded-provider-fetch.ts",
   "apps/worker/src/sp-write-outbox/loop.ts",
   "apps/worker/src/sp-write-outbox/live-smoke.ts",
   "apps/worker/src/sp-write-outbox/policy.ts",
@@ -38,5 +39,6 @@ export const SP_WRITE_MIGRATIONS = [
   "20260915080000_mcp_write_admissions.sql",
   "20260915090000_mcp_write_preview_sources.sql",
   "20260915100000_recommendation_fenced_function_acl.sql",
-  "20260915110000_campaign_creation_previews.sql"
+  "20260915110000_campaign_creation_previews.sql",
+  "20260915130000_coordinated_methods.sql"
 ] as const;

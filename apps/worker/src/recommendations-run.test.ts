@@ -7,9 +7,12 @@ import type { ClaimRef, ClaimedJob, ClaimToken } from '@wizard-ads/db';
 import { createTestDatabase, databaseAvailable, migrationFiles } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import type { RecommendationWorkerDatabase } from '@wizard-ads/db/recommendation-worker';
-import { CalculationTrace, REFERENCE_METHOD, type MethodAdmissionSnapshot, type MethodExperiment, type ScheduledOptimizationGroup, type TenantStrategy } from '@wizard-ads/shared';
+import { SP_COORDINATED_CAPABILITIES } from '@wizard-ads/core';
+import { CalculationTrace, REFERENCE_METHOD, COORDINATED_METHOD, type MethodAdmissionSnapshot, type MethodExperiment, type ScheduledOptimizationGroup, type TenantStrategy } from '@wizard-ads/shared';
 import {
   BID_REASON_TO_DATABASE,
+  freezeRecommendationSnapshot,
+  recommendationSnapshotFingerprint,
   experimentLockFor,
   RecommendationExecutionCustodyError,
   RecommendationScopeIntegrityError,
@@ -1101,6 +1104,28 @@ describe.skipIf(!databaseAvailableForLegacyStore)('legacy-mode preview enqueue o
     await database?.drop();
   });
 
+  it('binds every coordinated snapshot field with the same TypeScript and PostgreSQL fingerprint', async () => {
+    const configuration = { version: 2 as const, method: 'sp.coordinated-efficiency' as const,
+      targetAcos: 0.3, bidFloor: 0.1, bidCeiling: 1, bidIncreaseCap: 0.5, bidDecreaseCap: 0.6,
+      exposureCeiling: 1.5, minClicksPerPlacement: 20, placementEvidenceRequirements: 'single_target' as const,
+      window: { start: '2026-08-01', end: '2026-08-28' } };
+    const original = freezeRecommendationSnapshot(configuration, 'UTC', new Date('2026-09-10T12:00:00Z'));
+    const hashes: string[] = [];
+    for (const patch of [{}, { exposureCeiling: 1.6 }, { minClicksPerPlacement: 21 }]) {
+      const snapshot = freezeRecommendationSnapshot({ ...configuration, ...patch }, 'UTC', new Date('2026-09-10T12:00:00Z'));
+      const hash = recommendationSnapshotFingerprint(snapshot);
+      const [sql] = await database.sql<{ valid: boolean; hash: string }[]>`select
+        app.one_time_rpc_snapshot_valid(${JSON.stringify(snapshot)}::jsonb) as valid,
+        app.one_time_rpc_snapshot_fingerprint(${JSON.stringify(snapshot)}::jsonb) as hash`;
+      expect(sql).toEqual({ valid: true, hash }); hashes.push(hash);
+    }
+    expect(new Set(hashes).size).toBe(3);
+    expect(() => recommendationSnapshotFingerprint({ ...original, methodVersion: 'reference.1' })).toThrow();
+    const [invalid] = await database.sql<{ valid: boolean }[]>`select app.one_time_rpc_snapshot_valid(
+      ${JSON.stringify({ ...original, methodVersion: 'reference.1' })}::jsonb) as valid`;
+    expect(invalid?.valid).toBe(false);
+  });
+
   it('creates the run row and recommendations.run job in one transaction and the admission trigger accepts it', async () => {
     const store = new PostgresRecommendationRunStore(database);
     const before = await counts(batchScope.orgId);
@@ -1283,4 +1308,65 @@ describe('method worker evidence', () => {
     expect(store.completed[0]?.proposals).toHaveLength(0);
     expect(store.completed[0]?.narrative.holds).toMatchObject([{ reason: 'MISSING_SETTING' }]);
   });
+});
+
+it.each([true, false])('stores one ordered coordinated recommendation or a truthful missing-controls hold (complete: %s)', async (completeControls) => {
+  const inputs = fixtureInputs();
+  const target = inputs.targets[0]!;
+  target.currentBid = 0.6;
+  target.stock = { status: 'in_stock', asins: [] };
+  target.metrics = { impressions: 1000, clicks: 100, cost: 90, orders: 10, sales: 260 };
+  inputs.campaignControlEvidence = [{ campaignId: 'c-1', costType: 'cpc', targetCount: 1, complete: true, attributionMature: true,
+    homogeneousProxyValidation: null, capabilities: SP_COORDINATED_CAPABILITIES,
+    currentControls: { strategy: 'manual', placements: { topOfSearch: 100, restOfSearch: 0, productPages: 0, amazonBusiness: null }, shopperCohorts: [], offAmazonBudgetControlStrategy: null },
+    placementFacts: [
+      { campaignId: 'c-1', placement: 'top_of_search', clicks: 40, sales: 160, clickShare: 0.4 },
+      { campaignId: 'c-1', placement: 'rest_of_search', clicks: 40, sales: 80, clickShare: 0.4 },
+      { campaignId: 'c-1', placement: 'product_pages', clicks: 20, sales: 20, clickShare: 0.2 },
+    ],
+  }];
+  if (!completeControls) {
+    inputs.placementFacts = inputs.campaignControlEvidence[0]!.placementFacts;
+    delete inputs.campaignControlEvidence;
+  }
+  const store = new FakeStore(PROFILE, inputs);
+  store.startResult.groupRun = { dueAt: METHOD_ADMISSION.admittedAt, scheduleContext: null, group: {
+    version: 2, id: GROUP_ID, orgId: ORG_ID, profileId: PROFILE_ID, name: 'Synthetic coordinated group', role: 'profit',
+    method: COORDINATED_METHOD, methodSettings: { exposureCeiling: 1.5, minClicksPerPlacement: 20, placementEvidenceRequirements: 'single_target' },
+    targetAcos: 0.3, bidFloor: 0.1, bidCeiling: 1, bidIncreaseCap: 0.5, bidDecreaseCap: 0.6,
+    placementIncreaseCap: 0, placementDecreaseCap: 0, exclusions: [], prioritization: 'efficiency_first', enabled: true,
+    reviewSchedule: { version: 2, weekdays: ['thursday'] },
+  } };
+  const outcome = await runRecommendations(store, { ...JOB, groupId: GROUP_ID }, EXECUTION, new Date('2026-08-27T12:00:00Z'));
+  if (!completeControls) {
+    expect(outcome.proposals).toBe(0);
+    expect(store.completed).toHaveLength(1);
+    expect(store.completed[0]?.proposals).toHaveLength(0);
+    expect(store.completed[0]?.narrative.holds).toMatchObject([{ reason: 'INSUFFICIENT_EVIDENCE',
+      prose: 'A complete synchronized campaign control snapshot is missing.' }]);
+    expect(store.completed[0]?.narrative.calculationSnapshots).toMatchObject([{ campaignEvidence: {
+      complete: false, currentControls: null, placementFacts: inputs.placementFacts,
+    } }]);
+    return;
+  }
+  expect(outcome.proposals).toBe(1);
+  expect(store.completed).toHaveLength(1);
+  expect(store.completed[0]?.proposals).toHaveLength(1);
+  const proposal = store.completed[0]!.proposals[0]!;
+  expect(proposal.inputs.methodId).toBe(COORDINATED_METHOD.id);
+  expect(proposal.inputs.dependencySet?.changes.map((change) => change.proposed)).toEqual([0.3, 300, 100]);
+  expect(proposal.inputs.dependencySet?.precedenceReasons).toHaveLength(2);
+});
+
+it.each([true, false])('counts a coordinated campaign hold once regardless of inactive target order (%s)', async (inactiveFirst) => {
+  const inputs = fixtureInputs(); const active = inputs.targets[0]!;
+  const inactive = structuredClone(active); inactive.entityRef.entityId = 'inactive-target'; inactive.entityState = 'paused';
+  inputs.targets = inactiveFirst ? [inactive, active] : [active, inactive];
+  const store = new FakeStore(PROFILE, inputs);
+  store.startResult.methodAdmission = { ...METHOD_ADMISSION, methodId: COORDINATED_METHOD.id, methodVersion: COORDINATED_METHOD.version };
+  const result = await runRecommendations(store, JOB, EXECUTION, new Date('2026-08-27T12:00:00Z'));
+  expect(result.proposals).toBe(0);
+  expect(store.completed).toHaveLength(1);
+  expect(store.completed[0]?.narrative.holds).toHaveLength(1);
+  expect(store.completed[0]?.narrative.holds?.[0]?.affectedScope).toHaveLength(2);
 });

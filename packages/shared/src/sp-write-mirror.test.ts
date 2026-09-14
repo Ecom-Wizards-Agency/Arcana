@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { KeywordMirrorMergeCounts, KeywordMirrorMergeRequest, SpWriteMirrorCounts, SpWriteMirrorReceipt } from './sp-write-mirror.js';
+import { ControlMirrorMergeCounts, ControlMirrorMergeRequest, KeywordMirrorMergeCounts, KeywordMirrorMergeRequest, SpWriteMirrorCounts, SpWriteMirrorReceipt } from './sp-write-mirror.js';
 
 const id = '00000000-0000-4000-8000-000000000001';
 const observedAt = '2026-09-05T10:00:00.000Z';
@@ -69,5 +69,29 @@ describe('mirror evidence contracts', () => {
     expect(KeywordMirrorMergeRequest.safeParse({ ...request, rows: [row, row] }).success).toBe(false);
     expect(KeywordMirrorMergeRequest.safeParse({ ...request, adProduct: 'SB' }).success).toBe(false);
     expect(KeywordMirrorMergeRequest.safeParse({ ...request, rows: [{ ...row, bid: -1 }] }).success).toBe(false);
+  });
+});
+
+
+describe('ordinary control mirror contracts', () => {
+  it('binds unique typed listing rows to the requested profile and product', () => {
+    const row = { entityType: 'target', profileId: id, amazonId: 'synthetic-target', adProduct: 'SP', name: null,
+      state: 'enabled', campaignId: 'synthetic-campaign', adGroupId: 'synthetic-group', expression: [], resolvedExpression: null, bid: 0.3 };
+    const request = { orgId: id, profileId: id, adProduct: 'SP', entityType: 'target', readStartedAt: observedAt, full: false, rows: [row] };
+    expect(ControlMirrorMergeRequest.safeParse(request).success).toBe(true);
+    expect(ControlMirrorMergeRequest.safeParse({ ...request, rows: [row, row] }).success).toBe(false);
+    expect(ControlMirrorMergeRequest.safeParse({ ...request, adProduct: 'SB' }).success).toBe(false);
+    expect(ControlMirrorMergeRequest.safeParse({ ...request, entityType: 'campaign' }).success).toBe(false);
+    expect(ControlMirrorMergeRequest.safeParse({ ...request, rows: [{ ...row, profileId: '00000000-0000-4000-8000-000000000002' }] }).success).toBe(false);
+  });
+  it('reconciles every listed input and every proposed tombstone', () => {
+    const counts = { listed: 2, upserted: 2, currentControlInputs: 1, staleControlInputs: 1, changes: 1,
+      tombstonesOffered: 2, tombstoned: 1, staleTombstones: 1, invalidatedCompleteControls: 0 };
+    expect(ControlMirrorMergeCounts.safeParse(counts).success).toBe(true);
+    expect(ControlMirrorMergeCounts.safeParse({ ...counts, upserted: 1 }).success).toBe(false);
+    expect(ControlMirrorMergeCounts.safeParse({ ...counts, staleControlInputs: 0 }).success).toBe(false);
+    expect(ControlMirrorMergeCounts.safeParse({ ...counts, staleTombstones: 0 }).success).toBe(false);
+    expect(ControlMirrorMergeCounts.safeParse({ ...counts, changes: 0 }).success).toBe(false);
+    expect(ControlMirrorMergeCounts.safeParse({ ...counts, invalidatedCompleteControls: 3 }).success).toBe(false);
   });
 });

@@ -1,10 +1,11 @@
 import { performance } from 'node:perf_hooks';
-import { createSpWriteAdapter, type SpWriteAdapter } from '@wizard-ads/ads-api/sp-write-adapter';
+import { type SpWriteAdapter } from '@wizard-ads/ads-api/sp-write-adapter';
 import { getAdsRefreshToken } from '@wizard-ads/db';
 import { readSpWriteDatabaseTime } from '@wizard-ads/db/sp-write-worker';
 import type { DbHandle } from '@wizard-ads/db';
 import type { SpWritePlan } from '@wizard-ads/shared/sp-writes';
 import { hasher, providerKey } from './artifacts.js';
+import { createGuardedSpWriteAdapter } from './guarded-provider-fetch.js';
 
 /** Construct only within the worker, before claim. Secrets never enter returned facts or logs. */
 export function createSpWriteProviderPreparation(database: DbHandle, env: NodeJS.ProcessEnv = process.env) {
@@ -24,8 +25,9 @@ export function createSpWriteProviderPreparation(database: DbHandle, env: NodeJS
       if (prepared.has(key)) continue;
       const refreshToken = await getAdsRefreshToken(database, plan.providerScope.connectionId);
       if (refreshToken === null) continue;
-      prepared.set(key, createSpWriteAdapter({ region: plan.providerScope.region,
+      prepared.set(key, createGuardedSpWriteAdapter({ region: plan.providerScope.region,
         credentials: { clientId, clientSecret: secret, refreshToken },
+        fetch: (input, init) => globalThis.fetch(input, init),
       }, { hasher, now }));
     }
     return prepared;

@@ -5,6 +5,7 @@ import { TenantStrategy } from './strategy.js';
 import { OptimizationGroupSnapshot, normalizeOptimizationGroupSnapshot } from './optimization.js';
 import {
   McpKeywordBidProposal, McpWriteDelegation, SpWriteProviderScope, SpWriteSha256,
+  SpWriteDependencySetEvidence, SpWriteDependencySourceRow,
   verifyMcpPlanLimits, verifyMcpWriteDelegationFingerprint, verifySpWritePlanFingerprints,
   type SpWriteSha256Hasher,
 } from './sp-writes.js';
@@ -148,20 +149,54 @@ export const SpMcpWritePreviewEvidenceV2 = z.object({
 });
 export type SpMcpWritePreviewEvidenceV2 = z.infer<typeof SpMcpWritePreviewEvidenceV2>;
 
+/** The legacy export wire format is retained, with one source row per ordered control. */
+export const SpWriteDependencyPreviewEvidence = z.object({
+  schemaVersion: z.literal('openspell.sp-write-preview-evidence.v3'),
+  planId: Uuid,
+  guardrails: SpWritePreviewEvidence.shape.guardrails,
+  provenance: SpWritePreviewEvidence.shape.provenance.omit({ rows: true }).extend({
+    rows: z.array(SpWriteDependencySourceRow).min(1).max(500),
+    dependencySets: z.array(SpWriteDependencySetEvidence).min(1).max(500),
+  }).strict(),
+}).strict().superRefine((value, context) => {
+  const { rows, dependencySets } = value.provenance;
+  let validArtifact = false;
+  try { validArtifact = z.array(ApplyRowWire).parse(JSON.parse(value.provenance.artifactText)).length === rows.length; }
+  catch { /* The one issue below covers malformed artifacts and their count. */ }
+  const groupedRows = dependencySets.flatMap((set) => rows.filter((row) => row.dependencySetId === set.dependencySetId));
+  if (!validArtifact || new Set(rows.map((row) => row.applyRowId)).size !== rows.length
+    || new Set(dependencySets.map((set) => set.dependencySetId)).size !== dependencySets.length
+    || new Set(dependencySets.map((set) => set.recommendationId)).size !== dependencySets.length
+    || JSON.stringify(groupedRows) !== JSON.stringify(rows)
+    || dependencySets.some((set) => {
+      const members = rows.filter((row) => row.dependencySetId === set.dependencySetId);
+      return members.length === 0 || members.some((row, index) => row.recommendationId !== set.recommendationId
+        || row.dependencyStepIndex !== index);
+    })
+    || value.guardrails.policies.length !== rows.length
+    || value.guardrails.policies.some((policy, index) => {
+      const row = rows[index];
+      return row?.applyRowId !== policy.applyRowId || row.recommendationId !== policy.recommendationId || row.runId !== policy.runId;
+    })) context.addIssue({ code: 'custom', message: 'dependency source rows, groups and policies must preserve every ordered step' });
+});
+export type SpWriteDependencyPreviewEvidence = z.infer<typeof SpWriteDependencyPreviewEvidence>;
+
 /** Keep the original v1 parser available to consumers that must remain recommendation-only. */
-export const SpWriteSourceEvidence = z.discriminatedUnion('schemaVersion', [SpWritePreviewEvidence, SpMcpWritePreviewEvidenceV2]);
+export const SpWriteSourceEvidence = z.discriminatedUnion('schemaVersion', [SpWritePreviewEvidence, SpMcpWritePreviewEvidenceV2, SpWriteDependencyPreviewEvidence]);
 export type SpWriteSourceEvidence = z.infer<typeof SpWriteSourceEvidence>;
 
 export function serializeSpWritePreviewGuardrails(raw: SpWriteSourceEvidence): string {
   const evidence = SpWriteSourceEvidence.parse(raw);
   return JSON.stringify([evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v1'
-    ? 'openspell.sp-write-preview-guards.v1' : 'openspell.sp-write-preview-guards.v2', evidence.guardrails]);
+    ? 'openspell.sp-write-preview-guards.v1' : evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v2'
+      ? 'openspell.sp-write-preview-guards.v2' : 'openspell.sp-write-preview-guards.v3', evidence.guardrails]);
 }
 
 export function serializeSpWritePreviewProvenance(raw: SpWriteSourceEvidence): string {
   const evidence = SpWriteSourceEvidence.parse(raw);
   return JSON.stringify([evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v1'
-    ? 'openspell.sp-write-preview-source.v1' : 'openspell.sp-write-preview-source.v2', evidence.provenance]);
+    ? 'openspell.sp-write-preview-source.v1' : evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v2'
+      ? 'openspell.sp-write-preview-source.v2' : 'openspell.sp-write-preview-source.v3', evidence.provenance]);
 }
 
 /** Verify MCP source bytes and exact planned values; legacy sources retain their SQL validator. */
@@ -197,5 +232,39 @@ export function verifyMcpWritePreviewEvidenceArtifacts(rawPlan: unknown, rawEvid
           || action.changes.bid?.expected.amount !== row.expectedBid
           || action.changes.bid.requested.amount !== row.requestedBid;
       })) throw new Error('MCP proposal differs from its exact plan and authority');
+  return { plan, evidence };
+}
+
+/** Verify the immutable step order and exact stored evidence bytes before persistence or use. */
+export function verifySpWriteDependencyPreviewEvidenceArtifacts(rawPlan: unknown, rawEvidence: unknown, hasher: SpWriteSha256Hasher) {
+  const plan = verifySpWritePlanFingerprints(rawPlan, hasher);
+  const evidence = SpWriteDependencyPreviewEvidence.parse(rawEvidence);
+  if (plan.schemaVersion !== 'openspell.sp-write-plan.v3' || plan.direction !== 'forward'
+    || plan.source.kind !== 'apply_batch' || plan.dependencySets === undefined
+    || evidence.planId !== plan.id || evidence.provenance.applyBatchId !== plan.source.applyBatchId
+    || evidence.provenance.rows.length !== plan.actions.length
+    || JSON.stringify(evidence.guardrails.providerScope) !== JSON.stringify(plan.providerScope)
+    || hasher.digest(evidence.provenance.artifactText) !== evidence.provenance.artifactSha256
+    || hasher.digest(serializeSpWritePreviewGuardrails(evidence)) !== plan.source.guardrailSnapshotFingerprint
+    || hasher.digest(serializeSpWritePreviewProvenance(evidence)) !== plan.source.provenanceSnapshotFingerprint
+    || evidence.provenance.dependencySets.length !== plan.dependencySets.length
+    || evidence.provenance.dependencySets.some((group, index) => {
+      const set = plan.dependencySets![index];
+      let persisted: { id?: unknown; changes?: unknown[]; precedenceReasons?: unknown };
+      try { persisted = JSON.parse(group.dependencySetText) as typeof persisted; } catch { return true; }
+      return set === undefined || group.dependencySetId !== set.dependencySetId
+        || group.recommendationId !== set.recommendationId || group.dependencySetSha256 !== set.dependencySetSha256
+        || hasher.digest(group.dependencySetText) !== group.dependencySetSha256
+        || hasher.digest(group.calculationSnapshotText) !== group.calculationSnapshotSha256
+        || persisted.id !== set.dependencySetId || persisted.changes?.length !== set.actionIds.length
+        || JSON.stringify(persisted.precedenceReasons) !== JSON.stringify(set.precedenceReasons);
+    })
+    || evidence.provenance.rows.some((row, index) => {
+      const action = plan.actions[index];
+      const set = plan.dependencySets!.find((candidate) => candidate.dependencySetId === row.dependencySetId);
+      return action === undefined || action.sources[0]?.kind !== 'apply_row'
+        || action.sources[0].applyRowId !== row.applyRowId
+        || set?.actionIds[row.dependencyStepIndex] !== action.actionId;
+    })) throw new Error('dependency preview evidence differs from its exact ordered plan');
   return { plan, evidence };
 }

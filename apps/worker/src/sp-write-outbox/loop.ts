@@ -9,8 +9,10 @@ import {
 } from '@wizard-ads/db/sp-write-persistence';
 import {
   isSpWriteDispatchCurrent, listSpWriteProviderPlans, readSpWriteDatabaseTime, readSpWriteRecoveryResult,
+  settleSpWriteDependencies,
 } from '@wizard-ads/db/sp-write-worker';
-import { makeObservations, makeReservationArtifacts, unresolvedActionIds, providerKey, remainingAttemptMs } from './artifacts.js';
+import { makeObservations, makeReservationArtifacts, nextDependencyAction, supportedWorkerAction,
+  unresolvedActionIds, providerKey, remainingAttemptMs } from './artifacts.js';
 
 import type { SpWriteWorkerPolicy as Policy } from './policy.js';
 
@@ -52,8 +54,9 @@ export function createSpWriteOutboxLoop(dependencies: Dependencies) {
   async function evidenceFor(claim: SpWriteOutboxClaim): Promise<SpWriteExecutionEvidence> {
     const evidence = await runtime.loadVerifiedExecution(claim);
     if (evidence === null) throw new Error('SP write execution unavailable');
-    if (evidence.plan.actions.some((action) => action.routeKey !== 'sp.v3.keywords.update'
-      || action.changes.bid === undefined || action.changes.state !== undefined)) throw new Error('SP write action unsupported by worker');
+    if (evidence.plan.actions.some((action) => !supportedWorkerAction(action)
+      || (evidence.plan.schemaVersion !== 'openspell.sp-write-plan.v3'
+        && action.routeKey !== 'sp.v3.keywords.update'))) throw new Error('SP write action unsupported by worker');
     return evidence;
   }
 
@@ -71,7 +74,8 @@ export function createSpWriteOutboxLoop(dependencies: Dependencies) {
   ): Promise<SpWriteTickResult> {
     let evidence = initial;
     let attemptedCalls = 0;
-    let lease: { leaseId: string; expiresAt: string } | undefined;
+    let lease: { leaseId: string; expiresAt: string; routeKey: string } | undefined;
+    const coordinated = initial.plan.schemaVersion === 'openspell.sp-write-plan.v3';
     // Each pass must resolve at least one row. There can be no more passes than approved rows.
     for (let pass = 0; pass < initial.plan.actions.length; pass += 1) {
       if (evidence.authorization.approvalMode === 'delegated_mcp') {
@@ -80,17 +84,29 @@ export function createSpWriteOutboxLoop(dependencies: Dependencies) {
         if (settlement.kind === 'refused') return settleClaim(claim, attemptedCalls);
       }
       const remaining = unresolvedActionIds(evidence);
-      const call = adapter.preparePlan(evidence.plan, remaining)[0];
+      const next = coordinated ? nextDependencyAction(evidence) : null;
+      if (coordinated && next === null) return settleClaim(claim, attemptedCalls);
+      if (coordinated) {
+        const group = evidence.plan.dependencySets!.find((set) => set.actionIds.includes(next!))!;
+        for (const predecessor of group.actionIds.slice(0, group.actionIds.indexOf(next!))) {
+          const observation = evidence.observations.find((row) => row.actionId === predecessor && row.outcome === 'observed_requested');
+          if (observation === undefined || !await dependencies.reconcileObservation(observation)) return settleClaim(claim, attemptedCalls);
+        }
+      }
+      const call = adapter.preparePlan(evidence.plan, coordinated ? [next!] : remaining)[0];
       if (call === undefined) return settleClaim(claim, attemptedCalls);
+      if (coordinated && (call.positions.length !== 1 || call.positions[0]?.actionId !== next)) {
+        throw new Error('Coordinated provider call must contain exactly its next approved step');
+      }
       signal.throwIfAborted();
       if (!allowed(claim, currentPolicy()) || !await isSpWriteDispatchCurrent(database, claim)) {
         await outbox.deferClaim(claim, 'shutdown');
         return { kind: 'deferred', attemptedCalls };
       }
-      if (lease === undefined) {
+      if (lease === undefined || lease.routeKey !== call.routeKey) {
         const acquired = await runtime.acquireDispatchLease({ claim, routeKey: call.routeKey, leaseSeconds: 120 });
         if (acquired.kind !== 'acquired') return settleClaim(claim, attemptedCalls);
-        lease = acquired;
+        lease = { ...acquired, routeKey: call.routeKey };
       }
       const beforeRead = await readSpWriteDatabaseTime(database);
       if (Date.parse(lease.expiresAt) - Date.parse(beforeRead) <= 70_000) return settleClaim(claim, attemptedCalls);
@@ -122,6 +138,7 @@ export function createSpWriteOutboxLoop(dependencies: Dependencies) {
         await runtime.appendProviderResult(result);
       }
       evidence = await evidenceFor(claim);
+      if (coordinated) return settleClaim(claim, attemptedCalls);
       if (unresolvedActionIds(evidence).length >= remaining.length) return settleClaim(claim, attemptedCalls);
     }
     return settleClaim(claim, attemptedCalls);
@@ -212,9 +229,14 @@ export function createSpWriteOutboxLoop(dependencies: Dependencies) {
           await outbox.deferClaim(claim, 'shutdown');
           return { kind: 'deferred', attemptedCalls: 0 };
         }
-        const evidence = await evidenceFor(claim);
+        let evidence = await evidenceFor(claim);
         const adapter = providers.get(providerKey(evidence.plan));
         if (claim.kind === 'observe_and_recover') return await observe(claim, evidence, adapter, signal);
+        if (evidence.plan.schemaVersion === 'openspell.sp-write-plan.v3') {
+          const settlement = await settleSpWriteDependencies(database, claim);
+          if (settlement.kind === 'stale_claim') return { kind: 'stale', attemptedCalls: 0 };
+          if (settlement.kind === 'refused') evidence = await evidenceFor(claim);
+        }
         if (evidence.snapshot.accounting.pendingDispatch === 0) return await settleClaim(claim, 0);
         if (evidence.authorization.approvalMode === 'delegated_mcp') {
           const settlement = await outbox.settleDelegatedAuthority(claim);

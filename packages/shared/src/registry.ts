@@ -44,7 +44,7 @@ export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
   {"domain": "sp-write-application", "contract": "sp-write-application.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": []},
   {"domain": "sp-write-mirror", "contract": "sp-write-mirror.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": []},
   {"domain": "sp-write-preview-evidence", "contract": "sp-write-preview-evidence.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": []},
-  {"domain": "sp-writes", "contract": "sp-writes.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": []},
+  {"domain": "sp-writes", "contract": "sp-writes.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 27, "clause": "{ SpPlacementChange, SpCompleteCampaignBiddingState }", "after": ""}]},
   {"domain": "strategy", "contract": "strategy.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 11, "clause": "*", "after": ""}]},
   {"domain": "tags", "contract": "tags.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 21, "clause": "*", "after": ""}]},
   {"domain": "time-machine-writes", "contract": "time-machine-writes.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": []},

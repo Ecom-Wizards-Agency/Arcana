@@ -1347,6 +1347,13 @@ function EvidencePanel({
           ? ''
           : ` Target ACOS ${(proposal.strategy.targetAcos * 100).toFixed(0)}%.`}
       </p>
+      {proposal.dependencySet === undefined ? null : <section aria-label="Ordered control changes">
+        <p>One intervention · {proposal.dependencySet.changes.length} steps</p>
+        <ol>{proposal.dependencySet.changes.map((change, index) => <li key={index}>
+          {change.entityRef.name ?? change.entityRef.entityId}: {change.control === 'placement_adjustment' ? change.placementKey : change.control} {change.current} → {change.proposed} ({change.unit})
+          {proposal.dependencySet?.precedenceReasons[index] ? <p className="wa-hint">{proposal.dependencySet.precedenceReasons[index]}</p> : null}
+        </li>)}</ol>
+      </section>}
       <dl style={definitions}>
         {proposal.provenance.map((line) => (
           <div key={line.key} style={definitionRow} data-provenance={line.key}>
@@ -1369,8 +1376,9 @@ function EvidencePanel({
       )}
       {proposal.exportable ? null : (
         <p style={{ margin: '0.5rem 0 0' }}>
-          This proposal creates an entity rather than changing one, so it ships as a create
-          row in the workbook and is absent from the rows JSON.
+          {proposal.dependencySet === undefined
+            ? 'This proposal creates an entity, so it ships as a create row in the workbook and is absent from the rows JSON.'
+            : 'This draft method can be reviewed but cannot be approved for Amazon execution.'}
         </p>
       )}
     </div>

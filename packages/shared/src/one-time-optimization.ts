@@ -1,6 +1,6 @@
 /** Explicit settings for one read-only run. No tenant policy defaults live here. */
 import { z } from 'zod';
-import { MethodId, MethodVersion } from './methods.js';
+import { MethodId, MethodVersion, PlacementEvidenceRequirements } from './methods.js';
 import { Uuid } from './primitives.js';
 
 export const ONE_TIME_PREVIEW_CAMPAIGN_MAX = 10_000;
@@ -24,9 +24,9 @@ export type OneTimeOptimizationWindow = z.infer<typeof OneTimeOptimizationWindow
  * Run values fill settings not defined by the assigned group.
  * This document never changes that group's strategy or schedule.
  */
-export const OneTimeRpcConfiguration = z.strictObject({
+const ReferenceConfiguration = z.strictObject({
   version: z.literal(1),
-  method: z.union([MethodId, z.literal('rpc')]).transform((method) =>
+  method: z.enum(['sp.reference-efficiency', 'rpc']).transform((method) =>
     method === 'rpc' ? 'sp.reference-efficiency' as const : method),
   targetAcos: z.number().positive(),
   bidFloor: z.number().nonnegative(),
@@ -38,6 +38,12 @@ export const OneTimeRpcConfiguration = z.strictObject({
   path: ['bidCeiling'],
   message: 'The maximum bid must be at least the minimum bid.',
 });
+export const CoordinatedConfiguration = z.strictObject({ ...ReferenceConfiguration.shape,
+  version: z.literal(2), method: z.literal('sp.coordinated-efficiency'),
+  exposureCeiling: z.number().positive(), placementEvidenceRequirements: PlacementEvidenceRequirements,
+  minClicksPerPlacement: z.number().int().positive(),
+}).refine((settings) => settings.bidFloor <= settings.bidCeiling, { path: ['bidCeiling'], message: 'The maximum bid must be at least the minimum bid.' });
+export const OneTimeRpcConfiguration = z.discriminatedUnion('version', [ReferenceConfiguration, CoordinatedConfiguration]);
 export type OneTimeRpcConfiguration = z.infer<typeof OneTimeRpcConfiguration>;
 
 const SelectedCampaignIds = z.array(
@@ -67,12 +73,16 @@ export type OneTimeRpcPreviewRequest = z.infer<typeof OneTimeRpcPreviewRequest>;
 export const OneTimeRpcSnapshot = z.strictObject({
   methodId: MethodId.optional(),
   methodVersion: MethodVersion.optional(),
-  version: z.literal(1),
+  version: z.union([z.literal(1), z.literal(2)]),
   configuration: OneTimeRpcConfiguration,
   profileTimezone: z.string().min(1),
   admittedAt: z.iso.datetime(),
   profileToday: z.iso.date(),
-}).refine((snapshot) => snapshot.configuration.window.end < snapshot.profileToday, {
+}).refine((snapshot) => snapshot.version === snapshot.configuration.version
+  && (snapshot.version === 1
+    ? (snapshot.methodId === undefined || snapshot.methodId === 'sp.reference-efficiency')
+      && (snapshot.methodVersion === undefined || snapshot.methodVersion === 'reference.1')
+    : snapshot.methodId === 'sp.coordinated-efficiency' && snapshot.methodVersion === 'candidate.1'), { message: 'Snapshot version and method must match its configuration.' }).refine((snapshot) => snapshot.configuration.window.end < snapshot.profileToday, {
   path: ['configuration', 'window', 'end'],
   message: 'Use completed reporting days before today in the advertising profile timezone.',
 });
@@ -85,5 +95,5 @@ export type OneTimeRpcBidSettings = Pick<OneTimeRpcConfiguration, typeof ONE_TIM
 
 /** Legacy input is accepted only at parsing boundaries; output is always canonical. */
 export function oneTimeMethodId(method: MethodId | 'rpc'): MethodId {
-  return OneTimeRpcConfiguration.shape.method.parse(method);
+  return method === 'rpc' ? 'sp.reference-efficiency' : MethodId.parse(method);
 }

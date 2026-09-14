@@ -22,6 +22,16 @@ it('submits the explicit reference method identity from the unchanged settings f
     expect(onConfirm).toHaveBeenCalledTimes(1);
     expect(onConfirm.mock.calls[0]?.[0]).toMatchObject({ method: 'sp.reference-efficiency', targetAcos: 0.37 });
     expect(host.textContent).toContain('Assigned group values override the run fields');
+    const method = host.querySelector<HTMLSelectElement>('select[name="method"]')!;
+    act(() => { method.value = 'sp.coordinated-efficiency'; method.dispatchEvent(new Event('change', { bubbles: true })); });
+    const exposure = host.querySelector<HTMLInputElement>('input[name="exposureCeiling"]')!;
+    const clicks = host.querySelector<HTMLInputElement>('input[name="minClicksPerPlacement"]')!;
+    exposure.value = '1.73'; clicks.value = '19';
+    act(() => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    expect(onConfirm).toHaveBeenCalledTimes(2);
+    expect(onConfirm.mock.calls[1]?.[0]).toMatchObject({ version: 2, method: 'sp.coordinated-efficiency',
+      exposureCeiling: 1.73, minClicksPerPlacement: 19, placementEvidenceRequirements: 'single_target', targetAcos: 0.37 });
+    expect(host.textContent).toContain('Draft previews cannot be approved');
   } finally {
     act(() => root.unmount());
     host.remove();

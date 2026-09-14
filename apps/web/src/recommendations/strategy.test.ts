@@ -115,3 +115,13 @@ describe('resolveExportCaps', () => {
     });
   });
 });
+
+it('uses the saved per-row method for the objective and review label', () => {
+  const result = resolveProposalStrategy({ campaignId: 'c-1', campaignName: 'Synthetic', strategySnapshot: SNAPSHOT,
+    methodId: 'sp.coordinated-efficiency', executionSnapshot: { version: 1,
+      configuration: { version: 1, method: 'sp.reference-efficiency', targetAcos: 0.3, bidFloor: 0.1, bidCeiling: 1,
+        bidIncreaseCap: 0.5, bidDecreaseCap: 0.6, window: { start: '2026-08-01', end: '2026-08-28' } },
+      profileTimezone: 'UTC', admittedAt: '2026-09-10T00:00:00Z', profileToday: '2026-09-10' } });
+  expect(result.objective).toBe('coordinated-efficiency');
+  expect(strategyLabel(result)).toBe('Coordinated efficiency (draft)');
+});

@@ -74,6 +74,7 @@ describe('one-time RPC contract', () => {
       profileToday: '2024-03-01',
     };
     expect(OneTimeRpcSnapshot.parse(snapshot)).toEqual(snapshot);
+    expect(OneTimeRpcSnapshot.safeParse({ ...snapshot, methodId: 'sp.coordinated-efficiency', methodVersion: 'candidate.1' }).success).toBe(false);
     expect(OneTimeRpcSnapshot.safeParse({ ...snapshot, profileToday: '2024-02-29' }).success).toBe(false);
     expect(OneTimeRpcSnapshot.safeParse({ ...snapshot, profileToday: '2024-02-28' }).success).toBe(false);
   });

@@ -53,6 +53,7 @@ export const applyBatches = pgTable(
     appliedAt: ts('applied_at'),
     artifactSha256: text('artifact_sha256'),
     exportedProposals: integer('exported_proposals').notNull().default(0),
+    dependencySetsCount: integer('dependency_sets_count'),
     reversibleRows: integer('reversible_rows').notNull().default(0),
     unsupportedRows: integer('unsupported_rows').notNull().default(0),
     createdBy: uuid('created_by').references(() => authUsers.id, { onDelete: 'set null' }),
@@ -83,6 +84,8 @@ export const applyRows = pgTable(
       .references(() => adProfiles.id, { onDelete: 'cascade' }),
     recommendationId: uuid('recommendation_id'),
     proposalRevisionId: uuid('proposal_revision_id'),
+    dependencySetId: text('dependency_set_id'),
+    dependencyStepIndex: integer('dependency_step_index'),
     entityType: applyEntityType('entity_type').notNull(),
     entityId: text('entity_id').notNull(),
     entityName: text('entity_name'),
@@ -96,6 +99,8 @@ export const applyRows = pgTable(
   },
   (t) => [
     index('apply_rows_batch_idx').on(t.batchId),
+    uniqueIndex('apply_rows_dependency_step_key').on(t.batchId, t.dependencySetId, t.dependencyStepIndex)
+      .where(sql`${t.dependencySetId} is not null`),
     uniqueIndex('apply_rows_org_profile_id_key').on(t.orgId, t.profileId, t.id),
     index('apply_rows_profile_entity_idx').on(
       t.orgId,

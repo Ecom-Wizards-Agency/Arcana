@@ -3,7 +3,8 @@ import {
   SpWriteObservation, SpWriteObservedAction, SpWritePredispatchObservation, SpWriteProviderCallIntent,
   serializeSpWriteObservationFingerprint, serializeSpWritePredispatchObservationFingerprint,
   serializeSpWriteProviderCallIntentFingerprint, serializeSpWriteProviderRequestFingerprint,
-  type SpWriteExecutionEvidence, type SpWritePlan, type SpWriteProviderResult,
+  observedActionForSide,
+  type SpWriteAction, type SpWriteExecutionEvidence, type SpWritePlan, type SpWriteProviderResult,
 } from '@wizard-ads/shared/sp-writes';
 import type { SpWritePreparedCall } from '@wizard-ads/ads-api/sp-write-adapter';
 import type { SpWriteDispatchTicket, SpWriteObserveAndRecoverOutboxClaim } from '@wizard-ads/db/sp-write-persistence';
@@ -50,12 +51,45 @@ export function remainingAttemptMs(ticket: SpWriteDispatchTicket, elapsedMs: num
   return Math.max(0, Math.floor(attempt));
 }
 
-export function unresolvedActionIds(evidence: SpWriteExecutionEvidence): string[] {
+type DispatchProgress = {
+  plan: { actions: readonly Pick<SpWriteAction, 'actionId'>[]; dependencySets?: SpWritePlan['dependencySets'] };
+  predispatchDispositions: readonly Pick<SpWriteExecutionEvidence['predispatchDispositions'][number], 'actionId'>[];
+  providerCallIntents: readonly { positions: readonly Pick<SpWriteProviderCallIntent['positions'][number], 'actionId'>[] }[];
+};
+
+export function unresolvedActionIds(evidence: DispatchProgress): string[] {
   const resolved = new Set([
     ...evidence.predispatchDispositions.map((row) => row.actionId),
     ...evidence.providerCallIntents.flatMap((intent) => intent.positions.map((row) => row.actionId)),
   ]);
   return evidence.plan.actions.filter((action) => !resolved.has(action.actionId)).map((action) => action.actionId);
+}
+
+/** Coordinated execution supports only the controls bound by its immutable plan. */
+export function supportedWorkerAction(action: SpWriteAction): boolean {
+  if (action.routeKey === 'sp.v3.keywords.update' || action.routeKey === 'sp.v3.targets.update') {
+    return action.changes.bid !== undefined && action.changes.state === undefined;
+  }
+  return action.routeKey === 'sp.v3.campaigns.update' && action.changes.placement !== undefined
+    && action.changes.placement.approvedPlacementKeys.length === 1
+    && action.changes.budget === undefined && action.changes.state === undefined;
+}
+
+/** An intent consumes a step, but only observed success permits its successor. */
+export function nextDependencyAction(evidence: DispatchProgress & {
+  observations: readonly Pick<SpWriteObservation, 'actionId' | 'outcome'>[];
+}): string | null {
+  const unresolved = new Set(unresolvedActionIds(evidence));
+  for (const group of evidence.plan.dependencySets ?? []) {
+    for (const [index, actionId] of group.actionIds.entries()) {
+      if (!unresolved.has(actionId)) continue;
+      const predecessors = group.actionIds.slice(0, index);
+      if (predecessors.every((previous) => evidence.observations.some((observation) =>
+        observation.actionId === previous && observation.outcome === 'observed_requested'))) return actionId;
+      return null;
+    }
+  }
+  return null;
 }
 
 /** A successful complete read is required; failed reads never fabricate a missing entity. */
@@ -85,19 +119,21 @@ export function makeObservations(
       || evidence.observations.some((row) => row.intentId === intent.intentId && row.actionId === position.actionId)) continue;
     const action = evidence.plan.actions.find((row) => row.actionId === position.actionId);
     const observed = byAction.get(position.actionId);
-    const archived = observed?.routeKey === 'sp.v3.keywords.update' && observed.values.state === 'archived';
-    if (action?.routeKey !== 'sp.v3.keywords.update' || action.changes.bid === undefined || action.changes.state !== undefined
+    const archived = observed?.values.state === 'archived';
+    if (action === undefined || !supportedWorkerAction(action)
       || observed === undefined || (observed !== null && (
         observed.routeKey !== action.routeKey || observed.actionFingerprint !== action.fingerprint
-        || observed.amazonEntityId !== action.entity.keywordId || (!archived && observed.values.bid === undefined)
+        || observed.amazonEntityId !== observedActionForSide(action, 'expected').amazonEntityId
+        || (!archived && Object.keys(observedActionForSide(action, 'expected').values)
+          .some((key) => !(key in observed.values)))
         || (observed.values.state !== undefined && !archived)
       ))) {
       throw new Error('SP write observation identity or action unsupported');
     }
-    const matches = (side: 'expected' | 'requested') => observed?.values.bid?.amount === action.changes.bid?.[side].amount
-      && observed?.values.bid?.currencyCode === action.changes.bid?.[side].currencyCode;
+    const matches = (side: 'expected' | 'requested') => observed !== null
+      && JSON.stringify(observed) === JSON.stringify(observedActionForSide(action, side));
     const requested = !archived && matches('requested');
-    if (!requested && Date.parse(observedAt) < deadline) { pending += 1; continue; }
+    if (!requested && !(archived && observed?.routeKey !== 'sp.v3.keywords.update') && Date.parse(observedAt) < deadline) { pending += 1; continue; }
     const observation = SpWriteObservation.parse({ ...identity(evidence),
       schemaVersion: 'openspell.sp-write-observation.v1', observationId: randomUUID(),
       intentId: intent.intentId, intentFingerprint: intent.fingerprint, providerCallId: intent.providerCallId,

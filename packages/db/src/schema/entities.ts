@@ -21,6 +21,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import type { TargetExpression } from '@wizard-ads/shared';
+import type { SpCompleteCampaignBiddingState } from '@wizard-ads/shared/sp-writes';
 import { money, ts } from './columns.js';
 import {
   adProduct,
@@ -79,6 +80,8 @@ export const campaigns = pgTable(
     targetingType: targetingType('targeting_type'),
     biddingStrategy: biddingStrategy('bidding_strategy'),
     placementBidding: jsonb('placement_bidding').$type<PlacementBiddingJson>(),
+    biddingControlState: jsonb('bidding_control_state').$type<SpCompleteCampaignBiddingState>(),
+    biddingObservedAt: ts('bidding_observed_at'),
     startDate: date('start_date'),
     endDate: date('end_date'),
   },
@@ -143,6 +146,7 @@ export const targets = pgTable(
     expression: jsonb('expression').$type<TargetExpression[]>().notNull().default([]),
     resolvedExpression: text('resolved_expression'),
     bid: money('bid', 12, 4),
+    bidObservedAt: ts('bid_observed_at'),
   },
   (t) => [
     uniqueIndex('targets_profile_id_amazon_id_key').on(t.profileId, t.amazonId),

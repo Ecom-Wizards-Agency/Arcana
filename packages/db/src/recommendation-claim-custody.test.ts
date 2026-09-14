@@ -382,6 +382,7 @@ describe.skipIf(!available)('exclusive recommendation claim custody', () => {
       'audit_log:INSERT:recommendation_executor_insert',
       'bid_series_daily:SELECT:recommendation_executor_select',
       'campaigns:SELECT:recommendation_executor_select',
+      'fact_placement_daily:SELECT:recommendation_executor_select',
       'fact_profile_daily:SELECT:recommendation_executor_select',
       'fact_sb_daily:SELECT:recommendation_executor_select',
       'fact_sd_daily:SELECT:recommendation_executor_select',
