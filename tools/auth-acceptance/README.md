@@ -80,3 +80,14 @@ MFA/passkey policy, team-invitation browser flows, concurrent owner claims or
 general cross-agency data access. Those require their own focused checks. Changing
 an image pin or the template requires rerunning both suites; adding a check also
 requires updating its explicit expected count.
+
+### Public image registry
+
+All test containers pull from Amazon ECR Public to avoid Docker Hub anonymous
+pull limits. Postgres 17 and Node 22.22.0-bookworm-slim use the Docker Official
+Images mirror at `public.ecr.aws/docker/library`, preserving the existing versions
+and digest pins. The workflow's Postgres services use the same mirror and `17`
+tag. GoTrue v2.196.0 and Mailpit v1.30.2 already use `public.ecr.aws/supabase`
+with their existing digest pins. The official Postgres mirror preserves the plain
+Postgres fixture environment; the Supabase Postgres image includes additional
+platform initialization and has a different version scheme.

@@ -24,7 +24,8 @@
     "seed:strategy": "tsx ../../supabase/seed/import-strategy.ts",
     "seed:dev": "tsx ../../supabase/seed/dev-seed.ts",
     "seed:roadmap": "tsx ../../supabase/seed/seed-roadmap.ts",
-    "measure:read-path": "tsx scripts/measure-read-path.ts"
+    "measure:read-path": "tsx scripts/measure-read-path.ts",
+    "generate:barrels": "UPDATE_PACKAGE_BARRELS=1 vitest run src/registry.test.ts"
   },
   "dependencies": {
     "@wizard-ads/campaigns": "workspace:*",

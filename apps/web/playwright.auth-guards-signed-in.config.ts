@@ -1,3 +1,4 @@
+import { e2eTestMatch } from './src/e2e-suite-registry';
 /** Signed-in frame and guarded routes in a fresh authenticated-test Next process. */
 import { defineConfig, devices } from '@playwright/test';
 import { withE2ESummaryReporter } from './e2e/e2e-count-reporter';
@@ -5,7 +6,7 @@ import authConfig from './playwright.auth.config';
 
 export default defineConfig({
   ...authConfig,
-  testMatch: /guards-signed-in\.spec\.ts$/,
+  testMatch: e2eTestMatch('auth-guards-signed-in'),
   outputDir: './node_modules/.cache/playwright/auth-guards-signed-in',
   reporter: withE2ESummaryReporter(process.env['CI']
     ? [

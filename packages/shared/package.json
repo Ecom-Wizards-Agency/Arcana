@@ -19,7 +19,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "generate:barrels": "UPDATE_PACKAGE_BARRELS=1 vitest run src/registry.test.ts"
   },
   "dependencies": {
     "zod": "^4.4.3"

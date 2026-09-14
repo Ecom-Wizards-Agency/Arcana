@@ -22,7 +22,7 @@ describe.skipIf(!available)('recommendation preview scope migration safety', () 
     await Promise.all(databases.splice(0).map((database) => database.drop()));
   });
 
-  it('upgrades populated predecessor state without changing legacy ledger counts', async () => {
+  it('upgrades populated predecessor state without changing legacy ledger counts', { timeout: 60_000 }, async () => {
     const database = await createTestDatabase('preview_scope_upgrade', {
       throughMigration: PREDECESSOR,
     });

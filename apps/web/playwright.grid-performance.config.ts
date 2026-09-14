@@ -1,3 +1,4 @@
+import { e2eTestMatch } from './src/e2e-suite-registry';
 /**
  * Isolated authenticated Grid performance proof.
  *
@@ -12,7 +13,7 @@ import authConfig from './playwright.auth.config';
 
 export default defineConfig({
   ...authConfig,
-  testMatch: /grid-performance\.spec\.ts$/,
+  testMatch: e2eTestMatch('grid-performance'),
   outputDir: './node_modules/.cache/playwright/grid-performance',
   reporter: withE2ESummaryReporter(process.env['CI']
     ? [

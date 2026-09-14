@@ -574,6 +574,7 @@ async function main(): Promise<number> {
     );
   }
 
+  console.log(`Expected browser tests: ${definitions.reduce((total, suite) => total + suite.expectedTests, 0)}`);
   const summaryDirectory = await createSummaryDirectory();
 
   return await runE2ESuiteMatrix(
