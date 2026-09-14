@@ -14,7 +14,7 @@ test('the index opens the signed-in operator dashboard with its active profile',
   await page.waitForURL((url) =>
     url.pathname === '/' && url.searchParams.get('profile') === fixtureProfileId,
   );
-  await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+  await expect(page.getByTestId('shell-title')).toBeVisible();
 
   const nav = page.getByTestId('app-nav');
   await expect(nav).toBeVisible();
@@ -53,19 +53,17 @@ test('the same screens open once there is a session', async ({ page }) => {
           && (!signedIn.canonicalProfile || url.searchParams.has('profile'))
         ),
       );
-      await expect(page.locator(signedIn.artifact)).toBeVisible();
-      await expect(page.getByRole('heading', {
-        name: signedIn.heading,
-        exact: true,
-      })).toBeVisible();
+      await expect(signedIn.pathname === '/' ? page.getByLabel('Performance summary') : page.locator(signedIn.artifact)).toBeVisible();
+      await expect(signedIn.pathname === '/' ? page.getByTestId('shell-title') : page.getByRole('heading', { name: signedIn.heading, exact: true })).toBeVisible();
     }
     if (signedIn.kind === 'requested' && signedIn.heading !== undefined) {
-      await expect(page.getByRole('heading', { name: signedIn.heading, exact: true })).toBeVisible();
+      // The scoped Home adapter replaces the cockpit presentation; route admission is unchanged.
+      await expect(expectedPath === '/' ? page.getByTestId('shell-title') : page.getByRole('heading', { name: signedIn.heading, exact: true })).toBeVisible();
     }
     landed.push(new URL(page.url()).pathname);
   }
 
-  // Strategy Overview now lives inside Dashboard. Assert that one intentional
+  // The legacy strategy URL still redirects to Home. Assert that intentional
   // redirect exactly; every other route must stay on its requested pathname.
   expect(landed).toEqual(GUARDED_ROUTES.map(({ path, signedIn }) => (
     signedIn.kind === 'redirect' ? signedIn.pathname : path
