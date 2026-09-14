@@ -229,7 +229,7 @@ export async function buildSpWriteLegacyPreview(
   if (restoreRowIds && batch.dependency_sets_count !== null) {
     throw new SpWriteApplicationError('unsupported_source');
   }
-  const rows = await sql<SourceRow[]>`
+  const sourceRows = await sql<SourceRow[]>`
     select r.id::text, r.entity_type::text, r.entity_id, r.entity_name, r.field,
            r.old_value #>> '{}' as old_value, r.new_value #>> '{}' as new_value,
            r.old_value::text as old_json, r.new_value::text as new_json,
@@ -272,9 +272,17 @@ export async function buildSpWriteLegacyPreview(
       ) snapshot on true
      where r.org_id = ${orgId}::uuid and r.profile_id = ${request.profileId}::uuid
        and r.batch_id = ${request.applyBatchId}::uuid
-       and (${restoreRowIds === undefined} or r.id=any(${restoreRowIds ?? []}::uuid[]))
      order by rec.created_at, rec.id, r.dependency_step_index
   `;
+  const sourceArtifactText = serializeApplyRows(sourceRows.map((row): ApplyRow => ({
+    entityType: row.entity_type as ApplyRow['entityType'], entityId: row.entity_id, field: row.field,
+    old: exportScalar(row.old_json), new: exportScalar(row.new_json),
+    ...(row.entity_name === null ? {} : { name: row.entity_name }),
+    ...(row.clicks === null ? {} : { clicks: exportNumber(row.clicks) }),
+    ...(row.revenue === null ? {} : { revenue: exportNumber(row.revenue) }),
+  })));
+  if (sha256(sourceArtifactText) !== batch.artifact_sha256) throw new SpWriteApplicationError('source_changed');
+  const rows = restoreRowIds ? sourceRows.filter(row => restoreRowIds.includes(row.id)) : sourceRows;
   if (rows.length !== (restoreRowIds?.length ?? batch.reversible_rows)) throw new SpWriteApplicationError('source_changed');
   const scope = SpWriteProviderScope.parse({
     amazonProfileId: batch.amazon_profile_id, connectionId: batch.connection_id,
@@ -386,7 +394,6 @@ export async function buildSpWriteLegacyPreview(
     ...(row.clicks === null ? {} : { clicks: exportNumber(row.clicks) }),
     ...(row.revenue === null ? {} : { revenue: exportNumber(row.revenue) }),
   })));
-  if (!restoreRowIds && sha256(artifactText) !== batch.artifact_sha256) throw new SpWriteApplicationError('source_changed');
   const rawEvidence = {
     schemaVersion: coordinated ? 'openspell.sp-write-preview-evidence.v3' : 'openspell.sp-write-preview-evidence.v1', planId: request.requestId,
     guardrails: {
@@ -425,7 +432,7 @@ export async function buildSpWriteLegacyPreview(
     orgId: orgId, profileId: request.profileId, providerScope: scope, direction: 'forward',
     source: {
       kind: 'apply_batch', applyBatchId: request.applyBatchId,
-      ...(restoreRowIds ? { restoreProposal: {kind:'restore_proposal',sourceBatchId:request.applyBatchId,
+      ...(restoreRowIds ? { restoreProposal: {kind:'restore_proposal',sourceArtifactText,sourceBatchId:request.applyBatchId,
         sourceRowIds:rows.map(row=>row.id),rows:rows.map(row=>({sourceRowId:row.id,entityId:row.entity_id,
           current:{amount:decimal(row.current_bid),currencyCode:scope.currencyCode},readAt:row.read_at,
           restoreTo:{amount:decimal(row.old_value),currencyCode:scope.currencyCode}}))} } : {}),

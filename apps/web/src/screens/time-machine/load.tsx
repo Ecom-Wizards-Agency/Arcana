@@ -28,7 +28,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   try {
     return await access.read(async (database, actor) => {
       const role = await requireOrgRole(database, actor);
-      const query = resolveQueueViewQuery(Object.fromEntries(Object.entries(input.searchParams).flatMap(([key,value]) => { const item=one(value); return item===undefined ? [] : [[key,item]]; }))); 
+      const query = resolveQueueViewQuery(Object.fromEntries(Object.entries(input.searchParams).flatMap(([key,value]) => { const item=one(value); return item===undefined ? [] : [[key,item]]; })));
       const profiles = await listOrgProfiles(database, actor.orgId);
       const profile = access.selectProfile(profiles, one(query['profile']));
       if (one(query['profile']) && profile?.id !== one(query['profile'])) notFound();
@@ -54,7 +54,9 @@ export async function load(access: ScreenActor, input: ScreenParams) {
         select 1 from public.apply_batches b join public.apply_rows ar on ar.org_id=b.org_id and ar.profile_id=b.profile_id and ar.batch_id=b.id
         cross join lateral app.resolve_apply_current_value(b.org_id,b.profile_id,ar.entity_type,ar.entity_id,ar.field) mirror
         where b.org_id=${actor.orgId}::uuid and b.profile_id=${profile.id}::uuid and b.source_kind='legacy_export'
-          and mirror.supported and (mirror.current_synced_at is null or mirror.current_synced_at<b.exported_at)
+          and mirror.supported and (mirror.current_synced_at is null or mirror.current_synced_at<b.exported_at
+            or exists(select 1 from public.entity_changes ec where ec.org_id=b.org_id and ec.profile_id=b.profile_id
+              and ec.apply_batch_id=b.id and ec.apply_row_id=ar.id and ec.observed_at>mirror.current_synced_at))
       ) as partial`;
       const preserved = Object.fromEntries(Object.entries(query).flatMap(([key,value]) => {
         const item = one(value); return item === undefined ? [] : [[key,item]];
@@ -64,6 +66,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
         role, viewActor:actor, proposal, entries: entries.slice(0,50), hasOlder: entries.length > 50, cursor, query: preserved,
         partial: freshness?.partial ?? true,
         preview: preview === null ? null : { batchId: preview.batchId, label: preview.tag,
+          blockedReason: preview.activeReversionBatchId === null ? null : 'This batch already has an active reversion export.',
           rows: preview.rows.map((row) => classifyRestoreRow({ row, exportedAt: preview.exportedAt })) } } };
     });
   } catch (error) {

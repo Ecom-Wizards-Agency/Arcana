@@ -7,11 +7,12 @@ export function classifyRestoreRow({ row, exportedAt }: RestorePreviewInput): Re
   let state: RestorePreviewRow['state'];
   let why: string;
   const read = TimeMachineInstant.safeParse(row.currentSyncedAt);
+  const observed = TimeMachineInstant.safeParse(row.synchronizedAt);
   const exported = TimeMachineInstant.safeParse(exportedAt);
   if (row.state === 'unsupported') {
     state = 'unsupported'; why = row.reason === COORDINATED_RESTORE_UNAVAILABLE
       ? COORDINATED_RESTORE_UNAVAILABLE : 'No adapter for this field';
-  } else if (!read.success || !exported.success || read.data < exported.data) {
+  } else if (!read.success || !exported.success || read.data < exported.data || (observed.success && read.data < observed.data)) {
     state = 'awaiting sync'; why = 'Not read back from Amazon yet';
   } else if (row.state === 'ambiguous') {
     state = 'ambiguous'; why = 'The observed change cannot be attributed uniquely';

@@ -431,8 +431,8 @@ function classifyReversionRow(
   const exported = scalar(row.new_value);
   const current = scalar(row.current_value);
   const synchronized = scalar(row.synchronized_value);
-  const synchronizedAt = toDateOrNull(row.synchronized_at);
-  const currentSyncedAt = toDateOrNull(row.current_synced_at);
+  const synchronizedAt = row.synchronized_at === null ? null : TimeMachineInstant.parse(typeof row.synchronized_at === 'string' ? row.synchronized_at : row.synchronized_at.toISOString());
+  const currentSyncedAt = row.current_synced_at === null ? null : TimeMachineInstant.parse(typeof row.current_synced_at === 'string' ? row.current_synced_at : row.current_synced_at.toISOString());
 
   let state: ReversionRowPreview['state'];
   let reason: string;
@@ -456,10 +456,10 @@ function classifyReversionRow(
       : 'The exported value has not appeared in a uniquely linked synchronization event.';
   } else if (
     currentSyncedAt === null ||
-    currentSyncedAt.getTime() < exportedAt.getTime()
+    currentSyncedAt < TimeMachineInstant.parse(exportedAt.toISOString()) || currentSyncedAt < synchronizedAt
   ) {
-    state = 'conflict';
-    reason = 'The current mirror has not been synchronized since this batch was exported.';
+    state = 'awaiting_sync';
+    reason = 'restore_mirror_stale: The current mirror predates the applied observation.';
   } else if (!current.valid) {
     state = 'unsupported';
     reason = 'The current synchronized value is not a scalar value.';
@@ -488,9 +488,9 @@ function classifyReversionRow(
     proposedValue: exportedValue,
     exportedValue,
     synchronizedValue: synchronizedAt === null || !synchronized.valid ? null : synchronized.value,
-    synchronizedAt: synchronizedAt?.toISOString() ?? null,
+    synchronizedAt,
     currentValue: current.valid ? current.value : null,
-    currentSyncedAt: currentSyncedAt?.toISOString() ?? null,
+    currentSyncedAt,
     inverseValue: originalValue,
     state,
     conflict: state === 'conflict' || state === 'ambiguous',
@@ -575,9 +575,10 @@ export async function getReversionBatchPreview(
            ar.entity_type::text as entity_type, ar.entity_id, ar.entity_name,
            ar.field, ar.old_value, ar.new_value,
            current_state.supported, current_state.present,
-           current_state.current_value, current_state.current_synced_at,
+           current_state.current_value,
+           to_char(current_state.current_synced_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as current_synced_at,
            linked.new_value as synchronized_value,
-           linked.observed_at as synchronized_at,
+           to_char(linked.observed_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as synchronized_at,
            exists (
              select 1
                from public.entity_changes possible
@@ -607,8 +608,12 @@ export async function getReversionBatchPreview(
           from public.entity_changes ec
          where ec.org_id = b.org_id
            and ec.profile_id = b.profile_id
-           and ec.apply_row_id = ar.id
-         order by ec.observed_at, ec.id
+           and ec.apply_row_id = ar.id and ec.apply_batch_id=b.id and ec.source='sync'
+           and ec.entity_type::text=(case when ar.entity_type='placement' then 'campaign' else ar.entity_type::text end)
+           and ec.amazon_id=ar.entity_id
+           and app.canonical_apply_field(ec.entity_type::text,ec.field)=app.canonical_apply_field(ar.entity_type::text,ar.field)
+           and ec.old_value=ar.old_value and ec.new_value=ar.new_value and ec.observed_at>=b.exported_at
+         order by ec.observed_at desc, ec.id desc
          limit 1
       ) linked on true
      where b.org_id = ${input.orgId}

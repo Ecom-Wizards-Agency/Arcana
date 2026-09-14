@@ -45,9 +45,12 @@ export async function buildRestoreProposal(context:AuthenticatedEditorTransactio
   const batch=await getReversionBatchPreview(context,{orgId:context.actor.orgId,batchId:request.applyBatchId});
   if(!batch || batch.profileId!==request.profileId) throw new Error('Resource not found');
   if(batch.dependencySetCount!==null) throw new Error(COORDINATED_RESTORE_UNAVAILABLE);
+  if(batch.activeReversionBatchId!==null) throw Object.assign(new Error('restore_active_reversion: This batch already has an active reversion export.'),{code:'restore_active_reversion'});
+  // Verify the original artifact before interpreting a mutable row selection. SQL repeats this under locks.
+  const saved=await buildSpWriteLegacyPreview(context.sql,context.actor.orgId,request,request.sourceRowIds);
+  if(batch.rows.some(row=>request.sourceRowIds.includes(row.rowId) && row.reason.startsWith('restore_mirror_stale:'))) throw Object.assign(new Error('restore_mirror_stale: Mirror predates the applied observation'),{code:'restore_mirror_stale'});
   const ready=batch.rows.filter(row=>row.state==='ready').map(row=>row.rowId).sort();
   if(ready.length===0 || JSON.stringify(ready)!==JSON.stringify([...request.sourceRowIds].sort())) throw new Error('Restore selection changed. Reload the preview.');
-  const saved=await buildSpWriteLegacyPreview(context.sql,context.actor.orgId,request,ready);
   const preview=SpWritePreview.parse({...saved,binding:spWritePlanBinding(saved.plan)});
   await recordRestoreProposal(context,preview);
   return preview;

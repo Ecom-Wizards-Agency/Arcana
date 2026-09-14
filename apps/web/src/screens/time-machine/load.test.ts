@@ -9,13 +9,13 @@ vi.mock('../../server/org-role',()=>({requireOrgRole:mocks.role}));
 vi.mock('../../server/request-context',()=>({authenticationDestination:()=>null}));
 import { load } from './load';
 
-it('loads every physical row of one coordinated proposal with the restore refusal reason',async()=>{
+it.each([false,true])('loads every physical row and propagates active-reversion eligibility (%s)',async(activeReversion)=>{
   const id='10000000-0000-4000-8000-000000000001';
   const profile={...baseProfile,id:'10000000-0000-4000-8000-000000000005'};
   const row={batchId:id,rowId:id,recommendationId:null,entityType:'keyword',entityId:'synthetic',entityName:null,field:'bid',
     originalValue:1,proposedValue:2,exportedValue:2,synchronizedValue:null,synchronizedAt:null,currentValue:null,currentSyncedAt:null,
     inverseValue:1,state:'unsupported',conflict:false,exportAllowed:false,reason:COORDINATED_RESTORE_UNAVAILABLE};
-  const preview=ChangeQueueRestoreBatchPreview.parse({batchId:id,sourceBatchId:null,activeReversionBatchId:null,profileId:profile.id,
+  const preview=ChangeQueueRestoreBatchPreview.parse({batchId:id,sourceBatchId:null,activeReversionBatchId:activeReversion?id:null,profileId:profile.id,
     tag:'synthetic',optGroup:'synthetic',lever:'coordinated',note:'',lifecycleStatus:'exported',exportedAt:'2026-09-15T00:00:00Z',
     appliedAt:null,artifactSha256:null,exportedProposals:1,reversibleRows:2,unsupportedRows:0,
     rows:[row,{...row,rowId:'10000000-0000-4000-8000-000000000002'}],readyRows:0,blockedRows:2,
@@ -27,6 +27,7 @@ it('loads every physical row of one coordinated proposal with the restore refusa
   expect(data.view).toBe('ready');
   if(data.view!=='ready') throw new Error('Expected a complete restore preview');
   expect(data.props.preview?.rows).toHaveLength(2);
+  expect(data.props.preview?.blockedReason).toBe(activeReversion?'This batch already has an active reversion export.':null);
   for(const result of data.props.preview!.rows) expect(result).toMatchObject({state:'unsupported',why:COORDINATED_RESTORE_UNAVAILABLE,now:null});
   expect(read).toHaveBeenCalledTimes(1);
 });

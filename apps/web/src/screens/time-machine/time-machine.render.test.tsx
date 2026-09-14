@@ -51,3 +51,9 @@ it('shows coordinated restore refusal and offers no build action for its rows',(
   expect(screen.getAllByText(COORDINATED_RESTORE_UNAVAILABLE)).toHaveLength(3);
   expect(screen.getByRole('button',{name:'Build a restore proposal for 0 rows'}).hasAttribute('disabled')).toBe(true);
 });
+
+it('disables restore construction for an active reversion even when two rows remain ready',()=>{
+  render(<Screen data={{...restore,props:{...restore.props,preview:{...restore.props.preview,blockedReason:'This batch already has an active reversion export.'}}}}/>);
+  expect(screen.getByRole('button',{name:'Build a restore proposal for 2 rows'}).hasAttribute('disabled')).toBe(true);
+  expect(screen.getByText('This batch already has an active reversion export.')).toBeDefined();
+});

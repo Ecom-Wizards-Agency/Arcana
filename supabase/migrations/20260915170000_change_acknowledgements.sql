@@ -37,6 +37,17 @@ alter table public.apply_batches add column experiment_id uuid,
   add constraint apply_batches_experiment_scope_fk foreign key(org_id,profile_id,experiment_id)
     references public.experiments(org_id,profile_id,id);
 
+-- A recorded artifact fingerprint cannot be replaced to bless edited export rows.
+create function app.preserve_restore_export_fingerprint() returns trigger language plpgsql set search_path=pg_catalog as $$
+begin
+  if old.artifact_sha256 is not null and new.artifact_sha256 is distinct from old.artifact_sha256 then
+    raise exception 'source_changed: Original export fingerprint is immutable' using errcode='55000', detail='source_changed';
+  end if;
+  return new;
+end $$;
+create trigger apply_batches_export_fingerprint_immutable before update of artifact_sha256 on public.apply_batches
+  for each row execute function app.preserve_restore_export_fingerprint();
+
 -- Proposal receipts are separate from execution approvals and cannot enqueue work.
 create table public.sp_write_restore_proposals (
   plan_id uuid primary key,
@@ -97,6 +108,8 @@ declare
   v_keyword public.keywords%rowtype;
   v_restore jsonb;
   v_read timestamptz;
+  v_observed timestamptz;
+  v_source_artifact jsonb;
   v_index integer;
   v_count integer := 0;
   v_actual_count integer;
@@ -177,6 +190,23 @@ begin
    order by id for share;
   get diagnostics v_actual_count = row_count;
   if v_actual_count <> v_batch.exported_proposals then raise exception 'Source batch count changed' using errcode='55000'; end if;
+  if exists(select 1 from public.apply_batches child where child.org_id=v_org and child.profile_id=v_profile
+    and child.source_batch_id=v_batch.id and child.status<>'abandoned') then
+    raise exception 'restore_active_reversion: This batch already has an active reversion export.' using errcode='55000', detail='restore_active_reversion';
+  end if;
+  -- The complete original artifact is the trust root; the selected artifact alone is insufficient.
+  v_source_artifact := (v_plan #>> '{source,restoreProposal,sourceArtifactText}')::jsonb;
+  if v_batch.artifact_sha256 is null
+    or v_batch.artifact_sha256 is distinct from app.sp_write_sha256(v_plan #>> '{source,restoreProposal,sourceArtifactText}')
+    or v_source_artifact is distinct from (
+      select jsonb_agg(jsonb_strip_nulls(jsonb_build_object(
+        'entity_type',r.entity_type,'entity_id',r.entity_id,'field',r.field,'old',r.old_value,'new',r.new_value,
+        'name',r.entity_name,'clicks',r.clicks,'revenue',r.revenue)) order by rec.created_at,rec.id,r.dependency_step_index)
+      from public.apply_rows r left join public.recommendations rec on rec.org_id=r.org_id and rec.profile_id=r.profile_id and rec.id=r.recommendation_id
+      where r.org_id=v_org and r.profile_id=v_profile and r.batch_id=v_batch.id
+    ) then
+    raise exception 'source_changed: Original export evidence changed' using errcode='55000', detail='source_changed';
+  end if;
   v_actual_count := jsonb_array_length(v_plan #> '{source,restoreProposal,rows}');
   v_artifact := (v_evidence #>> '{provenance,artifactText}')::jsonb;
   if v_batch.status not in ('staged','applied') or v_batch.source_batch_id is not null
@@ -256,17 +286,33 @@ begin
          'clicks', v_row.clicks, 'revenue', v_row.revenue)) then
       raise exception 'SP preview source or policy changed' using errcode = '55000';
     end if;
+    perform 1 from public.entity_changes ec where ec.org_id=v_org and ec.profile_id=v_profile
+      and ec.apply_row_id=v_row.id order by ec.id for share;
+    -- A linked row ID alone cannot attribute a different entity or before-value.
+    select max(ec.observed_at) into v_observed from public.entity_changes ec
+      where ec.org_id=v_org and ec.profile_id=v_profile and ec.source='sync'
+        and ec.apply_row_id=v_row.id and ec.apply_batch_id=v_batch.id
+        and ec.entity_type::text=v_row.entity_type::text and ec.amazon_id=v_row.entity_id
+        and ec.field=v_row.field and ec.old_value=v_row.old_value and ec.new_value=v_row.new_value
+        and ec.observed_at>=v_batch.exported_at;
+    if v_observed is null or exists(select 1 from public.entity_changes ec
+      where ec.org_id=v_org and ec.profile_id=v_profile and ec.apply_row_id=v_row.id
+        and (ec.apply_batch_id is distinct from v_batch.id or ec.entity_type::text is distinct from v_row.entity_type::text
+          or ec.amazon_id is distinct from v_row.entity_id or ec.field is distinct from v_row.field
+          or ec.old_value is distinct from v_row.old_value or ec.new_value is distinct from v_row.new_value)) then
+      raise exception 'source_changed: Linked observation differs from the original export' using errcode='55000', detail='source_changed';
+    end if;
     v_restore := v_plan #> array['source','restoreProposal','rows',v_index::text];
     select current_synced_at into v_read from app.resolve_apply_current_value(v_org,v_profile,v_row.entity_type,v_row.entity_id,v_row.field);
+    if v_read is null or v_read < greatest(v_batch.exported_at,v_observed) then
+      raise exception 'restore_mirror_stale: Mirror predates the applied observation' using errcode='55000', detail='restore_mirror_stale';
+    end if;
     if v_restore ->> 'sourceRowId' is distinct from v_row.id::text
       or v_plan #>> array['source','restoreProposal','sourceRowIds',v_index::text] is distinct from v_row.id::text
       or v_restore ->> 'entityId' is distinct from v_row.entity_id
       or v_restore -> 'current' is distinct from v_action #> '{changes,bid,expected}'
       or v_restore -> 'restoreTo' is distinct from v_action #> '{changes,bid,requested}'
-      or v_read is null or v_read < v_batch.exported_at
       or v_read is distinct from (v_restore ->> 'readAt')::timestamptz
-      or not exists(select 1 from public.entity_changes ec where ec.org_id=v_org and ec.profile_id=v_profile
-        and ec.apply_row_id=v_row.id and ec.apply_batch_id=v_batch.id and ec.new_value=v_row.new_value and ec.observed_at>=v_batch.exported_at)
       or exists(select 1 from public.entity_changes ec where ec.org_id=v_org and ec.profile_id=v_profile
         and ec.apply_batch_id is null and ec.source='sync' and ec.entity_type::text=v_row.entity_type::text
         and ec.amazon_id=v_row.entity_id and ec.field=v_row.field and ec.old_value=v_row.old_value and ec.new_value=v_row.new_value

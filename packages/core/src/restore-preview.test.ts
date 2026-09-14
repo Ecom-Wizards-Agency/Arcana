@@ -29,3 +29,9 @@ it('keeps coordinated controls blocked and preserves their reason even without a
   expect(row).toMatchObject({state:'unsupported',why:COORDINATED_RESTORE_UNAVAILABLE,now:null});
   expect(restoreCounts([row])).toEqual({total:1,ready:0,blocked:1,nothingToDo:0});
 });
+
+it('classifies a mirror newer than export but older than the linked write as awaiting sync, including microseconds',()=>{
+  expect(classify({currentSyncedAt:'2026-09-05T07:30:00Z'})).toMatchObject({state:'awaiting sync',now:null,why:'Not read back from Amazon yet'});
+  expect(classify({currentSyncedAt:'2026-09-05T08:00:00.000001Z',synchronizedAt:'2026-09-05T08:00:00.000002Z'}).state).toBe('awaiting sync');
+  expect(classify({currentSyncedAt:base.synchronizedAt}).state).toBe('ready');
+});

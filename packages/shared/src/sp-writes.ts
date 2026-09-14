@@ -421,6 +421,8 @@ export type SpWritePlanCounts = z.infer<typeof SpWritePlanCounts>;
 /** A restore is a selected, observed inverse of a recorded export, never a new recommendation. */
 export const SpWriteRestoreProposalSource = z.object({
   kind: z.literal('restore_proposal'),
+  /** Complete original export, verified against the source batch hash before narrowing. */
+  sourceArtifactText: z.string().min(1),
   sourceBatchId: SpWriteUuid,
   sourceRowIds: z.array(SpWriteUuid).min(1).max(500),
   rows: z.array(z.object({ sourceRowId: SpWriteUuid, entityId: z.string().min(1),
