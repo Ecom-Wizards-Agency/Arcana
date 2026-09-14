@@ -37,6 +37,7 @@ const expectedArtifactRootEntries = new Set([
 ]);
 const workspacePackages = [
   { name: 'ads-api', stablePath: 'packages+ads-api' },
+  { name: 'campaigns', stablePath: 'packages+campaigns', dependencyOwner: 'db' },
   { name: 'core', stablePath: 'packages+core' },
   { name: 'crosscheck-cli', stablePath: 'tools+crosscheck-cli' },
   { name: 'datadive-api', stablePath: 'packages+datadive-api' },
@@ -96,15 +97,18 @@ async function rewriteLinks(directory) {
 await rewriteLinks(artifactRoot);
 
 const packagePath = join(artifactRoot, 'package.json');
-const packageJson = JSON.parse(await readFile(packagePath, 'utf8'));
-for (const { name } of workspacePackages) {
+for (const { name, dependencyOwner } of workspacePackages) {
+  // Transitive workspace dependencies belong to the injecting package's manifest.
+  const metadataPath = dependencyOwner === undefined ? packagePath
+    : join(artifactRoot, 'node_modules', '@wizard-ads', dependencyOwner, 'package.json');
+  const packageJson = JSON.parse(await readFile(metadataPath, 'utf8'));
   const dependency = `@wizard-ads/${name}`;
   if (!(dependency in (packageJson.dependencies ?? {}))) {
     throw new Error(`worker artifact package metadata is missing ${dependency}`);
   }
   packageJson.dependencies[dependency] = 'workspace:*';
+  await writeFile(metadataPath, `${JSON.stringify(packageJson, null, 2)}\n`, { mode: 0o644 });
 }
-await writeFile(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`, { mode: 0o644 });
 
 const generatedMetadata = [
   '.turbo',

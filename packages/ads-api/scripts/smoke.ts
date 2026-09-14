@@ -13,6 +13,7 @@
  *     pnpm smoke                       # uses _local/ads-api.config.json
  *     pnpm smoke path/to/config.json   # or an explicit path
  *     pnpm smoke --reportType spTargeting # target report, including impression-share counts
+ *     pnpm smoke sb-keywords path/to/config.json # one keyword page, read-only
  *     pnpm smoke --mode bid-recommendations path/to/config.json # one ad group, no writes
  *     pnpm smoke --writes              # DANGEROUS: configured sandbox writes
  *
@@ -27,6 +28,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { LIST_ENDPOINTS } from '../src/endpoints.js';
 import { AdsApiClient } from '../src/client.js';
 import { TokenProvider } from '../src/auth.js';
 import { adsHeaders } from '../src/headers.js';
@@ -270,16 +272,19 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   if (args.includes('--help')) {
     console.log('Usage: pnpm smoke [config-path] [--reportType TYPE] [--writes]\n' +
+      '       pnpm smoke sb-keywords [config-path] (one page, read-only)\n' +
       '       pnpm smoke --mode bid-recommendations [config-path] (one ad group, read-only)');
     return;
   }
   let mode = 'reports';
   let writesEnabled = false;
+  let sbKeywords = false;
   let reportTypeOverride: string | undefined;
   const positional: string[] = [];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
-    if (arg === '--mode') {
+    if (arg === 'sb-keywords') sbKeywords = true;
+    else if (arg === '--mode') {
       const value = args[++index];
       if (value !== 'bid-recommendations' && value !== 'reports') die('mode must be reports or bid-recommendations');
       mode = value;
@@ -290,6 +295,9 @@ async function main(): Promise<void> {
       reportTypeOverride = reportTypeOf(value);
     } else if (arg?.startsWith('--')) die(`unknown option: ${arg}`);
     else if (arg !== undefined) positional.push(arg);
+  }
+  if (sbKeywords && (mode !== 'reports' || writesEnabled || reportTypeOverride !== undefined)) {
+    die('sb-keywords cannot combine with bid-recommendations, writes or report options');
   }
   if (positional.length > 1) die('pass at most one config path');
   const configPath = positional[0] ?? DEFAULT_CONFIG;
@@ -321,6 +329,16 @@ async function main(): Promise<void> {
           `wait=${event.delayMs}ms retryAfter=${String(event.retryAfterMs)}`,
       ),
   });
+
+  if (sbKeywords) {
+    const endpoint = LIST_ENDPOINTS['sb.keywords'];
+    console.log(JSON.stringify({ mode: 'sb-keywords', ...endpoint }));
+    const page = await client.probeSbKeywordsPage(config.profileId);
+    console.log(JSON.stringify(page));
+    if (!page.expectedKeyIsArray) die('configured responseKey is not an array; keep sync disabled');
+    console.log('One page observed. Record operator evidence before enabling SB keyword sync.');
+    return;
+  }
 
   console.log(`region ${region}, profile ${config.profileId}, ${reportType} for ${config.date}`);
 

@@ -457,3 +457,16 @@ stored refusal counts or parser-refusal errors. Multiple dead child jobs count
 once per request. The separate dead-letter table shows the newest 100 jobs;
 first/last seen are queue creation/update times. Errors retain the existing
 operator-safe display labels; exact details remain in the private ledger.
+### SB keyword sync (WP-246)
+
+`OPENSPELL_SB_KEYWORD_SYNC_ENABLED=1` sets `sbKeywordSyncEnabled`; absent or other
+values keep it off. Enable only after an operator records live evidence for the
+candidate SB keyword path, media type and response key and updates the endpoint's
+verification status. Use the [SB keyword smoke mode](../../packages/ads-api/README.md#sb-keyword-verification).
+
+With the flag enabled, keywords list after SB campaigns and ad groups. Truncation,
+refused mappings or listed/mapped count disagreement fail the SB product group.
+Accepted keyword rows enter the existing mirror upsert, which asserts listed versus
+upserted counts. SP keyword sync is unchanged. The creative read model independently
+falls back to an unambiguous preset Keyword slot when no synchronized SB keyword
+exists; conflicting keywords and malformed names remain unresolved.

@@ -77,6 +77,7 @@ const quietLogger: WorkerLogger = process.env['WORKER_TEST_VERBOSE']
 
 class FakeAdsApi implements AdsApiClient {
   entities: EntityRow[] = [];
+  excludedEntityTypes?: EntityListing['excludedEntityTypes'];
   /** Ad products whose listing should fail; their rows are still in `entities`. */
   listFailures: EntityListFailure[] = [];
   reportRows: Record<string, unknown>[] = [];
@@ -92,7 +93,7 @@ class FakeAdsApi implements AdsApiClient {
     // A failed product contributes no rows, exactly as the real adapter drops a
     // product it could not fully list.
     const rows = this.entities.filter((entity) => !failed.has(entity.adProduct as AdProductCode));
-    return { rows, succeeded, failures: this.listFailures };
+    return { rows, succeeded, failures: this.listFailures, excludedEntityTypes: this.excludedEntityTypes };
   }
   async createReport(_input: CreateReportInput): Promise<{ reportId: string }> {
     this.createCalls += 1;
@@ -1535,6 +1536,72 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     // A failed job with attempts left is requeued, carrying the real error.
     expect(job?.status).toBe('queued');
     expect(job?.last_error ?? '').toContain('SP exploded');
+  });
+
+  it.each([false, true])('preserves disabled SB keywords through the full worker/store path: enabled=%s', async (enabled) => {
+    const messages: string[] = [];
+    const store = new PostgresWorkerStore(database, { info: (message) => messages.push(message) });
+    const profile = await store.profile(profileId);
+    const liveCampaign: EntityRow = { ...campaign(profileId, 'Synthetic SB campaign'),
+      amazonId: 'wp246-sb-live', adProduct: 'SB' };
+    const keyword = (amazonId: string, adProduct: 'SP' | 'SB' = 'SB'): EntityRow => ({
+      entityType: 'keyword', profileId, amazonId, adProduct, state: 'enabled',
+      name: 'blue widget', campaignId: 'wp246-sb-live', adGroupId: 'wp246-group',
+      keywordText: 'blue widget', matchType: 'exact', bid: 1,
+    });
+    try {
+      expect(await store.syncEntities(profile, [liveCampaign,
+        { ...liveCampaign, amazonId: 'wp246-sb-missing' },
+        keyword('wp246-keyword-live'), keyword('wp246-keyword-missing'),
+      ], { adProduct: 'SB' })).toMatchObject({ listed: 4, upserted: 4 });
+      await store.syncEntities(profile, [keyword('wp246-sp-keyword', 'SP')], { adProduct: 'SP' });
+      await database.sql`
+        update public.keywords set synced_at = '2026-01-01'::timestamptz
+         where profile_id = ${profileId} and amazon_id like 'wp246-%'
+      `;
+      const readKeywords = () => database.sql<{ row: Record<string, unknown> }[]>`
+        select to_jsonb(k) as row from public.keywords k
+         where profile_id = ${profileId} and amazon_id like 'wp246-%'
+         order by amazon_id
+      `;
+      const before = await readKeywords();
+      expect(before).toHaveLength(3);
+      const api = new FakeAdsApi();
+      api.entities = [{ ...liveCampaign, budgetAmount: 20 } as EntityRow,
+        ...(enabled ? [{ ...keyword('wp246-keyword-live'), bid: 2 } as EntityRow] : [])];
+      api.excludedEntityTypes = enabled ? undefined : { SB: ['keyword'] };
+      const worker = makeWorker('wp246-keyword-scope', store, api);
+      for (let round = 0; round < 2; round++) {
+        const key = `wp246-scope-${enabled}-${round}`;
+        await store.enqueue({ type: 'entity.sync', orgId, profileId, adProduct: 'SB', full: true }, new Date(), key);
+        expect(await worker.drainOnce()).toBe(1);
+        const [job] = await database.sql<{ status: string; result: { listed: number; upserted: number } }[]>`
+          select status::text as status, result from public.sync_jobs where dedupe_key = ${key}
+        `;
+        expect(job?.status).toBe('succeeded');
+        expect(job?.result).toMatchObject({ listed: enabled ? 2 : 1, upserted: enabled ? 2 : 1 });
+      }
+      const after = await readKeywords();
+      expect(after).toHaveLength(3);
+      if (!enabled) expect(after).toEqual(before);
+      else {
+        expect(after.find(({ row }) => row['amazon_id'] === 'wp246-keyword-live')?.row)
+          .toMatchObject({ bid: 2, deleted_at: null });
+        expect(after.find(({ row }) => row['amazon_id'] === 'wp246-keyword-missing')?.row['deleted_at']).not.toBeNull();
+      }
+      expect(after.find(({ row }) => row['amazon_id'] === 'wp246-sp-keyword'))
+        .toEqual(before.find(({ row }) => row['amazon_id'] === 'wp246-sp-keyword'));
+      const [missingCampaign] = await database.sql<{ deleted_at: string | null }[]>`
+        select deleted_at from public.campaigns
+         where profile_id = ${profileId} and amazon_id = 'wp246-sb-missing'
+      `;
+      expect(missingCampaign?.deleted_at).not.toBeNull();
+      expect(messages.filter((message) => message === 'SB keywords are present but sync is disabled'))
+        .toHaveLength(enabled ? 0 : 1);
+    } finally {
+      await database.sql`delete from public.keywords where profile_id = ${profileId} and amazon_id like 'wp246-%'`;
+      await database.sql`delete from public.campaigns where profile_id = ${profileId} and amazon_id like 'wp246-%'`;
+    }
   });
 
   it('tombstones missing entities only on a full pass', async () => {

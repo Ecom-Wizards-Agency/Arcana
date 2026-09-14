@@ -12,7 +12,7 @@ if (!rawArtifactRoot) {
 
 const artifactRoot = resolve(rawArtifactRoot);
 const virtualStore = join(artifactRoot, 'node_modules', '.pnpm');
-const workspacePackages = ['core', 'db', 'shared'];
+const workspacePackages = ['campaigns', 'core', 'db', 'shared'];
 const renamed = new Map();
 
 const storeEntries = await readdir(virtualStore);
@@ -49,15 +49,18 @@ async function rewriteLinks(directory) {
 await rewriteLinks(artifactRoot);
 
 const packagePath = join(artifactRoot, 'package.json');
-const packageJson = JSON.parse(await readFile(packagePath, 'utf8'));
 for (const packageName of workspacePackages) {
+  // Campaigns is injected through DB; preserve that dependency ownership.
+  const metadataPath = packageName === 'campaigns'
+    ? join(artifactRoot, 'node_modules', '@wizard-ads', 'db', 'package.json') : packagePath;
+  const packageJson = JSON.parse(await readFile(metadataPath, 'utf8'));
   const dependency = `@wizard-ads/${packageName}`;
   if (!(dependency in (packageJson.dependencies ?? {}))) {
     throw new Error(`artifact package metadata is missing ${dependency}`);
   }
   packageJson.dependencies[dependency] = 'workspace:*';
+  await writeFile(metadataPath, `${JSON.stringify(packageJson, null, 2)}\n`, { mode: 0o644 });
 }
-await writeFile(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`, { mode: 0o644 });
 
 const generatedMetadata = [
   '.turbo',

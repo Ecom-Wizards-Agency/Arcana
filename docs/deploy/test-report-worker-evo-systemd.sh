@@ -756,8 +756,9 @@ fi
 node - "$package_one/WORKSPACE_MANIFEST.json" <<'NODE'
 const fs = require('node:fs');
 const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-if (manifest.offered !== 10 || manifest.normalized !== 10
-  || manifest.packages.length !== 10
+if (manifest.offered !== 11 || manifest.normalized !== 11
+  || manifest.packages.length !== 11
+  || !manifest.packages.includes('@wizard-ads/campaigns')
   || !manifest.packages.includes('@wizard-ads/sp-api')) process.exit(1);
 NODE
 if [[ ! -f "$package_one/node_modules/tsx/dist/cli.mjs" \
@@ -840,16 +841,18 @@ if node "$normalizer" "$stray_fixture" >/dev/null 2>&1; then
   exit 1
 fi
 
-missing_fixture="$test_tmp/package-missing"
-pnpm --dir "$repo_root" --config.inject-workspace-packages=true \
-  --filter @wizard-ads/worker deploy "$missing_fixture" >/dev/null 2>&1
-missing_spapi="$(find "$missing_fixture/node_modules/.pnpm" -maxdepth 1 -type d \
-  -name '@wizard-ads+sp-api@file+*' -print -quit)"
-find "$missing_spapi" -depth -delete
-if node "$normalizer" "$missing_fixture" >/dev/null 2>&1; then
-  echo "normalizer accepted an artifact without sp-api" >&2
-  exit 1
-fi
+for missing_package in sp-api campaigns; do
+  missing_fixture="$test_tmp/package-missing-$missing_package"
+  pnpm --dir "$repo_root" --config.inject-workspace-packages=true \
+    --filter @wizard-ads/worker deploy "$missing_fixture" >/dev/null 2>&1
+  missing_workspace="$(find "$missing_fixture/node_modules/.pnpm" -maxdepth 1 -type d \
+    -name "@wizard-ads+$missing_package@file+*" -print -quit)"
+  find "$missing_workspace" -depth -delete
+  if node "$normalizer" "$missing_fixture" >/dev/null 2>&1; then
+    echo "normalizer accepted an artifact without $missing_package" >&2
+    exit 1
+  fi
+done
 
 link_fixture="$test_tmp/package-link"
 pnpm --dir "$repo_root" --config.inject-workspace-packages=true \

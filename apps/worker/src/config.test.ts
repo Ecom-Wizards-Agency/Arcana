@@ -177,3 +177,10 @@ describe('SP-API configuration', () => {
     expect(config.spApiReportMinIntervalMs).toBe(2_500);
   });
 });
+
+describe('SB keyword configuration', () => {
+  it.each([undefined, '', '0', 'false', 'true', '1'])('enables only the explicit value 1: %j', (value) => {
+    expect(configFromEnv({ DATABASE_URL: 'postgres://synthetic.invalid/db',
+      OPENSPELL_SB_KEYWORD_SYNC_ENABLED: value }).sbKeywordSyncEnabled).toBe(value === '1');
+  });
+});

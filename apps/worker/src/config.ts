@@ -30,6 +30,7 @@ export interface WorkerConfig {
   startsBackgroundPasses: boolean;
   /** Default off until the connection schema and this worker are installed. */
   amazonConnectionsEnabled: boolean;
+  sbKeywordSyncEnabled: boolean;
   /** Default-off WP-181 cohort. Account bindings remain database-owned. */
   unifiedReporting: UnifiedReportingDualRunPolicy;
   /**
@@ -49,6 +50,11 @@ export interface WorkerConfig {
   spApiClientSecret: string | undefined;
   /** Serial floor between Reports API operations; provider 429s still control retries. */
   spApiReportMinIntervalMs: number;
+}
+
+/** Only an explicit 1 enables the unverified SB keyword dialect. */
+export function sbKeywordSyncEnabledFromEnv(env: NodeJS.ProcessEnv): boolean {
+  return env['OPENSPELL_SB_KEYWORD_SYNC_ENABLED'] === '1';
 }
 
 export function workerRevisionFromEnv(env: NodeJS.ProcessEnv): string {
@@ -124,6 +130,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     revision: workerRevisionFromEnv(env),
     startsBackgroundPasses: deployment.startsBackgroundPasses,
     amazonConnectionsEnabled,
+    sbKeywordSyncEnabled: sbKeywordSyncEnabledFromEnv(env),
     unifiedReporting,
     crosscheckInboxDir: env['CROSSCHECK_INBOX_DIR'] || undefined,
     authHealthcheckIntervalMs:
