@@ -4,8 +4,8 @@ This page describes the legacy integration-only worker. It does not authorize th
 exclusive Amazon report lane. The Evo report worker has its own immutable systemd
 package and runbook in [evo-report-worker.md](./evo-report-worker.md).
 
-Run the four integration queues on a Linux host that stays online. Amazon entity
-and report jobs remain on the Vercel cron runtime; this process does not need any
+Run the four implemented integration queues on a Linux host that stays online. Amazon entity
+and Advertising report jobs remain on their configured cron/report runtime; this process does not need any
 Ads application variables when its allowlist contains only integration jobs.
 
 ## Install
@@ -52,14 +52,33 @@ Both runtimes use the same atomic `FOR UPDATE SKIP LOCKED` claim operation, so a
 cannot be handed to both. Their allowlists also divide responsibility before a claim:
 
 - the always-on service claims `keepa.sync`, `rank.sync`, `economics.sync`, and
-  `sqp.categorize`;
+  `sqp.request`;
 - Vercel cron explicitly claims `entity.sync`, `report.request`, `report.poll`,
   `report.fetch`, and `recommendations.run`.
 
-This keeps Amazon concurrency at the cron runtime's existing limit. A missing
-integration handler dead-letters its job with `"<job type> handler not deployed in
-this runtime"`; deploy WP-42/43/44/46 handler wiring before enabling their active
-connections.
+Configure the always-on service as `WORKER_DEPLOYMENT_ROLE=general` with
+`WORKER_JOB_TYPES` set to `keepa.sync,rank.sync,economics.sync,sqp.request`.
+`sqp.request` requires both `SP_API_LWA_CLIENT_ID` and `SP_API_LWA_CLIENT_SECRET`,
+an active SP-API connection with a Vault-backed refresh credential, and an exact
+profile/marketplace binding. These SP-API credentials are separate from Ads LWA
+credentials. The Evo report lane's exclusive allowlist remains unchanged.
+
+`history.bootstrap`, `report.promote`, and `sqp.categorize` are declared but
+unimplemented. They fail permanently with `"<job type> is declared but
+unimplemented"`. Reconciliation no longer creates `sqp.categorize` schedules
+and disables existing integration schedules for it, even with active DataDive
+connections. Neither of the other two types has a provisioned schedule.
+
+The weekly SQP producer stays in the general worker's `ScheduleProvisioner`.
+It requires background passes, an allowlist containing `sqp.request` (or unset),
+and both SP-API application variables. It builds exact bound marketplace payloads,
+counts and validates advertised ASINs, and selects the completed profile-local
+week. `enqueue_due_schedules()` cannot build those payloads today; moving this
+logic would require a SQL scheduler migration beyond schedule removal. Keeping
+production gated with the configured consumer also avoids creating jobs when no
+SP-API handler is available. The general worker must remain online: cron and the
+Evo report lane alone neither produce nor consume weekly SQP jobs. See the
+[weekly SQP prerequisites](../../apps/worker/README.md#weekly-sqp).
 
 Schedule reconciliation runs in both runtimes and is idempotent. It creates schedules
 only from active integration connections, selects the first sync-enabled profile per

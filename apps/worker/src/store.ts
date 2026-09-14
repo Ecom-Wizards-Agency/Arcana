@@ -793,7 +793,6 @@ export class PostgresWorkerStore implements WorkerStore {
           join (values
             ('keepa',   'keepa.sync',       '1 day',  '{"includeCompetitors":true}'::jsonb),
             ('datadive','rank.sync',        '1 day',  '{}'::jsonb),
-            ('datadive','sqp.categorize',   '7 days', '{}'::jsonb),
             ('mrp',     'economics.sync',   '1 day',  '{}'::jsonb)
           ) as m(provider, job_type, cadence, payload)
             on m.provider = s.provider

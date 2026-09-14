@@ -889,10 +889,11 @@ describe('integration handler wiring', () => {
     { type: 'marketing_stream.normalize', orgId, profileId, messageIds: ['message-one'] },
   ];
 
-  it('delegates every queue payload only through an explicitly bound handler', async () => {
+  it('delegates implemented payloads and permanently rejects the three unimplemented types', async () => {
     let claimed = false;
     const called: string[] = [];
     const sqpJobIds: string[] = [];
+    const dead: string[] = [];
     const results: unknown[] = [];
     const jobs = payloads.map((payload, index): ClaimedJob => ({
       id: `${index + 1}`.repeat(8) + '-1111-4111-8111-111111111111',
@@ -910,6 +911,7 @@ describe('integration handler wiring', () => {
       store: {
         ...stubStore(),
         claim: async () => claimed ? [] : (claimed = true, jobs),
+        deadLetter: async (_id, error) => { dead.push(error); },
         finish: async (_id, outcome, options) => {
           expect(outcome).toBe('succeeded');
           results.push(options?.result);
@@ -919,13 +921,10 @@ describe('integration handler wiring', () => {
         keepaSync: async (payload) => (called.push(payload.type), { provider: 'keepa' }),
         rankSync: async (payload) => (called.push(payload.type), { provider: 'datadive' }),
         economicsSync: async (payload) => (called.push(payload.type), { provider: 'mrp' }),
-        sqpCategorize: async (payload) => (called.push(payload.type), { weekStart: payload.weekStart }),
         creativeSync: async (payload) => (called.push(payload.type), { rows: 1 }),
         sqpRequest: async (payload, context) => (
           called.push(payload.type), sqpJobIds.push(context.jobId), { asins: payload.asins.length }
         ),
-        historyBootstrap: async (payload) => (called.push(payload.type), { source: payload.source }),
-        reportPromote: async (payload) => (called.push(payload.type), { date: payload.date }),
         marketingStreamNormalize: async (payload) => (
           called.push(payload.type), { messages: payload.messageIds.length }
         ),
@@ -934,8 +933,10 @@ describe('integration handler wiring', () => {
     });
 
     expect(await worker.drainOnce()).toBe(payloads.length);
-    expect(called).toEqual(payloads.map((payload) => payload.type));
-    expect(results).toHaveLength(payloads.length);
+    const unimplemented = ['sqp.categorize', 'history.bootstrap', 'report.promote'];
+    expect(called).toEqual(payloads.map((payload) => payload.type).filter((type) => !unimplemented.includes(type)));
+    expect(results).toHaveLength(payloads.length - unimplemented.length);
+    expect(dead).toEqual(unimplemented.map((type) => `${type} is declared but unimplemented`));
     expect(sqpJobIds).toEqual([jobs[5]?.id]);
   });
 
