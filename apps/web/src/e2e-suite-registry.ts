@@ -66,8 +66,7 @@ export const E2E_SUITE_DEFINITIONS = [
     config: 'playwright.auth.config.ts',
     project: 'auth',
     expectedSpecFiles: specsFor('auth'),
-    expectedTests: 15,
-    expectedTests: 16,
+    expectedTests: 20,
   },
   {
     name: 'auth-members',
