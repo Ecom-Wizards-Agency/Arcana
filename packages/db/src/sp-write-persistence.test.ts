@@ -1503,9 +1503,9 @@ function spWriteDrizzleConfigs() {
   for (const candidate of Object.values(dbSchema)) {
     try {
       const config = getTableConfig(candidate as PgTable);
-      // This suite is pinned to WP-187. WP-214 proves its later evidence table separately.
+      // This suite is pinned to WP-187. Later preview and restore suites prove their own tables.
       if (config.schema === undefined && config.name.startsWith('sp_write_')
-        && !['sp_write_preview_evidence', 'sp_write_mirror_observations'].includes(config.name)) {
+        && !['sp_write_preview_evidence', 'sp_write_mirror_observations', 'sp_write_restore_proposals', 'sp_write_restore_reviews'].includes(config.name)) {
         configs.push({ ...config, uniqueConstraints: config.uniqueConstraints.filter((constraint) =>
           constraint.name !== 'sp_write_observations_mirror_identity_key') });
       }

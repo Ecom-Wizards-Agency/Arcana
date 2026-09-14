@@ -67,6 +67,7 @@ export const E2E_SUITE_DEFINITIONS = [
     project: 'auth',
     expectedSpecFiles: specsFor('auth'),
     expectedTests: 15,
+    expectedTests: 16,
   },
   {
     name: 'auth-members',

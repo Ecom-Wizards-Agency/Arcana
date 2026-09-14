@@ -11,6 +11,7 @@
  */
 import {
   bigint,
+  check,
   date,
   index,
   jsonb,
@@ -34,7 +35,7 @@ import {
   negativeScope,
   targetingType,
 } from './enums.js';
-import { adProfiles, orgs } from './tenancy.js';
+import { adProfiles, orgs, authUsers } from './tenancy.js';
 
 /** Placement uplift percentages exactly as Amazon stores them. */
 export interface PlacementBiddingJson {
@@ -193,9 +194,13 @@ export const entityChanges = pgTable(
     applyBatchId: uuid('apply_batch_id'),
     /** Exact immutable export row this synchronization event uniquely proves. */
     applyRowId: uuid('apply_row_id'),
+    acknowledgedAt: ts('acknowledged_at'),
+    acknowledgedBy: uuid('acknowledged_by').references(() => authUsers.id),
     observedAt: ts('observed_at').notNull().defaultNow(),
   },
   (t) => [
+    check('entity_changes_ack_pair', sql`(${t.acknowledgedAt} is null) = (${t.acknowledgedBy} is null)`),
+    index('entity_changes_unacknowledged').on(t.orgId, t.profileId).where(sql`${t.acknowledgedAt} is null and ${t.source} = 'sync'`),
     index('entity_changes_profile_time_idx').on(t.profileId, t.observedAt),
     uniqueIndex('entity_changes_tenant_identity_key').on(t.orgId, t.profileId, t.id),
     uniqueIndex('entity_changes_apply_row_once_key')

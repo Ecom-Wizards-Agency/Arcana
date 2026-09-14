@@ -3,11 +3,11 @@ import { beforeEach, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   actor: { orgId: '11111111-1111-4111-8111-111111111111', userId: '22222222-2222-4222-8222-222222222222' },
   headers: new Headers(), identity: vi.fn(), open: vi.fn(), close: vi.fn(),
-  authenticate: vi.fn(), sql: vi.fn(), profiles: vi.fn(), coverage: vi.fn(), crosscheck: vi.fn(),
+  queueCount: vi.fn(), authenticate: vi.fn(), sql: vi.fn(), profiles: vi.fn(), coverage: vi.fn(), crosscheck: vi.fn(),
 }));
 vi.mock('next/headers', () => ({ headers: async () => mocks.headers }));
 vi.mock('../server/request-context', () => ({ requestActor: mocks.identity, openWebDatabase: mocks.open }));
-vi.mock('@wizard-ads/db', () => ({ withAuthenticatedActor: mocks.authenticate, readProfileFreshness: mocks.coverage }));
+vi.mock('@wizard-ads/db', () => ({ withAuthenticatedActor: mocks.authenticate, countChangeQueue: mocks.queueCount, readProfileFreshness: mocks.coverage }));
 vi.mock('@wizard-ads/crosscheck-cli', () => ({ loadCrosscheckPanel: mocks.crosscheck }));
 vi.mock('../../app/_lib/profiles', () => ({ listProfiles: mocks.profiles }));
 import { readShellEvidence } from './shell-evidence-server';
@@ -22,11 +22,12 @@ beforeEach(() => {
   mocks.coverage.mockResolvedValue({ entries: [] });
   mocks.crosscheck.mockResolvedValue({ chip: { verdict: 'no_data', tone: 'muted' } });
   mocks.sql.mockResolvedValue([{ count: 3 }]);
+  mocks.queueCount.mockResolvedValue(5);
 });
 
 it('rechecks membership and reads the complete evidence on exactly one authenticated connection', async () => {
   const result = await readShellEvidence(profileId);
-  expect(result).toMatchObject({ profileId, badges: { 'change-queue': null, timeline: 3 } });
+  expect(result).toMatchObject({ profileId, badges: { 'change-queue': 5, timeline: 3 } });
   expect(result?.freshness).not.toBeNull();
   expect(result?.crosscheck).toEqual({ verdict: 'no_data', tone: 'muted' });
   expect(mocks.identity).toHaveBeenCalledWith(mocks.headers);
@@ -35,6 +36,7 @@ it('rechecks membership and reads the complete evidence on exactly one authentic
   expect(mocks.authenticate.mock.calls[0]?.[1]).toEqual(mocks.actor);
   expect(mocks.profiles).toHaveBeenCalledWith({ sql: mocks.sql }, mocks.actor.orgId);
   expect(mocks.coverage).toHaveBeenCalledWith({ sql: mocks.sql }, mocks.actor, profileId);
+  expect(mocks.queueCount).toHaveBeenCalledWith({ sql: mocks.sql }, { orgId: mocks.actor.orgId, profileId });
   expect(mocks.crosscheck).toHaveBeenCalledWith({ sql: mocks.sql }, { orgId: mocks.actor.orgId, profileId });
   expect(mocks.sql.mock.calls[0]?.slice(1)).toEqual([mocks.actor.orgId, profileId]);
   expect(mocks.close).toHaveBeenCalledTimes(1);

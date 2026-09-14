@@ -7,6 +7,7 @@
  */
 import {
   boolean,
+  foreignKey,
   date,
   index,
   integer,
@@ -20,6 +21,7 @@ import { sql } from 'drizzle-orm';
 import type { ApplyValue } from '@wizard-ads/shared';
 import { count, money, ts } from './columns.js';
 import { applyBatchSourceKind, applyBatchStatus, applyEntityType, matchType } from './enums.js';
+import { experiments } from './experiments.js';
 import { adProfiles, authUsers, orgs } from './tenancy.js';
 
 export const applyBatches = pgTable(
@@ -49,6 +51,8 @@ export const applyBatches = pgTable(
     revertNote: text('revert_note'),
     /** A reversion export points to the immutable batch it inverses. */
     sourceBatchId: uuid('source_batch_id'),
+    /** Recorded experiment-start context; never inferred from labels. */
+    experimentId: uuid('experiment_id'),
     exportedAt: ts('exported_at').notNull().defaultNow(),
     appliedAt: ts('applied_at'),
     artifactSha256: text('artifact_sha256'),
@@ -61,6 +65,7 @@ export const applyBatches = pgTable(
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },
   (t) => [
+    foreignKey({name:'apply_batches_experiment_scope_fk',columns:[t.orgId,t.profileId,t.experimentId],foreignColumns:[experiments.orgId,experiments.profileId,experiments.id]}),
     index('apply_batches_profile_idx').on(t.profileId, t.appliedOn),
     uniqueIndex('apply_batches_org_profile_id_key').on(t.orgId, t.profileId, t.id),
     uniqueIndex('apply_batches_active_reversion_key')

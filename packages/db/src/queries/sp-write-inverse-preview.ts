@@ -62,7 +62,9 @@ export async function buildSpWriteInversePreview(
   handle: Pick<DbHandle, 'sql'>, request: SpWriteInversePreviewRequest,
   original: SpWriteOperationDetail, forward: SpWritePlan,
 ): Promise<SpWritePreview> {
-  if (forward.direction !== 'forward' || original.original !== null
+  // Coordinated sets need a separately designed inverse preserving their dependencies.
+  if (forward.schemaVersion === 'openspell.sp-write-plan.v3'
+    || forward.direction !== 'forward' || original.original !== null
     || original.operation.executionId !== request.original.executionId
     || original.operation.planId !== request.original.planId || forward.id !== request.original.planId
     || forward.profileId !== request.profileId

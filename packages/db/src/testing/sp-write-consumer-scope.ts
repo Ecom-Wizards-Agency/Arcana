@@ -10,6 +10,7 @@ export const SP_WRITE_APPLICATION_CONSUMERS = [
 export const SP_WRITE_ACTIVATION_FILES = [
   // Reads outbox counts to prove Target 360 approval never enqueues execution.
   "apps/web/e2e/targets-queue.spec.ts",
+  "apps/web/e2e/change-queue.spec.ts",
   "apps/web/app/api/writes/approve/route.ts",
   "apps/web/app/api/writes/preview/route.ts",
   "apps/web/app/api/writes/status/route.ts",
@@ -42,5 +43,6 @@ export const SP_WRITE_MIGRATIONS = [
   "20260915090000_mcp_write_preview_sources.sql",
   "20260915100000_recommendation_fenced_function_acl.sql",
   "20260915110000_campaign_creation_previews.sql",
-  "20260915130000_coordinated_methods.sql"
+  "20260915130000_coordinated_methods.sql",
+  "20260915170000_change_acknowledgements.sql"
 ] as const;

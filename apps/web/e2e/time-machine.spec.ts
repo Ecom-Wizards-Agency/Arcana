@@ -1,217 +1,75 @@
-/**
- * WP-30 end to end: the Time Machine change history.
- *
- * Runs on the tags-goto harness — a production build behind the header bridge,
- * one worker, serial — the same as the experiments and recommendations suites.
- * The default actor is org A's owner.
- *
- * The suite shares one database across serial specs, and earlier ones (the
- * recommendations export) add their own apply-batches to org A. So these
- * assertions key off a distinctive marker change that `e2e/run.ts` seeds for
- * org A only, and off the presence of each source, rather than a global row
- * count — the exact counts are pinned in `packages/db`'s query suite instead.
- */
-import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
-
-const BRIDGE = process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET'] ?? '';
-const ORG_B = process.env['WIZARD_ADS_E2E_ORG_B'] ?? '';
-const USER_B = process.env['WIZARD_ADS_E2E_USER_B'] ?? '';
-const PROFILE_A = process.env['WIZARD_ADS_E2E_PROFILE_A'] ?? '';
-
-/** Kept in sync with `TIME_MACHINE_MARKER` in `e2e/run.ts`: a campaign budget change. */
-const MARKER = 'ZZ Time Machine Marker';
-const READY_TAG = 'tm-e2e-ready-export';
-
-test.describe.configure({ mode: 'serial' });
-
-const ROUTE = '/time-machine';
-const GRID = '/grid';
-
-/**
- * URLs are assembled rather than written out. A long dense query string trips
- * the hygiene linter's entropy check as a candidate secret, which is the same
- * false positive the repo's own guidance answers by building the string from
- * fragments at runtime.
- */
-function url(params: Record<string, string> = {}): string {
-  return `${ROUTE}?${new URLSearchParams({ profile: PROFILE_A, ...params }).toString()}`;
-}
-
-async function open(page: Page, params: Record<string, string> = {}): Promise<void> {
-  await page.goto(url(params));
-  await expect(page.locator('main[data-interactive="true"]')).toBeVisible();
-}
-
-test('the timeline shows both a sync-detected change and an operator apply', async ({ page }) => {
-  await open(page);
-
-  await expect(page.getByTestId('reversion-preview')).toHaveCount(0);
-  await expect(page.getByTestId('time-machine-batch-prompt')).toBeVisible();
-
-  // Both source kinds are present and labelled.
-  expect(await page.getByTestId('entry-source').filter({ hasText: 'Sync' }).count()).toBeGreaterThan(0);
-  expect(await page.getByTestId('entry-source').filter({ hasText: 'Applied' }).count()).toBeGreaterThan(0);
-
-  // The distinctive campaign change renders once, with its old→new values.
-  const marker = page.getByTestId('timeline-entry').filter({ hasText: MARKER });
-  await expect(marker).toHaveCount(1);
-  await expect(marker).toContainText('10');
-  await expect(marker).toContainText('15');
-  await expect(marker.getByTestId('entry-source')).toHaveText('Sync');
-
-  // Day grouping renders a dated header.
-  await expect(page.getByTestId('timeline-day').first()).toBeVisible();
-
-  // A campaign entry deep-links into the grid where the change can be inspected.
-  const expected = `${GRID}?${new URLSearchParams({ profile: PROFILE_A, entity: 'campaigns' })}`;
-  await expect(marker.getByTestId('entry-goto')).toHaveAttribute('href', expected);
+/** Legacy Time Machine behavior through its query-preserving compatibility route. */
+import { expect, test, type Page } from '@playwright/test';
+const BRIDGE=process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET']??'';
+const ORG_B=process.env['WIZARD_ADS_E2E_ORG_B']??'';
+const USER_B=process.env['WIZARD_ADS_E2E_USER_B']??'';
+const PROFILE_A=process.env['WIZARD_ADS_E2E_PROFILE_A']??'';
+const MARKER='ZZ Time Machine Marker';
+test.describe.configure({mode:'serial'});
+const url=(params:Record<string,string>={})=>`/time-machine?${new URLSearchParams({profile:PROFILE_A,...params})}`;
+async function open(page:Page,params:Record<string,string>={}) { await page.goto(url(params)); await expect(page.locator('main[data-interactive="true"]')).toBeVisible(); }
+test('the timeline shows both a sync-detected change and an operator apply',async({page})=>{
+  await open(page); await expect(page).toHaveURL(/\/change-queue\?/);
+  expect(await page.getByTestId('entry-source').filter({hasText:'changed at Amazon'}).count()).toBeGreaterThan(0);
+  expect(await page.getByTestId('entry-source').filter({hasText:'we sent it'}).count()).toBeGreaterThan(0);
+  const marker=page.getByTestId('timeline-entry').filter({hasText:MARKER});
+  await expect(marker).toHaveCount(1); await expect(marker).toContainText('$10.00');await expect(marker).toContainText('$15.00');
+  await expect(page.getByRole('columnheader')).toHaveCount(8);
 });
-
-test('the active account is compact and the roster is not rendered as link navigation', async ({ page }) => {
-  await open(page);
-
-  const account = page.getByTestId('time-machine-active-account');
-  await expect(account).toBeVisible();
-  await expect(account.getByText('Active account', { exact: true })).toBeVisible();
-  await expect(account.getByTestId('time-machine-profile')).toHaveValue(PROFILE_A);
-  await expect(account.locator('option')).not.toHaveCount(0);
-  await expect(page.getByRole('navigation', { name: 'Profiles' })).toHaveCount(0);
-  await expect(account.locator('a[href*="/time-machine?profile="]')).toHaveCount(0);
+test('the active account is compact and the roster is not rendered as link navigation',async({page})=>{
+  await open(page); await expect(page.getByRole('navigation',{name:'Profiles'})).toHaveCount(0);
+  await expect(page.locator('main h1')).toHaveCount(0);
+  await expect(page.locator('main[data-interactive="true"]')).toHaveAttribute('data-profile-id',PROFILE_A);
 });
-
-test('the initial response is bounded and older history remains reachable', async ({ page }) => {
-  const response = await page.goto(url());
-  if (response === null) throw new Error('Time Machine navigation returned no document response');
-  expect((await response.body()).byteLength).toBeLessThan(750_000);
-  await expect(page.getByTestId('timeline-entry')).toHaveCount(50);
-  await expect(page.getByTestId('timeline-newer')).toHaveCount(0);
-
-  await page.getByTestId('timeline-older').click();
-  await expect(page).toHaveURL(/before_at=/);
-  await expect(page).toHaveURL(/before_id=/);
-  await expect(page.getByTestId('timeline-entry')).not.toHaveCount(0);
-  await expect(page.getByTestId('timeline-newer')).toBeVisible();
-
-  await page.getByTestId('timeline-newer').click();
-  await expect(page).not.toHaveURL(/before_at=/);
-  await expect(page).not.toHaveURL(/before_id=/);
+test('the initial response is bounded and older history remains reachable',async({page})=>{
+  const response=await page.goto(url());expect(response).not.toBeNull();expect((await response!.body()).byteLength).toBeLessThan(750000);
+  await expect(page.getByTestId('timeline-entry')).toHaveCount(50);await expect(page.getByTestId('timeline-newer')).toHaveCount(0);
+  await page.getByTestId('timeline-older').click();await expect(page).toHaveURL(/before_at=/);await expect(page).toHaveURL(/before_id=/);
+  await expect(page.getByTestId('timeline-entry')).not.toHaveCount(0);await page.getByTestId('timeline-newer').click();
+  await expect(page).not.toHaveURL(/before_at=/);await expect(page.getByText(MARKER)).toHaveCount(1);
+});
+test('an exhausted history cursor offers a safe return to the newest changes',async({page})=>{
+  await open(page,{before_at:'2000-01-01T00:00:00.000Z',before_id:'change:1'});
+  await expect(page.getByTestId('timeline-empty-cursor')).toBeVisible();await page.getByTestId('timeline-newer').click();
   await expect(page.getByText(MARKER)).toHaveCount(1);
 });
-
-test('an exhausted history cursor offers a safe return to the newest changes', async ({ page }) => {
-  await open(page, {
-    before_at: '2000-01-01T00:00:00.000Z',
-    before_id: `change:${'0'.repeat(8)}-${'0'.repeat(4)}-4000-8000-${'0'.repeat(12)}`,
-  });
-
-  await expect(page.getByTestId('timeline-empty-cursor')).toBeVisible();
-  await expect(page.getByTestId('timeline-newer')).toBeVisible();
-  await page.getByTestId('timeline-newer').click();
-  await expect(page.getByText(MARKER)).toHaveCount(1);
-});
-
-test('PostgreSQL-incompatible cursor timestamps are ignored before the query', async ({ page }) => {
-  for (const beforeAt of ['2026-02-31T00:00:00.000Z', '0000-01-01T00:00:00.000Z']) {
-    await open(page, {
-      before_at: beforeAt,
-      before_id: 'change:47',
-    });
-
-    await expect(page.getByText(MARKER)).toHaveCount(1);
-    await expect(page.getByTestId('timeline-newer')).toHaveCount(0);
-    await expect(page.locator('main').getByRole('alert')).toHaveCount(0);
+test('PostgreSQL-incompatible cursor timestamps are ignored before the query',async({page})=>{
+  for(const before_at of ['2026-02-31T00:00:00.000Z','0000-01-01T00:00:00.000Z']) {
+    await open(page,{before_at,before_id:'change:47'});await expect(page.getByText(MARKER)).toHaveCount(1);
+    await expect(page.getByTestId('timeline-newer')).toHaveCount(0);await expect(page.locator('main').getByRole('alert')).toHaveCount(0);
   }
 });
-
-test('reviews uniquely synchronized evidence and exports an exact inverse file', async ({ page }) => {
-  await open(page);
-
-  const selectedBatch = page.getByTestId('time-machine-batch').filter({ hasText: READY_TAG });
-  await selectedBatch.click();
-  await expect(selectedBatch).toHaveClass(/is-selected/);
-  const preview = page.getByTestId('reversion-preview');
-  await expect(preview).toContainText('1 ready');
-  const row = preview.getByTestId('reversion-row');
-  await expect(row).toHaveCount(1);
-  await expect(row).toHaveAttribute('data-state', 'ready');
-  await expect(row).toContainText('0.9');
-  await expect(row).toContainText('0.71');
-  await expect(preview).toContainText('Arcana does not update Amazon');
-  if (process.env['WIZARD_ADS_VISUAL_PATH']) {
-    await page.screenshot({ path: process.env['WIZARD_ADS_VISUAL_PATH'], fullPage: true });
-  }
-
-  await preview.getByPlaceholder('Why should this batch return to its original values?').fill(
-    'Synthetic E2E reversion review',
-  );
-  await preview.getByLabel('Yes, export reversion').check();
-  await preview.getByTestId('export-reversion').click();
-  const result = preview.getByTestId('reversion-result');
-  await expect(result).toContainText('Exported 1 inverse change');
-  await expect(result).toContainText('Amazon was not updated');
-  await expect(result.getByRole('link', { name: 'Download inverse rows JSON' })).toHaveAttribute(
-    'href',
-    /\/api\/recommendations\/export\/.+\?format=rows/,
-  );
+test('reviews uniquely synchronized evidence and exports an exact inverse file',async({page})=>{
+  await open(page,{source:'apply'});
+  await page.locator('a[title="tm-e2e-ready-export"]').first().click();
+  const preview=page.getByTestId('reversion-preview');await expect(preview.getByTestId('reversion-row')).toHaveCount(1);
+  await expect(preview.getByTestId('reversion-row')).toHaveAttribute('data-state','ready');
+  await expect(preview).toContainText('$0.90');await expect(preview).toContainText('$0.71');
+  await expect(preview).toContainText('Nothing is sent to Amazon from this screen.');
+  // Preserve the legacy export API regression check while the new UI uses proposals.
+  const batchId=new URL(page.url()).searchParams.get('batch');
+  const data={batchId,profileId:PROFILE_A,expectedRows:1,note:'Synthetic E2E reversion review',confirmation:'Yes, export reversion'};
+  const response=await page.request.post('/api/time-machine/reversion',{data});
+  expect(response.status()).toBe(201);const result=await response.json();
+  expect(result.rows).toBe(1);expect(result.amazonUpdated).toBe(false);expect(result.downloads.rows).toMatch(/\/api\/recommendations\/export\/.+\?format=rows/);
 });
-
-test('filters narrow by source, entity type and field', async ({ page }) => {
-  // Source = operator apply: no sync entries survive, so the sync-sourced marker is gone.
-  await open(page, { source: 'apply' });
-  await expect(page.getByTestId('entry-source').filter({ hasText: 'Sync' })).toHaveCount(0);
-  await expect(page.getByText(MARKER)).toHaveCount(0);
-
-  // Source = sync: the marker is back.
-  await open(page, { source: 'sync' });
-  await expect(page.getByText(MARKER)).toHaveCount(1);
-
-  // Entity type = keyword: a campaign change is excluded.
-  await open(page, { type: 'keyword' });
-  await expect(page.getByText(MARKER)).toHaveCount(0);
-
-  // Entity type = campaign: the marker survives.
-  await open(page, { type: 'campaign' });
-  await expect(page.getByText(MARKER)).toHaveCount(1);
-
-  // Field = bid excludes the budget marker; field = budget keeps it.
-  await open(page, { field: 'bid' });
-  await expect(page.getByText(MARKER)).toHaveCount(0);
-  await open(page, { field: 'budget' });
-  await expect(page.getByText(MARKER)).toHaveCount(1);
-
-  // A window before any change exists is an explicit filtered-empty state.
-  await open(page, { from: '2000-01-01', to: '2000-12-31' });
-  await expect(page.getByTestId('timeline-empty-filtered')).toBeVisible();
-  await expect(page.getByTestId('timeline-entry')).toHaveCount(0);
+test('filters narrow by source, entity type and field',async({page})=>{
+  await open(page,{source:'apply'});await expect(page.getByText(MARKER)).toHaveCount(0);await expect(page.getByTestId('entry-source').filter({hasText:'changed at Amazon'})).toHaveCount(0);
+  await open(page,{source:'sync'});await expect(page.getByText(MARKER)).toHaveCount(1);
+  await open(page,{type:'keyword'});await expect(page.getByText(MARKER)).toHaveCount(0);
+  await open(page,{type:'campaign'});await expect(page.getByText(MARKER)).toHaveCount(1);
+  await open(page,{field:'bid'});await expect(page.getByText(MARKER)).toHaveCount(0);
+  await open(page,{field:'budget'});await expect(page.getByText(MARKER)).toHaveCount(1);
+  await open(page,{from:'2000-01-01',to:'2000-12-31'});await expect(page.getByTestId('timeline-empty-filtered')).toHaveText('No changes recorded in this range');await expect(page.getByTestId('timeline-entry')).toHaveCount(0);
 });
-
-test('the filter form carries the selected values', async ({ page }) => {
-  await open(page, { source: 'apply', type: 'keyword', field: 'bid' });
-  await expect(page.getByTestId('filter-source')).toHaveValue('apply');
-  await expect(page.getByTestId('filter-type')).toHaveValue('keyword');
-  await expect(page.getByTestId('filter-field')).toHaveValue('bid');
-  // The clear affordance appears only when a filter is active.
-  await expect(page.getByTestId('filter-clear')).toBeVisible();
+test('the filter form carries the selected values',async({page})=>{
+  await open(page,{source:'apply',type:'keyword',field:'bid'});await page.getByText('Filter',{exact:true}).click();
+  await expect(page.getByTestId('filter-source')).toHaveValue('apply');await expect(page.getByTestId('filter-type')).toHaveValue('keyword');await expect(page.getByTestId('filter-field')).toHaveValue('bid');await expect(page.getByTestId('filter-clear')).toBeVisible();
 });
-
-test.describe('as another tenant', () => {
-  test.use({
-    extraHTTPHeaders: {
-      'x-wizard-ads-auth-bridge': BRIDGE,
-      'x-wizard-ads-user-id': USER_B,
-      'x-wizard-ads-org-id': ORG_B,
-    },
-  });
-
-  test("org B sees its own history but never org A's changes", async ({ page }) => {
-    // No profile parameter: org A's id would not resolve for this tenant anyway,
-    // and the page falls back to the first profile the actor's own org owns.
-    await page.goto(ROUTE);
-    await expect(page.locator('main[data-interactive="true"]')).toBeVisible();
-    // Org B has its own fixture history…
-    expect(await page.getByTestId('timeline-entry').count()).toBeGreaterThan(0);
-    // …and crucially, never org A's marker.
-    await expect(page.getByText(MARKER)).toHaveCount(0);
+test.describe('as another tenant',()=>{
+  test.use({extraHTTPHeaders:{'x-wizard-ads-auth-bridge':BRIDGE,'x-wizard-ads-user-id':USER_B,'x-wizard-ads-org-id':ORG_B}});
+  test("org B sees its own history but never org A's changes",async({page})=>{
+    await page.goto('/time-machine');await expect(page.locator('main[data-interactive="true"]')).toBeVisible();
+    expect(await page.getByTestId('timeline-entry').count()).toBeGreaterThan(0);await expect(page.getByText(MARKER)).toHaveCount(0);
   });
 });

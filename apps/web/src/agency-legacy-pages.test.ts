@@ -20,7 +20,7 @@ import RoadmapPage from '../app/roadmap/page';
 import TagsPage from '../app/tags/page';
 import NgramsPage from '../app/ngrams/page';
 import RecommendationsPage from '../app/recommendations/page';
-import TimeMachinePage from '../app/time-machine/page';
+import TimeMachinePage from '../app/change-queue/page';
 import CampaignsPage from '../app/campaigns/page';
 import { authenticatedPageRead } from './server/authenticated-page-read';
 import * as requestContext from './server/request-context';
@@ -48,7 +48,7 @@ describe.skipIf(!available)('actual legacy pages under authenticated agency read
       await database.sql`insert into public.feedback_items(org_id,author_id,type,title,body) values(${orgId},${userId},'feature',${marker},'Synthetic feature')`;
       await database.sql`update public.campaigns set name=${marker} where org_id=${orgId}`;
       await database.sql`update public.tags set name=${marker} where org_id=${orgId}`;
-      await database.sql`update public.entity_changes set entity_name=${marker} where org_id=${orgId}`;
+      await database.sql`update public.entity_changes set entity_name=${marker}, observed_at=${date}::date where org_id=${orgId}`;
       await database.sql`update public.fact_search_term_daily set search_term=${marker} where org_id=${orgId}`;
       agencies.push({ orgId, userId, profileId: profile!.id, experimentId: experiment!.id, itemId: item!.id, marker });
     }

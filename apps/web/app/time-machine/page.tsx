@@ -1,4 +1,4 @@
-import { descriptor } from '../../src/screens/time-machine/descriptor';
+import { descriptor } from '../../src/screens/time-machine/legacy/descriptor';
 import { pageRead } from '../../src/server/page-read';
 import type { ScreenSearchParams } from '../../src/screens/types';
 
