@@ -44,6 +44,8 @@ test(
       const activeAccount = (await switcher.locator('strong').innerText()).trim();
       expect(activeAccount).not.toBe('');
       if (surface.route === '/') await expect(page.locator('main.wa-home[data-profile-id]')).toHaveAttribute('data-profile-id', fixtureProfileId);
+      // Streaming can briefly retain the loading fallback beside the ready main.
+      if (surface.route === '/') await expect(page.locator('main.wa-home:not([aria-busy="true"])')).toHaveAttribute('data-profile-id', fixtureProfileId);
       else await expect(page.locator('#wa-main')).toContainText(activeAccount);
       verified.push(url.pathname);
     }
@@ -97,7 +99,7 @@ test('sidebar, date, entity, back and forward stay in one document and retain th
   await expect(page.getByRole('heading', { name: 'Search terms', exact: true })).toBeVisible();
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
 
-  await page.getByRole('tab', { name: 'Campaigns', exact: true }).click();
+  await page.getByRole('link', { name: 'Campaigns', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Campaigns', exact: true })).toBeVisible();
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
 

@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { describe, expect, it } from 'vitest';
+import { rendered } from '../render-test-support';
+import { columnsFor, defaultVisibleColumns, ENTITY_LABELS } from '@wizard-ads/ui';
 import Loading from '../../../app/grid/loading';
 import { verifyScreen } from '../render-test-support';
 import SharedError from '../shared-error';
@@ -16,3 +19,16 @@ verifyScreen(descriptor, [
   { state: 'empty', name: 'explains an empty profile roster', render: () => <Screen data={{ view: 'empty', props: { data: { profiles: [], profile: null } } }} />, text: 'No advertising profiles yet.' },
   { state: 'not-measured', name: 'does not substitute measured results for absent evidence', render: () => <Screen data={{ ...ready, props: { ...ready.props, slot1: <></>, freshness: <></> } }} />, text: "Campaigns", absent: ['[aria-label="Performance cockpit"]'] }
 ]);
+
+describe('shared performance presets', () => {
+  for (const entity of ['campaigns', 'ad_groups', 'search_terms', 'products', 'placements', 'targets'] as const) {
+    it(`renders ${entity} through the shared module with its complete column catalogue`, () => {
+      const host = rendered(<Screen data={{ ...ready, props: { ...ready.props, entity } }} />);
+      expect(host.textContent).toContain(ENTITY_LABELS[entity]);
+      const columns = columnsFor(entity);
+      expect(columns.map((column) => column.id)).toEqual(expect.arrayContaining(defaultVisibleColumns(entity)));
+      expect(columns.filter((column) => column.pinned)).toHaveLength(1);
+      if (entity === 'products') expect(columns.map((column) => column.id)).toContain('gap');
+    });
+  }
+});

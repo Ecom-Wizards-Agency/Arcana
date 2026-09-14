@@ -9,7 +9,7 @@
  * production renderer.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { DataGrid } from './DataGrid.js';
 import { columnsFor, defaultVisibleColumns } from './columns.js';
 import { filterSetOf } from './filter.js';
@@ -441,5 +441,32 @@ describe('totals policy and numeric disclosure', () => {
     expect(cell.style.overflow).toBe('auto');
     expect(cell.style.textOverflow).not.toBe('ellipsis');
     expect(Number.parseFloat(cell.style.width)).toBeGreaterThanOrEqual(96);
+  });
+});
+
+
+describe('performance cell window', () => {
+  it('defers off-screen cell content, keeps pinned targets and renders far columns on scroll', async () => {
+    const source = syntheticSearchTermRows(3597, { seed: 20260814 });
+    const model = buildGridModel(source);
+    const pinned = vi.fn((row: typeof source[number]) => <span>{row.id}</span>);
+    const far = vi.fn(() => <span>Measured far column</span>);
+    const columns = Array.from({ length: 30 }, (_, index) => ({ ...visible[0]!, id: index === 0 ? 'search_term' : `synthetic_${index}`, width: 200, minWidth: 20, pinned: index === 0 }));
+    const { rerender } = render(<DataGrid presentation="performance" model={model} columns={columns} currencyCode="USD" sort={[]} onSortChange={() => {}} height={600} initialRect={VIEWPORT} renderCell={{ search_term: pinned, synthetic_29: far }} />);
+    expect(model.rows).toHaveLength(3597);
+    expect(screen.getAllByTestId('grid-row').length).toBeLessThan(60);
+    expect(pinned).toHaveBeenCalled();
+    expect(far).not.toHaveBeenCalled();
+    expect(screen.queryByText('Measured far column')).toBeNull();
+    const scroller = screen.getByTestId('grid-scroller');
+    fireEvent.scroll(scroller, { target: { scrollLeft: 5000 } });
+    await waitFor(() => expect(far).toHaveBeenCalled());
+    expect(screen.getAllByText('Measured far column').length).toBe(screen.getAllByTestId('grid-row').length);
+    expect(pinned).toHaveBeenCalled();
+    fireEvent.scroll(scroller, { target: { scrollLeft: 0 } });
+    await waitFor(() => expect(screen.queryByText('Measured far column')).toBeNull());
+    // Width changes invalidate the horizontal measurements too.
+    rerender(<DataGrid presentation="performance" model={model} columns={columns.map((column) => ({ ...column, width: 25 }))} currencyCode="USD" sort={[]} onSortChange={() => {}} height={600} initialRect={VIEWPORT} renderCell={{ search_term: pinned, synthetic_29: far }} />);
+    await waitFor(() => expect(screen.getAllByText('Measured far column').length).toBeGreaterThan(0));
   });
 });

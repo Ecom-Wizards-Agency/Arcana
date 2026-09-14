@@ -26,7 +26,7 @@ export const E2E_SUITE_DEFINITIONS = [
     config: 'playwright.grid-performance.config.ts',
     project: 'grid-performance',
     expectedSpecFiles: specsFor('grid-performance'),
-    expectedTests: 1,
+    expectedTests: 2,
   },
   {
     name: 'optimization-groups',
@@ -66,7 +66,7 @@ export const E2E_SUITE_DEFINITIONS = [
     config: 'playwright.auth.config.ts',
     project: 'auth',
     expectedSpecFiles: specsFor('auth'),
-    expectedTests: 10,
+    expectedTests: 14,
   },
   {
     name: 'auth-members',

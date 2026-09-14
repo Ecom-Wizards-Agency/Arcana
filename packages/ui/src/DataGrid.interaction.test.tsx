@@ -92,6 +92,22 @@ function activeRow(): HTMLElement | undefined {
 afterEach(cleanup);
 
 describe('DataGrid keyboard navigation', () => {
+  it('keeps absolute row identity for End, Enter and Home in the performance window', async () => {
+    const onRowClick = vi.fn();
+    const { model } = renderGrid(3597, { presentation: 'performance', onRowClick });
+    const first = gridRows()[0]!;
+    first.focus();
+    fireEvent.keyDown(first, { key: 'End' });
+    await waitFor(() => expect(activeRow()?.getAttribute('data-row-index')).toBe('3596'));
+    fireEvent.keyDown(activeRow()!, { key: 'Enter' });
+    expect(onRowClick).toHaveBeenLastCalledWith(model.rows[3596]);
+    expect(gridRows().length).toBeLessThan(60);
+    fireEvent.keyDown(activeRow()!, { key: 'Home' });
+    await waitFor(() => expect(activeRow()?.getAttribute('data-row-index')).toBe('0'));
+    fireEvent.keyDown(activeRow()!, { key: 'Enter' });
+    expect(onRowClick).toHaveBeenLastCalledWith(model.rows[0]);
+    expect(model.exportRows).toHaveLength(3597);
+  });
   it('gives exactly one row the tab stop and moves it with the arrow keys', () => {
     renderGrid(200);
     const rows = gridRows();

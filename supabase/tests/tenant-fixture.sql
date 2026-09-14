@@ -745,6 +745,10 @@ begin
     values (v_org, p_user_id, 'fixture-layout', 'Synthetic fixture layout',
       '{"id":"fixture-layout","name":"Synthetic fixture layout","entity":"placements","columns":[],"pinned":[],"widths":{},"filter":{"groups":[]},"sort":[],"groupBy":[],"dateRange":null,"updatedAt":"2026-09-14"}'::jsonb);
   end if;
+  if to_regclass('public.target_translations') is not null then
+    insert into public.target_translations(org_id,profile_id,original_text,language,request_id,requested_by,status,reason,completed_at)
+      values(v_org,v_profile,'Synthetic original','en',gen_random_uuid(),p_user_id,'unavailable','provider not configured',now());
+  end if;
 
   if to_regclass('public.timeline_events') is not null then
     insert into public.timeline_events(org_id,profile_id,name,kind,start_on,scope_text,note,created_by) values(v_org,v_profile,'Synthetic listing note','listing',p_date,'Recorded only','Fixture observation',p_user_id);

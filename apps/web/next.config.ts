@@ -56,9 +56,9 @@ const nextConfig: NextConfig = {
   // setup and releases it at teardown. Normal development and production
   // retain Next's default behavior.
   experimental: {
-    // Resolve named contract imports through the generated barrel. Grid needs
-    // its own schemas, not initialization of every write and method contract.
-    optimizePackageImports: ['@wizard-ads/shared'],
+    // Resolve named workspace imports through their generated barrels so Grid
+    // loads its schemas and metric helpers without unrelated engine modules.
+    optimizePackageImports: ['@wizard-ads/shared', '@wizard-ads/core', '@wizard-ads/ui'],
     ...(process.env['WIZARD_ADS_E2E_AUTH'] === '1'
       ? { devMemoryThresholdRestart: false }
       : {}),

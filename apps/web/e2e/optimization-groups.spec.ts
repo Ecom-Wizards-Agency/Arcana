@@ -48,7 +48,10 @@ test('edits a canonical local weekday schedule and still queues a manual preview
   await weekdayChecks[0]?.click();
   await expect(weekdayChecks[0]!).toBeChecked();
 
+  const savedGroup = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === '/api/optimizer/groups' && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Save group', exact: true }).click();
+  expect((await savedGroup).ok()).toBe(true);
   await expect(page.getByRole('status')).toContainText('Saved 1 campaign assignment');
   await expect(page.getByText(/Target ACOS .* · Mon$/)).toBeVisible();
 
@@ -238,6 +241,7 @@ test('selects filtered campaigns across a filter and polls the exact read-only p
 
   await page.getByRole('list', { name: 'Preview runs' })
     .getByRole('link', { name: 'Review 0 recommendations →' }).first().click();
+  await page.waitForURL((url) => url.pathname === '/recommendations');
   await expect(page.getByRole('heading', { name: 'Recommendations', exact: true })).toBeVisible();
   await expect(page.getByText('This run proposed nothing', { exact: true })).toBeVisible();
   await page.getByText('Run details', { exact: true }).click();

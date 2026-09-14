@@ -28,28 +28,11 @@ import {
   DELTA_PERCENT_SUFFIX,
 } from './rows.js';
 
-export type EntityLevel =
-  | 'campaigns'
-  | 'ad_groups'
-  | 'targets'
-  | 'search_terms'
-  | 'placements';
+import { GridEntity } from '@wizard-ads/shared';
 
-export const ENTITY_LEVELS: readonly EntityLevel[] = [
-  'campaigns',
-  'ad_groups',
-  'targets',
-  'search_terms',
-  'placements',
-];
-
-export const ENTITY_LABELS: Record<EntityLevel, string> = {
-  campaigns: 'Campaigns',
-  ad_groups: 'Ad groups',
-  targets: 'Targets',
-  search_terms: 'Search terms',
-  placements: 'Placements',
-};
+export type EntityLevel = (typeof GridEntity.options)[number];
+export const ENTITY_LEVELS: readonly EntityLevel[] = GridEntity.options;
+export const ENTITY_LABELS: Record<EntityLevel, string> = { campaigns: 'Campaigns', ad_groups: 'Ad groups', targets: 'Targets', search_terms: 'Search terms', products: 'Products', placements: 'Placements' };
 
 /**
  * What a column *is*, which decides what may be done to it.
@@ -75,11 +58,17 @@ export type GridCellKind = 'suggested_bid' | 'text' | 'numeric' | 'status';
 
 export const NUMERIC_MIN_WIDTH = 96;
 export function minimumColumnWidth(column: GridColumn): number {
+  if (column.subject !== undefined && column.minWidth !== undefined) return column.minWidth;
   return column.scale !== 'text' || column.cell === 'numeric'
     ? Math.max(NUMERIC_MIN_WIDTH, column.minWidth ?? 0) : column.minWidth ?? 20;
 }
 
+export type ColumnSubject = 'Identity' | 'RANK & ORGANIC' | 'SPONSORED PRODUCTS' | 'SQP' | 'BRAND ANALYTICS';
+
 export interface GridColumn {
+  subject?: ColumnSubject;
+  /** Position in the complete performance preset; absent on supplementary columns. */
+  referenceOrder?: number;
   id: string;
   header: string;
   kind: ColumnKind;
@@ -212,7 +201,7 @@ const DIMENSIONS: Record<EntityLevel, GridColumn[]> = {
         'negatives; one concept gets one name here.',
     }),
     dimension('bid', 'Bid', { scale: 'money', align: 'right', width: 96 }),
-    dimension('suggested_bid', 'Bid corridor', {
+    dimension('suggested_bid', 'Sugg. bid', {
       scale: 'money',
       align: 'right',
       width: 128,
@@ -264,6 +253,7 @@ const DIMENSIONS: Record<EntityLevel, GridColumn[]> = {
     }),
     dimension('ad_product', 'Ad type', { width: 88, filterKind: 'categorical' }),
   ],
+  products: [dimension('asin', 'Product', { pinned: true, width: 220 }), dimension('product_name', 'Product name'), dimension('gap', 'Gap', { scale: 'integer', align: 'right', description: 'Signed distance to the best-ranked tracked competitor on this day; not measured when comparable ranks are missing.' })],
   placements: [
     dimension('placement', 'Placement', { width: 200, pinned: true, filterKind: 'categorical' }),
     dimension('campaign_name', 'Campaign', { width: 320, filterKind: 'categorical' }),
@@ -278,9 +268,40 @@ const DIMENSIONS: Record<EntityLevel, GridColumn[]> = {
 };
 
 /** Every column available at a level: dimensions first, then all four metric columns. */
+const REFERENCE_WIDTHS: Readonly<Record<string, number>> = { targeting: 196, signals: 140, bid: 58, suggested_bid: 76, top_of_search_share: 84, organic_rank: 72, sqp_impression_share: 72, sqp_purchase_share: 74, spend: 76, acos: 56, clicks: 60, verdict: 160 };
+
 export function columnsFor(level: EntityLevel): GridColumn[] {
-  return [...(DIMENSIONS[level] ?? []), ...allMetricColumns()];
+  return [...(DIMENSIONS[level] ?? []), ...allMetricColumns(), ...(level === 'targets' ? TARGET_PERFORMANCE_COLUMNS : [])].map((column) => ({ ...column,
+    ...(level === 'targets' && TARGET_FULL_COLUMNS.some((id) => id === column.id) ? { referenceOrder: TARGET_FULL_COLUMNS.findIndex((id) => id === column.id) } : {}),
+    ...(level === 'targets' && REFERENCE_WIDTHS[column.id] !== undefined ? { width: REFERENCE_WIDTHS[column.id]!, minWidth: Math.min(40, REFERENCE_WIDTHS[column.id]!) } : {}),
+    subject: column.subject ?? (column.kind === 'metric' || ['bid', 'suggested_bid', 'max_potential_cpc', 'diff_from_suggested_bid', 'bid_corridor_position'].includes(column.id) ? 'SPONSORED PRODUCTS' : 'Identity'),
+  }));
 }
+
+const TARGET_PERFORMANCE_COLUMNS: GridColumn[] = [
+  dimension('signals', 'SIGNALS', { width: 124, subject: 'Identity', description: 'R: organic rank; T: top-of-search impression share; I: SQP impression share; P: SQP purchase share. Dashed means not measured.' }),
+  dimension('organic_rank', 'RANK', { scale: 'integer', align: 'right', subject: 'RANK & ORGANIC' }),
+  dimension('rank_change', 'CHG', { scale: 'integer', align: 'right', subject: 'RANK & ORGANIC', description: 'Comparison rank minus current rank. Positive means improvement.' }),
+  dimension('rank_grid', 'LAST 14 DAYS', { width: 252, subject: 'RANK & ORGANIC' }),
+  dimension('break_even_bid', 'B/E BID', { scale: 'money', align: 'right', subject: 'SPONSORED PRODUCTS', description: 'Gross break-even bid = CPC ÷ ACOS. Does not account for margin, fees or tax.' }),
+  dimension('top_of_search_share', 'TOS IS', { scale: 'percent', align: 'right', subject: 'SPONSORED PRODUCTS' }),
+  dimension('top_of_search_range', 'LOW – HIGH', { width: 120, subject: 'SPONSORED PRODUCTS', description: 'Lowest and highest measured daily top-of-search impression share in the selected window.' }),
+  dimension('spend_share', '% SPEND', { scale: 'percent', align: 'right', subject: 'SPONSORED PRODUCTS' }),
+  dimension('acos_vs_target', 'ACOS vs TGT', { scale: 'integer', align: 'right', subject: 'SPONSORED PRODUCTS', description: 'ACOS minus resolved target, in percentage points.' }),
+  dimension('sqp_impression_share', 'IMP SH', { scale: 'percent', align: 'right', subject: 'SQP' }),
+  dimension('sqp_purchase_share', 'PURCH SH', { scale: 'percent', align: 'right', subject: 'SQP' }),
+  dimension('market_cvr', 'MKT CVR', { scale: 'percent', align: 'right', subject: 'SQP' }),
+  dimension('asin_cvr', 'ASIN CVR', { scale: 'percent', align: 'right', subject: 'SQP' }),
+  dimension('conversion_points', 'CONV PTS', { scale: 'integer', align: 'right', subject: 'SQP', description: 'ASIN conversion rate minus market conversion rate, in percentage points.' }),
+  dimension('search_frequency_rank', 'SFR', { scale: 'integer', align: 'right', subject: 'BRAND ANALYTICS' }),
+  dimension('aba_rank', 'ABA RANK', { scale: 'integer', align: 'right', subject: 'BRAND ANALYTICS' }),
+  dimension('aba_click_share', 'CLICK SH', { scale: 'percent', align: 'right', subject: 'BRAND ANALYTICS' }),
+  dimension('aba_conversion_share', 'CONV SH', { scale: 'percent', align: 'right', subject: 'BRAND ANALYTICS' }),
+  dimension('verdict', 'VERDICT', { width: 200, subject: 'Identity' }),
+  dimension('translation', 'Translation', { width: 220, subject: 'Identity', description: 'Hidden by default. Original wording remains visible; use it when editing a target.' }),
+];
+
+export const TARGET_FULL_COLUMNS = ['targeting', 'match_type', 'signals', 'organic_rank', 'rank_change', 'rank_grid', 'bid', 'suggested_bid', 'break_even_bid', 'top_of_search_share', 'top_of_search_range', 'spend', 'spend_share', 'sales', 'cpc', 'acos', 'acos_vs_target', 'sqp_impression_share', 'sqp_purchase_share', 'market_cvr', 'asin_cvr', 'conversion_points', 'search_frequency_rank', 'aba_rank', 'aba_click_share', 'aba_conversion_share'] as const;
 
 /**
  * What is visible before the operator touches anything.
@@ -293,6 +314,7 @@ export function columnsFor(level: EntityLevel): GridColumn[] {
 const DEFAULT_METRICS = ['impressions', 'clicks', 'spend', 'sales', 'orders', 'ctr', 'cvr', 'cpc', 'acos', 'roas'];
 
 export function defaultVisibleColumns(level: EntityLevel): string[] {
+  if (level === 'targets') return ['targeting', 'signals', 'bid', 'suggested_bid', 'top_of_search_share', 'organic_rank', 'sqp_impression_share', 'sqp_purchase_share', 'spend', 'acos', 'clicks', 'verdict'];
   const dims = (DIMENSIONS[level] ?? []).filter((column) => column.pinned || isKeyDimension(level, column.id));
   const metrics = DEFAULT_METRICS.flatMap((key) => [key, `${key}${DELTA_PERCENT_SUFFIX}`]);
   return [...dims.map((column) => column.id), ...metrics];
@@ -314,6 +336,7 @@ function isKeyDimension(level: EntityLevel, id: string): boolean {
       'campaign_name',
     ],
     search_terms: ['match_type', 'campaign_name', 'harvested'],
+    products: ['product_name', 'gap'],
     placements: ['campaign_name', 'placement_modifier'],
   };
   return (keys[level] ?? []).includes(id);

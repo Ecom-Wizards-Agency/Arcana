@@ -50,6 +50,7 @@ export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
   {"domain": "strategy", "contract": "strategy.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 11, "clause": "*", "after": ""}]},
   {"domain": "tags", "contract": "tags.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 21, "clause": "*", "after": ""}]},
   {"domain": "time-machine-writes", "contract": "time-machine-writes.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": []},
+  {"domain": "translation", "contract": "translation.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 29, "clause": "*", "after": ""}]},
   {"domain": "unified-reporting", "contract": "unified-reporting.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 18, "clause": "*", "after": ""}]},
 ];
 

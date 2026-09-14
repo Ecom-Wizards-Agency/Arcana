@@ -13,12 +13,14 @@
  * Skipped, not failed, without a Postgres: the suite has to stay honest on a
  * machine that has none, the same way the `packages/db` suites do.
  */
+import { decodeGridRowColumns, decodeGridPerformance } from '@wizard-ads/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import { ensureFactPartitions, withAuthenticatedActor } from '@wizard-ads/db';
 import { buildGridModel, groupRows, resolveField } from '@wizard-ads/ui';
 import type { GridRow } from '@wizard-ads/ui';
+import { serializeGridPayloadWithinBudget } from '../app/api/grid/rows/serialize';
 import { loadGridRows } from '../app/_lib/grid-data.js';
 import { loadBidHistory } from '../app/_lib/bid-corridor.js';
 import { listProfiles } from '../app/_lib/profiles.js';
@@ -503,6 +505,87 @@ suite('grid and roster reads against SQL aggregates', () => {
       // And the level is one that actually has rows to leak, or the assertion
       // above proves nothing.
       if (level !== 'placements') expect(own.rows.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('preserves absent current bases from SQL through transport and totals', async () => {
+    const payload = await loadGridRows(database, 'targets', { orgId, profileId, currencyCode: 'USD', period: { start: '2026-08-01', end: '2026-08-14' }, comparison: PERIOD });
+    expect(payload.rowCount).toBeGreaterThan(0);
+    const transported = JSON.parse(serializeGridPayloadWithinBudget(payload).body) as { rows: GridRow[]; rowCount: number };
+    expect(transported.rows).toHaveLength(payload.rowCount);
+    const model = buildGridModel(transported.rows);
+    for (const row of [...transported.rows, model.totalsRow!]) {
+      for (const key of ['impressions', 'clicks', 'spend', 'sales', 'orders', 'units', 'acos', 'cpc']) expect(resolveField(row, key)).toBeNull();
+    }
+    expect(resolveField(model.totalsRow!, 'spend_comparison')).toBeGreaterThan(0);
+  });
+
+  it('fits 3597 production-shaped targets with measured comparisons and all fourteen rank days', async () => {
+    const source = await loadGridRows(database, 'targets', { orgId, profileId, currencyCode: 'USD', period: PERIOD, comparison: COMPARISON });
+    expect(source.rows.length).toBeGreaterThan(0);
+    expect(source.rows.every((row) => row.comparison !== null)).toBe(true);
+    const rows = Array.from({ length: 3597 }, (_, index) => ({ ...source.rows[index % source.rows.length]!, id: `target:synthetic-${index}` }));
+    const rankDays = Object.fromEntries(rows.map((row, index) => [row.id, Array.from({ length: 14 }, (_, day) => ({ date: addDays(PERIOD.start, day), observed: true, rank: index + day + 1 }))]));
+    const performance = { ...source.performance!, rankDays };
+    const serialized = serializeGridPayloadWithinBudget({ rows, performance, rowCount: rows.length, truncated: false });
+    const wire = JSON.parse(serialized.body);
+    expect(serialized.byteLength).toBeLessThanOrEqual(4_000_000);
+    expect(wire.truncated).toBe(false);
+    expect(wire.rowCount).toBe(3597);
+    expect(wire.rowColumns).toBeDefined();
+    expect(decodeGridRowColumns(wire.rowColumns)).toEqual(rows);
+    expect(decodeGridPerformance(wire.performance)).toEqual(performance);
+  });
+
+  it('reads early current ranks when the custom comparison follows the current period', async () => {
+    const asin = 'B000SYN003';
+    try {
+      await database.sql`insert into public.product_ads(org_id,profile_id,amazon_id,ad_product,name,state,campaign_id,ad_group_id,asin)
+        values(${orgId},${profileId},'synthetic-rank-window','SP','Synthetic product','enabled','c-skew-a','c-skew-a-ag',${asin})`;
+      await database.sql`insert into public.rank_observations(org_id,profile_id,asin,keyword,observed_on,organic_rank)
+        values(${orgId},${profileId},${asin},'widget','2026-07-10',8),(${orgId},${profileId},${asin},'widget','2026-08-10',12)`;
+      const payload = await loadGridRows(database, 'targets', { orgId, profileId, currencyCode: 'USD', period: { start: '2026-07-01', end: '2026-07-31' }, comparison: { start: '2026-08-01', end: '2026-08-31' } });
+      const target = payload.rows.find((row) => row.id === 'target:c-skew-a-kw0')!;
+      expect(target.dimensions).toMatchObject({ organic_rank: 8, rank_change: 4 });
+      expect(payload.performance?.rankDays[target.id]).toBeUndefined();
+    } finally {
+      await database.sql`delete from public.rank_observations where org_id=${orgId} and asin=${asin}`;
+      await database.sql`delete from public.product_ads where org_id=${orgId} and amazon_id='synthetic-rank-window'`;
+    }
+  });
+
+  it('joins rank and whole SQP weeks, computes TOS ranges and counts unattributed spend from product mirrors', async () => {
+    const asin = 'B000SYN001';
+    const options = { orgId, profileId, currencyCode: 'USD', period: PERIOD, comparison: COMPARISON };
+    try {
+      await database.sql`insert into public.product_ads(org_id,profile_id,amazon_id,ad_product,name,state,campaign_id,ad_group_id,asin)
+        values(${orgId},${profileId},'synthetic-product-one','SP','Synthetic product','enabled','c-skew-a','c-skew-a-ag',${asin})`;
+      await database.sql`insert into public.rank_observations(org_id,profile_id,asin,keyword,observed_on,organic_rank)
+        values(${orgId},${profileId},${asin},'widget',${COMPARISON.end},12),
+        (${orgId},${profileId},${asin},'widget',${PERIOD.start},8),(${orgId},${profileId},${asin},'widget',${PERIOD.end},4)`;
+      await database.sql`update public.fact_sp_target_daily set top_of_search_impression_share=case when date=${PERIOD.start} then 0.2 else 0.4 end
+        where org_id=${orgId} and profile_id=${profileId} and target_id='c-skew-a-kw0' and date in (${PERIOD.start},${PERIOD.end})`;
+      await database.sql`insert into public.fact_sqp_weekly(org_id,profile_id,week_start,asin,search_query,total_impressions,asin_impressions,total_clicks,asin_clicks,total_purchases,asin_purchases)
+        values(${orgId},${profileId},'2026-07-05',${asin},'widget',1000,100,200,20,20,4),
+        (${orgId},${profileId},'2026-07-12',${asin},'widget',10000,9000,200,100,20,20)`;
+      const targets = await loadGridRows(database, 'targets', options);
+      const target = targets.rows.find((row) => row.dimensions['target_id'] === 'c-skew-a-kw0')!;
+      expect(target.dimensions).toMatchObject({ asin, organic_rank: 4, rank_change: 8, top_of_search_range: '20.0–40.0%', break_even_bid: 10, sqp_impression_share: 0.1, sqp_purchase_share: 0.2, market_cvr: 0.1, asin_cvr: 0.2, conversion_points: 10 });
+      expect(targets.performance?.rankDays[target.id]).toHaveLength(14);
+      expect(targets.performance?.rankDays[target.id]?.filter((day) => day.observed)).toHaveLength(2);
+      const products = await loadGridRows(database, 'products', options);
+      expect(products.rows.find((row) => row.dimensions['asin'] === asin)?.totals.spend).toBe(1680);
+      expect(products.rows.find((row) => row.dimensions['asin'] === asin)?.dimensions['gap']).toBeNull();
+      await database.sql`insert into public.product_ads(org_id,profile_id,amazon_id,ad_product,name,state,campaign_id,ad_group_id,asin)
+        values(${orgId},${profileId},'synthetic-product-two','SP','Synthetic second product','enabled','c-skew-a','c-skew-a-ag','B000SYN002')`;
+      const ambiguous = await loadGridRows(database, 'targets', options);
+      expect(ambiguous.performance?.unattributed).toEqual({ adGroups: 1, spend: 1680, days: 14 });
+      expect(ambiguous.rows.find((row) => row.id === target.id)?.dimensions['organic_rank']).toBeNull();
+    } finally {
+      await database.sql`delete from public.product_ads where org_id=${orgId} and amazon_id in ('synthetic-product-one','synthetic-product-two')`;
+      await database.sql`delete from public.rank_observations where org_id=${orgId} and asin=${asin}`;
+      await database.sql`delete from public.fact_sqp_weekly where org_id=${orgId} and asin=${asin}`;
+      await database.sql`update public.fact_sp_target_daily set top_of_search_impression_share=null where org_id=${orgId} and target_id='c-skew-a-kw0'`;
     }
   });
 

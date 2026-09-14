@@ -152,7 +152,9 @@ describe('pageRead admission and lifetime', () => {
   it('refuses disabled pages and disabled Grid presets before authentication', async () => {
     const load = vi.fn<ScreenDescriptor<string>['load']>(async () => 'unused');
     await expect(pageRead(screen(load, { rollout: { enabled: false } }))).rejects.toThrow('not-found');
-    for (const entity of ['products', 'placements']) {
+    const { SCREEN_REGISTRY } = await import('../screens/registry-metadata');
+    for (const preset of SCREEN_REGISTRY.filter((item) => item.route === 'preset' && !item.rollout.enabled && item.path.startsWith('/grid?entity='))) {
+      const entity = new URL(preset.path, 'https://example.test').searchParams.get('entity')!;
       await expect(pageRead(screen(load, { id: 'grid', path: '/grid' }), { entity })).rejects.toThrow('not-found');
     }
     expect(load).not.toHaveBeenCalled();

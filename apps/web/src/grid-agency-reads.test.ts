@@ -77,7 +77,7 @@ describe.skipIf(!available)('Grid authenticated data reads', () => {
       for (const actor of agencies) {
         const response = await read(level, actor);
         expect(response.status).toBe(200);
-        expect(await response.json()).toEqual({ rows: [], rowCount: 0, truncated: false });
+        expect(await response.json()).toMatchObject({ rows: [], rowCount: 0, truncated: false, performance: { rankDays: {}, unattributed: null } });
       }
     } finally {
       await database.sql`drop policy grid_fact_denial on public.${database.sql(table)}`;
@@ -149,7 +149,7 @@ describe.skipIf(!available)('Grid authenticated data reads', () => {
     try {
       const response = await get(request('targets', actor));
       expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ rows: [], rowCount: 0, truncated: false });
+      expect(await response.json()).toMatchObject({ rows: [], rowCount: 0, truncated: false, performance: { rankDays: {}, unattributed: null } });
       expect((await read('targets', actor)).status).toBe(403);
     } finally {
       await database.sql`insert into public.org_members(org_id,user_id,role) values(${actor.orgId},${actor.userId},'owner')`;

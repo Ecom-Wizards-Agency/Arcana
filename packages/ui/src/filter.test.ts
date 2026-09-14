@@ -33,6 +33,38 @@ describe('the key mapping', () => {
 });
 
 describe('metric filters', () => {
+  it.each(['50%', '50 %', '50,0 %', ' 50,0 % '])('preserves equality boundaries for spaced and comma percentages: %s', (value) => {
+    const population = [0.5, 0.5, 0.75].map((share, index) => row({ id: String(index), dimensions: { spend_share: share }, totals: { ...zero, spend: share * 100, sales: 100 } }));
+    for (const key of ['SPEND_SHARE', 'ACOS']) {
+      const matching = (operator: '>=' | '>' | '=') => applyFilterSet(population, { groups: [{ filters: [{ key, conditions: [{ operator, values: [value] }] }] }] }).map((item) => item.id);
+      expect(matching('>=')).toEqual(['0', '1', '2']);
+      expect(matching('=')).toEqual(['0', '1']);
+      expect(matching('>')).toEqual(['2']);
+    }
+  });
+  it.each(['50.5%', '50,5 %'])('uses the same fractional percentage parser for comparisons and membership: %s', (value) => {
+    for (const share of [0.5, 0.505, 0.75]) {
+      const item = row({ dimensions: { spend_share: share } });
+      for (const operator of ['>=', '=', 'IN'] as const) expect(evaluateFilter(item, { key: 'SPEND_SHARE', conditions: [{ operator, values: [value] }] })).toBe(operator === '>=' ? share >= 0.505 : share === 0.505);
+    }
+  });
+  it.each([['1,000', 1000], ['1.000,5', 1000.5], ['1,000.5', 1000.5]] as const)('parses grouped numbers before metric or dimension comparison: %s', (value, amount) => {
+    const item = row({ dimensions: { bid: amount }, totals: { ...zero, spend: amount } });
+    for (const key of ['SPEND', 'BID']) for (const operator of ['=', '>=', '>'] as const) expect(evaluateFilter(item, { key, conditions: [{ operator, values: [value] }] })).toBe(operator !== '>');
+  });
+  it.each(['50%0', '1,00,0', '1.00,5'])('rejects malformed numeric punctuation: %s', (value) => {
+    expect(() => evaluateFilter(row(), { key: 'SPEND', conditions: [{ operator: '>=', values: [value] }] })).toThrow(FilterError);
+  });
+  it('uses displayed percentage units for derived dimensions without scaling numeric bids or ranks', () => {
+    for (const key of ['spend_share', 'top_of_search_share', 'sqp_impression_share', 'sqp_purchase_share', 'market_cvr', 'asin_cvr', 'aba_click_share', 'aba_conversion_share']) {
+      const population = [row({ id: 'larger', dimensions: { [key]: 0.75 } }), row({ id: 'smaller', dimensions: { [key]: 0.25 } }), row({ id: 'unknown', dimensions: { [key]: null } })];
+      for (const value of ['50%', '50']) expect(applyFilterSet(population, { groups: [{ filters: [{ key: key.toUpperCase(), conditions: [{ operator: '>', values: [value] }] }] }] }).map((item) => item.id)).toEqual(['larger']);
+      expect(evaluateFilter(population[0]!, { key, conditions: [{ operator: 'IN', values: ['75%'] }] })).toBe(true);
+      expect(evaluateFilter(population[1]!, { key, conditions: [{ operator: '=', values: ['25%'] }] })).toBe(true);
+    }
+    expect(evaluateFilter(row(), { key: 'BID', conditions: [{ operator: '>', values: ['50'] }] })).toBe(false);
+    expect(evaluateFilter(row({ dimensions: { organic_rank: 8 } }), { key: 'ORGANIC_RANK', conditions: [{ operator: '>', values: ['5'] }] })).toBe(true);
+  });
   it('reads percent-scaled thresholds as percents', () => {
     // Row ACOS is 40/100 = 0.4. The operator types 30, meaning 30%.
     expect(evaluateFilter(row(), { key: 'ACOS', conditions: [{ operator: '>', values: ['30'] }] })).toBe(true);

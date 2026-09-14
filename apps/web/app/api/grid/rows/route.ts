@@ -37,6 +37,7 @@ interface GridRowsQuery {
   profileId: string;
   entity: EntityLevel;
   period: { start: string; end: string };
+  comparison?: { start: string; end: string };
 }
 
 interface ParsedGridRowsQuery {
@@ -74,7 +75,14 @@ export function parseGridRowsQuery(requestUrl: string): GridRowsQuery {
     throw new GridRequestError('from and to must be an ordered ISO date window');
   }
 
+  const compareFrom = query.get('compareFrom');
+  const compareTo = query.get('compareTo');
+  if ((compareFrom !== null || compareTo !== null) && (!compareFrom || !compareTo || !isCalendarDate(compareFrom) || !isCalendarDate(compareTo) || compareFrom > compareTo)) {
+    throw new GridRequestError('compareFrom and compareTo must be an ordered ISO date window');
+  }
+
   return {
+    ...(compareFrom && compareTo ? { comparison: { start: compareFrom, end: compareTo } } : {}),
     profileId,
     entity: entity as EntityLevel,
     period: { start: from, end: to },
@@ -189,7 +197,7 @@ export function createGridRowsGet(
             profileId: receipt.profileId,
             currencyCode: receipt.currencyCode,
             period,
-            comparison: precedingPeriod(period),
+            comparison: queryAttempt.query.comparison ?? precedingPeriod(period),
           });
           timing.mark('rows');
           return gridPayloadResponse(payload, timing);

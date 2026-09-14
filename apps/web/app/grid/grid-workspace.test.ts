@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { encodeGridRowColumns } from '@wizard-ads/shared';
 import { act, createElement, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -15,7 +16,7 @@ import {
 } from './grid-client';
 
 const navigation = vi.hoisted(() => ({ push: vi.fn() }));
-vi.mock('next/navigation', () => ({ useRouter: () => navigation }));
+vi.mock('next/navigation', () => ({ useRouter: () => navigation, useSearchParams: () => new URLSearchParams(window.location.search) }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -117,7 +118,7 @@ describe('Grid row transport', () => {
     expect(host.textContent).not.toContain('Export CSV');
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch.mock.calls[0]?.[0]).toBe(
-      '/api/grid/rows?profile=50505050-5050-4050-8050-505050505050&entity=search_terms&from=2026-06-30&to=2026-06-30',
+      '/api/grid/rows?profile=50505050-5050-4050-8050-505050505050&entity=search_terms&from=2026-06-30&to=2026-06-30&compareFrom=2026-06-29&compareTo=2026-06-29',
     );
     expect(fetch.mock.calls[0]?.[1]).toMatchObject({
       cache: 'no-store',
@@ -262,6 +263,20 @@ describe('Grid row transport', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it('validates columnar rows at the boundary before exposing them to the grid', () => {
+    const source = [row(1), row(2)];
+    const rowColumns = encodeGridRowColumns(source);
+    const envelope = { rowColumns, rowCount: 2, truncated: false };
+    expect(parseGridRowsPayload(envelope).rows).toEqual(source);
+    for (const corrupt of [
+      { ...rowColumns, ids: [1, 2] },
+      { ...rowColumns, dimensions: { invalid: [{ nested: true }, null] } },
+      { ...rowColumns, totals: { ...rowColumns.totals, clicks: [null, 2] } },
+      { ...rowColumns, comparison: { ...rowColumns.comparison, clicks: [null, 2] } },
+    ]) expect(() => parseGridRowsPayload({ ...envelope, rowColumns: corrupt })).toThrow();
+    expect(() => parseGridRowsPayload({ ...envelope, rowCount: 1 })).toThrow();
+  });
+
   it('preserves filtering, three-level grouping, totals, and CSV across 3,597-row JSON transport', () => {
     const source = Array.from({ length: 3_597 }, (_, index) => row(index + 1));
     const transported = parseGridRowsPayload(JSON.parse(JSON.stringify(payload(source))));
@@ -301,10 +316,12 @@ describe('Grid row transport', () => {
     expect(durations[Math.ceil(durations.length * 0.95) - 1]).toBeLessThan(150);
   });
 
-  it('builds a request without exposing currency or comparison control to the browser', () => {
+  it('carries the chosen comparison while leaving currency and agency authority on the server', () => {
     const url = gridRowsRequestUrl(props());
     expect(url).toContain('profile=50505050-5050-4050-8050-505050505050');
     expect(url).toContain('entity=search_terms');
-    expect(url).not.toMatch(/currency|comparison|org/i);
+    expect(url).not.toMatch(/currency|org/i);
+    expect(new URL(url, 'https://example.test').searchParams.get('compareFrom')).toBe(props().comparisonPeriod.start);
+    expect(new URL(url, 'https://example.test').searchParams.get('compareTo')).toBe(props().comparisonPeriod.end);
   });
 });

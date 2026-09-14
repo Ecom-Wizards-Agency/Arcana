@@ -1,4 +1,4 @@
-import { Suspense, type CSSProperties } from 'react';
+import { type CSSProperties } from 'react';
 
 import {
   ENTITY_LABELS,
@@ -6,12 +6,6 @@ import {
 } from '@wizard-ads/ui';
 
 import { gateMessage } from '../../ui/gate-message';
-
-import {
-  todayIso
-} from '../../../app/_lib/periods';
-
-import { GridOperatorContext } from '../../../app/grid/grid-context';
 
 import { GridWorkspace } from '../../../app/grid/grid-client';
 
@@ -53,72 +47,25 @@ function renderEmpty({ data }: Extract<ScreenData, { view: 'empty'; }>['props'])
   </main>);
 }
 
-function renderReady({ entity, profile, period, comparison, params, slot1, actor, freshness }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ entity, profile, period, comparison, params, slot1: _slot1, actor, freshness: _freshness }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main style={main}>
-    <header style={{ display: 'flex', flexDirection: 'column', gap: tokens.space(3) }}>
-      <div>
-        <h1 className="wa-page-title">{ENTITY_LABELS[entity]}</h1>
-        <p className="wa-page-sub">
-          {profile.label} · {period.start} to {period.end} · compared against {comparison.start} to{' '}
-          {comparison.end} · all figures in {profile.currencyCode}
-        </p>
-      </div>
-
-    </header>
-
-    <GridOperatorContext
-      account={profile.label}
-      marketplace={profile.countryCode}
-      currencyCode={profile.currencyCode}
-      timezone={profile.timezone}
-      path="/grid"
-      period={period}
-      today={todayIso()}
-      preserved={{
-        profile: profile.id,
-        entity,
-        ...(params.view === undefined ? {} : { view: params.view }),
-        ...(params.campaign === undefined ? {} : { campaign: params.campaign }),
-      }}
-    />
-
-    <Suspense fallback={<CockpitPending />}>
-      {slot1}
-    </Suspense>
+    <h1 className="wa-sr-only">{ENTITY_LABELS[entity]}</h1>
+    <p className="wa-sr-only">{profile.label} · {profile.countryCode} · {profile.currencyCode} · {period.start} to {period.end}</p>
 
     <GridWorkspace
-      key={`${profile.id}:${entity}:${period.start}:${period.end}:${params.campaign ?? ''}:${params.view ?? ''}`}
+      key={`${profile.id}:${entity}:${period.start}:${period.end}:${params.campaign ?? ''}:${params.view ?? ''}:${params.asin ?? ''}`}
       actor={actor}
       entity={entity}
       currencyCode={profile.currencyCode}
       profileId={profile.id}
       period={period}
       comparisonPeriod={comparison}
-      freshnessContent={
-        <Suspense fallback={<span aria-busy="true" style={crosscheckPending}>Freshness and crosscheck loading…</span>}>
-          {freshness}
-        </Suspense>
-      }
+      freshnessContent={null}
+      asin={params.asin ?? null}
       campaignId={entity === 'campaigns' ? params.campaign ?? null : null}
     />
 
-    <p style={muted}>
-      {/* The accent token rather than a hex literal: an inline colour does not
-            follow the theme, and the literal this replaced rendered at 2.98:1
-            against the dark background. */}
-      <a href={`/?profile=${profile.id}`} style={{ color: 'var(--wa-accent)' }}>
-        ← Back to the dashboard
-      </a>
-    </p>
   </main>);
-}
-
-function CockpitPending() {
-  return (
-    <p aria-busy="true" data-testid="grid-cockpit-pending" style={crosscheckPending}>
-      Loading the performance tiles and trend…
-    </p>
-  );
 }
 
 /**
@@ -130,17 +77,13 @@ const main: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   fontFamily: tokens.font.sans,
-  gap: tokens.space(4),
+  gap: 0,
   minWidth: 0,
-  padding: '1.5rem 0 2rem',
-  width: '100%',
+  padding: 0,
+  margin: '-1.75rem -1.75rem 0',
+  width: 'calc(100% + 3.5rem)',
 };
 
 const heading: CSSProperties = { fontSize: tokens.font.size.xl, margin: '0 0 0.25rem' };
 
 const muted: CSSProperties = { color: tokens.color.textMuted, fontSize: tokens.font.size.base, margin: 0 };
-
-const crosscheckPending: CSSProperties = {
-  color: tokens.color.textMuted,
-  fontSize: tokens.font.size.sm,
-};

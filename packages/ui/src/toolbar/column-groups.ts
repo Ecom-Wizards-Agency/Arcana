@@ -8,16 +8,17 @@
  * comparison and delta columns went unused: nobody scrolls a wall of
  * checkboxes to find `ACOS (prev)`.
  */
-import type { GridColumn } from '../columns.js';
+import type { ColumnSubject, GridColumn } from '../columns.js';
 import { COMPARISON_SUFFIX, DELTA_ABSOLUTE_SUFFIX, DELTA_PERCENT_SUFFIX, parseFieldId } from '../rows.js';
 
 export interface ColumnGroup {
-  id: 'dimensions' | 'metrics' | 'comparison' | 'delta_absolute' | 'delta_percent';
+  id: ColumnSubject | 'dimensions' | 'metrics' | 'comparison' | 'delta_absolute' | 'delta_percent';
   label: string;
   columns: GridColumn[];
 }
 
 const GROUP_LABELS: Record<ColumnGroup['id'], string> = {
+  Identity: 'Identity', 'RANK & ORGANIC': 'RANK & ORGANIC', 'SPONSORED PRODUCTS': 'SPONSORED PRODUCTS', SQP: 'SQP', 'BRAND ANALYTICS': 'BRAND ANALYTICS',
   dimensions: 'Attributes',
   metrics: 'Metrics, selected period',
   comparison: 'Metrics, comparison period',
@@ -26,6 +27,7 @@ const GROUP_LABELS: Record<ColumnGroup['id'], string> = {
 };
 
 const ORDER: readonly ColumnGroup['id'][] = [
+  'Identity', 'RANK & ORGANIC', 'SPONSORED PRODUCTS', 'SQP', 'BRAND ANALYTICS',
   'dimensions',
   'metrics',
   'comparison',
@@ -34,6 +36,7 @@ const ORDER: readonly ColumnGroup['id'][] = [
 ];
 
 function groupIdFor(column: GridColumn): ColumnGroup['id'] {
+  if (column.subject !== undefined) return column.subject;
   if (column.kind === 'dimension' || parseFieldId(column.id) === null) return 'dimensions';
   if (column.id.endsWith(COMPARISON_SUFFIX)) return 'comparison';
   if (column.id.endsWith(DELTA_ABSOLUTE_SUFFIX)) return 'delta_absolute';

@@ -13,27 +13,26 @@
  * keystroke over the whole set. The 50k perf suite is what says that is
  * affordable; without it this component would be a guess.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { gridWork } from '../../src/screens/grid/performance-timing';
 import type { ReactNode } from 'react';
-import { parseGridView, serializeGridView, type OrgActor } from '@wizard-ads/shared';
+import { decodeGridRowColumns, decodeGridPerformance, type GridPerformanceEvidence, GridMeasurement, PerformanceVerdict, parseGridView, serializeGridView, type OrgActor } from '@wizard-ads/shared';
 import { browserViewStore } from './view-store';
 import {
   DataGrid,
   DEFAULT_DENSITY,
   BASE_METRICS,
-  GridToolbar,
   GridViewport,
   LayoutWriteBuffer,
   STATE_COLUMN,
-  buildGridModelSafely,
   columnsFor,
   defaultVisibleColumns,
   formatInteger,
   hasCachedLayout,
   newViewId,
-  rowHeightFor,
+  resolveField,
   toCsv,
 } from '@wizard-ads/ui';
 import type {
@@ -48,8 +47,10 @@ import type {
   ViewStore,
 } from '@wizard-ads/ui';
 import { FreshnessBanner, tokens } from '@wizard-ads/ui';
+import { buildPerformanceModel, scopeRows } from '../../src/screens/grid/performance-model';
 import type { GridPayload } from '../_lib/grid-data';
-import { BidHistoryModal } from '../../src/ui/bid-history-modal';
+import { PerformanceSummary, PerformanceToolbar } from '../../src/screens/grid/performance-chrome';
+import { useTranslationColumn } from '../../src/screens/grid/translation-column';
 
 interface GridWorkspaceBaseProps {
   /** Identity supplied by the authenticated server page, never an API override. */
@@ -63,6 +64,7 @@ interface GridWorkspaceBaseProps {
   crosscheck?: ReactNode;
   /** Campaign deep-link applied as a visible grid filter. */
   campaignId: string | null;
+  asin?: string | null;
   /** Test seam for proving delayed restoration. Production uses browser localStorage. */
   viewStore?: ViewStore | null;
 }
@@ -75,6 +77,7 @@ export type GridWorkspaceProps = GridWorkspaceBaseProps & (
 
 type ReadyGridWorkspaceProps = GridWorkspaceProps & {
   rows: readonly GridRow[];
+  performance?: GridPerformanceEvidence;
 };
 
 type GridLoadState =
@@ -109,6 +112,7 @@ function isGridRow(value: unknown): value is GridRow {
   if (!Object.values(value['dimensions']).every((dimension) =>
     dimension === null || ['string', 'number', 'boolean'].includes(typeof dimension),
   )) return false;
+  if (value['measurement'] !== undefined && !GridMeasurement.safeParse(value['measurement']).success) return false;
   if (!isTotals(value['totals'])) return false;
   if (value['comparison'] !== null && !isTotals(value['comparison'])) return false;
   const tagIds = value['tagIds'];
@@ -117,6 +121,11 @@ function isGridRow(value: unknown): value is GridRow {
 
 /** Refuse partial or malformed transport data before it becomes actionable. */
 export function parseGridRowsPayload(value: unknown): GridPayload {
+  const columnar = isRecord(value) && value['rowColumns'] !== undefined;
+  if (columnar && isRecord(value)) {
+    if (value['rows'] !== undefined) throw new Error('Grid response has ambiguous row encodings');
+    value = { ...value, rows: decodeGridRowColumns(value['rowColumns']) };
+  }
   if (!isRecord(value) || !Array.isArray(value['rows'])) {
     throw new Error('Grid response does not contain rows');
   }
@@ -129,16 +138,18 @@ export function parseGridRowsPayload(value: unknown): GridPayload {
   if (Number(value['rowCount']) !== value['rows'].length) {
     throw new Error('Grid response row count does not match its rows');
   }
-  if (!value['rows'].every(isGridRow)) throw new Error('Grid response contains an invalid row');
+  // Column decoding has already validated every field through the shared contract.
+  if (!columnar && !value['rows'].every(isGridRow)) throw new Error('Grid response contains an invalid row');
   return {
-    rows: value['rows'],
+    rows: value['rows'] as GridRow[],
     rowCount: Number(value['rowCount']),
     truncated: value['truncated'],
+    ...(value['performance'] === undefined ? {} : { performance: decodeGridPerformance(value['performance']) }),
   };
 }
 
 export function gridRowsRequestUrl(
-  props: Pick<GridWorkspaceProps, 'profileId' | 'entity' | 'period'>,
+  props: Pick<GridWorkspaceProps, 'profileId' | 'entity' | 'period'> & Partial<Pick<GridWorkspaceProps, 'comparisonPeriod'>>,
 ): string {
   const query = new URLSearchParams({
     profile: props.profileId,
@@ -146,6 +157,10 @@ export function gridRowsRequestUrl(
     from: props.period.start,
     to: props.period.end,
   });
+  if (props.comparisonPeriod) {
+    query.set('compareFrom', props.comparisonPeriod.start);
+    query.set('compareTo', props.comparisonPeriod.end);
+  }
   return `/api/grid/rows?${query.toString()}`;
 }
 
@@ -158,7 +173,10 @@ function startGridRequest(scope: string): InFlightGridRequest {
     signal: controller.signal,
   }).then(async (response) => {
     if (!response.ok) throw new Error(`Grid request failed with ${response.status}`);
-    return parseGridRowsPayload(await response.json());
+    const jsonStart = performance.now();
+    const body = await response.json();
+    if ((globalThis as { __gridProfile?: boolean }).__gridProfile) performance.measure('grid.json', { start: jsonStart });
+    return gridWork('decode', () => parseGridRowsPayload(body));
   });
   const request: InFlightGridRequest = {
     scope,
@@ -231,13 +249,6 @@ function defaultView(entity: EntityLevel, campaignId: string | null): SavedView 
 }
 
 /** How each entity level's rows map into an experiment's scope. */
-const SCOPE_PARAM: Partial<Record<EntityLevel, { param: string; key: string }>> = {
-  campaigns: { param: 'campaigns', key: 'campaign_id' },
-  ad_groups: { param: 'adgroups', key: 'ad_group_id' },
-  targets: { param: 'targets', key: 'target_id' },
-  search_terms: { param: 'terms', key: 'search_term' },
-};
-
 /** Stable first-seen scope with a hard URL-size bound and no full-array pipeline. */
 export function experimentScopeIds(rows: readonly GridRow[], key: string): string[] {
   const ids: string[] = [];
@@ -254,10 +265,15 @@ export function experimentScopeIds(rows: readonly GridRow[], key: string): strin
   return ids;
 }
 
+export function gridExperimentHref(profileId: string, entity: EntityLevel, rows: readonly GridRow[]): string {
+  const experimentScope = ({ campaigns: ['campaigns', 'campaign_id'], ad_groups: ['adgroups', 'ad_group_id'], targets: ['targets', 'target_id'], search_terms: ['terms', 'search_term'], products: ['asins', 'asin'], placements: ['campaigns', 'campaign_id'] } as const)[entity];
+  return `/experiments/new?${new URLSearchParams({ profile: profileId, [experimentScope[0]]: experimentScopeIds(rows, experimentScope[1]).join(',') })}`;
+}
+
 export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
   // Identity replacement owns the entire hook subtree: rows, late requests,
   // saved views, selections and buffered writes. Callers need no special key.
-  return <ScopedGridWorkspace key={JSON.stringify([props.actor.userId, props.actor.orgId])} {...props} />;
+  return <ScopedGridWorkspace key={JSON.stringify([props.actor.userId, props.actor.orgId, props.asin ?? null])} {...props} />;
 }
 
 function ScopedGridWorkspace(props: GridWorkspaceProps): ReactNode {
@@ -267,7 +283,9 @@ function ScopedGridWorkspace(props: GridWorkspaceProps): ReactNode {
   const [retry, setRetry] = useState(0);
   const [load, setLoad] = useState<GridLoadState>({ status: 'loading', scope });
 
-  useEffect(() => {
+  // Start the counted read as soon as this island commits, before the browser
+  // waits for a paint and unrelated passive effects. Cleanup/replay stays scoped.
+  useLayoutEffect(() => {
     const requestGeneration = ++generation.current;
     setLoad({ status: 'loading', scope });
     let request = activeRequest.current;
@@ -308,7 +326,7 @@ function ScopedGridWorkspace(props: GridWorkspaceProps): ReactNode {
   const current: GridLoadState = load.scope === scope ? load : { status: 'loading', scope };
 
   return (
-    <div className="wa-embed" style={{ display: 'flex', flexDirection: 'column', gap: tokens.space(3) }}>
+    <div className="wa-embed" style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
       {props.freshness === undefined ? props.freshnessContent : (
         <FreshnessBanner assessment={props.freshness}>
           {props.crosscheck ?? null}
@@ -360,7 +378,7 @@ function ScopedGridWorkspace(props: GridWorkspaceProps): ReactNode {
               shown. Narrow the period or entity level for a complete read.
             </p>
           ) : null}
-          <ReadyGridWorkspace {...props} rows={current.payload.rows} />
+          <ReadyGridWorkspace {...props} rows={current.payload.rows} performance={current.payload.performance} />
         </>
       )}
     </div>
@@ -394,7 +412,7 @@ function cachedLayoutFor(
 }
 
 /** The grid's floor once the cockpit is above it. See the `GridViewport` below. */
-const GRID_MIN_HEIGHT = 560;
+const GRID_MIN_HEIGHT = 662;
 
 function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   const router = useRouter();
@@ -439,9 +457,11 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     store,
     restored: initialRestore.restored,
   });
-  const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
   const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
+  const selectedRowSet = useMemo(() => new Set(selectedRowIds), [selectedRowIds]);
   const [fullscreen, setFullscreen] = useState(false);
+  const searchParams = useSearchParams();
+  const asinScope = searchParams.get('asin');
   const layoutWrites = useMemo(
     () => (store === null ? null : new LayoutWriteBuffer(store)),
     [store],
@@ -467,7 +487,6 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     if (store === null) {
       setView(cachedLayoutFor(null, props.entity, props.campaignId, available) ?? defaultView(props.entity, props.campaignId));
       setSaved([]);
-      setSelectedTargetId(null);
       setSelectedRowIds([]);
       setRestoredScope({ key: scopeKey, store });
       return;
@@ -490,8 +509,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       restoredSynchronously = cached !== null;
       if (cached !== null) {
         setView(cached);
-        setSelectedTargetId(null);
-        setSelectedRowIds([]);
+          setSelectedRowIds([]);
         setRestoredScope({ key: scopeKey, store });
       }
     }
@@ -524,8 +542,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
         setSaved([]);
       }
       if (!restoredSynchronously) {
-        setSelectedTargetId(null);
-        setSelectedRowIds([]);
+          setSelectedRowIds([]);
       }
       // This is deliberately later than hydration alone. An interaction that
       // lands after React attaches but before the saved layout resolves can be
@@ -559,14 +576,10 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     [layoutWrites, viewReady],
   );
 
+  const scopedRows = useMemo(() => scopeRows(props.rows, asinScope), [props.rows, asinScope]);
   const { model, filterError } = useMemo(
-    () =>
-      buildGridModelSafely(props.rows, {
-        filter: view.filter,
-        sort: view.sort,
-        groupBy: view.groupBy,
-      }),
-    [props.rows, view.filter, view.sort, view.groupBy],
+    () => gridWork('model', () => buildPerformanceModel(scopedRows, { filter: view.filter, sort: view.sort, groupBy: view.groupBy })),
+    [scopedRows, view.filter, view.sort, view.groupBy],
   );
 
   /**
@@ -581,20 +594,54 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
    */
   const visibleColumns = useMemo<GridColumn[]>(() => {
     const byId = new Map(available.map((column) => [column.id, column]));
+    const original = available.find((column) => column.pinned)?.id;
+    const baseWanted = original ? [original, ...view.columns.filter((id) => id !== original)] : [...view.columns];
+    if (baseWanted.includes('translation')) { baseWanted.splice(baseWanted.indexOf('translation'), 1); baseWanted.splice(1, 0, 'translation'); }
     const wanted = model.grouped
-      ? [...model.groupBy, ...view.columns.filter((id) => !model.groupBy.includes(id))]
-      : view.columns;
+      ? [...model.groupBy, ...baseWanted.filter((id) => !model.groupBy.includes(id))]
+      : baseWanted;
     return wanted
       .map((id) => byId.get(id))
       .filter((column): column is GridColumn => column !== undefined)
       .map((column) => {
         const width = view.widths[column.id];
-        const pinned = view.pinned.includes(column.id) || model.groupBy.includes(column.id);
-        return { ...column, ...(width === undefined ? {} : { width }), pinned };
+        const pinned = column.id === original || view.pinned.includes(column.id) || model.groupBy.includes(column.id);
+        const normalHeaders: Record<string, string> = { sqp_impression_share: 'SQP IS', sqp_purchase_share: 'SQP purch', verdict: 'Diagnosis' };
+        const header = props.entity === 'targets' && !view.columns.includes('rank_grid') ? normalHeaders[column.id] ?? column.header : column.header;
+        return { ...column, header, ...(width === undefined ? {} : { width }), pinned };
       });
-  }, [available, model.groupBy, model.grouped, view.columns, view.pinned, view.widths]);
+  }, [available, model.groupBy, model.grouped, view.columns, view.pinned, view.widths, props.entity]);
 
   const density: GridDensity = view.density ?? DEFAULT_DENSITY;
+  const translation = useTranslationColumn(props.profileId, view.translation?.language ?? 'en', viewReady && view.columns.includes('translation'), props.rows);
+  const experimentHref = gridExperimentHref(props.profileId, props.entity, model.matchedRows);
+  const backToGrid = useMemo(() => `/grid?${new URLSearchParams({ profile: props.profileId, entity: props.entity, from: props.period.start, to: props.period.end, compareFrom: props.comparisonPeriod.start, compareTo: props.comparisonPeriod.end, view: serializeGridView(view), ...(asinScope ? { asin: asinScope } : {}) })}`, [props.profileId, props.entity, props.period, props.comparisonPeriod, view, asinScope]);
+  const rowHref = useCallback((row: GridRow) => {
+    return `/targets/${encodeURIComponent(String(row.dimensions['target_id']))}?${new URLSearchParams({ profile: props.profileId, from: props.period.start, to: props.period.end, compareFrom: props.comparisonPeriod.start, compareTo: props.comparisonPeriod.end, back: backToGrid })}`;
+  }, [props.profileId, props.period, props.comparisonPeriod, backToGrid]);
+  const renderCells = useMemo(() => {
+  const reason = (feed: 'PPC' | 'RANK' | 'SQP') => `${props.performance?.feeds.find((item) => item.feed === feed)?.reason ?? `${feed} not measured in this range.`} An empty cell means this target has no measured ${feed === 'PPC' ? 'top-of-search share' : feed === 'RANK' ? 'organic rank' : 'query evidence'} in the selected window.`;
+  const number = (row: GridRow, key: string) => typeof row.dimensions[key] === 'number' ? row.dimensions[key] as number : null;
+  return Object.fromEntries(available.map((column) => [column.id, (row: GridRow): ReactNode | undefined => {
+    if (column.kind === 'metric' && resolveField(row, column.id) === null) return <DataGrid.cells.NotMeasuredCell reason={column.id.includes('comparison') || column.id.includes('delta') ? 'The comparison is not measured, or its denominator is unavailable.' : 'This metric is not measured, or its denominator is unavailable.'} />;
+    if (column.id === 'translation') return translation.cell(row);
+    if (column.id === 'suggested_bid' && props.entity === 'targets') {
+      const value = number(row, 'suggested_bid');
+      if (value === null) return <DataGrid.cells.NotMeasuredCell reason="The Amazon suggested-bid corridor is not measured for this ad group and theme." />;
+      const money = (amount: number | null) => amount === null ? '—' : new Intl.NumberFormat('en-US', { style: 'currency', currency: props.currencyCode }).format(amount);
+      return <span data-testid="suggested-bid-cell" title={`Suggested bid corridor: ${money(number(row, 'suggested_bid_low'))} – ${money(number(row, 'suggested_bid_high'))}`}>{money(value)}</span>;
+    }
+    if (column.id === 'gap' && row.dimensions['gap'] == null) return <DataGrid.cells.NotMeasuredCell label="Not measured" reason="Comparable competitor ranks are not measured on this date." />;
+    if (column.id === 'gap') return <DataGrid.cells.DeltaCell value={number(row, 'gap')} better="higher" />;
+    if (column.id === 'signals') return <DataGrid.cells.SignalsCell axes={[{ key: 'R', value: number(row, 'organic_rank'), reason: reason('RANK') }, { key: 'T', value: number(row, 'top_of_search_share'), reason: reason('PPC') }, { key: 'I', value: number(row, 'sqp_impression_share'), reason: reason('SQP') }, { key: 'P', value: number(row, 'sqp_purchase_share'), reason: reason('SQP') }]} />;
+    if (column.id === 'rank_grid') return <DataGrid.cells.RankGridCell days={props.performance?.rankDays[row.id] ?? Array.from({ length: 14 }, (_, index) => ({ date: new Date(Date.parse(props.period.end) - (13 - index) * 86400000).toISOString().slice(0, 10), observed: false, rank: null }))} reason={reason('RANK')} />;
+    if (column.id === 'verdict') return <DataGrid.cells.VerdictCell verdict={{ diagnosis: PerformanceVerdict.shape.diagnosis.safeParse(row.dimensions['verdict']).data ?? 'Insufficient evidence', reason: String(row.dimensions['verdict_reason'] ?? 'no threshold configured') }} />;
+    if (column.id === 'rank_change' || column.id === 'acos_vs_target' || column.id === 'conversion_points') return <DataGrid.cells.DeltaCell value={number(row, column.id)} suffix={column.id === 'rank_change' ? '' : ' pts'} better={column.id === 'acos_vs_target' ? 'lower' : 'higher'} />;
+    if (column.id === 'targeting' && props.entity === 'targets') return <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}><Link href={rowHref(row)} prefetch={false} onClick={(event) => event.stopPropagation()}>{String(row.dimensions['targeting'] ?? row.dimensions['target_id'])}</Link><small style={{ color: tokens.color.textMuted }}>{String(row.dimensions['match_type'] ?? '')}{row.dimensions['campaign_purpose'] ? ` · ${row.dimensions['campaign_purpose']}` : ''} {row.dimensions['not_the_query'] === true ? <DataGrid.cells.NotTheQueryChip /> : null}</small></span>;
+    if (row.dimensions[column.id] == null && column.kind === 'dimension' && column.subject !== 'Identity') return <DataGrid.cells.NotMeasuredCell reason={column.subject === 'BRAND ANALYTICS' ? 'Brand Analytics ingestion is not configured.' : reason(column.subject === 'SQP' ? 'SQP' : column.subject === 'RANK & ORGANIC' ? 'RANK' : 'PPC')} />;
+    return undefined;
+  }]));
+  }, [available, props.entity, props.currencyCode, props.performance, props.period.end, rowHref, translation.cell]);
 
   const handleExport = useCallback(() => {
     if (!viewReady) return;
@@ -644,15 +691,6 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
    * what the operator has selected in the grid. Additive — a link, not a change
    * to the grid or its model.
    */
-  const experimentHref = useMemo(() => {
-    const mapping = SCOPE_PARAM[props.entity];
-    if (mapping === undefined) return null;
-    const ids = experimentScopeIds(model.matchedRows, mapping.key);
-    if (ids.length === 0) return null;
-    const params = new URLSearchParams({ profile: props.profileId, entity: props.entity });
-    params.set(mapping.param, ids.join(','));
-    return `/experiments/new?${params.toString()}`;
-  }, [model.matchedRows, props.entity, props.profileId]);
 
   return (
     // `wa-embed` sets the inherited text colour and chromes the bare controls
@@ -667,6 +705,8 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
      * table the whole screen. Measured at 1280x720 in `grid.spec.ts`, which
      * asserts both this height and that no screen space is left unused below it.
      */
+    <>
+    <PerformanceSummary rows={model.matchedRows} performance={props.performance} view={view} onChange={update} currencyCode={props.currencyCode} profileId={props.profileId} />
     <GridViewport
       fullscreen={fullscreen}
       onExitFullscreen={() => setFullscreen(false)}
@@ -676,12 +716,19 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       data-testid="grid-data-ready"
       data-ready={viewReady ? 'true' : 'false'}
       aria-busy={!viewReady}
-      style={{ display: 'flex', flex: '1 1 auto', flexDirection: 'column', gap: tokens.space(3), minHeight: 0 }}
+      style={{ display: 'flex', flex: '1 1 auto', flexDirection: 'column', gap: 0, minHeight: 0 }}
     >
       {saveError === null ? null : <p role="alert">{saveError}</p>}
       <div data-testid="grid-toolbar-readiness" aria-busy={!viewReady}>
         {viewReady ? (
-          <GridToolbar
+          <PerformanceToolbar
+            view={view}
+            update={update}
+            profileId={props.profileId}
+            onRefreshTranslation={translation.refresh}
+            asinScope={asinScope}
+            onRemoveScope={() => { const url = new URL(window.location.href); url.searchParams.delete('asin'); window.history.replaceState(null, '', url); }}
+            onTranslation={() => update({ translation: { language: view.translation?.language ?? 'en' } })}
             entity={props.entity}
             onEntityChange={(entity) => {
               const params = new URLSearchParams({
@@ -693,14 +740,14 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
               router.push(`/grid?${params.toString()}`);
             }}
             available={available}
-            visible={view.columns}
+            visible={visibleColumns.map((column) => column.id)}
             onVisibleChange={(columns) => update({ columns })}
             filter={view.filter}
             onFilterChange={(filter) => update({ filter })}
             groupBy={model.groupBy}
             onGroupByChange={(groupBy) => update({ groupBy, collapsedGroupIds: [] })}
             model={model}
-            optionRows={props.rows}
+            optionRows={scopedRows}
             onExport={handleExport}
             views={saved}
             onApplyView={(applied) => {
@@ -722,25 +769,6 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
         )}
       </div>
 
-      {!viewReady || experimentHref === null ? null : (
-        <div className="wa-row" style={{ justifyContent: 'flex-end' }}>
-          <Link
-            href={experimentHref}
-            prefetch={false}
-            data-testid="grid-start-experiment"
-            className="wa-btn wa-btn--sm"
-          >
-            Start an experiment from this view →
-          </Link>
-        </div>
-      )}
-
-      {viewReady && props.entity === 'targets' ? (
-        <p className="wa-grid-context-hint">
-          Select a target row to open its bid-corridor history, including the current bid,
-          Amazon’s suggested range, realized CPC, and maximum potential CPC.
-        </p>
-      ) : null}
 
       {!viewReady || filterError === null ? null : (
         <p role="alert" style={filterErrorStyle}>
@@ -749,22 +777,17 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
         </p>
       )}
 
+      <div data-testid="grid-worktable" style={{ display: 'flex', flex: '1 1 auto', flexDirection: 'column', minHeight: 0 }}>
       {viewReady ? (
         <DataGrid
+          presentation="performance"
+          style={{ marginInline: 24, border: 0, borderRadius: 0 }}
           model={model}
-          renderCell={props.entity === 'targets' ? {
-            targeting: (row) => {
-              const targetId = row.dimensions['target_id'];
-              if (targetId === null || targetId === undefined) return undefined;
-              const back = `/grid?${new URLSearchParams({ profile: props.profileId, entity: props.entity, from: props.period.start, to: props.period.end, view: serializeGridView(view) })}`;
-              const query = new URLSearchParams({ profile: props.profileId, from: props.period.start, to: props.period.end, back });
-              const path = `/targets/${encodeURIComponent(String(targetId))}`;
-              return <Link href={`${path}?${query}`} prefetch={false} onClick={(event) => event.stopPropagation()}>{String(row.dimensions['targeting'] ?? targetId)}</Link>;
-            },
-          } : {}}
+          renderCell={{ ...renderCells, selection: (row) => <input type="checkbox" aria-label={`Select ${row.id}`} checked={selectedRowIds.includes(row.id)} onClick={(event) => event.stopPropagation()} onChange={() => setSelectedRowIds((ids) => ids.includes(row.id) ? ids.filter((id) => id !== row.id) : [...ids, row.id])} /> }}
+          renderHeader={{ selection: () => <input type="checkbox" aria-label="Select all rows" checked={model.matchedRows.length > 0 && model.matchedRows.every((row) => selectedRowSet.has(row.id))} onChange={(event) => { const matched = new Set(model.matchedRows.map((row) => row.id)); setSelectedRowIds((selected) => event.target.checked ? [...new Set([...selected, ...matched])] : selected.filter((id) => !matched.has(id))); }} />, signals: () => <span title={DataGrid.cells.SIGNALS_TOOLTIP}>SIGNALS ⓘ<span style={{ display: "grid", gridTemplateColumns: "repeat(4,28px)", gap: 4, fontSize: 9, textAlign: "center" }}>{["R", "T", "I", "P"].map((axis) => <span key={axis}>{axis}</span>)}</span></span> }}
           collapsedGroupIds={view.collapsedGroupIds ?? []}
           onCollapsedGroupIdsChange={(collapsedGroupIds) => update({ collapsedGroupIds })}
-          columns={visibleColumns}
+          columns={[{ id: 'selection', header: 'Select', kind: 'control', scale: 'text', align: 'left', width: 28, minWidth: 28, pinned: true }, ...visibleColumns]}
           currencyCode={props.currencyCode}
           sort={view.sort}
           onSortChange={(sort: SortRule[]) => update({ sort })}
@@ -778,31 +801,26 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
           }
           onReorder={handleReorder}
           density={density}
-          rowHeight={rowHeightFor(density, props.entity === 'targets' ? 2 : 1)}
+          rowHeight={density === 'compact' ? 32 : 42}
           selectedRowIds={selectedRowIds}
           onSelectionChange={setSelectedRowIds}
           {...(props.entity === 'targets'
             ? {
                 onRowClick: (row: GridRow) => {
                   const targetId = row.dimensions['target_id'];
-                  if (targetId !== null && targetId !== undefined) setSelectedTargetId(String(targetId));
+                  if (targetId !== null && targetId !== undefined) router.push(rowHref(row));
                 },
               }
             : {})}
         />
       ) : null}
 
-      {!viewReady || selectedTargetId === null ? null : (
-        <BidHistoryModal
-          profileId={props.profileId}
-          targetId={selectedTargetId}
-          window={props.period}
-          currencyCode={props.currencyCode}
-          onClose={() => setSelectedTargetId(null)}
-        />
-      )}
+      {view.columns.includes('translation') ? <p style={{ fontSize: 11, paddingInline: 24 }}>Use the original wording when editing a target. Translation helps you read it.</p> : null}
+      <p data-testid="grid-scroll-disclosure" style={{ fontSize: 11, margin: 0, padding: '5px 24px', color: tokens.color.textMuted }}>Scroll sideways to see every selected column. No columns are dropped. {viewReady ? <a data-testid="grid-start-experiment" href={experimentHref} style={{ marginLeft: 16 }}>Start experiment from this view</a> : null}</p>
+    </div>
     </div>
     </GridViewport>
+    </>
   );
 }
 

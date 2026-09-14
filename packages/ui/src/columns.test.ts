@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { columnsFor, defaultVisibleColumns, filterKindForColumn } from './columns.js';
+import { columnsFor, defaultVisibleColumns, filterKindForColumn, TARGET_FULL_COLUMNS } from './columns.js';
 
 describe('target bid-fidelity columns', () => {
   it('offers the latest bid corridor, position and RPC classification', () => {
@@ -14,8 +14,11 @@ describe('target bid-fidelity columns', () => {
     expect(columns.find((column) => column.id === 'rpc_category')?.scale).toBe('text');
   });
 
-  it('puts the fidelity quick wins in the default targets view', () => {
-    const visible = defaultVisibleColumns('targets');
+  it('keeps the corridor available alongside the reference defaults', () => {
+    const visible = columnsFor('targets').map((column) => column.id);
+    expect(defaultVisibleColumns('targets')).toEqual(expect.arrayContaining(['targeting', 'signals', 'suggested_bid', 'verdict']));
+    expect(visible).toEqual(expect.arrayContaining([...TARGET_FULL_COLUMNS]));
+    expect(new Set(visible).size).toBe(visible.length);
     expect(visible).toEqual(
       expect.arrayContaining([
         'suggested_bid',

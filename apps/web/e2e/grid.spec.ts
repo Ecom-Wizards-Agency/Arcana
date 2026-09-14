@@ -1,10 +1,14 @@
 /** Ordered nested grouping through the real session guard and production grid model. */
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { createDb } from '@wizard-ads/db';
 import { signIn } from './support/auth';
 import { applyRequestedCpuThrottle } from './support/cpu-throttle';
 import { expectDateRangePresets } from './support/date-range';
 import { readState, USERS } from './support/fixture';
+
+async function openGridControls(page: Page) {
+  if (!(await page.getByRole('button', { name: 'Close controls', exact: true }).isVisible())) await page.getByRole('button', { name: /^Saved view:/ }).click();
+}
 
 test.beforeEach(async ({ page }) => applyRequestedCpuThrottle(page));
 
@@ -13,6 +17,7 @@ test('saved Grid views are shared within the agency while layouts stay with thei
   await signIn(page, 'admin');
   await page.goto('/grid?entity=campaigns');
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await openGridControls(page);
   await page.getByLabel('Row density').selectOption('compact');
   await page.getByRole('textbox', { name: 'New view name' }).fill('Synthetic owner lens');
   await page.getByRole('button', { name: 'Save view', exact: true }).click();
@@ -30,6 +35,7 @@ test('saved Grid views are shared within the agency while layouts stay with thei
   await signIn(page, 'viewer');
   await page.goto('/grid?entity=campaigns');
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await openGridControls(page);
   await expect(page.getByLabel('Row density')).toHaveValue('normal');
   const choices = page.getByRole('combobox', { name: 'Saved view', exact: true }).locator('option');
   await expect(choices).toHaveText(['Saved views…', 'Synthetic owner lens']);
@@ -40,12 +46,14 @@ test('saved Grid views are shared within the agency while layouts stay with thei
   await expect(choices).toHaveText(['Saved views…', 'Synthetic owner lens']);
   await page.reload();
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await openGridControls(page);
   await expect(page.getByLabel('Row density')).toHaveValue('comfortable');
   await expect(choices).toHaveText(['Saved views…', 'Synthetic owner lens']);
 
   await signIn(page, 'admin');
   await page.goto('/grid?entity=campaigns');
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await openGridControls(page);
   await expect(page.getByLabel('Row density')).toHaveValue('compact');
   await expect(choices).toHaveText(['Saved views…', 'Synthetic owner lens']);
 });
@@ -55,6 +63,7 @@ test('collapsed groups persist through the database saved view and a clean reloa
   const { orgId, connectionString } = await readState();
   await page.goto('/grid?entity=campaigns');
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await openGridControls(page);
   await page.getByLabel('Add grouping level').selectOption({ label: 'State' });
   await page.getByLabel('Add grouping level').selectOption({ label: 'Campaign' });
   const rows = page.getByTestId('grid-row');
@@ -81,6 +90,7 @@ test('collapsed groups persist through the database saved view and a clean reloa
   await page.evaluate(() => window.localStorage.clear());
   await page.goto('/grid?entity=campaigns');
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await openGridControls(page);
   await expect(page.getByRole('list', { name: 'Ordered grouping levels' }).getByRole('listitem')).toHaveCount(0);
   await choices.selectOption({ label: 'Synthetic collapsed lens' });
   await expect(rows).toHaveCount(1);
@@ -88,6 +98,7 @@ test('collapsed groups persist through the database saved view and a clean reloa
   // A clean URL reload also restores the newly applied local layout.
   await page.goto('/grid?entity=campaigns');
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await openGridControls(page);
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toHaveAttribute('aria-expanded', 'false');
   await page.getByRole('button', { name: /^Expand State/ }).click();
@@ -159,6 +170,7 @@ test('grid restores the matching saved filter, grouping, and sort before becomin
 
   const workspace = page.getByTestId('grid-data-ready');
   await expect(workspace).toHaveAttribute('data-ready', 'true');
+  await openGridControls(page);
   await expect(page.getByRole('treegrid', { name: 'Results grouped by campaign_state' })).toBeVisible();
   await expect(page.getByRole('columnheader', { name: 'Clicks' })).toHaveAttribute('aria-sort', 'ascending');
   const restoredFilter = page.getByRole('button', { name: 'Remove filter CAMPAIGN_ID' }).locator('..');
@@ -185,10 +197,11 @@ test('grid restores the matching saved filter, grouping, and sort before becomin
 test('grid adds, reorders, and removes truthful nested grouping levels', async ({ page }) => {
   await signIn(page, 'admin');
   await page.goto('/grid?entity=campaigns');
-  await expect(page.getByRole('heading', { name: 'Campaigns', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Campaigns', exact: true })).toHaveCount(1);
   // The complete row payload and saved layout must both be ready before an
   // early date-range or grouping change can be accepted.
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await openGridControls(page);
   await expectDateRangePresets(page);
 
   const addLevel = page.getByLabel('Add grouping level');
@@ -215,6 +228,7 @@ test('grid selects every categorical value, filters exact rows, and restores the
   await signIn(page, 'admin');
   await page.goto('/grid?entity=campaigns');
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await openGridControls(page);
 
   const column = page.getByLabel('Filter column');
   const operator = page.getByLabel('Filter operator');
@@ -233,6 +247,7 @@ test('grid selects every categorical value, filters exact rows, and restores the
 
   await page.reload();
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await openGridControls(page);
   await expect(page.getByRole('button', { name: 'Remove filter AD_PRODUCT' }).locator('..')).toContainText(
     'Ad type is one of SP',
   );
@@ -254,6 +269,7 @@ test('grid sorts on a header click, groups by dragging headers into the group ba
   const layoutKey = ['wizard-ads:layout:v2', orgId, USERS.admin].join(':');
   await page.goto('/grid?entity=campaigns');
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await openGridControls(page);
 
   // The workspace is full width and the grid fills its viewport container
   // rather than a fixed box.
@@ -308,6 +324,7 @@ test('grid sorts on a header click, groups by dragging headers into the group ba
     .toMatchObject({ density: 'compact', groupBy: ['campaign_state', 'ad_product'] });
   await page.reload();
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await openGridControls(page);
   await expect(page.getByTestId('grid-shell')).toHaveAttribute('data-density', 'compact');
   await expect(page.getByLabel('Row density')).toHaveValue('compact');
 });
@@ -319,49 +336,28 @@ test('grid sorts on a header click, groups by dragging headers into the group ba
  * because the rows the operator came for are fetched by the browser over
  * `/api/grid/rows` and cannot start until that document has arrived.
  */
-test('grid carries the performance tiles and trend above the rows, streamed outside the row path', async ({
-  page,
-}) => {
+test('grid charts up to four of eight KPI series and restores the shared view with one row request', async ({ page }) => {
   await signIn(page, 'admin');
   const rowRequests: string[] = [];
-  page.on('request', (request) => {
-    if (new URL(request.url()).pathname === '/api/grid/rows') rowRequests.push(request.url());
-  });
+  page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/grid/rows') rowRequests.push(request.url()); });
   await page.goto('/grid?entity=campaigns');
-
-  const cockpit = page.getByRole('region', { name: 'Performance cockpit' });
-  await expect(cockpit).toBeVisible();
-  await expect(cockpit.getByRole('heading', { name: 'Performance trend' })).toBeVisible();
-  await expect(cockpit.locator('.wa-cockpit__tile')).not.toHaveCount(0);
-
-  // Above the grid, not beside or below it, and the rows still arrive.
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
-  const cockpitBox = await cockpit.boundingBox();
-  const gridBox = await page.getByTestId('grid-viewport').boundingBox();
-  expect(cockpitBox).not.toBeNull();
-  expect(gridBox).not.toBeNull();
-  expect(cockpitBox!.y + cockpitBox!.height).toBeLessThanOrEqual(gridBox!.y);
-  await expect(page.getByTestId('grid-scroller')).toBeVisible();
-
-  // The tiles and the chart are a second read on the same page and they cost
-  // the rows nothing: the browser still makes exactly the one row request the
-  // boundary is measured on.
+  const tiles = page.getByTestId('grid-kpis').getByRole('button');
+  await expect(tiles).toHaveCount(8);
+  await page.getByRole('button', { name: 'Chart clicks', exact: true }).click();
+  await page.getByRole('button', { name: 'Chart orders', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Chart impressions', exact: true })).toBeDisabled();
+  const kpis = await page.getByTestId('grid-kpis').boundingBox();
+  const grid = await page.getByTestId('grid-viewport').boundingBox();
+  expect(kpis!.y + kpis!.height).toBeLessThanOrEqual(grid!.y);
+  expect(grid!.height).toBeGreaterThanOrEqual(560);
   expect(rowRequests).toHaveLength(1);
-
-  // The `GridViewport` measured fill, carried from the slice 3 and slice 4
-  // reviews and measured here at a real viewport size rather than reasoned
-  // about. With the cockpit above it the fill can only resolve to the floor, so
-  // the floor is the decision: the grid keeps a usable height and runs past the
-  // bottom of the window, leaving no screen space unused below it.
-  const fill = await page.evaluate(() => {
-    const element = document.querySelector('[data-testid="grid-viewport"]');
-    if (element === null) return null;
-    const rect = element.getBoundingClientRect();
-    return { height: rect.height, below: window.innerHeight - rect.bottom };
-  });
-  expect(fill).not.toBeNull();
-  expect(fill!.height).toBeGreaterThanOrEqual(560);
-  expect(fill!.below).toBeLessThanOrEqual(0);
+  await expect.poll(() => new URL(page.url()).searchParams.get('view')).not.toBeNull();
+  const shared = page.url();
+  await page.evaluate(() => window.localStorage.clear());
+  await page.goto(shared);
+  await expect(page.getByRole('button', { name: 'Chart orders', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'Chart impressions', exact: true })).toBeDisabled();
 });
 
 /**
