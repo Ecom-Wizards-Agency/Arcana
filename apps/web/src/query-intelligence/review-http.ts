@@ -1,3 +1,4 @@
+import { MutationInputError } from '../server/authenticated-mutation';
 export const CONTEXTUAL_NEGATIVE_ACTION_LIMIT = 500;
 export const CONTEXTUAL_NEGATIVE_REQUEST_BYTE_LIMIT = 128 * 1024;
 
@@ -27,31 +28,31 @@ export interface ExportRequestInput extends ReviewScopeInput {
 
 function object(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error('request body must be a JSON object');
+    throw new MutationInputError('request body must be a JSON object');
   }
   return value as Record<string, unknown>;
 }
 
 function rejectSpoofedActor(body: Record<string, unknown>): void {
   if (Object.hasOwn(body, 'orgId') || Object.hasOwn(body, 'actorId')) {
-    throw new Error('orgId and actorId are derived from the authenticated request and must not be supplied');
+    throw new MutationInputError('orgId and actorId are derived from the authenticated request and must not be supplied');
   }
 }
 
 function scope(body: Record<string, unknown>): ReviewScopeInput {
   rejectSpoofedActor(body);
   if (typeof body['profileId'] !== 'string' || !UUID.test(body['profileId'])) {
-    throw new Error('profileId must be a UUID');
+    throw new MutationInputError('profileId must be a UUID');
   }
   if (typeof body['marketplaceId'] !== 'string' || body['marketplaceId'].trim().length === 0) {
-    throw new Error('marketplaceId is required');
+    throw new MutationInputError('marketplaceId is required');
   }
-  if (body['marketplaceId'].length > 128) throw new Error('marketplaceId is too long');
+  if (body['marketplaceId'].length > 128) throw new MutationInputError('marketplaceId is too long');
   if (!Array.isArray(body['proposals']) || body['proposals'].length === 0) {
-    throw new Error('proposals must be a non-empty explicit selection');
+    throw new MutationInputError('proposals must be a non-empty explicit selection');
   }
   if (body['proposals'].length > CONTEXTUAL_NEGATIVE_ACTION_LIMIT) {
-    throw new Error(`proposals may contain at most ${CONTEXTUAL_NEGATIVE_ACTION_LIMIT} rows`);
+    throw new MutationInputError(`proposals may contain at most ${CONTEXTUAL_NEGATIVE_ACTION_LIMIT} rows`);
   }
   const seen = new Set<string>();
   const proposals = body['proposals'].map((value, index) => {
@@ -59,12 +60,12 @@ function scope(body: Record<string, unknown>): ReviewScopeInput {
     const id = proposal['id'];
     const expectedFingerprint = proposal['expectedFingerprint'];
     if (typeof id !== 'string' || !UUID.test(id)) {
-      throw new Error(`proposal ${index} id must be a UUID`);
+      throw new MutationInputError(`proposal ${index} id must be a UUID`);
     }
-    if (seen.has(id)) throw new Error(`proposal ${id} is duplicated`);
+    if (seen.has(id)) throw new MutationInputError(`proposal ${id} is duplicated`);
     seen.add(id);
     if (typeof expectedFingerprint !== 'string' || !FINGERPRINT.test(expectedFingerprint)) {
-      throw new Error(`proposal ${id} has an invalid review fingerprint`);
+      throw new MutationInputError(`proposal ${id} has an invalid review fingerprint`);
     }
     return { id, expectedFingerprint };
   });
@@ -77,9 +78,9 @@ function scope(body: Record<string, unknown>): ReviewScopeInput {
 
 function optionalNote(value: unknown): string | null {
   if (value === undefined || value === null) return null;
-  if (typeof value !== 'string') throw new Error('note must be text');
+  if (typeof value !== 'string') throw new MutationInputError('note must be text');
   const note = value.trim();
-  if (note.length > 4000) throw new Error('note is too long');
+  if (note.length > 4000) throw new MutationInputError('note is too long');
   return note || null;
 }
 
@@ -87,26 +88,26 @@ export function parseDecisionRequest(value: unknown): DecisionRequestInput {
   const body = object(value);
   const parsedScope = scope(body);
   if (typeof body['decision'] !== 'string' || !(DECISIONS as readonly string[]).includes(body['decision'])) {
-    throw new Error(`decision must be one of: ${DECISIONS.join(', ')}`);
+    throw new MutationInputError(`decision must be one of: ${DECISIONS.join(', ')}`);
   }
   const decision = body['decision'] as DecisionRequestInput['decision'];
   const note = optionalNote(body['note']);
-  if (decision === 'dismissed' && note === null) throw new Error('a dismissal needs a note');
+  if (decision === 'dismissed' && note === null) throw new MutationInputError('a dismissal needs a note');
   return { ...parsedScope, decision, note };
 }
 
 export function parseExportRequest(value: unknown): ExportRequestInput {
   const body = object(value);
-  if (body['confirmed'] !== true) throw new Error('confirm “Yes, create evidence files” before exporting');
+  if (body['confirmed'] !== true) throw new MutationInputError('confirm “Yes, create evidence files” before exporting');
   const parsedScope = scope(body);
   const note = optionalNote(body['note']);
-  if (note === null) throw new Error('an export needs a note');
+  if (note === null) throw new MutationInputError('an export needs a note');
   return { ...parsedScope, note };
 }
 
 export function parseExportFormat(value: string | null): 'csv' | 'json' {
   if (value === 'csv' || value === 'json') return value;
-  throw new Error('format must be csv or json');
+  throw new MutationInputError('format must be csv or json');
 }
 
 /** Read and decode JSON without allowing an unbounded body into memory. */
@@ -117,8 +118,8 @@ export async function readBoundedReviewJson(
   const declared = request.headers.get('content-length');
   if (declared !== null) {
     const bytes = Number(declared);
-    if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error('invalid content-length');
-    if (bytes > limit) throw new Error(`request body exceeds ${limit} bytes`);
+    if (!Number.isSafeInteger(bytes) || bytes < 0) throw new MutationInputError('invalid content-length');
+    if (bytes > limit) throw new MutationInputError(`request body exceeds ${limit} bytes`);
   }
   if (request.body === null) throw new SyntaxError('request body is empty');
 
@@ -132,7 +133,7 @@ export async function readBoundedReviewJson(
       total += part.value.byteLength;
       if (total > limit) {
         await reader.cancel();
-        throw new Error(`request body exceeds ${limit} bytes`);
+        throw new MutationInputError(`request body exceeds ${limit} bytes`);
       }
       chunks.push(part.value);
     }

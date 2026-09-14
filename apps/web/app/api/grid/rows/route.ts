@@ -3,8 +3,12 @@ import { ENTITY_LEVELS } from '@wizard-ads/ui';
 import type { EntityLevel } from '@wizard-ads/ui';
 import { loadGridRows } from '../../../_lib/grid-data';
 import { precedingPeriod } from '../../../_lib/periods';
-import { withAuthenticatedIdentity } from '@wizard-ads/db';
+import { withAuthenticatedIdentityRead } from '../../../../src/server/authenticated-identity-read';
 import { enforceGridAssurance, gridRequestSubject, resolveGridReadReceipt } from '../../../../src/grid/request-context';
+// Exception: Grid resolves the selected agency and assurance receipt inside its
+// identity transaction; requestActor would resolve a second agency context first.
+// Its receipt contract observes revocation on the next statement, so this
+// one read-only transaction uses READ COMMITTED rather than a fixed snapshot.
 import { openWebDatabase, RequestAuthError } from '../../../../src/server/request-context';
 import { finalizeTimedGridResponse, GridServerTiming } from './server-timing';
 import { serializeGridPayloadWithinBudget } from './serialize';
@@ -167,7 +171,7 @@ export function createGridRowsGet(
       const database = runtime.openDatabase();
       let response: Response;
       try {
-        response = await withAuthenticatedIdentity(database, { userId: subject.userId }, async (sql) => {
+        response = await withAuthenticatedIdentityRead(database, { userId: subject.userId }, async (sql) => {
           const handle = { sql };
           const receipt = await runtime.resolveReceipt(handle, subject, queryAttempt.candidateProfileId);
           await runtime.enforceAssurance(subject, receipt);

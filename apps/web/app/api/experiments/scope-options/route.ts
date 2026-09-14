@@ -8,7 +8,7 @@ export const runtime = 'nodejs';
 
 export async function GET(request: Request): Promise<Response> {
   return authenticatedRead(request, async (database, actor) => {
-    await requireCapability(database, actor, 'manageExperiments');
+    await requireCapability(database, 'manageExperiments');
     const profileId = new URL(request.url).searchParams.get('profile');
     if (profileId === null || profileId.trim() === '') {
       throw new ApiReadError('profile is required');

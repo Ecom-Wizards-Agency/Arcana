@@ -1,11 +1,13 @@
 import {
   ContextualNegativeArtifactIntegrityError,
   ContextualNegativeReviewConflictError,
+  ContextualNegativeReviewValidationError,
   ContextualNegativeReviewLockTimeoutError,
   ContextualNegativeReviewStateError,
 } from '@wizard-ads/db';
 
 export function contextualNegativeReviewErrorResponse(error: unknown): Response | null {
+  if (error instanceof ContextualNegativeReviewValidationError) return Response.json({ error: error.message }, { status: 400 });
   if (error instanceof ContextualNegativeArtifactIntegrityError) {
     return Response.json({
       error: 'Stored contextual-negative evidence failed integrity verification',

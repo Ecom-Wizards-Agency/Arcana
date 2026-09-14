@@ -1,3 +1,4 @@
+// Exception: OAuth start owns signed state and browser nonce custody; beginAmazonConnection owns the single authenticated transaction and app.lock_org_manager.
 /**
  * `GET /api/amazon/oauth/start` — begin the Amazon grant.
  *

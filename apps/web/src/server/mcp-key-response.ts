@@ -1,4 +1,5 @@
-import { McpKeyCommandError } from '@wizard-ads/db';
+import { AgencyAccessDenied, McpKeyCommandError } from '@wizard-ads/db';
+import { MutationInputError } from './authenticated-mutation';
 import { authOrigin } from '../auth/origin';
 import { errorResponse, RequestAuthError } from './request-context';
 
@@ -16,7 +17,11 @@ export function mcpKeyResponse(response: Response): Response {
 }
 
 export function mcpKeyError(error: unknown): Response {
-  return mcpKeyResponse(error instanceof McpKeyCommandError
-    ? Response.json({ error: error.message }, { status: error.code === 'invalid' ? 400 : 503 })
-    : errorResponse(error));
+  if (error instanceof McpKeyCommandError) return mcpKeyResponse(Response.json(
+    { error: error.message }, { status: error.code === 'invalid' ? 400 : 503 }));
+  if (error instanceof MutationInputError) return mcpKeyResponse(Response.json({ error: error.message }, { status: error.status }));
+  if (error instanceof RequestAuthError || error instanceof SyntaxError || error instanceof AgencyAccessDenied) {
+    return mcpKeyResponse(errorResponse(error));
+  }
+  return mcpKeyResponse(Response.json({ error: 'The key operation could not be confirmed. Refresh the key list before trying again.' }, { status: 503 }));
 }

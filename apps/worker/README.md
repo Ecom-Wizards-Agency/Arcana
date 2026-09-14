@@ -5,6 +5,13 @@ runs and crosscheck ingestion. Web requests preview, approve and enqueue work;
 provider execution belongs here. The root [installation guide](../../README.md)
 describes agency onboarding and the supported runtime topology.
 
+The worker uses a service-role connection with the job payload's `orgId`.
+Job claims are intentionally org-blind so one worker can drain several agencies.
+Before dispatching a job, [`SyncWorker.execute`](src/worker.ts) checks that the
+payload's org, profile and job type match the claimed row, then verifies that the
+profile belongs to the payload's org. This check precedes every dispatched
+mutation; claiming a job alone does not establish its agency boundary.
+
 ## The shape of it
 
 | Module | What it is |

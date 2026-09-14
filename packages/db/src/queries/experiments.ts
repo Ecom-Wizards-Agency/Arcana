@@ -1,12 +1,9 @@
 /**
  * Experiments: the A/B-test tracker's read and write model (WP-19).
  *
- * Like the feedback helpers, every function here takes an `orgId` and puts it in
- * the WHERE clause even where RLS would already do it. The web tier connects as
- * the application's own role rather than as `authenticated`, so RLS is the
- * second fence, not the first: a query that forgets the org predicate would be a
- * cross-tenant read in the browser even though the same query is safe from
- * PostgREST. The two layers are tested separately for that reason.
+ * Actor commands run under authenticated RLS with editor membership locked
+ * until commit. Explicit org predicates also bind users with several agencies
+ * to the selected agency. Legacy persistence helpers remain available to workers.
  *
  * The comparison view is the one piece of real arithmetic. It derives
  * before / during / after windows of equal length from the fact tables and
@@ -15,84 +12,25 @@
  * a randomized test, and the UI says so — but the numbers it does show are the
  * real ones, verified against a direct SQL sum in the query suite.
  */
-import type { QueryHandle } from '../client.js';
-import type { ExperimentScope } from '../schema/experiments.js';
+import type { DbHandle, QueryHandle } from '../client.js';
+import {
+  ExperimentCommand, ExperimentCommandResult, OrgActor, OrgRole, ORG_CAPABILITY_ROLES,
+  EXPERIMENT_TYPES, EXPERIMENT_METRICS, EXPERIMENT_STATUSES,
+  canTransitionExperiment as canTransition,
+  type ExperimentType, type ExperimentMetric, type ExperimentStatus,
+  type ExperimentRecord, type ExperimentEventRecord,
+} from '@wizard-ads/shared';
+import { AgencyAccessDenied, withAuthenticatedOrgEditor, type AuthenticatedEditorTransaction } from './authenticated-actor.js';
+export { EXPERIMENT_TYPES, EXPERIMENT_METRICS, EXPERIMENT_STATUSES, canTransition };
+export type { ExperimentType, ExperimentMetric, ExperimentStatus, ExperimentRecord, ExperimentEventRecord };
+import type { ExperimentScope } from '@wizard-ads/shared';
 import { toDate, toDateOrNull } from './pg-time.js';
 import type { JsonValue } from './goto.js';
 
 export type ExperimentQueryHandle = QueryHandle;
 
-export const EXPERIMENT_TYPES = [
-  'bid_push',
-  'creative',
-  'listing_content',
-  'price',
-  'placement',
-  'other',
-] as const;
-export type ExperimentType = (typeof EXPERIMENT_TYPES)[number];
-
-export const EXPERIMENT_METRICS = ['acos', 'cvr', 'ctr', 'sales', 'share'] as const;
-export type ExperimentMetric = (typeof EXPERIMENT_METRICS)[number];
-
-export const EXPERIMENT_STATUSES = [
-  'planned',
-  'running',
-  'ended',
-  'analyzed',
-  'aborted',
-] as const;
-export type ExperimentStatus = (typeof EXPERIMENT_STATUSES)[number];
-
-/** "Live" — still shading a chart, and worth reading a window off. */
+/** Experiments that still shade a chart. */
 export const ACTIVE_EXPERIMENT_STATUSES = ['running', 'ended', 'analyzed'] as const;
-
-/**
- * The transitions a status may make. A test is planned, then run, then ended,
- * then analyzed; and it may be aborted from any non-terminal state. Anything
- * else is a mistake worth an error rather than a silent no-op.
- */
-const ALLOWED_TRANSITIONS: Record<ExperimentStatus, readonly ExperimentStatus[]> = {
-  planned: ['running', 'aborted'],
-  running: ['ended', 'aborted'],
-  ended: ['analyzed', 'running', 'aborted'],
-  analyzed: ['running', 'aborted'],
-  aborted: [],
-};
-
-export function canTransition(from: ExperimentStatus, to: ExperimentStatus): boolean {
-  return from === to || ALLOWED_TRANSITIONS[from].includes(to);
-}
-
-export interface ExperimentRecord {
-  id: string;
-  orgId: string;
-  profileId: string;
-  name: string;
-  hypothesis: string;
-  type: ExperimentType;
-  scope: ExperimentScope;
-  metricFocus: ExperimentMetric;
-  startAt: Date;
-  endAt: Date | null;
-  status: ExperimentStatus;
-  resultNote: string | null;
-  createdBy: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-  statusChangedAt: Date;
-}
-
-export interface ExperimentEventRecord {
-  id: number;
-  experimentId: string;
-  orgId: string;
-  fromStatus: ExperimentStatus | null;
-  toStatus: ExperimentStatus;
-  note: string | null;
-  actorId: string | null;
-  createdAt: Date;
-}
 
 interface ExperimentDbRow {
   id: string;
@@ -244,6 +182,90 @@ function serializeJson(value: unknown): string {
 // ---------------------------------------------------------------------------
 // Writes
 // ---------------------------------------------------------------------------
+
+export class ExperimentCommandError extends Error {
+  constructor(readonly code: 'invalid' | 'forbidden' | 'not_found' | 'conflict' | 'unconfirmed') {
+    super({ invalid: 'Check the experiment fields and try again.', forbidden: 'Resource not found',
+      not_found: 'Experiment or profile not found', conflict: 'This experiment cannot make that status transition.',
+      unconfirmed: 'The save could not be confirmed. Reload before trying again.' }[code]);
+    this.name = 'ExperimentCommandError';
+  }
+}
+
+/** A complete command, or composition into the route's already-locked transaction. */
+export async function mutateExperimentForActor(
+  handle: Pick<DbHandle, 'sql'> | AuthenticatedEditorTransaction,
+  rawActor: OrgActor,
+  rawCommand: ExperimentCommand,
+): Promise<ExperimentCommandResult> {
+  try {
+    const actorParse = OrgActor.safeParse(rawActor);
+    if (!actorParse.success) throw new ExperimentCommandError('forbidden');
+    const actor = actorParse.data;
+    const commandParse = ExperimentCommand.safeParse(rawCommand);
+    if (!commandParse.success) throw new ExperimentCommandError('invalid');
+    const command = commandParse.data;
+    const execute = async (context: AuthenticatedEditorTransaction): Promise<ExperimentCommandResult> => {
+      if (context.actor.orgId !== actor.orgId || context.actor.userId !== actor.userId) {
+        throw new ExperimentCommandError('forbidden');
+      }
+      const { sql } = context;
+      const [member] = await sql<{ role: string }[]>`select role::text as role from public.org_members
+        where org_id=${actor.orgId} and user_id=auth.uid()`;
+      const role = OrgRole.parse(member?.role);
+      if (!(ORG_CAPABILITY_ROLES.manageExperiments as readonly OrgRole[]).includes(role)) {
+        throw new ExperimentCommandError('forbidden');
+      }
+      let result: ExperimentCommandResult;
+      if (command.kind === 'create') {
+        const item = await createExperiment(context, { ...command, orgId: actor.orgId, createdBy: actor.userId });
+        const events = await listExperimentEvents(context, { orgId: actor.orgId, experimentId: item.id });
+        if (events.length !== 1) throw new ExperimentCommandError('unconfirmed');
+        result = { kind: 'created', item, event: events[0]! };
+      } else {
+        // Serialize edits and status changes before reading the lifecycle state.
+        await sql`select id from public.experiments
+          where org_id=${actor.orgId} and id=${command.experimentId} for update`;
+        const current = await getExperiment(context, { orgId: actor.orgId, experimentId: command.experimentId });
+        if (!current) throw new ExperimentCommandError('not_found');
+        if (role !== 'owner' && role !== 'admin' && current.createdBy !== actor.userId) {
+          throw new ExperimentCommandError('forbidden');
+        }
+        if (command.kind === 'edit') {
+          const item = await updateExperiment(context, { ...command, orgId: actor.orgId, actorId: actor.userId });
+          result = { kind: 'updated', item, event: null };
+        } else {
+          const to = command.status ?? current.status;
+          if (!canTransition(current.status, to)) throw new ExperimentCommandError('conflict');
+          const before = await listExperimentEvents(context, { orgId: actor.orgId, experimentId: current.id });
+          const item = await transitionExperiment(context, { ...command, orgId: actor.orgId, actorId: actor.userId, to });
+          const after = await listExperimentEvents(context, { orgId: actor.orgId, experimentId: current.id });
+          const moved = current.status !== to;
+          const previousIds = new Set(before.map((event) => event.id));
+          const appended = after.filter((event) => !previousIds.has(event.id));
+          if (after.length !== before.length + Number(moved) || appended.length !== Number(moved)) {
+            throw new ExperimentCommandError('unconfirmed');
+          }
+          // Transaction timestamps can precede another transaction's commit.
+          // Identify this command's event by identity, not chronological order.
+          result = { kind: 'transitioned', item, event: appended[0] ?? null };
+        }
+      }
+      // A malformed item, event, or event linkage rolls back the whole command.
+      return ExperimentCommandResult.parse(result);
+    };
+    return 'actor' in handle ? await execute(handle) : await withAuthenticatedOrgEditor(handle, actor, execute);
+  } catch (error) {
+    if (error instanceof ExperimentCommandError) throw error;
+    if (error instanceof ExperimentNotFound || error instanceof ExperimentProfileNotFound) throw new ExperimentCommandError('not_found');
+    if (error instanceof InvalidExperimentWindow) throw new ExperimentCommandError('invalid');
+    if (error instanceof InvalidExperimentTransition) throw new ExperimentCommandError('conflict');
+    if (error instanceof AgencyAccessDenied || (error as { code?: unknown } | null)?.code === '42501') {
+      throw new ExperimentCommandError('forbidden');
+    }
+    throw new ExperimentCommandError('unconfirmed');
+  }
+}
 
 export interface CreateExperimentInput {
   orgId: string;

@@ -11,14 +11,9 @@
  * in the review surface with its work shown like every other proposal rather
  * than as an assertion.
  */
-import { createNegativeProposals } from '@wizard-ads/db';
+import { createNegativeProposalsForActor } from '@wizard-ads/db';
 import type { NegativeProposalInput } from '@wizard-ads/db';
-import {
-  errorResponse,
-  openWebDatabase,
-  requestActor,
-} from '../../../../src/server/request-context';
-import { requireCapability } from '../../../../src/server/org-role';
+import { authenticatedMutation, mutationBody, MutationInputError } from '../../../../src/server/authenticated-mutation';
 
 export const runtime = 'nodejs';
 
@@ -35,17 +30,15 @@ interface IncomingProposal {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  const database = openWebDatabase();
-  try {
-    const actor = await requestActor(request.headers);
-    await requireCapability(database, actor, 'editTargets');
+  return authenticatedMutation(request, async (database) => {
+    const actor = database.actor;
 
-    const body = (await request.json()) as {
+    const body = (await mutationBody(request)) as {
       profileId?: unknown;
       window?: unknown;
       proposals?: unknown;
     };
-    if (typeof body.profileId !== 'string') throw new Error('profileId is required');
+    if (typeof body.profileId !== 'string') throw new MutationInputError('profileId is required');
     const incomingWindow = body.window as { start?: unknown; end?: unknown } | undefined;
     if (
       incomingWindow === undefined ||
@@ -54,14 +47,14 @@ export async function POST(request: Request): Promise<Response> {
       !ISO_DATE.test(incomingWindow.start) ||
       !ISO_DATE.test(incomingWindow.end)
     ) {
-      throw new Error('window must carry ISO start and end dates');
+      throw new MutationInputError('window must carry ISO start and end dates');
     }
     const window: { start: string; end: string } = {
       start: incomingWindow.start,
       end: incomingWindow.end,
     };
     if (!Array.isArray(body.proposals) || body.proposals.length === 0) {
-      throw new Error('proposals must be a non-empty array');
+      throw new MutationInputError('proposals must be a non-empty array');
     }
 
     // The profile has to belong to the caller's org. `ad_profiles` carries the
@@ -72,15 +65,15 @@ export async function POST(request: Request): Promise<Response> {
          where id = ${body.profileId} and org_id = ${actor.orgId}
       ) as exists
     `;
-    if (!owned[0]?.exists) throw new Error('Not found');
+    if (!owned[0]?.exists) throw new MutationInputError('Not found', 404);
 
     const proposals: NegativeProposalInput[] = (body.proposals as IncomingProposal[]).map(
       (proposal, index) => {
         if (typeof proposal.searchTerm !== 'string' || proposal.searchTerm.trim().length === 0) {
-          throw new Error(`proposal ${index} needs a search term`);
+          throw new MutationInputError(`proposal ${index} needs a search term`);
         }
         if (typeof proposal.campaignId !== 'string') {
-          throw new Error(`proposal ${index} needs a campaign id`);
+          throw new MutationInputError(`proposal ${index} needs a campaign id`);
         }
         const matchType =
           typeof proposal.matchType === 'string' && MATCH_TYPES.includes(proposal.matchType)
@@ -118,19 +111,13 @@ export async function POST(request: Request): Promise<Response> {
           86_400_000,
       ) + 1;
 
-    const result = await createNegativeProposals(database, {
-      orgId: actor.orgId,
+    const result = await createNegativeProposalsForActor(database, {
       profileId: body.profileId,
       window: { start: window.start, end: window.end },
       lookbackDays,
       proposals,
-      actorId: actor.userId,
     });
 
     return Response.json({ ...result, offered: proposals.length }, { status: 201 });
-  } catch (error) {
-    return errorResponse(error);
-  } finally {
-    await database.close();
-  }
+  });
 }

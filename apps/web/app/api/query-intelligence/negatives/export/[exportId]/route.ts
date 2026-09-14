@@ -1,9 +1,6 @@
-import { getContextualNegativeExport, withAuthenticatedActor, type RequestDatabase } from '@wizard-ads/db';
+import { getContextualNegativeExport } from '@wizard-ads/db';
 import { Uuid } from '@wizard-ads/shared';
-import {
-  openWebDatabase,
-  requestActor,
-} from '../../../../../../src/server/request-context';
+import { authenticatedRead } from '../../../../../../src/server/authenticated-read';
 import { DownloadRequestError, downloadErrorResponse, downloadResponse } from '../../../../../../src/server/download-response';
 import { contextualNegativeReviewErrorResponse } from '../../../../../../src/query-intelligence/review-errors';
 
@@ -12,19 +9,16 @@ export const runtime = 'nodejs';
 type RouteContext = { params: Promise<{ exportId: string }> };
 
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
-  let database: RequestDatabase | null = null;
-  try {
-    const actor = await requestActor(request.headers);
-    database = openWebDatabase();
+  return authenticatedRead(request, async (database, actor) => {
     const { exportId } = await context.params;
     if (!Uuid.safeParse(exportId).success) throw new DownloadRequestError('A valid export id is required');
     const format = new URL(request.url).searchParams.get('format');
     if (format !== 'csv' && format !== 'json') throw new DownloadRequestError('format must be csv or json');
-    const artifact = await withAuthenticatedActor(database, actor, (sql) => getContextualNegativeExport({ sql }, {
+    const artifact = await getContextualNegativeExport(database, {
       orgId: actor.orgId,
       exportId,
       format,
-    }));
+    });
     if (artifact === null) throw new DownloadRequestError('Not found', 404);
 
     const date = artifact.createdAt.toISOString().slice(0, 10);
@@ -42,9 +36,5 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
         'x-openspell-exported-rows': String(artifact.rowCount),
       },
     }));
-  } catch (error) {
-    return downloadResponse(contextualNegativeReviewErrorResponse(error) ?? downloadErrorResponse(error));
-  } finally {
-    await database?.close();
-  }
+  }, (error) => contextualNegativeReviewErrorResponse(error) ?? downloadErrorResponse(error));
 }

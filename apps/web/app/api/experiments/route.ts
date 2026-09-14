@@ -6,19 +6,11 @@
  * row is stamped with the actor as its author so the "edit your own" rule the
  * database enforces has something to match.
  */
-import {
-  EXPERIMENT_METRICS,
-  EXPERIMENT_STATUSES,
-  EXPERIMENT_TYPES,
-  createExperiment,
-  listExperiments,
-  normalizeScope,
-  profileBelongsToOrg,
-} from '@wizard-ads/db';
-import type { ExperimentMetric, ExperimentStatus, ExperimentType } from '@wizard-ads/db';
-import { openWebDatabase, requestActor } from '../../../src/server/request-context';
-import { requireCapability, requireOrgRole } from '../../../src/server/org-role';
-import { experimentErrorResponse } from '../../../src/experiments/http';
+import { EXPERIMENT_STATUSES, listExperiments, profileBelongsToOrg, mutateExperimentForActor } from '@wizard-ads/db';
+import type { ExperimentStatus } from '@wizard-ads/shared';
+import { requireOrgRole } from '../../../src/server/org-role';
+import { authenticatedMutation, mutationBody } from '../../../src/server/authenticated-mutation';
+import { experimentCommand, experimentErrorResponse, experimentMutationResponse } from '../../../src/experiments/http';
 import { listProposedTests } from '../../../src/experiments/data';
 import { can } from '../../../src/auth/roles';
 import { authenticatedRead, readUuid } from '../../../src/server/authenticated-read';
@@ -32,7 +24,7 @@ const asStatus = (value: string | null): ExperimentStatus | null =>
 
 export async function GET(request: Request): Promise<Response> {
   return authenticatedRead(request, async (database, actor) => {
-    const role = await requireOrgRole(database, actor);
+    const role = await requireOrgRole(database);
     const query = new URL(request.url).searchParams;
     const profileId = query.get('profile');
     if (profileId !== null) {
@@ -61,62 +53,8 @@ export async function GET(request: Request): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  const database = openWebDatabase();
-  try {
-    const actor = await requestActor(request.headers);
-    await requireCapability(database, actor, 'manageExperiments');
-    const body = (await request.json()) as {
-      profileId?: unknown;
-      name?: unknown;
-      hypothesis?: unknown;
-      type?: unknown;
-      metricFocus?: unknown;
-      scope?: unknown;
-      startAt?: unknown;
-      status?: unknown;
-    };
-
-    if (typeof body.profileId !== 'string') throw new Error('profileId is required');
-    // The table's only fence on `profile_id` is a foreign key to
-    // `ad_profiles (id)`, which another tenant's profile satisfies. Unknown and
-    // foreign are the same 404 from outside, so the answer cannot be used to
-    // probe which profile ids exist.
-    if (!(await profileBelongsToOrg(database, { orgId: actor.orgId, profileId: body.profileId }))) {
-      return Response.json({ error: 'Profile not found' }, { status: 404 });
-    }
-    if (typeof body.name !== 'string') throw new Error('name is required');
-    if (typeof body.type !== 'string' || !(EXPERIMENT_TYPES as readonly string[]).includes(body.type)) {
-      throw new Error(`type must be one of: ${EXPERIMENT_TYPES.join(', ')}`);
-    }
-    if (
-      typeof body.metricFocus !== 'string' ||
-      !(EXPERIMENT_METRICS as readonly string[]).includes(body.metricFocus)
-    ) {
-      throw new Error(`metricFocus must be one of: ${EXPERIMENT_METRICS.join(', ')}`);
-    }
-    const status = asStatus(typeof body.status === 'string' ? body.status : null);
-    // Only planned or running may be chosen at creation: a test cannot be born
-    // already ended.
-    if (status !== null && status !== 'planned' && status !== 'running') {
-      throw new Error('a new experiment can only be planned or running');
-    }
-
-    const item = await createExperiment(database, {
-      orgId: actor.orgId,
-      profileId: body.profileId,
-      createdBy: actor.userId,
-      name: body.name,
-      hypothesis: typeof body.hypothesis === 'string' ? body.hypothesis : '',
-      type: body.type as ExperimentType,
-      metricFocus: body.metricFocus as ExperimentMetric,
-      scope: normalizeScope(body.scope),
-      startAt: typeof body.startAt === 'string' ? body.startAt : null,
-      ...(status ? { status } : {}),
-    });
-    return Response.json({ item }, { status: 201 });
-  } catch (error) {
-    return experimentErrorResponse(error);
-  } finally {
-    await database.close();
-  }
+  return authenticatedMutation(request, async (context) => {
+    const command = experimentCommand(await mutationBody(request));
+    return experimentMutationResponse(await mutateExperimentForActor(context, context.actor, command));
+  }, experimentErrorResponse);
 }

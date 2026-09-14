@@ -6,7 +6,9 @@ import { Uuid } from '@wizard-ads/shared';
 import { errorResponse, openWebDatabase, requestActor, RequestAuthError } from './request-context';
 import { privateResponse } from './private-response';
 
-export class MutationInputError extends Error {}
+export class MutationInputError extends Error {
+  constructor(message: string, readonly status: 400 | 404 = 400) { super(message); }
+}
 
 export async function mutationBody(request: Request): Promise<Record<string, unknown>> {
   const value: unknown = await request.json();
@@ -26,6 +28,7 @@ export function mutationUuid(value: unknown, field: string): string {
 export async function authenticatedMutation(
   request: Request,
   mutate: (context: AuthenticatedEditorTransaction) => Promise<Response>,
+  onError?: (error: unknown) => Response | null,
 ): Promise<Response> {
   try {
     const actor = await requestActor(request.headers);
@@ -39,6 +42,8 @@ export async function authenticatedMutation(
     }
     return response;
   } catch (error) {
+    const mapped = onError?.(error);
+    if (mapped) return privateResponse(mapped);
     if (error instanceof RequestAuthError || error instanceof SyntaxError) {
       return privateResponse(errorResponse(error));
     }
@@ -51,7 +56,7 @@ export async function authenticatedMutation(
       return privateResponse(Response.json({ error: 'Not found' }, { status: 404 }));
     }
     if (error instanceof MutationInputError || error instanceof TagInputError || error instanceof GotoInputError) {
-      return privateResponse(Response.json({ error: error.message }, { status: 400 }));
+      return privateResponse(Response.json({ error: error.message }, { status: error instanceof MutationInputError ? error.status : 400 }));
     }
     if (sqlError?.code === '23505' && sqlError.constraint_name === 'tags_sibling_slug_key') {
       return privateResponse(Response.json({ error: 'A sibling tag already uses that name' }, { status: 409 }));

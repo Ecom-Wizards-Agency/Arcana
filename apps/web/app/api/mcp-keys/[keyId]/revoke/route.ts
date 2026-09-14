@@ -8,7 +8,6 @@
  */
 import { revokeMcpKey } from '../../../../../src/data/mcp-keys';
 import { openWebDatabase, requestActor } from '../../../../../src/server/request-context';
-import { requireCapability } from '../../../../../src/server/org-role';
 import { mcpKeyError, mcpKeyResponse, requireMcpKeyOrigin } from '../../../../../src/server/mcp-key-response';
 
 export const runtime = 'nodejs';
@@ -16,20 +15,21 @@ export const runtime = 'nodejs';
 type RouteContext = { params: Promise<{ keyId: string }> };
 
 export async function POST(request: Request, context: RouteContext): Promise<Response> {
-  let database: ReturnType<typeof openWebDatabase> | undefined;
   try {
     requireMcpKeyOrigin(request);
-    database = openWebDatabase();
     const actor = await requestActor(request.headers);
-    await requireCapability(database, actor, 'manageConnection');
-    const { keyId } = await context.params;
+    // Exception: the managed-key command owns the single authenticated transaction.
+    // Its SQL command takes app.lock_org_manager before checking owner/admin
+    // authority and mutating. Wrapping it would open a second transaction.
+    const database = openWebDatabase();
+    try {
+      const { keyId } = await context.params;
 
-    const revoked = await revokeMcpKey(database, actor, keyId);
-    if (!revoked) return mcpKeyResponse(Response.json({ error: 'Key not found' }, { status: 404 }));
-    return mcpKeyResponse(Response.json({ revoked: true }));
+      const revoked = await revokeMcpKey(database, actor, keyId);
+      if (!revoked) return mcpKeyResponse(Response.json({ error: 'Key not found' }, { status: 404 }));
+      return mcpKeyResponse(Response.json({ revoked: true }));
+    } finally { await database.close(); }
   } catch (error) {
     return mcpKeyError(error);
-  } finally {
-    await database?.close();
   }
 }

@@ -12,12 +12,9 @@
  * rather than from the proposals — the ledger is the record, the proposal table
  * is where the record came from.
  */
-import { getExportBatch, getRecommendationRun, withAuthenticatedActor, type RequestDatabase } from '@wizard-ads/db';
+import { getExportBatch, getRecommendationRun } from '@wizard-ads/db';
 import { Uuid } from '@wizard-ads/shared';
-import {
-  openWebDatabase,
-  requestActor,
-} from '../../../../../src/server/request-context';
+import { authenticatedRead } from '../../../../../src/server/authenticated-read';
 import { DownloadRequestError, downloadErrorResponse, downloadResponse } from '../../../../../src/server/download-response';
 import {
   buildBulkWorkbook,
@@ -42,10 +39,7 @@ export async function GET(
   request: Request,
   context: { params: Promise<{ batchId: string }> },
 ): Promise<Response> {
-  let database: RequestDatabase | null = null;
-  try {
-    const actor = await requestActor(request.headers);
-    database = openWebDatabase();
+  return authenticatedRead(request, async (database, actor) => {
 
     const { batchId } = await context.params;
     if (!Uuid.safeParse(batchId).success) throw new DownloadRequestError('A valid batch id is required');
@@ -55,14 +49,14 @@ export async function GET(
     }
     const format = requested as Format;
 
-    const { batch, run } = await withAuthenticatedActor(database, actor, async (sql) => {
-      const batch = await getExportBatch({ sql }, { orgId: actor.orgId, batchId });
+    const { batch, run } = await (async () => {
+      const batch = await getExportBatch(database, { orgId: actor.orgId, batchId });
       if (batch === null) throw new DownloadRequestError('Not found', 404);
       const runId = format === 'caps' ? batch.proposals[0]?.runId ?? null : null;
-      const run = runId === null ? null : await getRecommendationRun({ sql }, { orgId: actor.orgId, runId });
+      const run = runId === null ? null : await getRecommendationRun(database, { orgId: actor.orgId, runId });
       if (run !== null && run.profileId !== batch.profileId) throw new DownloadRequestError('Not found', 404);
       return { batch, run };
-    });
+    })();
     const files = exportFilenames(batch.tag);
 
     if (format === 'rows') {
@@ -121,9 +115,5 @@ export async function GET(
         'x-wizard-ads-exported-rows': String(workbook.sheet.rows.length),
       },
     }));
-  } catch (error) {
-    return downloadErrorResponse(error);
-  } finally {
-    await database?.close();
-  }
+  }, downloadErrorResponse);
 }

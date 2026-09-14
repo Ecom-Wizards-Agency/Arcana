@@ -9,7 +9,7 @@ import * as requestContext from './server/request-context';
 
 const available = await databaseAvailable();
 const bridge = 'synthetic-optimization-mutation-bridge';
-const application = 'synthetic-optimization-mutation-' + randomUUID();
+const application = ('synthetic-optimization-mutation-' + randomUUID()).slice(0,63);
 const revision = 'c'.repeat(40);
 const routes = { groupSave, groupPreview, batchPreview, oneTimePreview };
 type Kind = keyof typeof routes;
@@ -193,4 +193,23 @@ describe.skipIf(!available)('agency optimization mutations through actual HTTP h
     expect((await call('oneTimePreview', actor, { ...body, configuration: { ...configuration, targetAcos: 0.39 } })).status).toBe(409);
     expect(await counts(actor.orgId)).toEqual(committed);
   });
+  it.each(Object.keys(routes) as Kind[])('%s refuses membership revoked while admission waits', async (kind) => {
+    await readiness(false); const actor = await agency(); await readiness(kind === 'oneTimePreview');
+    const before = await counts(actor.orgId); let pending: Promise<Response> | undefined;
+    await database.sql.begin(async (sql) => {
+      await sql`select pg_advisory_xact_lock(hashtextextended(${'org-members:' + actor.orgId},0))`;
+      pending = call(kind,actor,input(kind,actor));
+      let blocked = false;
+      for (let attempt=0; attempt<200; attempt++) {
+        const rows = await database.sql`select pid from pg_stat_activity where datname=current_database()
+          and application_name=${application} and cardinality(pg_blocking_pids(pid))>0`;
+        if (rows.length===1) { blocked=true; break; }
+        await new Promise((resolve) => setTimeout(resolve,10));
+      }
+      expect(blocked).toBe(true);
+      await sql`update public.org_members set role='viewer' where org_id=${actor.orgId} and user_id=${actor.userId}`;
+    });
+    expect((await pending!).status).toBe(403); expect(await counts(actor.orgId)).toEqual(before);
+  });
+
 });

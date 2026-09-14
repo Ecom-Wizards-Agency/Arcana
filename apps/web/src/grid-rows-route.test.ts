@@ -159,7 +159,10 @@ describe('Grid rows route runtime', () => {
   function database() {
     const close = vi.fn(async () => {});
     const transaction = { sql: vi.fn(async () => []) as unknown as QueryHandle['sql'] };
-    const begin = vi.fn(async (operation: (sql: QueryHandle['sql']) => Promise<unknown>) => operation(transaction.sql));
+    const begin = vi.fn(async (mode: string, operation: (sql: QueryHandle['sql']) => Promise<unknown>) => {
+      expect(mode).toBe('read only');
+      return operation(transaction.sql);
+    });
     const sql = Object.assign(vi.fn(), { begin }) as unknown as RequestDatabase['sql'];
     return { handle: { sql, close }, close, transaction, begin };
   }
@@ -176,7 +179,7 @@ describe('Grid rows route runtime', () => {
     const settle = gate();
     const closing = gate();
     const close = gate();
-    db.begin.mockImplementation(async (operation) => {
+    db.begin.mockImplementation(async (_mode, operation) => {
       const outcome = await Promise.allSettled([operation(db.transaction.sql)]);
       entered.release();
       await settle.promise;
@@ -214,7 +217,7 @@ describe('Grid rows route runtime', () => {
 
   it.each(['commit', 'close'] as const)('refuses a prepared successful payload when %s fails', async (failure) => {
     const db = database();
-    if (failure === 'commit') db.begin.mockImplementation(async (operation) => {
+    if (failure === 'commit') db.begin.mockImplementation(async (_mode, operation) => {
       await operation(db.transaction.sql);
       throw new Error('synthetic private commit failure');
     });
