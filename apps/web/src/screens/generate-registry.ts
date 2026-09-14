@@ -7,10 +7,15 @@ const screens = fileURLToPath(new URL('.', import.meta.url));
 const app = fileURLToPath(new URL('../../app/', import.meta.url));
 const registry = join(screens, 'registry.ts');
 const source = readFileSync(registry, 'utf8');
-const ids = readdirSync(screens, { withFileTypes: true })
-  .filter((entry) => entry.isDirectory() && existsSync(join(screens, entry.name, 'descriptor.ts')))
-  .map((entry) => entry.name).sort();
-const symbol = (id: string): string => id.replaceAll('-', '_');
+function descriptorPaths(directory: string, prefix = ''): string[] {
+  return readdirSync(directory, { withFileTypes: true }).filter((entry) => entry.isDirectory()).flatMap((entry) => {
+    const path = prefix + entry.name;
+    const child = join(directory, entry.name);
+    return [...(existsSync(join(child, 'descriptor.ts')) ? [path] : []), ...descriptorPaths(child, path + '/')];
+  });
+}
+const ids = descriptorPaths(screens).sort();
+const symbol = (id: string): string => id.replaceAll('-', '_').replaceAll('/', '_');
 const next = [
   '// Generated imports: run src/screens/generate-registry.ts after adding a descriptor.',
   "import type { ScreenMetadata } from './types';",

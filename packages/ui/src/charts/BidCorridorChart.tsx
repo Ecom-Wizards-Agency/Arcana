@@ -1,22 +1,10 @@
 'use client';
 import { useMemo, useState, type ReactNode } from 'react';
 import { formatValue } from '../format.js';
-import { W, H, PAD, PLOT_W, PLOT_H, weekKey, linePath, lastDefined, niceTicks, GranularityToggle, type Granularity, type TrendPoint } from './TrendChart.js';
+import { W, H as DEFAULT_H, PAD as DEFAULT_PAD, weekKey, linePath, lastDefined, niceTicks, stackEndLabelYs, GranularityToggle, type Granularity, type TrendPoint } from './TrendChart.js';
 
-/** One target's corridor on one day: the market band and the plotted lines. */
-export interface BidCorridorPoint {
-  date: string;
-  /** Amazon's suggested-bid corridor edges and midpoint. Null where none synced. */
-  low: number | null;
-  median: number | null;
-  high: number | null;
-  /** The bid in force (a step function), realized CPC, and max-potential CPC. */
-  bid: number | null;
-  cpc: number | null;
-  maxCpc: number | null;
-  /** The modifiers that composed `maxCpc`, in application order. */
-  components: readonly { name: string; pct: number }[];
-}
+import type { TargetCorridorPoint } from '@wizard-ads/shared';
+export type BidCorridorPoint = TargetCorridorPoint;
 
 export interface BidCorridorChartProps {
   /**
@@ -25,6 +13,9 @@ export interface BidCorridorChartProps {
    * did with "Bid corridor" whenever no target was selected.
    */
   title?: string;
+  visible?: Partial<Record<'bid' | 'cpc' | 'suggested' | 'maxCpc', boolean>>;
+  compact?: boolean;
+  placementLines?: readonly string[];
   ariaLabel: string;
   currencyCode: string;
   points: readonly BidCorridorPoint[];
@@ -116,13 +107,21 @@ export function BidCorridorChart({
   points,
   caption,
   aggregatable = false,
+  visible,
+  compact = false,
+  placementLines = [],
 }: BidCorridorChartProps): ReactNode {
+  const H = compact ? 360 : DEFAULT_H;
+  const PAD = compact ? { top: 14, right: 96, bottom: 28, left: 52 } : DEFAULT_PAD;
+  const PLOT_W = W - PAD.left - PAD.right;
+  const PLOT_H = H - PAD.top - PAD.bottom;
   const [hover, setHover] = useState<number | null>(null);
   const [gran, setGran] = useState<Granularity>('D');
   const context = useMemo(() => ({ currencyCode, locale: 'en-US' }), [currencyCode]);
+  const evidencePoints = useMemo(() => aggregateBidCorridorPoints(points, aggregatable ? gran : 'D'), [points, aggregatable, gran]);
   const viewPoints = useMemo(
-    () => aggregateBidCorridorPoints(points, aggregatable ? gran : 'D'),
-    [aggregatable, gran, points],
+    () => aggregateBidCorridorPoints(points.map((p) => ({ ...p, bid: visible?.bid === false ? null : p.bid, cpc: visible?.cpc === false ? null : p.cpc, low: visible?.suggested === false ? null : p.low, median: visible?.suggested === false ? null : p.median, high: visible?.suggested === false ? null : p.high, maxCpc: visible?.maxCpc === false ? null : p.maxCpc })), aggregatable ? gran : 'D'),
+    [aggregatable, gran, points, visible],
   );
 
   const dates = viewPoints.map((point) => point.date);
@@ -176,7 +175,7 @@ export function BidCorridorChart({
           ) : null}
         </div>
       )}
-      {legend}
+      {compact ? null : legend}
     </>
   );
 
@@ -186,8 +185,9 @@ export function BidCorridorChart({
         {head}
         <div className="wa-empty" style={{ padding: '2rem 1rem' }}>
           <p className="wa-empty__body">
-            No bid corridor has been synced for this target yet. The daily sync retrieves Amazon&apos;s
-            suggested-bid band and stores it as a series; until it runs there is nothing to draw here.
+            {points.some((p) => [p.bid,p.cpc,p.low,p.median,p.high,p.maxCpc].some((value) => value !== null))
+              ? 'The selected series are hidden or not measured. Turn on a measured series to draw it.'
+              : "No bid corridor has been synced for this target yet. The daily sync retrieves Amazon's suggested-bid band and stores it as a series; until it runs there is nothing to draw here."}
           </p>
         </div>
       </figure>
@@ -214,7 +214,7 @@ export function BidCorridorChart({
   const maxCpcPath = stepPath(viewPoints.map((p) => ({ date: p.date, value: p.maxCpc })), x, y);
 
   return (
-    <figure style={{ margin: 0 }} data-testid="bid-corridor">
+    <figure style={{ margin: 0, position: 'relative' }} data-testid="bid-corridor">
       {head}
 
       <div style={{ position: 'relative' }}>
@@ -268,6 +268,13 @@ export function BidCorridorChart({
           {maxCpcPath === '' ? null : (
             <path d={maxCpcPath} fill="none" stroke={CORRIDOR_COLORS.maxCpc} strokeWidth={2} strokeDasharray="2 3" strokeLinecap="round" strokeLinejoin="round" />
           )}
+          {placementLines.map((name) => {
+            const d = stepPath(evidencePoints.map((p) => {
+              const component = p.components.find((c) => c.name === name);
+              return { date: p.date, value: component && p.bid !== null ? p.bid * (1 + component.pct / 100) : null };
+            }), x, y);
+            return d ? <path key={name} aria-label={`${name} exposure`} d={d} fill="none" stroke={CORRIDOR_COLORS.maxCpc} strokeDasharray="5 5" strokeWidth={1} /> : null;
+          })}
           {/* CPC: exact Electric Indigo with a contrast outline in dark mode. */}
           {cpcPath === '' ? null : (
             <>
@@ -288,7 +295,7 @@ export function BidCorridorChart({
             <path d={bidPath} fill="none" stroke={CORRIDOR_COLORS.bid} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
           )}
 
-          <CorridorEndpointLabels points={points} x={x} y={y} context={context} />
+          <CorridorEndpointLabels points={viewPoints} x={x} y={y} context={context} named={compact} />
 
           {hovered === null ? null : (
             <CorridorHoverDots point={viewPoints[hovered]} index={hovered} x={x} y={y} />
@@ -300,9 +307,9 @@ export function BidCorridorChart({
         )}
       </div>
 
-      <figcaption className="wa-hint" style={{ marginTop: '0.25rem' }}>{caption ?? ''}</figcaption>
+      {compact && caption === undefined ? null : <figcaption className="wa-hint" style={{ marginTop: '0.25rem' }}>{caption ?? ''}</figcaption>}
 
-      <details style={{ marginTop: '0.5rem' }}>
+      <details style={compact ? { position: 'absolute', top: 0, right: 0, zIndex: 1, background: 'var(--wa-surface-2)' } : { marginTop: '0.5rem' }}>
         <summary className="wa-hint" style={{ cursor: 'pointer' }}>Show the numbers</summary>
         <div className="wa-tablewrap" style={{ marginTop: '0.5rem', maxHeight: '16rem', overflowY: 'auto' }}>
           <table className="wa-table wa-table--numeric">
@@ -438,33 +445,39 @@ function CorridorEndpointLabels({
   x,
   y,
   context,
+  named,
 }: {
+  named: boolean;
   points: readonly BidCorridorPoint[];
   x: (index: number) => number;
   y: (value: number) => number;
   context: { currencyCode: string; locale: string };
 }): ReactNode {
   const endpoints = [
-    { points: points.map((point) => ({ date: point.date, value: point.median })), offset: -12 },
-    { points: points.map((point) => ({ date: point.date, value: point.maxCpc })), offset: 14 },
-    { points: points.map((point) => ({ date: point.date, value: point.cpc })), offset: 2 },
-    { points: points.map((point) => ({ date: point.date, value: point.bid })), offset: 14 },
+    { points: points.map((point) => ({ date: point.date, value: point.median })), offset: -12, label: 'Suggested', color: CORRIDOR_COLORS.suggested },
+    { points: points.map((point) => ({ date: point.date, value: point.maxCpc })), offset: 14, label: 'Max CPC', color: CORRIDOR_COLORS.maxCpc },
+    { points: points.map((point) => ({ date: point.date, value: point.cpc })), offset: 2, label: 'CPC', color: CORRIDOR_COLORS.cpc },
+    { points: points.map((point) => ({ date: point.date, value: point.bid })), offset: 14, label: 'Bid', color: CORRIDOR_COLORS.bid },
   ];
+  const measured = endpoints.flatMap((entry) => {
+    const endpoint = lastDefined(entry.points);
+    return endpoint === null ? [] : [{ ...entry, endpoint }];
+  });
+  const labelYs = stackEndLabelYs(measured.map((entry) => y(entry.endpoint.value) + 4), 22, 332);
   return (
     <>
-      {endpoints.map((entry, index) => {
-        const endpoint = lastDefined(entry.points);
-        if (endpoint === null) return null;
+      {measured.map((entry, index) => {
+        const endpoint = entry.endpoint;
         return (
           <text
             key={index}
             x={x(endpoint.index) + 10}
-            y={y(endpoint.value) + entry.offset}
-            fill="var(--wa-viz-ink)"
+            y={named ? labelYs[index] : y(endpoint.value) + entry.offset}
+            fill={named ? entry.color : 'var(--wa-viz-ink)'}
             fontSize={12}
             style={{ fontVariantNumeric: 'tabular-nums' }}
           >
-            {formatValue(endpoint.value, 'money', context)}
+            {named ? `${entry.label} ` : ''}{formatValue(endpoint.value, 'money', context)}
           </text>
         );
       })}

@@ -481,6 +481,21 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
   }, [view, viewReady]);
 
+  // Target drawers preserve their namespaced state in the same view envelope.
+  useEffect(() => {
+    const receive = (event: Event) => {
+      if (!(event instanceof CustomEvent) || typeof event.detail !== 'string') return;
+      const incoming = parseGridView(event.detail);
+      if (!incoming || incoming.entity !== props.entity) return;
+      setView((current) => ({ ...current,
+        ...(incoming.target === undefined ? {} : { target: incoming.target }),
+        ...(incoming.compare === undefined ? {} : { compare: incoming.compare }),
+      }));
+    };
+    window.addEventListener('arcana:target-view', receive);
+    return () => window.removeEventListener('arcana:target-view', receive);
+  }, [props.entity]);
+
   // Restore the implicit layout AdLabs remembers per user, and list the named
   // views we have that they do not.
   useEffect(() => {

@@ -1,11 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent, ReactNode } from 'react';
 import type { BidHistoryPayload } from '../../app/_lib/bid-corridor';
 import { bidHistoryKpiTiles } from '../optimizer/view';
 import { KpiTile } from './dashboard';
 import { BidCorridorChart } from '@wizard-ads/ui';
+import { Target360 } from '../screens/targets/target360';
+import type { Target360Model } from '../screens/targets/model';
 
 export interface BidHistoryModalProps {
   profileId: string;
@@ -23,7 +25,7 @@ function focusable(dialog: HTMLDivElement): HTMLElement[] {
   );
 }
 
-/** One target's asynchronous, read-only bid-history drill-down. */
+/** Shared target analysis and staged bid review over the originating grid. */
 export function BidHistoryModal({
   profileId,
   targetId,
@@ -34,8 +36,24 @@ export function BidHistoryModal({
   const [state, setState] = useState<
     | { status: 'loading' }
     | { status: 'error'; message: string }
-    | { status: 'ready'; payload: BidHistoryPayload }
+    | { status: 'ready'; payload: BidHistoryPayload; model: Target360Model }
   >({ status: 'loading' });
+  const [origin] = useState(() => typeof window !== 'undefined' && window.location.pathname === '/grid' ? `${window.location.pathname}${window.location.search}` : '/grid');
+  const returnLocation = useRef(origin);
+  const close = useCallback(() => {
+    window.history.replaceState(window.history.state, '', returnLocation.current);
+    onClose();
+  }, [onClose]);
+  useEffect(() => {
+    const preserve = (event: Event) => {
+      if (!(event instanceof CustomEvent) || typeof event.detail !== 'string') return;
+      const url = new URL(origin, window.location.origin);
+      url.searchParams.set('view', event.detail);
+      returnLocation.current = `${url.pathname}${url.search}`;
+    };
+    window.addEventListener('arcana:target-view', preserve);
+    return () => window.removeEventListener('arcana:target-view', preserve);
+  }, [origin]);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
 
@@ -47,15 +65,15 @@ export function BidHistoryModal({
     const onKey = (event: globalThis.KeyboardEvent): void => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
-      onClose();
+      close();
     };
     window.addEventListener('keydown', onKey);
     return () => {
       window.removeEventListener('keydown', onKey);
       document.body.style.overflow = previousOverflow;
-      window.requestAnimationFrame(() => previousFocus?.focus());
+      previousFocus?.focus();
     };
-  }, [onClose]);
+  }, [close]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -68,20 +86,21 @@ export function BidHistoryModal({
     setState({ status: 'loading' });
     void (async () => {
       try {
-        const response = await fetch(`/api/bid-history?${query.toString()}`, {
+        const path = `/api/targets/${encodeURIComponent(targetId)}`;
+        const response = await fetch(`${path}?${query.toString()}`, {
           signal: controller.signal,
         });
         const payload = (await response.json().catch(() => null)) as
-          | (BidHistoryPayload & { error?: never })
+          | (Target360Model & { error?: never })
           | { error?: string }
           | null;
-        if (!response.ok || payload === null || !('target' in payload)) {
+        if (!response.ok || payload === null || !('payload' in payload)) {
           throw new Error(
             (payload !== null && 'error' in payload ? payload.error : null) ??
               `Bid history failed to load (${response.status})`,
           );
         }
-        setState({ status: 'ready', payload });
+        setState({ status: 'ready', payload: payload.payload, model: payload });
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return;
         setState({
@@ -92,6 +111,10 @@ export function BidHistoryModal({
     })();
     return () => controller.abort();
   }, [dateWindow.end, dateWindow.start, profileId, targetId]);
+
+  useEffect(() => {
+    if (state.status === 'ready') dialogRef.current?.querySelector<HTMLButtonElement>('[aria-label="Close target"]')?.focus();
+  }, [state.status]);
 
   const trapFocus = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
     if (event.key !== 'Tab' || dialogRef.current === null) return;
@@ -128,7 +151,7 @@ export function BidHistoryModal({
   }, [dateWindow.end, dateWindow.start, payload, profileId]);
 
   const dismissBackdrop = (event: MouseEvent<HTMLDivElement>): void => {
-    if (event.target === event.currentTarget) onClose();
+    if (event.target === event.currentTarget) close();
   };
 
   return (
@@ -138,11 +161,12 @@ export function BidHistoryModal({
         className="wa-bid-history-modal"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="bid-history-title"
-        aria-describedby="bid-history-subtitle"
+        aria-label={state.status === 'ready' ? title : undefined}
+        aria-labelledby={state.status === 'ready' ? undefined : 'bid-history-title'}
+        aria-describedby={state.status === 'ready' ? undefined : 'bid-history-subtitle'}
         onKeyDown={trapFocus}
       >
-        <header className="wa-bid-history-modal__head">
+        {state.status !== 'ready' ? <header className="wa-bid-history-modal__head">
           <div style={{ minWidth: 0 }}>
             <h2 id="bid-history-title" className="wa-bid-history-modal__title" title={title}>
               {title}
@@ -166,15 +190,15 @@ export function BidHistoryModal({
             type="button"
             className="wa-btn wa-btn--ghost"
             aria-label="Close bid history"
-            onClick={onClose}
+            onClick={close}
           >
             ✕
           </button>
-        </header>
+        </header> : null}
 
         <div className="wa-bid-history-modal__body">
           {state.status === 'loading' ? (
-            <div className="wa-bid-history-modal__loading" role="status">
+            <div className="wa-bid-history-modal__loading" role="status" aria-busy="true">
               Loading bid history…
             </div>
           ) : state.status === 'error' ? (
@@ -183,7 +207,7 @@ export function BidHistoryModal({
               <p className="wa-empty__body">{state.message}</p>
             </div>
           ) : (
-            <BidHistoryContent payload={state.payload} currencyCode={currencyCode} />
+            <Target360 model={state.model} currencyCode={currencyCode} back={origin} savedView={new URL(origin, window.location.origin).searchParams.get('view')} onClose={close} />
           )}
         </div>
       </div>

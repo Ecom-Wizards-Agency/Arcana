@@ -276,6 +276,8 @@ export const RecommendationEvidencePolicy = z.object({
 export type RecommendationEvidencePolicy = z.infer<typeof RecommendationEvidencePolicy>;
 
 export const TenantStrategy = z.object({
+  /** Explicit organic-rank protection for manually staged bid decreases. */
+  rank_protection: z.object({ protection_rank: z.number().int().positive() }).strict().optional(),
   schema: z.literal('wizard-ads.tenant-strategy.v1'),
   refreshed_at: IsoDate.optional(),
   pacing: PacingStrategy,

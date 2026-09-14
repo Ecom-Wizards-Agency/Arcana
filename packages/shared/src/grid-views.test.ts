@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeGridRowColumns, encodeGridRowColumns, encodeGridPerformance, decodeGridPerformance, parseGridView, serializeGridView, type GridSavedView, type GridTransportRow } from './grid-views.js';
+import { decodeGridRowColumns, encodeGridRowColumns, encodeGridPerformance, decodeGridPerformance, parseGridView, serializeGridView, type GridSavedView, type GridTransportRow, GridSavedView as GridSavedViewSchema } from './grid-views.js';
 const view: GridSavedView = {
   id: 'synthetic', name: '分析 café', entity: 'targets', columns: ['targeting', 'spend'],
   widths: { targeting: 301 }, pinned: ['targeting'], density: 'compact',
@@ -72,5 +72,34 @@ describe('lossless grid row columns', () => {
     expect(() => decodeGridRowColumns({ ...encoded, comparison: { ...encoded.comparison, spend: [null, null] } })).toThrow();
     expect(() => decodeGridRowColumns({ ...encoded, tags: { 2: [] } })).toThrow();
     expect(decodeGridRowColumns(encodeGridRowColumns([]))).toEqual([]);
+const target = {
+  series: { bid: true, realisedCpc: true, suggestedBand: true, maxCpc: false, dailySpend: true, acos: true },
+  maxCpcExpanded: true,
+};
+const compare = Array.from({ length: 4 }, (_, index) => ({
+  profileId: '00000000-0000-4000-8000-000000000001', targetId: `synthetic-${index}`,
+}));
+describe('Target 360 saved state', () => {
+  it('preserves all four comparisons, toggles and originating grid fields', () => {
+    const saved = { ...view, target, compare };
+    const restored = parseGridView(serializeGridView(saved));
+    expect(restored).toEqual(saved);
+    expect(restored?.compare).toHaveLength(4);
+  });
+  it('leaves existing saved views unchanged', () => {
+    expect(parseGridView(serializeGridView(view))).toEqual(view);
+    expect(parseGridView(serializeGridView(view))).not.toHaveProperty('target');
+  });
+  it('refuses a fifth target', () => {
+    expect(GridSavedViewSchema.safeParse({ ...view, compare: [...compare, { ...compare[0]!, targetId: 'fifth' }] }).success).toBe(false);
+  });
+  it('refuses duplicate target identities', () => {
+    expect(GridSavedViewSchema.safeParse({ ...view, compare: [compare[0], compare[0]] }).success).toBe(false);
+  });
+  it('distinguishes identical target identifiers in different profiles', () => {
+    expect(GridSavedViewSchema.safeParse({ ...view, compare: [compare[0], { ...compare[0]!, profileId: '00000000-0000-4000-8000-000000000002' }] }).success).toBe(true);
+  });
+  it('refuses unknown series instead of silently losing state', () => {
+    expect(GridSavedViewSchema.safeParse({ ...view, target: { ...target, series: { ...target.series, invented: true } } }).success).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation';
-import { loadBidHistory, loadTargetRanks } from '../../../app/_lib/bid-corridor';
+import { loadTarget360 } from './model';
 import { periodFromParams, todayIso } from '../../../app/_lib/periods';
 import { listProfiles } from '../../../app/_lib/profiles';
 import { gridBackLocation } from '../../server/view-state';
@@ -17,12 +17,11 @@ export async function load(access: ScreenActor, input: ScreenParams) {
     const profiles = await listProfiles(handle, actor.orgId);
     const profile = access.selectProfile(profiles, access.requestedProfile);
     if (profile === null) return null;
-    const payload = await loadBidHistory(handle, { orgId: actor.orgId, profileId: profile.id,
+    const model = await loadTarget360(handle, { orgId: actor.orgId, profileId: profile.id,
       targetId: input.params['id'] ?? '', from: period.start, to: period.end });
-    if (payload === null) return null;
-    const ranks = await loadTargetRanks(handle, actor.orgId, profile.id, payload);
-    return { payload, ranks, currencyCode: profile.currencyCode };
+    if (model === null) return null;
+    return { ...model, currencyCode: profile.currencyCode };
   });
   if (data === null) notFound();
-  return { view: 'ready' as const, ...data, back: gridBackLocation(query['back']) };
+  return { view: 'ready' as const, ...data, back: gridBackLocation(query['back']), savedView: typeof query['view'] === 'string' ? query['view'] : null, ...(query['limits'] === '1' ? { showLimits: true } : {}) };
 }
