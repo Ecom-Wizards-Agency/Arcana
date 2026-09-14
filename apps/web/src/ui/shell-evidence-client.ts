@@ -1,30 +1,52 @@
+import { shellFetchActivity } from './shell-fetch-activity';
 import type { ReadShellEvidence, ShellEvidence } from './shell-evidence';
 
 export const SHELL_EVIDENCE_TTL_MS = 60_000;
 const IDLE_TIMEOUT_MS = 1_000;
 
-/** Never start during document loading. Both idle implementations are cancellable. */
+export const SHELL_NETWORK_IDLE_MS = 500;
+
+/** Wait for load, completed data reads and parsing, then a quiet 500 ms and an idle turn. */
 export function afterLoadAndIdle(run: () => void, signal: AbortSignal): void {
   let idle: number | undefined;
   let timer: number | undefined;
+  let unsubscribe: (() => void) | undefined;
+  let loadedAt = 0;
+  const activity = shellFetchActivity();
+  const clearScheduled = () => {
+    if (idle !== undefined) { window.cancelIdleCallback(idle); idle = undefined; }
+    if (timer !== undefined) { window.clearTimeout(timer); timer = undefined; }
+  };
   const cancel = () => {
+    clearScheduled();
+    unsubscribe?.();
     window.removeEventListener('load', loaded);
-    if (idle !== undefined) window.cancelIdleCallback(idle);
-    if (timer !== undefined) window.clearTimeout(timer);
     signal.removeEventListener('abort', cancel);
   };
+  const quietFor = () => performance.now() - Math.max(loadedAt, activity?.lastSettledAt ?? 0);
   const start = () => {
+    idle = undefined;
+    timer = undefined;
+    if (signal.aborted) return;
+    // A new fetch may have started since the idle callback was queued.
+    if ((activity?.pending ?? 0) > 0 || quietFor() < SHELL_NETWORK_IDLE_MS) { schedule(); return; }
     cancel();
-    if (!signal.aborted) run();
+    run();
+  };
+  const schedule = () => {
+    clearScheduled();
+    if (signal.aborted || (activity?.pending ?? 0) > 0) return;
+    const remaining = SHELL_NETWORK_IDLE_MS - quietFor();
+    if (remaining > 0) timer = window.setTimeout(schedule, remaining);
+    else if (typeof window.requestIdleCallback === 'function') {
+      idle = window.requestIdleCallback(start, { timeout: IDLE_TIMEOUT_MS });
+    } else timer = window.setTimeout(start, 0);
   };
   const loaded = () => {
     window.removeEventListener('load', loaded);
-    if (signal.aborted) return;
-    if (typeof window.requestIdleCallback === 'function') {
-      idle = window.requestIdleCallback(start, { timeout: IDLE_TIMEOUT_MS });
-    } else {
-      timer = window.setTimeout(start, IDLE_TIMEOUT_MS);
-    }
+    loadedAt = performance.now();
+    unsubscribe = activity?.subscribe(schedule);
+    schedule();
   };
   if (signal.aborted) return;
   signal.addEventListener('abort', cancel, { once: true });

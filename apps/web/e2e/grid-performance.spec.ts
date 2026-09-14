@@ -81,8 +81,10 @@ test('initial document stays small while one counted request powers the complete
 
   const rowResponses: PlaywrightResponse[] = [];
   const shellRequests: PlaywrightRequest[] = [];
+  const pageDataRequests: PlaywrightRequest[] = [];
   page.on('request', (request) => {
     if (request.headers()['next-action'] !== undefined) shellRequests.push(request);
+    else if (['fetch', 'xhr'].includes(request.resourceType())) pageDataRequests.push(request);
   });
   page.on('response', (response) => {
     if (new URL(response.url()).pathname === '/api/grid/rows') rowResponses.push(response);
@@ -125,7 +127,7 @@ test('initial document stays small while one counted request powers the complete
   expect(responseBody.byteLength).toBeLessThanOrEqual(4_000_000);
 
   // This check runs after usableMs is captured. Shell evidence must settle
-  // independently, without becoming a counted Grid request or preceding load.
+  // independently, without becoming a counted Grid request or competing with page data.
   await expect(page.locator('.wa-shell-chips')).toHaveAttribute('aria-busy', 'false');
   const loadEndedAt = await page.evaluate(() => {
     const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
@@ -134,6 +136,11 @@ test('initial document stays small while one counted request powers the complete
   const measuredShellRequests = shellRequests.filter((request) => new URL(request.url()).searchParams.get('from') === DATE);
   expect(measuredShellRequests).toHaveLength(1);
   expect(measuredShellRequests[0]!.timing().startTime).toBeGreaterThanOrEqual(loadEndedAt);
+  const shellStartedAt = measuredShellRequests[0]?.timing().startTime;
+  const pageReads = pageDataRequests.map((request) => request.timing()).filter((timing) =>
+    timing.startTime >= documentResponse!.request().timing().startTime && timing.startTime < (shellStartedAt ?? Infinity));
+  const shellAfterPageDataMs = shellStartedAt === undefined ? null : shellStartedAt
+    - Math.max(...pageReads.map((timing) => timing.startTime + timing.responseEnd));
   expect(rowResponses).toHaveLength(1);
 
   const exportButton = page.getByRole('button', { name: /Export CSV/ });
@@ -155,6 +162,19 @@ test('initial document stays small while one counted request powers the complete
     rows: payload.rowCount,
     requests: rowResponses.length,
     shellRequests: measuredShellRequests.length,
+    gridRequestStartMs: gridResponse.request().timing().startTime - documentResponse!.request().timing().startTime,
+    gridRequestDurationMs: gridResponse.request().timing().responseEnd,
+    documentDurationMs: documentResponse!.request().timing().responseEnd,
+    gridServerTiming: gridResponse.headers()['server-timing'],
+    shellAfterGridMs: measuredShellRequests.length === 0 ? null : measuredShellRequests[0]!.timing().startTime - (gridResponse.request().timing().startTime + gridResponse.request().timing().responseEnd),
+    shellAfterPageDataMs,
+    pageDataRequests: pageReads.length,
+    shellRequestDurationMs: measuredShellRequests[0]?.timing().responseEnd ?? null,
+    browser: await page.evaluate(() => {
+      const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
+      return { domContentLoadedMs: navigation.domContentLoadedEventEnd, loadMs: navigation.loadEventEnd,
+        scriptsBytes: performance.getEntriesByType('resource').filter((entry) => (entry as PerformanceResourceTiming).initiatorType === 'script').reduce((bytes, entry) => bytes + (entry as PerformanceResourceTiming).decodedBodySize, 0) };
+    }),
     shellAfterLoadMs: Math.round((measuredShellRequests[0]!.timing().startTime - loadEndedAt) * 100) / 100,
   };
   console.info(JSON.stringify({ event: 'openspell.grid_boundary_e2e', ...measurements }));
@@ -163,6 +183,9 @@ test('initial document stays small while one counted request powers the complete
     contentType: 'application/json',
   });
 
+  expect(measurements.shellAfterGridMs).toBeGreaterThanOrEqual(500);
+  expect(pageReads.every((timing) => timing.responseEnd >= 0)).toBe(true);
+  expect(shellAfterPageDataMs).toBeGreaterThanOrEqual(500);
   expect(usableMs).toBeLessThan(
     process.env['CI'] ? CI_USABLE_LIMIT_MS : REFERENCE_USABLE_LIMIT_MS,
   );
