@@ -7,7 +7,7 @@ export const descriptor = {
   "nav": {
     "group": "creators",
     "label": "Daily queue",
-    "icon": "check",
+    "icon": "icon/inbox",
     "order": 0
   },
   "guard": null,

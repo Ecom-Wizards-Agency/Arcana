@@ -1,3 +1,5 @@
+import { SCREEN_REGISTRY } from '../src/screens/registry-metadata';
+import { ShellEvidenceActionProvider, type ShellEvidence } from '../src/ui/shell-evidence';
 import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
 import { Suspense, type ReactNode } from 'react';
@@ -105,6 +107,14 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     }
   }
 
+  // Layouts persist across query navigation. The client supplies the current profile;
+  // this read-only server function rechecks identity, membership and roster every time.
+  async function readShellEvidence(requested: string | null): Promise<ShellEvidence | null> {
+    'use server';
+    const { readShellEvidence: read } = await import('../src/ui/shell-evidence-server');
+    return read(requested);
+  }
+
   return (
     // The theme stamp below rewrites `data-theme` before React sees the
     // document, which is exactly the mismatch this attribute exists for.
@@ -119,6 +129,8 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
       </head>
       <body>
         <ToastProvider>
+          <ShellEvidenceActionProvider key={user?.id ?? 'anonymous'} read={readShellEvidence} enabled={user !== null}
+            paths={SCREEN_REGISTRY.filter((screen) => screen.route === 'page').map((screen) => screen.path)}>
           {/*
             The layout reads the session once for the frame. Anonymous screens
             get a quiet public header and no unreachable operator navigation;
@@ -147,6 +159,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
           {feedbackEnabled ? (
             <BugWidget appVersion={process.env['WIZARD_ADS_APP_VERSION'] ?? null} />
           ) : null}
+        </ShellEvidenceActionProvider>
         </ToastProvider>
       </body>
     </html>

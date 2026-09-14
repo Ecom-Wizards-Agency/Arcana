@@ -6,7 +6,7 @@ export const descriptor = {
   id: "campaigns",
   path: "/campaigns",
   route: "page",
-  nav: { "group": "act", "label": "Create campaigns", "icon": "layers", "order": 1 },
+  nav: { "group": "act", "label": "Create campaigns", "icon": "icon/create-campaigns", "order": 1 },
   guard: { "kind": "requested", "canonicalProfile": true },
   prefetch: "cheap",
   rollout: { "enabled": true },

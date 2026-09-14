@@ -12,7 +12,7 @@ const PRESETS = [
 
 /** Prove the native disclosure opens and every promised preset is actionable. */
 export async function expectDateRangePresets(page: Page): Promise<void> {
-  const picker = page.locator('details.wa-date-range');
+  const picker = page.locator('.wa-topbar details.wa-date-range:not(.wa-shell-comparison)');
   await expect(picker).toHaveCount(1);
 
   const trigger = picker.locator('summary');

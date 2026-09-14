@@ -6,7 +6,7 @@ export const descriptor = {
   id: "time-machine",
   path: "/time-machine",
   route: "page",
-  nav: { "group": "act", "label": "Change queue", "icon": "history", "order": 2, "badgeSource": "change-queue" },
+  nav: { "group": "act", "label": "Change queue", "icon": "icon/change-queue", "order": 2, "badgeSource": "change-queue" },
   guard: { "kind": "requested" },
   prefetch: "expensive",
   rollout: { "enabled": true },

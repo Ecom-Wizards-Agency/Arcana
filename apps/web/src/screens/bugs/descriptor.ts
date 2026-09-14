@@ -6,7 +6,7 @@ export const descriptor = {
   id: "bugs",
   path: "/bugs",
   route: "page",
-  nav: { "group": "utility", "label": "Bugs", "icon": "bug", "order": 5 },
+  nav: { "group": "utility", "label": "Bugs", "icon": "icon/inbox", "order": 5 },
   guard: { "kind": "requested" },
   prefetch: "cheap",
   rollout: { "enabled": true },

@@ -6,7 +6,7 @@ export const descriptor = {
   id: "roadmap",
   path: "/roadmap",
   route: "page",
-  nav: { "group": "utility", "label": "Roadmap", "icon": "map", "order": 6 },
+  nav: { "group": "utility", "label": "Roadmap", "icon": "icon/timeline", "order": 6 },
   guard: { "kind": "requested" },
   prefetch: "cheap",
   rollout: { "enabled": true },

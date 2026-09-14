@@ -6,6 +6,7 @@ import { usePathname, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { NavGroup, NavLink } from './nav-links';
+import { useShellEvidence } from './shell-evidence';
 import { NavIcon } from './nav-icons';
 
 const CLOSED_KEY = 'openspell.nav.closed.v2';
@@ -19,7 +20,7 @@ export function SidebarNav({ groups }: { groups: readonly NavGroup[] }): ReactNo
   const workflowGroups = groups.filter((group) => group.placement === 'workflow');
   const afterWorkflowLinks = groups.filter((group) => group.placement === 'after-workflow').flatMap((group) => group.links);
   const utilityLinks = groups.filter((group) => group.placement === 'utility').flatMap((group) => group.links);
-  const defaultClosed = workflowGroups.map((group) => group.id);
+  const defaultClosed: readonly string[] = [];
   const [closed, setClosed] = useState<readonly string[]>(defaultClosed);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -105,11 +106,17 @@ export function SidebarNav({ groups }: { groups: readonly NavGroup[] }): ReactNo
       <footer className="wa-sidebar-utilities">
         <nav aria-label="Product and account">
           <ul className="wa-navlist">
-            {utilityLinks.map((link) => (
+            {utilityLinks.slice(0, 1).map((link) => (
               <NavLinkRow key={link.href} link={link} pathname={pathname} profile={profile} entity={entity} />
             ))}
           </ul>
         </nav>
+        <details className="wa-shell-more" open={collapsed}>
+          <summary>More</summary>
+          <nav aria-label="More destinations"><ul className="wa-navlist">
+            {utilityLinks.slice(1).map((link) => <NavLinkRow key={link.href} link={link} pathname={pathname} profile={profile} entity={entity} />)}
+          </ul></nav>
+        </details>
 
         <button
           type="button"
@@ -148,25 +155,23 @@ function NavLinkRow({
   profile: string | null;
   entity: string;
 }): ReactNode {
-  const current = pathname !== null && isCurrent(link.href, pathname, entity);
-  return (
-    <li>
-      <Link
-        href={withProfile(link.href, profile)}
-        prefetch={link.prefetch ? null : false}
-        className="wa-navlink"
-        title={link.label}
-        {...(current ? { 'aria-current': 'page' as const } : {})}
-      >
-        <span aria-hidden="true" className="wa-navlink-icon">
-          <NavIcon icon={link.icon} />
-        </span>
-        <span className="wa-navlink-label">{link.label}</span>
-        {link.tag === undefined ? null : <span className="wa-navlink-tag">{link.tag}</span>}
-        {link.badgeSource === undefined ? null : <span data-badge-source={link.badgeSource} />}
-      </Link>
-    </li>
-  );
+  const evidence = useShellEvidence();
+  const count = link.badgeSource === undefined ? null : evidence?.badges[link.badgeSource];
+  const current = !link.disabled && pathname !== null && isCurrent(link.href, pathname, entity);
+  const content = <>
+    <span aria-hidden="true" className="wa-navlink-icon"><NavIcon icon={link.icon} /></span>
+    <span className="wa-navlink-label">{link.label}</span>
+    {link.tag === undefined ? null : <span className="wa-navlink-tag">{link.tag}</span>}
+    {link.badgeSource === undefined ? null : <span className="wa-shell-badge" data-badge-source={link.badgeSource}
+      aria-label={count == null ? 'Count unavailable' : `${count} ${link.badgeSource === 'timeline' ? 'active experiments' : 'pending review'}`}>
+      {count ?? '—'}
+    </span>}
+  </>;
+  return <li>
+    {link.disabled ? <span className="wa-navlink" aria-disabled="true" title="Planned">{content}</span> :
+      <Link href={withProfile(link.href, profile)} prefetch={link.prefetch ? null : false}
+        className="wa-navlink" title={link.label} aria-current={current ? 'page' : undefined}>{content}</Link>}
+  </li>;
 }
 
 /** Reflect the collapse state onto the root so CSS can resize the whole frame. */

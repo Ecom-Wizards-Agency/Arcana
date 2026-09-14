@@ -7,7 +7,7 @@ export const descriptor = {
   "nav": {
     "group": "performance",
     "label": "Market position",
-    "icon": "gauge",
+    "icon": "icon/market-position",
     "order": 5
   },
   "guard": null,

@@ -6,7 +6,7 @@ export const descriptor = {
   id: "settings",
   path: "/settings",
   route: "redirect",
-  nav: { "group": "utility", "label": "Settings", "icon": "cog", "order": 0 },
+  nav: { "group": "utility", "label": "Settings", "icon": "icon/settings", "order": 0 },
   guard: null,
   prefetch: "cheap",
   rollout: { "enabled": true },

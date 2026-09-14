@@ -6,7 +6,7 @@ export const descriptor = {
   id: "dayparting",
   path: "/dayparting",
   route: "page",
-  nav: { "group": "research", "label": "Dayparting", "icon": "clock", "order": 2 },
+  nav: { "group": "research", "label": "Dayparting", "icon": "icon/dayparting", "order": 2 },
   guard: { "kind": "requested", "heading": "Dayparting" },
   prefetch: "expensive",
   rollout: { "enabled": true },

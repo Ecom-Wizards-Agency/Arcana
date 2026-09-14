@@ -6,7 +6,7 @@ export const descriptor = {
   id: "connect-claude",
   path: "/connect-claude",
   route: "page",
-  nav: { "group": "utility", "label": "Connect AI", "icon": "spark", "order": 4 },
+  nav: { "group": "utility", "label": "Connect AI", "icon": "icon/sponsored-prompts", "order": 4 },
   guard: { "kind": "requested", "heading": "Connect AI (MCP)" },
   prefetch: "cheap",
   rollout: { "enabled": true },

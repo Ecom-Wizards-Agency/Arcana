@@ -6,7 +6,7 @@ export const descriptor = {
   id: "ngrams",
   path: "/ngrams",
   route: "page",
-  nav: { "group": "research", "label": "N-grams", "icon": "search", "order": 0 },
+  nav: { "group": "research", "label": "N-grams", "icon": "icon/n-grams", "order": 0 },
   guard: { "kind": "requested" },
   prefetch: "cheap",
   rollout: { "enabled": true },

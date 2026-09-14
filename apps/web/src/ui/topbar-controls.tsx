@@ -1,25 +1,12 @@
 'use client';
 
-/**
- * The two controls in the top bar that need a browser: the profile switcher and
- * the theme toggle.
- *
- * The profile switcher is in the frame rather than on each screen because the
- * recon's clearest structural finding about the incumbent is that tenancy is a
- * switchable parameter on every route, never a path prefix — so the switcher
- * belongs to the chrome and rewrites `?profile=` on whatever route you are
- * standing on. Screens that do not read the parameter simply ignore it.
- *
- * WP-24 makes it the AdLabs top-right dropdown: a trigger showing the active
- * profile, a popover with a search box, the profile list, and a "Manage
- * Profiles" link. Switching is still a navigation, so the resulting URL stays
- * the shareable thing it always should have been.
- *
- * The choice is also mirrored into `PROFILE_COOKIE` on the way out. The URL
- * remains the source of truth, while server-rendered profile pages use the
- * cookie only when the URL has no profile parameter. The server validates the
- * remembered id against the active organisation's roster before using it.
- */
+/** Profile and date navigation preserve the current route's query state. */
+import type { FreshnessAssessment } from '@wizard-ads/ui';
+import type { VerdictChip } from '@wizard-ads/crosscheck-cli/pure';
+import { addDays, periodFromParams, periodFromParamsThroughToday, precedingPeriod, todayIsoInTimeZone, type Period } from '../../app/_lib/periods';
+import { comparisonLengthState, dateRangeHref } from './date-range';
+import { DateRangePicker } from './date-range-picker';
+import { useShellEvidence, useShellEvidenceLoading } from './shell-evidence';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
@@ -33,6 +20,9 @@ export interface NavProfile {
   label: string;
   countryCode: string;
   syncEnabled: boolean;
+  currencyCode?: string;
+  syncLabel?: string;
+  timezone?: string;
 }
 
 /** Two stable initials from an address, with a product fallback for address-less sessions. */
@@ -62,6 +52,7 @@ export function filterNavProfiles(
 }
 
 export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] }): ReactNode {
+  const evidence = useShellEvidence();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -134,8 +125,10 @@ export function ProfileSwitcher({ profiles }: { profiles: readonly NavProfile[] 
         onClick={() => setOpen((value) => !value)}
       >
         <span className="wa-profile-trigger-label">
-          {active === null ? 'Advertising profile' : `${active.label} · ${active.countryCode}`}
+          <strong>{active?.label ?? 'Advertising profile'}</strong>
+          <small>{active?.countryCode}{active?.currencyCode ? ` · ${active.currencyCode}` : ''} · {active?.syncEnabled ? active.syncLabel ?? 'Sync enabled' : 'Sync off'}</small>
         </span>
+        <span className="wa-profile-sync" data-tone={evidence?.freshness?.tone ?? 'muted'} title={evidence?.freshness?.headline ?? 'Freshness unavailable'}><StatusDot /></span>
         <svg aria-hidden="true" viewBox="0 0 10 10" className="wa-profile-caret">
           <path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
         </svg>
@@ -269,4 +262,128 @@ export function IdentityMenu({ email }: { email: string | null }): ReactNode {
       </div>
     </details>
   );
+}
+
+/** Registry title and resolved windows follow App Router query changes. */
+export function ScreenTopbar({ screens, today, profiles = [], now }: {
+  screens: readonly { path: string; title: string }[]; today: string; profiles?: readonly NavProfile[]; now?: string;
+}) {
+  const pathname = usePathname() ?? '/';
+  const search = useSearchParams();
+  const entity = search.get('entity') ?? 'search_terms';
+  const screen = screens.find((candidate) => candidate.path === `${pathname}?entity=${entity}`)
+    ?? screens.find((candidate) => candidate.path === pathname)
+    ?? [...screens].sort((a, b) => b.path.length - a.path.length)
+      .find((candidate) => candidate.path !== '/' && pathname.startsWith(`${candidate.path}/`));
+  const preserved = Object.fromEntries(search.entries());
+  const active = resolveActiveProfile(profiles, search.get('profile') ?? undefined);
+  const profileToday = pathname === '/creative' && active?.timezone && now ? todayIsoInTimeZone(active.timezone, new Date(now)) : today;
+  const { period, includeToday } = resolveShellPeriod(pathname, preserved, profileToday);
+  const comparison = validShellDate(search.get('compareFrom') ?? undefined) && validShellDate(search.get('compareTo') ?? undefined) && search.get('compareFrom')! <= search.get('compareTo')!
+    ? periodFromParams({ from: search.get('compareFrom')!, to: search.get('compareTo')! }, today)
+    : precedingPeriod(period);
+  const evidence = useShellEvidence();
+  const loading = useShellEvidenceLoading();
+  return <>
+    <span className="wa-shell-title" data-testid="shell-title">{screen?.title ?? 'Arcana'}</span>
+    <ShellDateControls path={pathname} period={period} comparison={comparison} today={profileToday} preserved={preserved} includeToday={includeToday} />
+    <ShellStatusChips freshness={evidence?.freshness ?? null} crosscheck={evidence?.crosscheck ?? null} loading={loading} />
+  </>;
+}
+
+function validShellDate(value: string | undefined): value is string {
+  if (value === undefined || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+/** Match the existing screen loaders' complete-day and current-day windows. */
+export function resolveShellPeriod(path: string, params: Readonly<Record<string, string | undefined>>, today: string) {
+  const from = validShellDate(params['from']) ? params['from'] : undefined;
+  const to = validShellDate(params['to']) ? params['to'] : undefined;
+  if (path === '/dayparting') {
+    const start = from ?? addDays(today, -55);
+    const end = to ?? today;
+    return { period: start <= end ? { start, end } : { start: addDays(today, -55), end: today }, includeToday: true };
+  }
+  const input = { ...(from === undefined ? {} : { from }), ...(to === undefined ? {} : { to }) };
+  const includeToday = path === '/creative';
+  return { period: includeToday ? periodFromParamsThroughToday(input, today) : periodFromParams(input, today), includeToday };
+}
+
+export function formatShellDate(value: string): string {
+  if (!validShellDate(value)) return 'Date unavailable';
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+    .format(new Date(`${value}T00:00:00Z`));
+}
+const windowWords = (period: Period): string => `${formatShellDate(period.start)} – ${formatShellDate(period.end)}`;
+
+export function ShellDateControls({ path, period, comparison, today, preserved = {}, includeToday = false }: {
+  path: string; period: Period; comparison: Period; today: string; includeToday?: boolean;
+  preserved?: Readonly<Record<string, string | undefined>>;
+}) {
+  const lengths = comparisonLengthState(period, comparison);
+  const router = useRouter();
+  const comparisonRoot = useRef<HTMLDetailsElement>(null);
+  return <div className="wa-shell-dates">
+    <DateRangePicker path={path} period={period} today={today} preserved={preserved} includeToday={includeToday}
+      {...(preserved['preset'] === undefined ? {} : { selectedPresetId: preserved['preset'] })}
+      trigger={<span className="wa-shell-window"><strong>{windowWords(period)}</strong><small>{lengths.currentDays} days</small></span>} />
+    <details className="wa-date-range wa-shell-comparison" ref={comparisonRoot}>
+      <summary className="wa-date-range__trigger" aria-label={`Comparison: ${windowWords(comparison)}`}>
+        <span className="wa-shell-window"><strong>vs {windowWords(comparison)}</strong>
+          <small>{preserved['compareFrom'] === undefined ? 'previous period' : 'custom period'} · {lengths.comparisonDays} days</small></span>
+        <span aria-hidden="true">▾</span>
+      </summary>
+      <div className="wa-date-range__popover">
+        <Link href={dateRangeHref(path, period, { ...preserved, compareFrom: undefined, compareTo: undefined })}
+          prefetch={false} onClick={() => comparisonRoot.current?.removeAttribute('open')}>Previous period</Link>
+        <form className="wa-date-range__custom" onSubmit={(event) => {
+          event.preventDefault();
+          const data = new FormData(event.currentTarget);
+          const query = new URLSearchParams();
+          for (const [key, value] of Object.entries(preserved)) if (value !== undefined) query.set(key, value);
+          query.set('compareFrom', String(data.get('compareFrom')));
+          query.set('compareTo', String(data.get('compareTo')));
+          comparisonRoot.current?.removeAttribute('open');
+          router.push(`${path}?${query.toString()}`);
+        }}>
+          <label>Comparison from<input className="wa-input" type="date" name="compareFrom" defaultValue={comparison.start} required /></label>
+          <label>Comparison to<input className="wa-input" type="date" name="compareTo" defaultValue={comparison.end} required /></label>
+          <button className="wa-btn wa-btn--sm" type="submit">Apply comparison</button>
+        </form>
+      </div>
+    </details>
+    {lengths.mismatch ? <span role="status" className="wa-shell-mismatch">
+      Date ranges differ: {lengths.currentDays} days compared with {lengths.comparisonDays} days.
+    </span> : null}
+  </div>;
+}
+
+export function ShellStatusChips({ freshness, crosscheck, loading = false }: {
+  freshness: FreshnessAssessment | null; crosscheck: VerdictChip | null; loading?: boolean;
+}) {
+  const profile = useSearchParams().get('profile');
+  const suffix = profile === null ? '' : `?profile=${encodeURIComponent(profile)}`;
+  const freshTone = freshness?.coversThrough == null ? 'muted' : freshness.tone;
+  const crosscheckBehind = crosscheck?.tone === 'good' && crosscheck.asOf != null && freshness?.coversThrough != null && crosscheck.asOf < freshness.coversThrough;
+  const crossTone = crosscheckBehind ? 'warn' : crosscheck?.tone ?? 'muted';
+  const freshLabel = loading ? 'Loading freshness…' : freshness?.coversThrough == null ? 'Freshness unavailable'
+    : `${freshTone === 'good' ? 'Facts to' : freshTone === 'warn' ? 'Data delayed ·' : 'Data issue ·'} ${formatShellDate(freshness.coversThrough)}`;
+  const crossLabel = loading ? 'Loading crosscheck…' : crosscheck == null || crosscheck.verdict === 'no_data' ? 'Crosscheck unavailable'
+    : crosscheckBehind ? 'Crosscheck stale' : crosscheck.tone === 'good' ? 'Crosscheck OK' : `Crosscheck ${crosscheck.label.toLowerCase()}`;
+  return <div className="wa-shell-chips" aria-busy={loading}>
+    <Link href={`/sync-status${suffix}`} prefetch={false} className="wa-shell-chip" data-tone={freshTone}
+      aria-label={`Data freshness: ${freshLabel}`} title={freshness?.headline ?? 'Coverage evidence unavailable'}>
+      <StatusDot />{freshLabel}
+    </Link>
+    <Link href={`/crosscheck${suffix}`} prefetch={false} className="wa-shell-chip" data-tone={crossTone}
+      aria-label={crossLabel} title={crosscheck?.asOf == null ? 'No comparison evidence' : `Compared through ${formatShellDate(crosscheck.asOf)}`}>
+      <StatusDot />{crossLabel}
+    </Link>
+  </div>;
+}
+
+function StatusDot() {
+  return <svg aria-hidden="true" viewBox="0 0 7 7" width="7" height="7"><circle cx="3.5" cy="3.5" r="3.5" fill="currentColor" /></svg>;
 }

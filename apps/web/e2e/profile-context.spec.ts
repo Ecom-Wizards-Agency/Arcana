@@ -41,7 +41,7 @@ test(
       const switcher = page.getByTestId('profile-switcher');
       await expect(switcher).toBeVisible();
       await expect(switcher).not.toContainText('All profiles');
-      const activeAccount = (await switcher.innerText()).split(' · ')[0]?.trim() ?? '';
+      const activeAccount = (await switcher.locator('strong').innerText()).trim();
       expect(activeAccount).not.toBe('');
       await expect(page.locator('#wa-main')).toContainText(activeAccount);
       verified.push(url.pathname);
@@ -63,7 +63,7 @@ test('an inaccessible profile id is replaced by the org-scoped active profile', 
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
 
   const switcher = page.getByTestId('profile-switcher');
-  const activeAccount = (await switcher.innerText()).split(' · ')[0]?.trim() ?? '';
+  const activeAccount = (await switcher.locator('strong').innerText()).trim();
   expect(activeAccount).not.toBe('');
   await expect(page.locator('#wa-main')).toContainText(activeAccount);
 });
@@ -83,14 +83,15 @@ test('sidebar, date, entity, back and forward stay in one document and retain th
     if (request.resourceType() === 'document') documentRequests.push(request.url());
   });
 
-  const picker = page.locator('details.wa-date-range');
+  const picker = page.locator('.wa-topbar details.wa-date-range:not(.wa-shell-comparison)');
   await picker.locator('summary').click();
   await picker.getByRole('link', { name: 'Previous month', exact: true }).click();
   await expect(page).toHaveURL(/\/\?.*profile=/);
   await expect(picker).not.toHaveAttribute('open', '');
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
 
-  await page.locator('details.wa-navgroup').filter({ hasText: 'PERFORMANCE' }).locator('summary').click();
+  const performance = page.locator('details.wa-navgroup').filter({ hasText: 'PERFORMANCE' });
+  if (!(await performance.evaluate((element) => (element as HTMLDetailsElement).open))) await performance.locator('summary').click();
   await page.getByRole('link', { name: 'Search terms', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Search terms', exact: true })).toBeVisible();
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);

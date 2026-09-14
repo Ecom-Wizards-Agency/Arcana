@@ -37,7 +37,7 @@ interface Box {
 const VIEWPORTS = [
   { width: 1280, height: 720, mustScroll: true },
   { width: 1440, height: 860, mustScroll: true },
-  { width: 1440, height: 1000, mustScroll: false },
+  { width: 1440, height: 1024, mustScroll: false },
 ] as const;
 
 /** Below the 60rem breakpoint the sidebar stacks above the content. */
@@ -94,8 +94,10 @@ async function isHitAtOwnCenter(link: Locator): Promise<boolean> {
 }
 
 for (const viewport of VIEWPORTS) {
-  test(`at ${viewport.width}x${viewport.height} with every group open, only the nav scrolls and the footer covers no link`, async ({ page }) => {
+  test(`at ${viewport.width}x${viewport.height} with every group open, only the nav scrolls and the footer covers no link`, async ({ page }, testInfo) => {
     test.setTimeout(120_000);
+    const hydrationErrors: string[] = [];
+    page.on('pageerror', (error) => { if (/hydration/i.test(error.message)) hydrationErrors.push(error.message); });
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await openDashboard(page);
     await openEveryGroup(page);
@@ -131,6 +133,21 @@ for (const viewport of VIEWPORTS) {
     }
     expect(verified).toHaveLength(expected);
     expect(await sidebar.boundingBox()).not.toBeNull();
+
+    if (viewport.height === 1024) {
+      await expect(page.locator('[data-badge-source="timeline"]')).not.toHaveText('—');
+      await main.evaluate((element) => { element.scrollTop = 0; });
+      expect(hydrationErrors).toEqual([]);
+      await expect(sidebar).toHaveCSS('width', '240px');
+      await expect(page.locator('.wa-topbar')).toHaveCSS('height', '56px');
+      const theme = page.getByTestId('theme-toggle');
+      if ((await page.locator('html').getAttribute('data-theme')) !== 'light') await theme.click();
+      await page.screenshot({ path: testInfo.outputPath('shell-light-1440x1024.png'), style: 'nextjs-portal { display: none; }', animations: 'disabled' });
+      await theme.click();
+      await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+      await expect(theme).toContainText('Dark');
+      await page.screenshot({ path: testInfo.outputPath('shell-dark-1440x1024.png'), style: 'nextjs-portal { display: none; }', animations: 'disabled' });
+    }
 
     // The nav is the scroll container; the sidebar column itself is not.
     const metrics = await page.evaluate(() => {

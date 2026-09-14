@@ -6,7 +6,7 @@ export const descriptor = {
   id: "feedback-new",
   path: "/feedback/new",
   route: "page",
-  nav: { "group": "utility", "label": "Feedback", "icon": "chat", "order": 7 },
+  nav: { "group": "utility", "label": "Feedback", "icon": "icon/queries", "order": 7 },
   guard: { "kind": "requested" },
   prefetch: "cheap",
   rollout: { "enabled": true },

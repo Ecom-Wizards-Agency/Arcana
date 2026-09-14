@@ -7,7 +7,7 @@ export const descriptor = {
   "nav": {
     "group": "creators",
     "label": "Sample shipments",
-    "icon": "layers",
+    "icon": "icon/dayparting",
     "order": 2
   },
   "guard": null,

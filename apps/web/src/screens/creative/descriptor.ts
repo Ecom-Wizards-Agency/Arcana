@@ -6,7 +6,7 @@ export const descriptor = {
   id: "creative",
   path: "/creative",
   route: "page",
-  nav: { "group": "performance", "label": "Creatives", "icon": "flask", "order": 7 },
+  nav: { "group": "performance", "label": "Creatives", "icon": "icon/creatives", "order": 7 },
   guard: { "kind": "requested", "canonicalProfile": true, "heading": "Creative Performance" },
   prefetch: "expensive",
   rollout: { "enabled": true },

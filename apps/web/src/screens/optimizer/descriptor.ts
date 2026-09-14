@@ -6,7 +6,7 @@ export const descriptor = {
   id: "optimizer",
   path: "/optimizer",
   route: "page",
-  nav: { "group": "act", "label": "Optimize Now", "icon": "sliders", "order": 0 },
+  nav: { "group": "act", "label": "Optimize Now", "icon": "icon/optimize-now", "order": 0 },
   guard: { "kind": "requested", "canonicalProfile": true, "heading": "Campaign Optimizer" },
   prefetch: "expensive",
   rollout: { "enabled": true },

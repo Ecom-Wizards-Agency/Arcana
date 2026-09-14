@@ -1,35 +1,13 @@
-/**
- * The authenticated application frame: a left sidebar, a top bar, and the only
- * place the app says which operator is signed in. Anonymous screens use a quiet
- * public header rather than advertising an operator navigation they cannot open.
- *
- * Before this existed the product had no visible way in — `/login` was reachable
- * only by typing it — and then, briefly, a flat bar of ten equal links. Neither
- * is a shape a tool with ten screens can wear. This is the incumbent's pattern
- * (`https://github.com/Ecom-Wizards-Agency/Arcana/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/01-navigation-map.md`, `UI-verified`): grouped, collapsible
- * navigation down the left, tenancy and identity along the top, content in the
- * remaining space.
- *
- * Two exports, deliberately split, unchanged from the version this replaces:
- *
- *  - `NavBar` is pure. It takes the identity and the roster it renders and
- *    touches nothing ambient, so a unit test can render both states without a
- *    request.
- *  - `AppNav` is the server component the root layout mounts. It receives the
- *    resolved session, reads the roster and hands both to `NavBar`.
- *
- * `AppNav` imports its data lazily for the reason `src/server/request-context.ts`
- * documents: `next/headers` only works inside a request, and a top-level import
- * would drag it into the module graph of every Vitest suite that renders this
- * file.
- */
+/** Server-owned roster and registry projection for the application shell. */
+import { SCREEN_REGISTRY } from '../screens/registry-metadata';
+import { todayIso } from '../../app/_lib/periods';
 import type { ReactNode } from 'react';
 import type { SessionUser } from '../auth/session';
 import { NAV_GROUPS, NAV_LINKS, navigationFor } from './nav-links';
 import type { NavGroup, NavLink } from './nav-links';
 import { ProfileAwareBrand } from './profile-aware-brand';
 import { SidebarNav } from './sidebar';
-import { IdentityMenu, ProfileSwitcher, ThemeToggle } from './topbar-controls';
+import { IdentityMenu, ProfileSwitcher, ThemeToggle, ScreenTopbar } from './topbar-controls';
 import type { NavProfile } from './topbar-controls';
 
 export { NAV_GROUPS, NAV_LINKS };
@@ -42,14 +20,14 @@ export interface NavUser {
 
 export interface NavBarProps {
   user: NavUser | null;
-  /** The org's advertising profiles, for the top bar's switcher. */
+  /** The org's advertising profiles, for the sidebar switcher. */
   profiles?: readonly NavProfile[];
   /** The active organisation's name, when one could be resolved. */
   orgName?: string | null;
   groups?: readonly NavGroup[];
 }
 
-export function NavBar({ user, profiles = [], orgName = null, groups = NAV_GROUPS }: NavBarProps): ReactNode {
+export function NavBar({ user, profiles = [], groups = NAV_GROUPS }: NavBarProps): ReactNode {
   if (user === null) {
     return (
       <div data-testid="app-nav" data-auth-state="anonymous">
@@ -76,25 +54,16 @@ export function NavBar({ user, profiles = [], orgName = null, groups = NAV_GROUP
       </a>
 
       <aside className="wa-sidebar">
-        <ProfileAwareBrand />
-
+        <ProfileSwitcher profiles={profiles} />
         <SidebarNav groups={groups} />
+        <div className="wa-shell-account"><ProfileAwareBrand /><ThemeToggle /><IdentityMenu email={user.email} /></div>
 
       </aside>
 
       <header className="wa-topbar">
-        {orgName === null ? null : (
-          <span className="wa-topbar-org" title={orgName}>
-            {orgName}
-          </span>
-        )}
-
-        <span className="wa-topbar-spacer" />
-
-        <ProfileSwitcher profiles={profiles} />
-        <ThemeToggle />
-
-        <IdentityMenu email={user.email} />
+        <ScreenTopbar today={todayIso()} profiles={profiles} now={new Date().toISOString()} screens={SCREEN_REGISTRY.filter((screen) => screen.route !== 'redirect' && screen.route !== 'planned').map((screen) => ({
+          path: screen.path, title: screen.nav?.label ?? screen.guard?.heading ?? screen.id.split('-').map((word) => word[0]?.toUpperCase() + word.slice(1)).join(' '),
+        }))} />
       </header>
     </div>
   );
@@ -115,5 +84,5 @@ export async function AppNav({ user }: { user: SessionUser | null }): Promise<Re
 
   const { navContext } = await import('./nav-context');
   const context = await navContext(user);
-  return <NavBar user={user} profiles={context.profiles} orgName={context.orgName} groups={navigationFor()} />;
+  return <NavBar user={user} profiles={context.profiles} orgName={context.orgName} groups={navigationFor(SCREEN_REGISTRY, process.env, true)} />;
 }
