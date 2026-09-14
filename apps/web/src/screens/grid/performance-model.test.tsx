@@ -11,6 +11,13 @@ const rows: GridRow[] = ([
 ] as const).map(([id, asin, verdict, spend]) => ({ id: String(id), currencyCode: 'USD', dimensions: { targeting: String(id), asin, verdict }, totals: { spend: Number(spend), sales: 100, clicks: 10, impressions: 100, orders: 1, units: 1 }, comparison: null }));
 const filter: FilterSet = { groups: [{ filters: [{ key: 'TARGETING', conditions: [{ operator: '=', values: ['a'] }] }] }] };
 describe('performance population', () => {
+  it('shares flat row identities across rendering, action scope and complete export', () => {
+    const { model } = buildPerformanceModel(rows, { sort: [{ columnId: 'spend', direction: 'desc' }] });
+    expect(model.rows).toBe(model.exportRows);
+    expect(model.rows).toHaveLength(rows.length);
+    for (const row of model.rows) expect(model.matchedRows.find((item) => item.id === row.id)).toBe(row);
+    expect(rows.every((row) => row.dimensions['spend_share'] === undefined)).toBe(true);
+  });
   it.each(['50%', '50 %', '50,0 %'])('retains both equal spend contributors at the displayed boundary: %s', (value) => {
     const population = rows.slice(0, 2).map((item) => ({ ...item, totals: { ...item.totals, spend: 50 } }));
     for (const operator of ['>=', '='] as const) {

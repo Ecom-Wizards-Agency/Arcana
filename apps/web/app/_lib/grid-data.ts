@@ -26,6 +26,7 @@ import { classifyCampaignCategory, classifyPerformanceVerdict, grossBreakEvenBid
 import { readLatestBidSeriesByTargetIds, listMarketPositionLinks, readMarketRankSeries } from '@wizard-ads/db';
 import { TenantStrategy, type GridMeasurement, type GridPerformanceEvidence } from '@wizard-ads/shared';
 import { parseCampaignName } from '@wizard-ads/campaigns';
+import { targetReadTimer } from '../../src/screens/grid/target-read-timing';
 import { readGridPerformance } from '../../src/screens/grid/data-evidence';
 import type { QueryHandle } from '@wizard-ads/db';
 import type { EntityLevel, GridRow } from '@wizard-ads/ui';
@@ -296,7 +297,6 @@ async function loadAdGroups(
 
 interface TargetRow extends AggregateRow {
   asin: string | null;
-  strategy_doc: unknown;
   target_acos: string | null;
   tos_low: string | null;
   tos_high: string | null;
@@ -320,6 +320,7 @@ async function loadTargets(
   limit: number,
   rankDays: GridPerformanceEvidence['rankDays'],
 ): Promise<GridRow[]> {
+  const stage = targetReadTimer();
   const { orgId, profileId, period, comparison } = options;
   const rows = await handle.sql<TargetRow[]>`
     with facts as (
@@ -342,7 +343,7 @@ async function loadTargets(
            coalesce(k.state::text, t.state::text) as target_state,
            coalesce(k.bid, t.bid) as bid,
            g.name as ad_group_name,
-           c.name as campaign_name, products.asin, strategy.doc as strategy_doc,
+           c.name as campaign_name, products.asin,
            coalesce(og.target_acos,p.target_acos) as target_acos
       from facts f
       left join public.keywords k
@@ -358,25 +359,39 @@ async function loadTargets(
       left join public.optimization_groups og on og.org_id=${orgId} and og.profile_id=${profileId} and og.id=ca.group_id
       left join lateral (select case when count(distinct asin)=1 then min(asin) end as asin from public.product_ads
         where org_id=${orgId} and profile_id=${profileId} and campaign_id=f.campaign_id and ad_group_id=f.ad_group_id and deleted_at is null) products on true
-      left join lateral (select doc from public.profile_strategy where org_id=${orgId} and (profile_id=${profileId} or profile_id is null)
-        order by profile_id nulls last, updated_at desc limit 1) strategy on true
      limit ${limit}
   `;
 
+  stage('facts');
+  // Strategy resolves once per profile/window, not once per target. Repeating
+  // its document in the fact join also repeats transport and schema validation.
+  const [strategyRow] = await handle.sql<{ doc: unknown }[]>`select doc from public.profile_strategy
+    where org_id=${orgId} and (profile_id=${profileId} or profile_id is null)
+    order by profile_id nulls last, updated_at desc limit 1`;
+  const strategy = strategyRow?.doc == null ? null : TenantStrategy.safeParse(strategyRow.doc);
+  const configured = strategy?.success ? strategy.data : null;
   const latest = await readLatestBidSeriesByTargetIds(handle, {
     orgId,
     profileId,
     targetIds: rows.map((row) => row.target_id),
   });
+  stage('bids');
   const latestByTarget = new Map(latest.map((row) => [row.targetId, row]));
   const asins = [...new Set(rows.flatMap((row) => row.asin ? [row.asin] : []))];
   const rankStart = new Date(Date.parse(period.end) - 13 * 86_400_000).toISOString().slice(0, 10);
   const rankAxis = Array.from({ length: 14 }, (_, index) => new Date(Date.parse(rankStart) + index * 86_400_000).toISOString().slice(0, 10));
   const rankFrom = [period.start, comparison.start, rankStart].sort()[0]!;
-  const observations = asins.length === 0 ? [] : await handle.sql<{ asin: string; keyword: string; date: string; rank: number | null }[]>`
-    select distinct on (asin,keyword,observed_on) asin, keyword, observed_on::text as date, organic_rank as rank
-    from public.rank_observations where org_id=${orgId} and profile_id=${profileId} and asin=any(${asins}::text[])
-    and observed_on between ${rankFrom} and ${comparison.end > period.end ? comparison.end : period.end} order by asin,keyword,observed_on,created_at desc,id desc`;
+  // One database row per history, rather than repeating ASIN and keyword for
+  // every day. Preserve the latest observation and the complete ordered window.
+  const observations = asins.length === 0 ? [] : await handle.sql<{ asin: string; keyword: string; dates: string[]; ranks: (number | null)[] }[]>`
+    select asin, keyword, array_agg(date order by date) as dates, array_agg(rank order by date) as ranks
+    from (
+      select distinct on (asin,keyword,observed_on) asin, keyword, observed_on::text as date, organic_rank as rank
+      from public.rank_observations where org_id=${orgId} and profile_id=${profileId} and asin=any(${asins}::text[])
+      and observed_on between ${rankFrom} and ${comparison.end > period.end ? comparison.end : period.end}
+      order by asin,keyword,observed_on,created_at desc,id desc
+    ) latest group by asin,keyword order by asin,keyword`;
+  stage('ranks');
   const sqp = asins.length === 0 ? [] : await handle.sql<{ asin: string; query: string; impression_share: string | null; purchase_share: string | null; market_cvr: string | null; asin_cvr: string | null }[]>`
     select asin, lower(search_query) as query,
       sum(asin_impressions)::numeric/nullif(sum(total_impressions),0) as impression_share,
@@ -385,15 +400,40 @@ async function loadTargets(
       sum(asin_purchases)::numeric/nullif(sum(asin_clicks),0) as asin_cvr
     from public.fact_sqp_weekly where org_id=${orgId} and profile_id=${profileId} and asin=any(${asins}::text[])
     and week_start>=${period.start} and week_end<=${period.end} group by asin,lower(search_query)`;
-  const ranks = new Map<string, Array<{ asin: string; keyword: string; date: string; rank: number | null }>>();
+  stage('sqp');
+  const rankIndex = new Map(rankAxis.map((date, index) => [date, index]));
+  const ranks = new Map<string, { current: number | null; previous: number | null; days?: GridPerformanceEvidence['rankDays'][string] }>();
   for (const observation of observations) {
     const key = `${observation.asin}\u0000${observation.keyword.toLowerCase()}`;
-    const days = ranks.get(key) ?? []; days.push(observation); ranks.set(key, days);
+    const history: NonNullable<ReturnType<typeof ranks.get>> = ranks.get(key) ?? { current: null, previous: null };
+    observation.dates.forEach((date, index) => {
+      const rank = observation.ranks[index] ?? null;
+      if (date >= period.start && date <= period.end) history.current = rank;
+      if (date >= comparison.start && date <= comparison.end) history.previous = rank;
+      const tile = rankIndex.get(date);
+      if (tile !== undefined) {
+        history.days ??= rankAxis.map((date) => ({ date, observed: false, rank: null }));
+        history.days[tile]!.observed = true;
+        history.days[tile]!.rank = rank;
+      }
+    });
+    ranks.set(key, history);
   }
+  const campaignMetadata = new Map<string | null, { purpose: string | null; category: ReturnType<typeof classifyCampaignCategory> }>();
+  const campaignFor = (name: string | null) => {
+    const cached = campaignMetadata.get(name);
+    if (cached !== undefined) return cached;
+    const naming = configured?.naming;
+    const parsed = naming?.variable_order?.length && naming.delimiter && name ? parseCampaignName(name, { variableOrder: naming.variable_order, delimiter: naming.delimiter,
+      suffix: naming.suffix ?? '', custom1Value: naming.custom1_value ?? '', custom2Value: naming.custom2_value ?? '' }) : null;
+    const value = { purpose: parsed?.confidence === 'exact' ? parsed.slots['Goal'] ?? null : null, category: classifyCampaignCategory(name) };
+    campaignMetadata.set(name, value);
+    return value;
+  };
   const sqpByQuery = new Map(sqp.map((row) => [`${row.asin}\u0000${row.query}`, row]));
   const measured = (value: string | number | null | undefined) => value === null || value === undefined ? null : Number(value);
 
-  return rows.map((row) => {
+  const result = rows.map((row) => {
     const series = latestByTarget.get(row.target_id);
     const bid = row.bid === null ? null : num(row.bid);
     const suggestedBid = series?.suggestedBidMedian ?? null;
@@ -401,17 +441,11 @@ async function loadTargets(
     const suggestedBidHigh = series?.suggestedBidHigh ?? null;
     const literal = row.target_kind === 'keyword' && row.match_type !== 'broad';
     const key = `${row.asin ?? ''}\u0000${row.targeting?.toLowerCase() ?? ''}`;
-    const history = literal ? ranks.get(key) ?? [] : [];
-    const current = history.filter((day) => day.date >= period.start && day.date <= period.end).at(-1)?.rank ?? null;
-    const previous = history.filter((day) => day.date >= comparison.start && day.date <= comparison.end).at(-1)?.rank ?? null;
+    const history = literal ? ranks.get(key) : undefined;
+    const current = history?.current ?? null;
+    const previous = history?.previous ?? null;
     const query = literal ? sqpByQuery.get(key) : undefined;
-    const dayMap = new Map(history.map((day) => [day.date, day]));
-    if (history.some((day) => day.date >= rankStart && day.date <= period.end)) rankDays[`target:${row.target_id}`] = rankAxis.map((date) => {
-      const observation = dayMap.get(date);
-      return { date, observed: observation !== undefined, rank: observation?.rank ?? null };
-    });
-    const strategy = row.strategy_doc == null ? null : TenantStrategy.safeParse(row.strategy_doc);
-    const configured = strategy?.success ? strategy.data : null;
+    if (history?.days) rankDays[`target:${row.target_id}`] = history.days;
     const targetAcos = measured(row.target_acos);
     const spend = measured(row.spend);
     const clicks = measured(row.clicks);
@@ -421,15 +455,13 @@ async function loadTargets(
     const verdict = classifyPerformanceVerdict({ spend, clicks, acos, organicRank: current, topOfSearchShare: measured(row.tos_share) }, {
       ownedRank: configured?.rank_lifecycle.graduation_rank ?? null, rankGap: configured?.rank_lifecycle.demotion_rank ?? null, targetAcos,
     });
-    const naming = configured?.naming;
-    const parsedName = naming?.variable_order?.length && naming.delimiter && row.campaign_name ? parseCampaignName(row.campaign_name, { variableOrder: naming.variable_order, delimiter: naming.delimiter,
-      suffix: naming.suffix ?? '', custom1Value: naming.custom1_value ?? '', custom2Value: naming.custom2_value ?? '' }) : null;
+    const campaign = campaignFor(row.campaign_name);
     return {
       id: `target:${row.target_id}`,
       dimensions: {
         asin: row.asin ?? null, not_the_query: !literal,
         campaign_id: row.campaign_id, ad_group_id: row.ad_group_id,
-        campaign_purpose: parsedName?.confidence === 'exact' ? parsedName.slots['Goal'] ?? null : null,
+        campaign_purpose: campaign.purpose,
         organic_rank: current, rank_change: rankChange(current, previous),
         top_of_search_share: measured(row.tos_share),
         top_of_search_range: row.tos_low == null || row.tos_high == null ? null : `${(Number(row.tos_low) * 100).toFixed(1)}–${(Number(row.tos_high) * 100).toFixed(1)}%`,
@@ -453,7 +485,7 @@ async function loadTargets(
           bid === null || suggestedBid === null ? null : bid - suggestedBid,
         ad_group_name: row.ad_group_name ?? row.ad_group_id,
         campaign_name: row.campaign_name ?? row.campaign_id,
-        rpc_category: classifyCampaignCategory(row.campaign_name),
+        rpc_category: campaign.category,
         ad_product: row.ad_product,
       },
       ...measurementOf(row), totals: totalsOf(row),
@@ -461,6 +493,8 @@ async function loadTargets(
       currencyCode: options.currencyCode,
     };
   });
+  stage('derive');
+  return result;
 }
 
 function bidCorridorPosition(

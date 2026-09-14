@@ -13,9 +13,10 @@
  * keystroke over the whole set. The 50k perf suite is what says that is
  * affordable; without it this component would be a guess.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { gridWork } from '../../src/screens/grid/performance-timing';
 import type { ReactNode } from 'react';
 import { decodeGridRowColumns, decodeGridPerformance, type GridPerformanceEvidence, GridMeasurement, PerformanceVerdict, parseGridView, serializeGridView, type OrgActor } from '@wizard-ads/shared';
 import { browserViewStore } from './view-store';
@@ -120,7 +121,8 @@ function isGridRow(value: unknown): value is GridRow {
 
 /** Refuse partial or malformed transport data before it becomes actionable. */
 export function parseGridRowsPayload(value: unknown): GridPayload {
-  if (isRecord(value) && value['rowColumns'] !== undefined) {
+  const columnar = isRecord(value) && value['rowColumns'] !== undefined;
+  if (columnar && isRecord(value)) {
     if (value['rows'] !== undefined) throw new Error('Grid response has ambiguous row encodings');
     value = { ...value, rows: decodeGridRowColumns(value['rowColumns']) };
   }
@@ -136,9 +138,10 @@ export function parseGridRowsPayload(value: unknown): GridPayload {
   if (Number(value['rowCount']) !== value['rows'].length) {
     throw new Error('Grid response row count does not match its rows');
   }
-  if (!value['rows'].every(isGridRow)) throw new Error('Grid response contains an invalid row');
+  // Column decoding has already validated every field through the shared contract.
+  if (!columnar && !value['rows'].every(isGridRow)) throw new Error('Grid response contains an invalid row');
   return {
-    rows: value['rows'],
+    rows: value['rows'] as GridRow[],
     rowCount: Number(value['rowCount']),
     truncated: value['truncated'],
     ...(value['performance'] === undefined ? {} : { performance: decodeGridPerformance(value['performance']) }),
@@ -170,7 +173,10 @@ function startGridRequest(scope: string): InFlightGridRequest {
     signal: controller.signal,
   }).then(async (response) => {
     if (!response.ok) throw new Error(`Grid request failed with ${response.status}`);
-    return parseGridRowsPayload(await response.json());
+    const jsonStart = performance.now();
+    const body = await response.json();
+    if ((globalThis as { __gridProfile?: boolean }).__gridProfile) performance.measure('grid.json', { start: jsonStart });
+    return gridWork('decode', () => parseGridRowsPayload(body));
   });
   const request: InFlightGridRequest = {
     scope,
@@ -277,7 +283,9 @@ function ScopedGridWorkspace(props: GridWorkspaceProps): ReactNode {
   const [retry, setRetry] = useState(0);
   const [load, setLoad] = useState<GridLoadState>({ status: 'loading', scope });
 
-  useEffect(() => {
+  // Start the counted read as soon as this island commits, before the browser
+  // waits for a paint and unrelated passive effects. Cleanup/replay stays scoped.
+  useLayoutEffect(() => {
     const requestGeneration = ++generation.current;
     setLoad({ status: 'loading', scope });
     let request = activeRequest.current;
@@ -570,7 +578,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
 
   const scopedRows = useMemo(() => scopeRows(props.rows, asinScope), [props.rows, asinScope]);
   const { model, filterError } = useMemo(
-    () => buildPerformanceModel(scopedRows, { filter: view.filter, sort: view.sort, groupBy: view.groupBy }),
+    () => gridWork('model', () => buildPerformanceModel(scopedRows, { filter: view.filter, sort: view.sort, groupBy: view.groupBy })),
     [scopedRows, view.filter, view.sort, view.groupBy],
   );
 
@@ -607,13 +615,14 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   const density: GridDensity = view.density ?? DEFAULT_DENSITY;
   const translation = useTranslationColumn(props.profileId, view.translation?.language ?? 'en', viewReady && view.columns.includes('translation'), props.rows);
   const experimentHref = gridExperimentHref(props.profileId, props.entity, model.matchedRows);
-  const rowHref = (row: GridRow) => {
-    const back = `/grid?${new URLSearchParams({ profile: props.profileId, entity: props.entity, from: props.period.start, to: props.period.end, compareFrom: props.comparisonPeriod.start, compareTo: props.comparisonPeriod.end, view: serializeGridView(view), ...(asinScope ? { asin: asinScope } : {}) })}`;
-    return `/targets/${encodeURIComponent(String(row.dimensions['target_id']))}?${new URLSearchParams({ profile: props.profileId, from: props.period.start, to: props.period.end, compareFrom: props.comparisonPeriod.start, compareTo: props.comparisonPeriod.end, back })}`;
-  };
+  const backToGrid = useMemo(() => `/grid?${new URLSearchParams({ profile: props.profileId, entity: props.entity, from: props.period.start, to: props.period.end, compareFrom: props.comparisonPeriod.start, compareTo: props.comparisonPeriod.end, view: serializeGridView(view), ...(asinScope ? { asin: asinScope } : {}) })}`, [props.profileId, props.entity, props.period, props.comparisonPeriod, view, asinScope]);
+  const rowHref = useCallback((row: GridRow) => {
+    return `/targets/${encodeURIComponent(String(row.dimensions['target_id']))}?${new URLSearchParams({ profile: props.profileId, from: props.period.start, to: props.period.end, compareFrom: props.comparisonPeriod.start, compareTo: props.comparisonPeriod.end, back: backToGrid })}`;
+  }, [props.profileId, props.period, props.comparisonPeriod, backToGrid]);
+  const renderCells = useMemo(() => {
   const reason = (feed: 'PPC' | 'RANK' | 'SQP') => `${props.performance?.feeds.find((item) => item.feed === feed)?.reason ?? `${feed} not measured in this range.`} An empty cell means this target has no measured ${feed === 'PPC' ? 'top-of-search share' : feed === 'RANK' ? 'organic rank' : 'query evidence'} in the selected window.`;
   const number = (row: GridRow, key: string) => typeof row.dimensions[key] === 'number' ? row.dimensions[key] as number : null;
-  const renderCells = Object.fromEntries(available.map((column) => [column.id, (row: GridRow): ReactNode | undefined => {
+  return Object.fromEntries(available.map((column) => [column.id, (row: GridRow): ReactNode | undefined => {
     if (column.kind === 'metric' && resolveField(row, column.id) === null) return <DataGrid.cells.NotMeasuredCell reason={column.id.includes('comparison') || column.id.includes('delta') ? 'The comparison is not measured, or its denominator is unavailable.' : 'This metric is not measured, or its denominator is unavailable.'} />;
     if (column.id === 'translation') return translation.cell(row);
     if (column.id === 'suggested_bid' && props.entity === 'targets') {
@@ -632,6 +641,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     if (row.dimensions[column.id] == null && column.kind === 'dimension' && column.subject !== 'Identity') return <DataGrid.cells.NotMeasuredCell reason={column.subject === 'BRAND ANALYTICS' ? 'Brand Analytics ingestion is not configured.' : reason(column.subject === 'SQP' ? 'SQP' : column.subject === 'RANK & ORGANIC' ? 'RANK' : 'PPC')} />;
     return undefined;
   }]));
+  }, [available, props.entity, props.currencyCode, props.performance, props.period.end, rowHref, translation.cell]);
 
   const handleExport = useCallback(() => {
     if (!viewReady) return;

@@ -49,10 +49,10 @@ import * as performanceCells from './cells/performance.js';
  * speak for the one row whose figure is absent and leave the rest formatted
  * here instead of reimplementing money, ratios and the empty marker.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, ReactNode } from 'react';
 import { createColumnHelper, getCoreRowModel, useReactTable } from '@tanstack/react-table';
-import type { ColumnDef } from '@tanstack/react-table';
+import type { ColumnDef, Row } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { observeGridOffset, observeGridRect } from './grid/virtualizer-observers.js';
 import { minimumColumnWidth, type GridColumn } from './columns.js';
@@ -68,6 +68,7 @@ import { resolveField } from './rows.js';
 import type { SortRule } from './sort.js';
 import { DEFAULT_OVERSCAN } from './virtual.js';
 import { GridBody } from './grid/GridBody.js';
+import { DataGridPerformanceBody } from './DataGridPerformanceBody.js';
 import { GridCell } from './grid/GridCell.js';
 import type { GridCellEnvironment } from './grid/GridCell.js';
 import { GridHeader } from './grid/GridHeader.js';
@@ -197,6 +198,10 @@ export function DataGrid({
   populationNote,
   filterKey,
 }: DataGridProps): ReactNode {
+  const renderStart = performance.now();
+  useLayoutEffect(() => {
+    if ((globalThis as { __gridProfile?: boolean }).__gridProfile) performance.measure('grid.visible-render', { start: renderStart });
+  });
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const resolvedRowHeight = rowHeight ?? rowHeightFor(density);
   const groupingKey = model.groupBy.join('\u0000');
@@ -295,6 +300,24 @@ export function DataGrid({
     [collapsedGroupIds, formatContext, toggleGroup, model.totalsRow],
   );
 
+  // Keep the full width, headers and export catalogue. Only mount cell content
+  // in the horizontal viewport (plus one column of overscan); pinned cells stay.
+  const windowColumns = useMemo(() => [...columns.filter((column) => column.pinned), ...columns.filter((column) => !column.pinned)], [columns]);
+  const columnWindow = useVirtualizer({
+    horizontal: true,
+    enabled: presentation === 'performance',
+    observeElementOffset: observeGridOffset,
+    observeElementRect: observeGridRect,
+    count: columns.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (index) => Math.max(windowColumns[index]!.width, minimumColumnWidth(windowColumns[index]!)),
+    overscan: 1,
+    ...(initialRect === undefined ? {} : { initialRect }),
+  });
+  const columnWindowKey = columnWindow.getVirtualItems().map((item) => item.index).join(',');
+  const renderedColumnIds = useMemo(() => new Set(columnWindowKey.split(',').filter(Boolean).map((index) => windowColumns[Number(index)]!.id)), [columnWindowKey, windowColumns]);
+  useLayoutEffect(() => { if (presentation === 'performance') columnWindow.measure(); }, [columnWindow, windowColumns, presentation]);
+
   const columnDefs = useMemo<ColumnDef<GridRow, unknown>[]>(
     () =>
       columns.map((column) => {
@@ -327,8 +350,23 @@ export function DataGrid({
     [columns],
   );
 
+  const virtualizer = useVirtualizer({
+    observeElementOffset: observeGridOffset,
+    observeElementRect: observeGridRect,
+    count: visibleRows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => resolvedRowHeight,
+    overscan: DEFAULT_OVERSCAN,
+    ...(initialRect === undefined ? {} : { initialRect }),
+  });
+
+  const items = virtualizer.getVirtualItems();
+  const windowStart = items[0]?.index ?? 0;
+  const windowEnd = items.length ? items[items.length - 1]!.index + 1 : 0;
+  const tableData = useMemo(() => presentation === 'performance' ? visibleRows.slice(windowStart, windowEnd) : visibleRows, [presentation, visibleRows, windowStart, windowEnd]);
+
   const table = useReactTable({
-    data: visibleRows,
+    data: tableData,
     columns: columnDefs,
     getCoreRowModel: getCoreRowModel(),
     state: { columnPinning: { left: pinnedIds, right: [] } },
@@ -337,19 +375,19 @@ export function DataGrid({
     columnResizeMode: 'onEnd',
   });
 
-  const rows = table.getRowModel().rows;
+  const rowModelStart = performance.now();
+  const tableRows = table.getRowModel().rows;
+  // Keep absolute indices for navigation and spacers while TanStack only
+  // allocates row/cell models inside the performance viewport.
+  const rows = useMemo(() => {
+    if (presentation !== 'performance') return tableRows;
+    const indexed = new Array<Row<GridRow>>(visibleRows.length);
+    tableRows.forEach((row, index) => { indexed[windowStart + index] = row; });
+    return indexed;
+  }, [presentation, tableRows, visibleRows.length, windowStart]);
+  if ((globalThis as { __gridProfile?: boolean }).__gridProfile) performance.measure('grid.row-model', { start: rowModelStart });
 
-  const virtualizer = useVirtualizer({
-    observeElementOffset: observeGridOffset,
-    observeElementRect: observeGridRect,
-    count: rows.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => resolvedRowHeight,
-    overscan: DEFAULT_OVERSCAN,
-    ...(initialRect === undefined ? {} : { initialRect }),
-  });
 
-  const items = virtualizer.getVirtualItems();
   const paddingTop = items.length > 0 ? (items[0]?.start ?? 0) : 0;
   const paddingBottom =
     items.length > 0 ? virtualizer.getTotalSize() - (items[items.length - 1]?.end ?? 0) : 0;
@@ -489,6 +527,7 @@ export function DataGrid({
 
   const leafColumns = table.getVisibleLeafColumns();
   const totalWidth = leafColumns.reduce((sum, column) => sum + column.getSize(), 0);
+  const Body = presentation === 'performance' ? DataGridPerformanceBody : GridBody;
   const totalsRow = model.totalsRow;
   const fill = height === undefined;
 
@@ -512,6 +551,7 @@ export function DataGrid({
         data-testid="grid-scroller"
         role={model.grouped ? 'treegrid' : 'grid'}
         aria-label={model.grouped ? `Results grouped by ${model.groupBy.join(', ')}` : 'Results'}
+        aria-colcount={columns.length}
         aria-rowcount={model.shown + (totalsRow === null ? 1 : 2)}
         aria-multiselectable={onSelectionChange === undefined ? undefined : true}
         onKeyDown={handleKeyDown}
@@ -553,7 +593,8 @@ export function DataGrid({
             />
           )}
 
-          <GridBody
+          <Body
+            renderedColumnIds={renderedColumnIds}
             rows={rows}
             items={items}
             paddingTop={paddingTop}

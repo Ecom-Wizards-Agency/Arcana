@@ -92,6 +92,7 @@ async function seedRows(entity: 'targets' | 'search_terms'): Promise<string> {
 for (const entity of ['search_terms', 'targets'] as const) test(`${entity}: one counted request powers all 3,597 rows and the complete export`, async ({
   page,
 }, testInfo) => {
+  await page.addInitScript(() => { (globalThis as { __gridProfile?: boolean }).__gridProfile = true; });
   const profile = await seedRows(entity);
   await signIn(page, 'admin');
 
@@ -100,6 +101,9 @@ for (const entity of ['search_terms', 'targets'] as const) test(`${entity}: one 
   // one-time module compilation.
   await page.goto(gridUrl(profile, WARM_DATE, entity));
   await expect(page.getByRole('button', { name: 'Export CSV (0 of 0)' })).toBeVisible();
+  // Finish the warm navigation, including its independent evidence and route
+  // prefetches, before measuring a new document's request order.
+  await expect(page.locator('.wa-shell-chips')).toHaveAttribute('aria-busy', 'false');
 
   const rowResponses: PlaywrightResponse[] = [];
   const shellRequests: PlaywrightRequest[] = [];
@@ -124,7 +128,16 @@ for (const entity of ['search_terms', 'targets'] as const) test(`${entity}: one 
     }),
   ).toBeVisible();
   if (entity === 'targets') await expect(page.getByRole('button', { name: `Columns (${columnsFor(entity).length - 1})`, exact: true })).toBeVisible();
+  await expect(page.getByTestId('grid-row').first()).toBeVisible();
   const usableMs = performance.now() - startedAt;
+  const clientWork = await page.evaluate(() => ({
+    measures: performance.getEntriesByType('measure').filter((entry) => entry.name.startsWith('grid.')).map((entry) => ({ name: entry.name, startMs: entry.startTime, durationMs: entry.duration })),
+    mountedRows: document.querySelectorAll('[data-testid="grid-row"]').length,
+    mountedCells: document.querySelectorAll('[data-testid="grid-row"] [role="cell"]').length,
+    populatedCells: [...document.querySelectorAll('[data-testid="grid-row"] [role="cell"]')].filter((cell) => cell.childNodes.length > 0).length,
+  }));
+  expect(clientWork.mountedRows).toBeLessThan(60);
+  if (entity === 'targets') expect(clientWork.mountedCells).toBeLessThan(clientWork.mountedRows * columnsFor(entity).length / 2);
   // A development Strict Mode replay happens immediately after mount. Waiting
   // one short task makes the request-count assertion catch a duplicate rather
   // than racing it.
@@ -187,6 +200,7 @@ for (const entity of ['search_terms', 'targets'] as const) test(`${entity}: one 
 
   const measurements = {
     entity,
+    clientWork,
     usableMs: Math.round(usableMs * 100) / 100,
     usableLimitMs: process.env['CI'] ? CI_USABLE_LIMIT_MS : REFERENCE_USABLE_LIMIT_MS,
     referenceUsableLimitMs: REFERENCE_USABLE_LIMIT_MS,
@@ -205,7 +219,7 @@ for (const entity of ['search_terms', 'targets'] as const) test(`${entity}: one 
     shellRequestDurationMs: measuredShellRequests[0]?.timing().responseEnd ?? null,
     browser: await page.evaluate(() => {
       const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
-      return { domContentLoadedMs: navigation.domContentLoadedEventEnd, loadMs: navigation.loadEventEnd,
+      return { documentTtfbMs: navigation.responseStart - navigation.requestStart, documentTransferMs: navigation.responseEnd - navigation.responseStart, domContentLoadedMs: navigation.domContentLoadedEventEnd, loadMs: navigation.loadEventEnd,
         scriptsBytes: performance.getEntriesByType('resource').filter((entry) => (entry as PerformanceResourceTiming).initiatorType === 'script').reduce((bytes, entry) => bytes + (entry as PerformanceResourceTiming).decodedBodySize, 0) };
     }),
     shellAfterLoadMs: Math.round((measuredShellRequests[0]!.timing().startTime - loadEndedAt) * 100) / 100,

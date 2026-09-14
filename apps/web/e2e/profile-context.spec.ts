@@ -44,6 +44,8 @@ test(
       const activeAccount = (await switcher.locator('strong').innerText()).trim();
       expect(activeAccount).not.toBe('');
       if (surface.route === '/') await expect(page.locator('main.wa-home[data-profile-id]')).toHaveAttribute('data-profile-id', fixtureProfileId);
+      // Streaming can briefly retain the loading fallback beside the ready main.
+      if (surface.route === '/') await expect(page.locator('main.wa-home:not([aria-busy="true"])')).toHaveAttribute('data-profile-id', fixtureProfileId);
       else await expect(page.locator('#wa-main')).toContainText(activeAccount);
       verified.push(url.pathname);
     }

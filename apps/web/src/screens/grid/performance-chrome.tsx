@@ -10,7 +10,7 @@ export function PerformanceSummary({ rows, performance, view, onChange, currency
   rows: readonly GridRow[]; performance?: GridPerformanceEvidence; view: SavedView; onChange: (patch: Partial<SavedView>) => void; currencyCode: string; profileId: string;
 }): ReactNode {
   const series: NonNullable<SavedView['chart']>['series'] = view.chart?.series ?? ['spend', 'sales'];
-  const aggregate = grandTotal(rows);
+  const aggregate = useMemo(() => grandTotal(rows), [rows]);
   return <>
     {performance?.unattributed ? <section data-testid="grid-unattributed" style={{ height: 120, boxSizing: 'border-box', padding: '10px 24px', display: 'flex', alignItems: 'center', gap: 10, background: tokens.color.warnSoft, borderBlock: `1px solid ${tokens.color.warnBorder}`, color: tokens.color.warn, fontSize: 12 }}>
       <strong>{performance.unattributed.adGroups} ad groups advertise more than one ASIN, so {new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(performance.unattributed.spend)} of spend over {performance.unattributed.days} days is attributed to no product.</strong>
@@ -53,7 +53,7 @@ export function PerformanceToolbar(props: GridToolbarProps & { view: SavedView; 
   const filters = props.filter.groups[0]?.filters ?? [];
   const identity = entitySearchColumn(props.available);
   const language = props.view.translation?.language ?? 'en';
-  const groups = groupColumns(props.available.filter((column) => `${column.header} ${column.description ?? ''}`.toLowerCase().includes(columnSearch.toLowerCase())));
+  const groups = useMemo(() => panel === 'columns' ? groupColumns(props.available.filter((column) => `${column.header} ${column.description ?? ''}`.toLowerCase().includes(columnSearch.toLowerCase()))) : [], [panel, props.available, columnSearch]);
   const applyColumns = (ids: readonly string[]) => {
     const original = identity?.id;
     const ordered = original ? [original, ...ids.filter((id) => id !== original)] : [...ids];

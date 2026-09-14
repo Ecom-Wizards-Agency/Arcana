@@ -43,9 +43,13 @@ export function serializeGridPayloadWithinBudget(
     // Evidence is counted with its row and removed with any truncated prefix.
     const performance = encodeGridPerformance(source.performance);
     const completePerformance = Object.keys(performance.rankValues).length === 0 ? { ...source.performance, rankDays: {} } : performance;
-    const completeBody = JSON.stringify({ rows: source.rows, performance: completePerformance, rowCount: source.rowCount, truncated: source.truncated });
-    const completeBytes = utf8Bytes(completeBody);
-    if (completeBytes <= maxBytes) return { body: completeBody, byteLength: completeBytes, payload: source };
+    // Observed histories accompany wide target rows. Encode those directly;
+    // constructing and discarding a multi-megabyte row envelope delays delivery.
+    if (performance.rankAxis.length === 0) {
+      const completeBody = JSON.stringify({ rows: source.rows, performance: completePerformance, rowCount: source.rowCount, truncated: source.truncated });
+      const completeBytes = utf8Bytes(completeBody);
+      if (completeBytes <= maxBytes) return { body: completeBody, byteLength: completeBytes, payload: source };
+    }
     // Preserve every field before considering the existing oversize safeguard.
     // Shared column names remove repeated metric/dimension keys without rounding money.
     const columnBody = JSON.stringify({ rowColumns: encodeGridRowColumns(source.rows), performance: completePerformance, rowCount: source.rowCount, truncated: source.truncated });

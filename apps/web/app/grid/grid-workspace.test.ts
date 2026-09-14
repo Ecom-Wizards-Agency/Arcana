@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { encodeGridRowColumns } from '@wizard-ads/shared';
 import { act, createElement, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -260,6 +261,20 @@ describe('Grid row transport', () => {
     expect(host.textContent).not.toContain('Export CSV');
     expect(host.querySelector('[data-testid="grid-data-loading"]')).not.toBeNull();
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('validates columnar rows at the boundary before exposing them to the grid', () => {
+    const source = [row(1), row(2)];
+    const rowColumns = encodeGridRowColumns(source);
+    const envelope = { rowColumns, rowCount: 2, truncated: false };
+    expect(parseGridRowsPayload(envelope).rows).toEqual(source);
+    for (const corrupt of [
+      { ...rowColumns, ids: [1, 2] },
+      { ...rowColumns, dimensions: { invalid: [{ nested: true }, null] } },
+      { ...rowColumns, totals: { ...rowColumns.totals, clicks: [null, 2] } },
+      { ...rowColumns, comparison: { ...rowColumns.comparison, clicks: [null, 2] } },
+    ]) expect(() => parseGridRowsPayload({ ...envelope, rowColumns: corrupt })).toThrow();
+    expect(() => parseGridRowsPayload({ ...envelope, rowCount: 1 })).toThrow();
   });
 
   it('preserves filtering, three-level grouping, totals, and CSV across 3,597-row JSON transport', () => {

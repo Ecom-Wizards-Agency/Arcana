@@ -19,18 +19,31 @@ export const GridMeasurement = z.strictObject({
 });
 export type GridMeasurement = z.infer<typeof GridMeasurement>;
 const gridBases = ['impressions', 'clicks', 'spend', 'sales', 'orders', 'units'] as const;
-const gridDimension = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
+type GridDimension = string | number | boolean | null;
+const isGridDimension = (value: unknown): value is GridDimension => value === null || typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value));
+const gridDimension = z.custom<GridDimension>(isGridDimension, 'Grid dimensions must be text, finite numbers, booleans or null');
+
+/** Validate primitive columns in one pass, without a parse context per scalar. */
+function primitiveColumn<T>(accepts: (value: unknown) => value is T) {
+  return z.custom<T[]>((values) => {
+    if (!Array.isArray(values)) return false;
+    // Index explicitly: Array.every would silently accept sparse holes.
+    for (let index = 0; index < values.length; index++) if (!accepts(values[index])) return false;
+    return true;
+  }, 'Invalid grid column values').transform((values) => values.slice());
+}
+const metricColumn = primitiveColumn((value): value is number | null => value === null || (typeof value === 'number' && Number.isFinite(value)));
 const gridTotals = z.strictObject({ impressions: z.number().finite(), clicks: z.number().finite(), spend: z.number().finite(), sales: z.number().finite(), orders: z.number().finite(), units: z.number().finite() });
 export const GridTransportRow = z.strictObject({
   id: z.string(), currencyCode: z.string(), dimensions: z.record(z.string(), gridDimension),
   totals: gridTotals, comparison: gridTotals.nullable(), measurement: GridMeasurement.optional(), tagIds: z.array(z.string()).readonly().optional(),
 });
 export type GridTransportRow = z.infer<typeof GridTransportRow>;
-const metricColumns = z.record(z.enum(gridBases), z.array(z.number().finite().nullable()));
+const metricColumns = z.record(z.enum(gridBases), metricColumn);
 /** Lossless columns: sparse metadata and absent dimension keys retain their row indexes. */
 export const GridRowColumns = z.strictObject({
   version: z.literal(1), ids: z.array(z.string()), currency: z.union([z.string(), z.array(z.string())]),
-  dimensions: z.record(z.string(), z.array(gridDimension)), absent: z.record(z.string(), z.array(z.number().int().nonnegative())),
+  dimensions: z.record(z.string(), primitiveColumn(isGridDimension)), absent: z.record(z.string(), z.array(z.number().int().nonnegative())),
   totals: metricColumns, comparison: metricColumns,
   measurements: z.record(z.string(), GridMeasurement), tags: z.record(z.string(), z.array(z.string())),
 }).superRefine((value, context) => {
@@ -53,33 +66,63 @@ export const GridRowColumns = z.strictObject({
 export type GridRowColumns = z.infer<typeof GridRowColumns>;
 
 export function encodeGridRowColumns(rows: readonly GridTransportRow[]): GridRowColumns {
-  const keys = [...new Set(rows.flatMap((row) => Object.keys(row.dimensions)))];
-  const currencies = rows.map((row) => row.currencyCode);
+  const keySet = new Set<string>();
+  for (const row of rows) for (const key of Object.keys(row.dimensions)) keySet.add(key);
+  const keys = [...keySet];
+  const dimensions = Object.fromEntries(keys.map((key) => [key, [] as Array<string | number | boolean | null>]));
+  const absent = Object.fromEntries(keys.map((key) => [key, [] as number[]]));
+  const totals = Object.fromEntries(gridBases.map((key) => [key, [] as number[]])) as GridRowColumns['totals'];
+  const comparison = Object.fromEntries(gridBases.map((key) => [key, [] as (number | null)[]])) as GridRowColumns['comparison'];
+  const ids: string[] = [];
+  const currencies: string[] = [];
+  const measurements: GridRowColumns['measurements'] = {};
+  const tags: GridRowColumns['tags'] = {};
+  rows.forEach((row, index) => {
+    ids.push(row.id);
+    currencies.push(row.currencyCode);
+    for (const key of keys) {
+      dimensions[key]!.push(row.dimensions[key] ?? null);
+      if (!Object.hasOwn(row.dimensions, key)) absent[key]!.push(index);
+    }
+    for (const key of gridBases) {
+      totals[key].push(row.totals[key]);
+      comparison[key].push(row.comparison?.[key] ?? null);
+    }
+    if (row.measurement !== undefined) measurements[String(index)] = row.measurement;
+    if (row.tagIds !== undefined) tags[String(index)] = [...row.tagIds];
+  });
   return {
-    version: 1, ids: rows.map((row) => row.id), currency: new Set(currencies).size === 1 ? currencies[0]! : currencies,
-    dimensions: Object.fromEntries(keys.map((key) => [key, rows.map((row) => row.dimensions[key] ?? null)])),
-    absent: Object.fromEntries(keys.flatMap((key) => {
-      const indexes = rows.flatMap((row, index) => Object.hasOwn(row.dimensions, key) ? [] : [index]);
-      return indexes.length ? [[key, indexes]] : [];
-    })),
-    totals: Object.fromEntries(gridBases.map((key) => [key, rows.map((row) => row.totals[key])])) as GridRowColumns['totals'],
-    comparison: Object.fromEntries(gridBases.map((key) => [key, rows.map((row) => row.comparison?.[key] ?? null)])) as GridRowColumns['comparison'],
-    measurements: Object.fromEntries(rows.flatMap((row, index) => row.measurement === undefined ? [] : [[index, row.measurement]])),
-    tags: Object.fromEntries(rows.flatMap((row, index) => row.tagIds === undefined ? [] : [[index, [...row.tagIds]]])),
+    version: 1, ids, currency: new Set(currencies).size === 1 ? currencies[0]! : currencies,
+    dimensions, absent: Object.fromEntries(Object.entries(absent).filter(([, indexes]) => indexes.length > 0)),
+    totals, comparison, measurements, tags,
   };
 }
 
 export function decodeGridRowColumns(raw: unknown): GridTransportRow[] {
   const value = GridRowColumns.parse(raw);
   const absent = new Map(Object.entries(value.absent).map(([key, indexes]) => [key, new Set(indexes)]));
-  return value.ids.map((id, index) => ({
-    id, currencyCode: typeof value.currency === 'string' ? value.currency : value.currency[index]!,
-    dimensions: Object.fromEntries(Object.entries(value.dimensions).flatMap(([key, values]) => absent.get(key)?.has(index) ? [] : [[key, values[index]!]])),
-    totals: Object.fromEntries(gridBases.map((key) => [key, value.totals[key][index]!])) as GridTransportRow['totals'],
-    comparison: value.comparison.impressions[index] === null ? null : Object.fromEntries(gridBases.map((key) => [key, value.comparison[key][index]!])) as GridTransportRow['totals'],
-    ...(value.measurements[String(index)] === undefined ? {} : { measurement: value.measurements[String(index)]! }),
-    ...(value.tags[String(index)] === undefined ? {} : { tagIds: value.tags[String(index)]! }),
-  }));
+  const dimensionColumns = Object.entries(value.dimensions);
+  const totalsAt = (columns: GridRowColumns['totals'], index: number): GridTransportRow['totals'] => ({
+    impressions: columns.impressions[index]!, clicks: columns.clicks[index]!, spend: columns.spend[index]!,
+    sales: columns.sales[index]!, orders: columns.orders[index]!, units: columns.units[index]!,
+  });
+  return value.ids.map((id, index) => {
+    // Reuse the column index. Per-row entries/flatMap created several temporary
+    // arrays for every dimension before the first viewport could be drawn.
+    const dimensions: GridTransportRow['dimensions'] = {};
+    for (const [key, values] of dimensionColumns) {
+      if (absent.get(key)?.has(index)) continue;
+      if (key === '__proto__') Object.defineProperty(dimensions, key, { value: values[index]!, enumerable: true, writable: true, configurable: true });
+      else dimensions[key] = values[index]!;
+    }
+    return {
+      id, currencyCode: typeof value.currency === 'string' ? value.currency : value.currency[index]!, dimensions,
+      totals: totalsAt(value.totals, index),
+      comparison: value.comparison.impressions[index] === null ? null : totalsAt(value.comparison, index),
+      ...(value.measurements[String(index)] === undefined ? {} : { measurement: value.measurements[String(index)]! }),
+      ...(value.tags[String(index)] === undefined ? {} : { tagIds: value.tags[String(index)]! }),
+    };
+  });
 }
 
 export const GridEntity = z.enum(['campaigns', 'ad_groups', 'targets', 'search_terms', 'products', 'placements']);
@@ -115,7 +158,7 @@ export type GridPerformanceEvidence = z.infer<typeof GridPerformanceEvidence>;
 /** One date axis per response. null = unobserved; 0 = observed, never ranked. */
 export const GridPerformanceTransport = GridPerformanceEvidence.omit({ rankDays: true }).extend({
   rankAxis: z.array(z.string()).length(14).or(z.tuple([])),
-  rankValues: z.record(z.string(), z.array(z.number().int().nonnegative().nullable()).length(14)),
+  rankValues: z.record(z.string(), primitiveColumn((value): value is number | null => value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)).refine((values) => values.length === 14, 'Rank history must contain fourteen days')),
 });
 export type GridPerformanceTransport = z.infer<typeof GridPerformanceTransport>;
 
@@ -134,10 +177,20 @@ export function decodeGridPerformance(raw: unknown): GridPerformanceEvidence {
   if (typeof raw === 'object' && raw !== null && 'rankDays' in raw) return GridPerformanceEvidence.parse(raw);
   const value = GridPerformanceTransport.parse(raw);
   if (Object.keys(value.rankValues).length && value.rankAxis.length !== 14) throw new Error('Rank history date axis is missing');
-  return { feeds: value.feeds, unattributed: value.unattributed,
-    rankDays: Object.fromEntries(Object.entries(value.rankValues).map(([id, ranks]) => [id, ranks.map((rank, index) => ({
-      date: value.rankAxis[index]!, observed: rank !== null, rank: rank === 0 ? null : rank,
-    }))])) };
+  const rankDays: GridPerformanceEvidence['rankDays'] = {};
+  for (const [id, ranks] of Object.entries(value.rankValues)) {
+    const store = (days: GridPerformanceEvidence['rankDays'][string]) => {
+      Object.defineProperty(rankDays, id, { value: days, enumerable: true, configurable: true, writable: true });
+      return days;
+    };
+    // Validate the complete payload above, then expand tiles on first read.
+    // Scrolling to a rank column pays for its row's fourteen tiles once.
+    Object.defineProperty(rankDays, id, { enumerable: true, configurable: true,
+      get: () => store(ranks.map((rank, index) => ({ date: value.rankAxis[index]!, observed: rank !== null, rank: rank === 0 ? null : rank }))),
+      set: store,
+    });
+  }
+  return { feeds: value.feeds, unattributed: value.unattributed, rankDays };
 }
 
 export const GridSavedView = z.object({

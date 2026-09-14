@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { TargetTranslation, type TranslationLanguage } from '@wizard-ads/shared';
 import { DataGrid, type GridRow } from '@wizard-ads/ui';
 
@@ -35,14 +35,14 @@ export function useTranslationColumn(profileId: string, language: TranslationLan
     void run().catch((error: unknown) => { if (!abort.signal.aborted) setResult({ scope, rows: [], error: error instanceof Error ? error.message : 'Translation unavailable' }); });
     return () => abort.abort();
   }, [enabled, language, profileId, rows, scope, refreshVersion]);
-  const byText = new Map((result.scope === scope ? result.rows : []).map((row) => [row.originalText, row]));
-  const cell = (row: GridRow) => {
+  const byText = useMemo(() => new Map((result.scope === scope ? result.rows : []).map((row) => [row.originalText, row])), [result, scope]);
+  const cell = useCallback((row: GridRow) => {
     const original = row.dimensions['targeting'];
     const translation = typeof original === 'string' ? byText.get(original) : undefined;
     if (translation?.result.status === 'available') return <span title={`Translated by ${translation.providerId}`}>{translation.result.text}</span>;
     if (translation?.result.status === 'unavailable') return <DataGrid.cells.NotMeasuredCell label="Translation unavailable" reason={translation.result.reason} />;
     if (result.scope === scope && result.error) return <DataGrid.cells.NotMeasuredCell label="Translation unavailable" reason={result.error} />;
     return <span aria-busy="true" title="Waiting for translation">Translating…</span>;
-  };
+  }, [byText, result.scope, result.error, scope]);
   return { cell, refresh: () => setRefreshVersion((value) => value + 1) };
 }

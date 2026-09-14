@@ -47,6 +47,8 @@ export function buildPerformanceModel(rows: readonly GridRow[], query: GridQuery
   // For a measured denominator, group shares sort exactly as group spend.
   if (shape.groupBy?.length) shape.sort = shape.sort?.map((rule) => rule.columnId === 'spend_share' ? { ...rule, columnId: 'spend' } : rule);
   const result = buildGridModelSafely(filtered.model.matchedRows.map(withShare), shape);
+  // Flat rows already have shares. Preserve their identity for the table and CSV.
+  if (!result.model.grouped) return { filterError: filtered.filterError, model: { ...result.model, total: sourceCount } };
   const shapedRows = result.model.rows.map(withShare);
   const byId = new Map(shapedRows.map((row) => [row.id, row]));
   return { filterError: filtered.filterError, model: { ...result.model, total: sourceCount,

@@ -1,9 +1,14 @@
 import { expect, test } from '@playwright/test';
 import { signIn } from './support/auth';
+import { readState } from './support/fixture';
 
 test('performance frame preserves measured strips across density, theme and attribution states', async ({ page }, info) => {
   await page.setViewportSize({ width: 1440, height: 1024 });
   await signIn(page, 'admin');
+  const { fixtureProfileId } = await readState();
+  // Measure each layout on its canonical URL; profile-context owns redirects.
+  const gridQuery = new URLSearchParams({ entity: 'targets', profile: fixtureProfileId });
+  const gridUrl = ['/grid', '?', gridQuery.toString()].join('');
   let banner = true;
   let measurement: 'original' | 'missing' | 'zero' = 'original';
   await page.route('**/api/grid/rows?*', async (route) => {
@@ -19,7 +24,7 @@ test('performance frame preserves measured strips across density, theme and attr
   });
   for (const theme of ['light', 'dark']) for (const density of ['normal', 'compact']) for (const present of [true, false]) {
     banner = present;
-    await page.goto('/grid?entity=targets');
+    await page.goto(gridUrl);
     await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
     await page.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
     await page.getByLabel('Row density').selectOption(density);
@@ -43,7 +48,7 @@ test('performance frame preserves measured strips across density, theme and attr
     await page.screenshot({ path, fullPage: true });
     await info.attach(`targets-${theme}-${density}-banner-${present}`, { path, contentType: 'image/png' });
   }
-  await page.goto('/grid?entity=targets&asin=B000SYN001');
+  await page.goto(`${gridUrl}&asin=B000SYN001`);
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
   await expect(page.getByText('Product is B000SYN001')).toBeVisible();
   await page.getByRole('button', { name: 'Remove product scope', exact: true }).click();
@@ -71,13 +76,13 @@ test('performance frame preserves measured strips across density, theme and attr
   await info.attach('targets-full-columns', { path: full, contentType: 'image/png' });
 
   const comparisonRequest = page.waitForRequest((request) => request.url().includes('/api/grid/rows?') && request.url().includes('compareFrom=2026-06-01'));
-  await page.goto('/grid?entity=targets&from=2026-07-01&to=2026-07-14&compareFrom=2026-06-01&compareTo=2026-06-14');
+  await page.goto(`${gridUrl}&from=2026-07-01&to=2026-07-14&compareFrom=2026-06-01&compareTo=2026-06-14`);
   const selectedComparison = new URL((await comparisonRequest).url());
   expect(selectedComparison.searchParams.get('compareTo')).toBe('2026-06-14');
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
 
   measurement = 'missing';
-  await page.goto('/grid?entity=targets');
+  await page.goto(gridUrl);
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
   const kpiValues = page.getByTestId('grid-kpis').locator('button strong');
   await expect(kpiValues).toHaveText(Array(8).fill('—'));
@@ -87,7 +92,7 @@ test('performance frame preserves measured strips across density, theme and attr
   await expect(totals.getByRole('cell').filter({ hasText: /^0(?:\.0%|%)?$/ })).toHaveCount(0);
   await expect(totals.getByRole('cell').filter({ hasText: /^—$/ })).not.toHaveCount(0);
   measurement = 'zero';
-  await page.goto('/grid?entity=targets');
+  await page.goto(gridUrl);
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
   await expect(page.getByRole('button', { name: 'Chart spend', exact: true }).locator('strong')).toHaveText('$0.00');
   await expect(page.getByRole('button', { name: 'Chart clicks', exact: true }).locator('strong')).toHaveText('0');
