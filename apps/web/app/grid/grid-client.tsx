@@ -15,9 +15,9 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import type { ReactNode } from 'react';
-import { decodeGridPerformance, type GridPerformanceEvidence, GridMeasurement, PerformanceVerdict, parseGridView, serializeGridView, type OrgActor } from '@wizard-ads/shared';
+import { decodeGridRowColumns, decodeGridPerformance, type GridPerformanceEvidence, GridMeasurement, PerformanceVerdict, parseGridView, serializeGridView, type OrgActor } from '@wizard-ads/shared';
 import { browserViewStore } from './view-store';
 import {
   DataGrid,
@@ -120,6 +120,10 @@ function isGridRow(value: unknown): value is GridRow {
 
 /** Refuse partial or malformed transport data before it becomes actionable. */
 export function parseGridRowsPayload(value: unknown): GridPayload {
+  if (isRecord(value) && value['rowColumns'] !== undefined) {
+    if (value['rows'] !== undefined) throw new Error('Grid response has ambiguous row encodings');
+    value = { ...value, rows: decodeGridRowColumns(value['rowColumns']) };
+  }
   if (!isRecord(value) || !Array.isArray(value['rows'])) {
     throw new Error('Grid response does not contain rows');
   }
@@ -448,7 +452,8 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
   const selectedRowSet = useMemo(() => new Set(selectedRowIds), [selectedRowIds]);
   const [fullscreen, setFullscreen] = useState(false);
-  const [asinScope, setAsinScope] = useState(props.asin ?? null);
+  const searchParams = useSearchParams();
+  const asinScope = searchParams.get('asin');
   const layoutWrites = useMemo(
     () => (store === null ? null : new LayoutWriteBuffer(store)),
     [store],
@@ -712,7 +717,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
             profileId={props.profileId}
             onRefreshTranslation={translation.refresh}
             asinScope={asinScope}
-            onRemoveScope={() => { setAsinScope(null); const url = new URL(window.location.href); url.searchParams.delete("asin"); window.history.replaceState(window.history.state, "", url); }}
+            onRemoveScope={() => { const url = new URL(window.location.href); url.searchParams.delete('asin'); window.history.replaceState(null, '', url); }}
             onTranslation={() => update({ translation: { language: view.translation?.language ?? 'en' } })}
             entity={props.entity}
             onEntityChange={(entity) => {

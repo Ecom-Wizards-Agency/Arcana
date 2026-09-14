@@ -1,5 +1,5 @@
 'use client';
-import { buildPerformanceModel, verdictFilter } from './performance-model';
+import { countPerformanceRows, verdictFilter } from './performance-model';
 import { useMemo, useState, type ReactNode } from 'react';
 import { deltaColor, grandTotal, resolveField, describeFilter, formatValue, metricSpec, GridToolbar, groupColumns, readEntitySearch, writeEntitySearch, entitySearchColumn, tokens, type GridToolbarProps, type GridRow, type SavedView } from '@wizard-ads/ui';
 import { TRANSLATION_LANGUAGES, TranslationLanguage, PerformanceVerdict, type GridPerformanceEvidence } from '@wizard-ads/shared';
@@ -60,7 +60,7 @@ export function PerformanceToolbar(props: GridToolbarProps & { view: SavedView; 
     if (ordered.includes('translation')) { ordered.splice(ordered.indexOf('translation'), 1); ordered.splice(1, 0, 'translation'); }
     props.onVisibleChange([...new Set(ordered)]);
   };
-  const counts = useMemo(() => new Map(props.entity === 'targets' ? PerformanceVerdict.shape.diagnosis.options.map((diagnosis) => [diagnosis, buildPerformanceModel(props.optionRows ?? [], { filter: verdictFilter(props.filter, diagnosis) }).model.matched] as const) : []), [props.entity, props.optionRows, props.filter]);
+  const counts = useMemo(() => new Map(props.entity === 'targets' ? PerformanceVerdict.shape.diagnosis.options.map((diagnosis) => [diagnosis, countPerformanceRows(props.optionRows ?? [], verdictFilter(props.filter, diagnosis))] as const) : []), [props.entity, props.optionRows, props.filter]);
   return <div style={{ position: 'relative' }}>
     <div data-testid="grid-performance-toolbar" style={{ height: 47, boxSizing: 'border-box', padding: '12px 24px 8px', display: 'flex', alignItems: 'center', gap: 8 }}>
       <input style={{ ...button, width: 240, minWidth: 100 }} aria-label={`Search ${props.entity.replace('_', ' ')}`} placeholder={`Search ${props.entity.replace('_', ' ')}…`} value={readEntitySearch(filters, identity)} onChange={(event) => props.onFilterChange({ groups: [{ filters: writeEntitySearch(filters, identity, event.target.value) }] })} />

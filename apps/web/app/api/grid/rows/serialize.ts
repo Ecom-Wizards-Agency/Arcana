@@ -1,5 +1,5 @@
 /** Bounded, deterministic serialization for the serverless Grid response. */
-import { encodeGridPerformance } from '@wizard-ads/shared';
+import { encodeGridPerformance, encodeGridRowColumns } from '@wizard-ads/shared';
 import type { GridPayload } from '../../../_lib/grid-data';
 
 /** Keep 0.5 MB of headroom below the hosting platform's documented limit. */
@@ -42,6 +42,15 @@ export function serializeGridPayloadWithinBudget(
     // The legacy row-only encoder remains the fast path for existing callers.
     // Evidence is counted with its row and removed with any truncated prefix.
     const performance = encodeGridPerformance(source.performance);
+    const completePerformance = Object.keys(performance.rankValues).length === 0 ? { ...source.performance, rankDays: {} } : performance;
+    const completeBody = JSON.stringify({ rows: source.rows, performance: completePerformance, rowCount: source.rowCount, truncated: source.truncated });
+    const completeBytes = utf8Bytes(completeBody);
+    if (completeBytes <= maxBytes) return { body: completeBody, byteLength: completeBytes, payload: source };
+    // Preserve every field before considering the existing oversize safeguard.
+    // Shared column names remove repeated metric/dimension keys without rounding money.
+    const columnBody = JSON.stringify({ rowColumns: encodeGridRowColumns(source.rows), performance: completePerformance, rowCount: source.rowCount, truncated: source.truncated });
+    const columnBytes = utf8Bytes(columnBody);
+    if (columnBytes <= maxBytes) return { body: columnBody, byteLength: columnBytes, payload: source };
     const base = { ...performance, rankValues: {} };
     const baseBytes = utf8Bytes(JSON.stringify(base));
     const serializedRows: string[] = [];

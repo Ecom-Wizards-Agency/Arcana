@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { encodeGridPerformance, decodeGridPerformance, parseGridView, serializeGridView, type GridSavedView } from './grid-views.js';
+import { decodeGridRowColumns, encodeGridRowColumns, encodeGridPerformance, decodeGridPerformance, parseGridView, serializeGridView, type GridSavedView, type GridTransportRow } from './grid-views.js';
 const view: GridSavedView = {
   id: 'synthetic', name: '分析 café', entity: 'targets', columns: ['targeting', 'spend'],
   widths: { targeting: 301 }, pinned: ['targeting'], density: 'compact',
@@ -28,5 +28,22 @@ describe('compact rank transport', () => {
     expect(wire.rankValues['measured']!.slice(0, 3)).toEqual([null, 0, 2]);
     expect(decodeGridPerformance(wire).rankDays).toEqual({ measured: days });
     expect(() => decodeGridPerformance({ ...wire, rankAxis: [] })).toThrow('date axis');
+  });
+});
+
+
+describe('lossless grid row columns', () => {
+  it('round trips comparisons, nulls, absent keys, precision, measurement masks and tags', () => {
+    const totals = { impressions: 100, clicks: 4, spend: 1.23456789, sales: 6.78901234, orders: 2, units: 3 };
+    const rows: GridTransportRow[] = [
+      { id: 'a', currencyCode: 'USD', dimensions: { nullable: null, name: 'Synthetic 日本語', flag: false }, totals, comparison: totals, tagIds: ['synthetic'], measurement: { missing: ['spend' as const], comparisonMissing: ['sales' as const] } },
+      { id: 'b', currencyCode: 'EUR', dimensions: { name: 'Synthetic other' }, totals, comparison: null, tagIds: [] },
+    ];
+    const encoded = encodeGridRowColumns(rows);
+    expect(decodeGridRowColumns(JSON.parse(JSON.stringify(encoded)))).toEqual(rows);
+    expect(() => decodeGridRowColumns({ ...encoded, ids: [] })).toThrow();
+    expect(() => decodeGridRowColumns({ ...encoded, comparison: { ...encoded.comparison, spend: [null, null] } })).toThrow();
+    expect(() => decodeGridRowColumns({ ...encoded, tags: { 2: [] } })).toThrow();
+    expect(decodeGridRowColumns(encodeGridRowColumns([]))).toEqual([]);
   });
 });

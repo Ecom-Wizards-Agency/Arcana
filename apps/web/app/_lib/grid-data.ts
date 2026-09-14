@@ -371,6 +371,7 @@ async function loadTargets(
   const latestByTarget = new Map(latest.map((row) => [row.targetId, row]));
   const asins = [...new Set(rows.flatMap((row) => row.asin ? [row.asin] : []))];
   const rankStart = new Date(Date.parse(period.end) - 13 * 86_400_000).toISOString().slice(0, 10);
+  const rankAxis = Array.from({ length: 14 }, (_, index) => new Date(Date.parse(rankStart) + index * 86_400_000).toISOString().slice(0, 10));
   const rankFrom = [period.start, comparison.start, rankStart].sort()[0]!;
   const observations = asins.length === 0 ? [] : await handle.sql<{ asin: string; keyword: string; date: string; rank: number | null }[]>`
     select distinct on (asin,keyword,observed_on) asin, keyword, observed_on::text as date, organic_rank as rank
@@ -405,13 +406,12 @@ async function loadTargets(
     const previous = history.filter((day) => day.date >= comparison.start && day.date <= comparison.end).at(-1)?.rank ?? null;
     const query = literal ? sqpByQuery.get(key) : undefined;
     const dayMap = new Map(history.map((day) => [day.date, day]));
-    if (history.some((day) => day.date >= rankStart && day.date <= period.end)) rankDays[`target:${row.target_id}`] = Array.from({ length: 14 }, (_, index) => {
-      const date = new Date(Date.parse(rankStart) + index * 86_400_000).toISOString().slice(0, 10);
+    if (history.some((day) => day.date >= rankStart && day.date <= period.end)) rankDays[`target:${row.target_id}`] = rankAxis.map((date) => {
       const observation = dayMap.get(date);
       return { date, observed: observation !== undefined, rank: observation?.rank ?? null };
     });
-    const strategy = TenantStrategy.safeParse(row.strategy_doc);
-    const configured = strategy.success ? strategy.data : null;
+    const strategy = row.strategy_doc == null ? null : TenantStrategy.safeParse(row.strategy_doc);
+    const configured = strategy?.success ? strategy.data : null;
     const targetAcos = measured(row.target_acos);
     const spend = measured(row.spend);
     const clicks = measured(row.clicks);

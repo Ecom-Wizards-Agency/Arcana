@@ -13,6 +13,7 @@
  * Skipped, not failed, without a Postgres: the suite has to stay honest on a
  * machine that has none, the same way the `packages/db` suites do.
  */
+import { decodeGridRowColumns, decodeGridPerformance } from '@wizard-ads/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
@@ -517,6 +518,23 @@ suite('grid and roster reads against SQL aggregates', () => {
       for (const key of ['impressions', 'clicks', 'spend', 'sales', 'orders', 'units', 'acos', 'cpc']) expect(resolveField(row, key)).toBeNull();
     }
     expect(resolveField(model.totalsRow!, 'spend_comparison')).toBeGreaterThan(0);
+  });
+
+  it('fits 3597 production-shaped targets with measured comparisons and all fourteen rank days', async () => {
+    const source = await loadGridRows(database, 'targets', { orgId, profileId, currencyCode: 'USD', period: PERIOD, comparison: COMPARISON });
+    expect(source.rows.length).toBeGreaterThan(0);
+    expect(source.rows.every((row) => row.comparison !== null)).toBe(true);
+    const rows = Array.from({ length: 3597 }, (_, index) => ({ ...source.rows[index % source.rows.length]!, id: `target:synthetic-${index}` }));
+    const rankDays = Object.fromEntries(rows.map((row, index) => [row.id, Array.from({ length: 14 }, (_, day) => ({ date: addDays(PERIOD.start, day), observed: true, rank: index + day + 1 }))]));
+    const performance = { ...source.performance!, rankDays };
+    const serialized = serializeGridPayloadWithinBudget({ rows, performance, rowCount: rows.length, truncated: false });
+    const wire = JSON.parse(serialized.body);
+    expect(serialized.byteLength).toBeLessThanOrEqual(4_000_000);
+    expect(wire.truncated).toBe(false);
+    expect(wire.rowCount).toBe(3597);
+    expect(wire.rowColumns).toBeDefined();
+    expect(decodeGridRowColumns(wire.rowColumns)).toEqual(rows);
+    expect(decodeGridPerformance(wire.performance)).toEqual(performance);
   });
 
   it('reads early current ranks when the custom comparison follows the current period', async () => {

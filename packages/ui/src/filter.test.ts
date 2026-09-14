@@ -33,6 +33,16 @@ describe('the key mapping', () => {
 });
 
 describe('metric filters', () => {
+  it('uses displayed percentage units for derived dimensions without scaling numeric bids or ranks', () => {
+    for (const key of ['spend_share', 'top_of_search_share', 'sqp_impression_share', 'sqp_purchase_share', 'market_cvr', 'asin_cvr', 'aba_click_share', 'aba_conversion_share']) {
+      const population = [row({ id: 'larger', dimensions: { [key]: 0.75 } }), row({ id: 'smaller', dimensions: { [key]: 0.25 } }), row({ id: 'unknown', dimensions: { [key]: null } })];
+      for (const value of ['50%', '50']) expect(applyFilterSet(population, { groups: [{ filters: [{ key: key.toUpperCase(), conditions: [{ operator: '>', values: [value] }] }] }] }).map((item) => item.id)).toEqual(['larger']);
+      expect(evaluateFilter(population[0]!, { key, conditions: [{ operator: 'IN', values: ['75%'] }] })).toBe(true);
+      expect(evaluateFilter(population[1]!, { key, conditions: [{ operator: '=', values: ['25%'] }] })).toBe(true);
+    }
+    expect(evaluateFilter(row(), { key: 'BID', conditions: [{ operator: '>', values: ['50'] }] })).toBe(false);
+    expect(evaluateFilter(row({ dimensions: { organic_rank: 8 } }), { key: 'ORGANIC_RANK', conditions: [{ operator: '>', values: ['5'] }] })).toBe(true);
+  });
   it('reads percent-scaled thresholds as percents', () => {
     // Row ACOS is 40/100 = 0.4. The operator types 30, meaning 30%.
     expect(evaluateFilter(row(), { key: 'ACOS', conditions: [{ operator: '>', values: ['30'] }] })).toBe(true);

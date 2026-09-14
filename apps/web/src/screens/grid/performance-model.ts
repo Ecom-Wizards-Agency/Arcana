@@ -1,10 +1,13 @@
 import { buildGridModelSafely, grandTotal, resolveField, type FilterSet, type GridModelResult, type GridQuery, type GridRow } from '@wizard-ads/ui';
+import { PerformanceVerdict } from '@wizard-ads/shared';
 import { shareOfSpend } from '@wizard-ads/core';
 
 /** A quick chip replaces every selected verdict, retaining each non-verdict OR branch. */
 export function verdictFilter(filter: FilterSet, diagnosis: string): FilterSet {
+  const canonical = PerformanceVerdict.shape.diagnosis.options.find((value) => value.toLowerCase() === diagnosis.trim().toLowerCase());
+  if (canonical === undefined) throw new Error('Unknown performance verdict');
   return { groups: (filter.groups.length ? filter.groups : [{ filters: [] }]).map((group) => ({
-    filters: [...group.filters.filter((item) => item.key !== 'VERDICT'), { key: 'VERDICT', conditions: [{ operator: '=' as const, values: [diagnosis] }] }],
+    filters: [...group.filters.filter((item) => item.key.trim().toUpperCase() !== 'VERDICT'), { key: 'VERDICT', conditions: [{ operator: '=' as const, values: [canonical] }] }],
   })) };
 }
 
@@ -12,18 +15,29 @@ export function scopeRows(rows: readonly GridRow[], asin: string | null): readon
   return asin === null ? rows : rows.filter((row) => row.dimensions['asin'] === asin);
 }
 
+function hasSpendShareFilter(filter: FilterSet | undefined): boolean {
+  return filter?.groups.some((group) => group.filters.some((item) => item.key.trim().toUpperCase() === 'SPEND_SHARE')) ?? false;
+}
+
+/** Counts need no totals or row copies unless a share predicate needs a denominator. */
+export function countPerformanceRows(rows: readonly GridRow[], filter: FilterSet): number {
+  return hasSpendShareFilter(filter)
+    ? buildPerformanceModel(rows, { filter }).model.matched
+    : buildGridModelSafely(rows, { filter, totals: 'none' }).model.matched;
+}
+
 /** Shares use the measured spend of exactly the matched population, including verdict scope. */
 export function buildPerformanceModel(rows: readonly GridRow[], query: GridQuery = {}): GridModelResult {
   // Share predicates are evaluated against the non-share population first;
   // the displayed shares are then rebased to the rows those predicates retain.
   const sourceCount = rows.length;
-  const hasShareFilter = query.filter?.groups.some((group) => group.filters.some((filter) => filter.key === 'SPEND_SHARE'));
+  const hasShareFilter = hasSpendShareFilter(query.filter);
   if (hasShareFilter) {
-    const nonShare = { groups: query.filter!.groups.map((group) => ({ filters: group.filters.filter((filter) => filter.key !== 'SPEND_SHARE') })) };
+    const nonShare = { groups: query.filter!.groups.map((group) => ({ filters: group.filters.filter((filter) => filter.key.trim().toUpperCase() !== 'SPEND_SHARE') })) };
     const population = buildPerformanceModel(rows, { filter: nonShare }).model.matchedRows;
     rows = population;
   }
-  const filtered = buildGridModelSafely(rows, { filter: query.filter });
+  const filtered = buildGridModelSafely(rows, { filter: query.filter, totals: 'none' });
   const total = grandTotal(filtered.model.matchedRows);
   const denominator = total === null ? null : resolveField(total, 'spend');
   const withShare = <T extends GridRow>(row: T): T => ({ ...row, dimensions: { ...row.dimensions,

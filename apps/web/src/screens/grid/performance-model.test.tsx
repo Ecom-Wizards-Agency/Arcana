@@ -4,13 +4,39 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { resolveField, type GridRow, type FilterSet } from '@wizard-ads/ui';
 import { PerformanceVerdict } from '@wizard-ads/shared';
-import { buildPerformanceModel, scopeRows, verdictFilter } from './performance-model';
+import { buildPerformanceModel, countPerformanceRows, scopeRows, verdictFilter } from './performance-model';
 import { PerformanceSummary } from './performance-chrome';
 const rows: GridRow[] = ([
   ['a', 'B000SYN001', 'Efficient', 4.5], ['b', 'B000SYN001', 'Rank gap', 15.5], ['c', 'B000SYN002', 'Efficient', 30],
 ] as const).map(([id, asin, verdict, spend]) => ({ id: String(id), currencyCode: 'USD', dimensions: { targeting: String(id), asin, verdict }, totals: { spend: Number(spend), sales: 100, clicks: 10, impressions: 100, orders: 1, units: 1 }, comparison: null }));
 const filter: FilterSet = { groups: [{ filters: [{ key: 'TARGETING', conditions: [{ operator: '=', values: ['a'] }] }] }] };
 describe('performance population', () => {
+  it('counts chips without shaping rows while retaining OR, lowercase verdict and percentage semantics', () => {
+    const filters: FilterSet[] = [filter,
+      { groups: [{ filters: [{ key: 'verdict', conditions: [{ values: ['efficient'] }] }] }, ...filter.groups] },
+      { groups: [{ filters: [{ key: 'spend_share', conditions: [{ operator: '>', values: ['50%'] }] }] }] },
+    ];
+    for (const active of filters) for (const asin of [null, 'B000SYN001']) for (const diagnosis of PerformanceVerdict.shape.diagnosis.options) {
+      const population = scopeRows(rows, asin);
+      const clicked = verdictFilter(active, diagnosis);
+      expect(countPerformanceRows(population, clicked)).toBe(buildPerformanceModel(population, { filter: clicked }).model.matched);
+    }
+  });
+  it('filters a 75 percent spend contributor using the displayed 50% threshold', () => {
+    const population = [25, 75].map((spend, index) => ({ ...rows[index]!, totals: { ...rows[index]!.totals, spend } }));
+    for (const key of ['SPEND_SHARE', 'spend_share']) {
+      const model = buildPerformanceModel(population, { filter: { groups: [{ filters: [{ key, conditions: [{ operator: '>', values: ['50%'] }] }] }] } }).model;
+      expect(model.matchedRows.map((row) => row.id)).toEqual(['b']);
+      expect(model.rows[0]!.dimensions['spend_share']).toBe(1);
+      expect(resolveField(model.totalsRow!, 'spend')).toBe(75);
+    }
+  });
+  it('replaces lowercase saved verdict predicates and normalizes the selected value', () => {
+    const saved = { groups: [{ filters: [{ key: 'verdict', conditions: [{ operator: '=' as const, values: ['efficient'] }] }] }] };
+    const next = verdictFilter(saved, ' rank GAP ');
+    expect(next.groups[0]!.filters).toEqual([{ key: 'VERDICT', conditions: [{ operator: '=', values: ['Rank gap'] }] }]);
+    expect(buildPerformanceModel(rows, { filter: next }).model.matchedRows.map((row) => row.id)).toEqual(['b']);
+  });
   it('rebases spend share on active filters and ASIN scope and exports the same shares', () => {
     const one = buildPerformanceModel(scopeRows(rows, 'B000SYN001'), { filter }).model;
     expect(one.matched).toBe(1);

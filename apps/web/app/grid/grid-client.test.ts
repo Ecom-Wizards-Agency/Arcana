@@ -14,7 +14,7 @@ import type {
 import { GridWorkspace, gridExperimentHref, experimentScopeIds, withValidGrouping } from './grid-client';
 
 const navigation = vi.hoisted(() => ({ push: vi.fn() }));
-vi.mock('next/navigation', () => ({ useRouter: () => navigation }));
+vi.mock('next/navigation', () => ({ useRouter: () => navigation, useSearchParams: () => new URLSearchParams(window.location.search) }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const mounted: Array<{ unmount: () => void }> = [];
@@ -690,6 +690,26 @@ describe('grid navigation scope', () => {
         expect(host.textContent).not.toContain(`Product is ${asin === 'B000SYN001' ? 'B000SYN002' : 'B000SYN001'}`);
       } else expect(host.querySelector('[aria-label="Remove product scope"]')).toBeNull();
     }
+  });
+  it('uses navigation after A is removed and the same retained ASIN prop is selected again', async () => {
+    const rows = ['B000SYN001', 'B000SYN002'].map((asin, index) => ({ ...row('targets'), id: `target:${index}`, dimensions: { ...row('targets').dimensions, asin } }));
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ rows, rowCount: rows.length, truncated: false })));
+    const host = document.createElement('div'); document.body.append(host);
+    const root = createRoot(host); mounted.push(root);
+    const props = { ...workspaceProps('targets', new MemoryViewStore()), asin: 'B000SYN001' };
+    const render = async () => { act(() => root.render(createElement(GridWorkspace, props))); await flushGridLoad(); };
+    const scoped = '/grid?' + new URLSearchParams({ entity: 'targets', asin: props.asin });
+    window.history.replaceState(null, '', scoped);
+    await render();
+    expect(host.textContent).toContain('Export CSV (1 of 1)');
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Remove product scope"]')!.click());
+    await render();
+    expect(new URL(window.location.href).searchParams.get('asin')).toBeNull();
+    expect(host.textContent).toContain('Export CSV (2 of 2)');
+    window.history.pushState(null, '', scoped);
+    await render();
+    expect(host.textContent).toContain('Product is B000SYN001');
+    expect(host.textContent).toContain('Export CSV (1 of 1)');
   });
   it('prefills experiment ad-group ids with the destination adgroups parameter', () => {
     const rows = ['ag-a', 'ag-b', 'ag-a'].map((id) => ({ ...row('ad_groups'), dimensions: { ad_group_id: id } }));

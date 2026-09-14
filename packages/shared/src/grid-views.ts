@@ -18,6 +18,70 @@ export const GridMeasurement = z.strictObject({
   comparisonMissing: z.array(z.enum(['impressions', 'clicks', 'spend', 'sales', 'orders', 'units'])),
 });
 export type GridMeasurement = z.infer<typeof GridMeasurement>;
+const gridBases = ['impressions', 'clicks', 'spend', 'sales', 'orders', 'units'] as const;
+const gridDimension = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
+const gridTotals = z.strictObject({ impressions: z.number().finite(), clicks: z.number().finite(), spend: z.number().finite(), sales: z.number().finite(), orders: z.number().finite(), units: z.number().finite() });
+export const GridTransportRow = z.strictObject({
+  id: z.string(), currencyCode: z.string(), dimensions: z.record(z.string(), gridDimension),
+  totals: gridTotals, comparison: gridTotals.nullable(), measurement: GridMeasurement.optional(), tagIds: z.array(z.string()).readonly().optional(),
+});
+export type GridTransportRow = z.infer<typeof GridTransportRow>;
+const metricColumns = z.record(z.enum(gridBases), z.array(z.number().finite().nullable()));
+/** Lossless columns: sparse metadata and absent dimension keys retain their row indexes. */
+export const GridRowColumns = z.strictObject({
+  version: z.literal(1), ids: z.array(z.string()), currency: z.union([z.string(), z.array(z.string())]),
+  dimensions: z.record(z.string(), z.array(gridDimension)), absent: z.record(z.string(), z.array(z.number().int().nonnegative())),
+  totals: metricColumns, comparison: metricColumns,
+  measurements: z.record(z.string(), GridMeasurement), tags: z.record(z.string(), z.array(z.string())),
+}).superRefine((value, context) => {
+  const count = value.ids.length;
+  const error = (message: string) => context.addIssue({ code: 'custom', message });
+  const arrays = [...Object.values(value.dimensions), ...Object.values(value.totals), ...Object.values(value.comparison)];
+  if (arrays.some((column) => column.length !== count) || (Array.isArray(value.currency) && value.currency.length !== count)) error('Grid column lengths disagree');
+  if (Object.values(value.totals).some((column) => column.some((number) => number === null))) error('Grid current base slots cannot be null');
+  for (let index = 0; index < count; index++) {
+    const missing = gridBases.filter((key) => value.comparison[key][index] === null).length;
+    if (missing !== 0 && missing !== gridBases.length) error('Grid comparison must be present or wholly absent');
+  }
+  for (const [key, indexes] of Object.entries(value.absent)) {
+    if (!(key in value.dimensions) || indexes.some((index) => index >= count)) error('Grid absent dimension index is invalid');
+  }
+  for (const key of [...Object.keys(value.measurements), ...Object.keys(value.tags)]) {
+    if (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= count) error('Grid metadata index is invalid');
+  }
+});
+export type GridRowColumns = z.infer<typeof GridRowColumns>;
+
+export function encodeGridRowColumns(rows: readonly GridTransportRow[]): GridRowColumns {
+  const keys = [...new Set(rows.flatMap((row) => Object.keys(row.dimensions)))];
+  const currencies = rows.map((row) => row.currencyCode);
+  return {
+    version: 1, ids: rows.map((row) => row.id), currency: new Set(currencies).size === 1 ? currencies[0]! : currencies,
+    dimensions: Object.fromEntries(keys.map((key) => [key, rows.map((row) => row.dimensions[key] ?? null)])),
+    absent: Object.fromEntries(keys.flatMap((key) => {
+      const indexes = rows.flatMap((row, index) => Object.hasOwn(row.dimensions, key) ? [] : [index]);
+      return indexes.length ? [[key, indexes]] : [];
+    })),
+    totals: Object.fromEntries(gridBases.map((key) => [key, rows.map((row) => row.totals[key])])) as GridRowColumns['totals'],
+    comparison: Object.fromEntries(gridBases.map((key) => [key, rows.map((row) => row.comparison?.[key] ?? null)])) as GridRowColumns['comparison'],
+    measurements: Object.fromEntries(rows.flatMap((row, index) => row.measurement === undefined ? [] : [[index, row.measurement]])),
+    tags: Object.fromEntries(rows.flatMap((row, index) => row.tagIds === undefined ? [] : [[index, [...row.tagIds]]])),
+  };
+}
+
+export function decodeGridRowColumns(raw: unknown): GridTransportRow[] {
+  const value = GridRowColumns.parse(raw);
+  const absent = new Map(Object.entries(value.absent).map(([key, indexes]) => [key, new Set(indexes)]));
+  return value.ids.map((id, index) => ({
+    id, currencyCode: typeof value.currency === 'string' ? value.currency : value.currency[index]!,
+    dimensions: Object.fromEntries(Object.entries(value.dimensions).flatMap(([key, values]) => absent.get(key)?.has(index) ? [] : [[key, values[index]!]])),
+    totals: Object.fromEntries(gridBases.map((key) => [key, value.totals[key][index]!])) as GridTransportRow['totals'],
+    comparison: value.comparison.impressions[index] === null ? null : Object.fromEntries(gridBases.map((key) => [key, value.comparison[key][index]!])) as GridTransportRow['totals'],
+    ...(value.measurements[String(index)] === undefined ? {} : { measurement: value.measurements[String(index)]! }),
+    ...(value.tags[String(index)] === undefined ? {} : { tagIds: value.tags[String(index)]! }),
+  }));
+}
+
 export const GridEntity = z.enum(['campaigns', 'ad_groups', 'targets', 'search_terms', 'products', 'placements']);
 export const VerdictThresholds = z.strictObject({
   ownedRank: z.number().positive().nullable(),

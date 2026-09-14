@@ -92,3 +92,31 @@ test('performance frame preserves measured strips across density, theme and attr
   await expect(page.getByRole('button', { name: 'Chart spend', exact: true }).locator('strong')).toHaveText('$0.00');
   await expect(page.getByRole('button', { name: 'Chart clicks', exact: true }).locator('strong')).toHaveText('0');
 });
+
+test('ASIN scope follows removal, same-value reselection and browser back and forward', async ({ page }) => {
+  await signIn(page, 'admin');
+  const rows = ['B000SYN001', 'B000SYN002'].map((asin, index) => ({ id: `target:scope-${index}`, currencyCode: 'USD',
+    dimensions: { asin, target_id: `scope-${index}`, targeting: `Synthetic scope ${index}`, target_state: 'enabled', match_type: 'exact', verdict: 'Insufficient evidence' },
+    totals: { spend: 10, sales: 20, impressions: 100, clicks: 5, orders: 1, units: 1 }, comparison: null,
+  }));
+  await page.route('**/api/grid/rows?*', (route) => route.fulfill({ json: { rows, rowCount: rows.length, truncated: false } }));
+  await page.goto('/grid?entity=targets&asin=B000SYN001');
+  const scope = page.getByRole('button', { name: 'Remove product scope', exact: true });
+  const assertScope = async (scoped: boolean) => {
+    await expect(scope).toHaveCount(scoped ? 1 : 0);
+    await expect(page.getByRole('button', { name: scoped ? 'Export CSV (1 of 1)' : 'Export CSV (2 of 2)', exact: true })).toBeVisible();
+    expect(new URL(page.url()).searchParams.get('asin')).toBe(scoped ? 'B000SYN001' : null);
+  };
+  await assertScope(true);
+  await scope.click();
+  await assertScope(false);
+  await page.evaluate(() => {
+    const url = new URL(window.location.href); url.searchParams.set('asin', 'B000SYN001');
+    window.history.pushState(null, '', url);
+  });
+  await assertScope(true);
+  await page.goBack();
+  await assertScope(false);
+  await page.goForward();
+  await assertScope(true);
+});

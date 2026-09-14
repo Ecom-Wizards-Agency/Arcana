@@ -28,6 +28,7 @@
  * not 3000%, because that is what an operator types. The conversion happens
  * once, here, using the metric registry's `scale` -- never in a caller.
  */
+import { columnsFor, ENTITY_LEVELS } from './columns.js';
 import { metricSpec } from './metrics.js';
 import type { GridRow } from './rows.js';
 import { DELTA_ABSOLUTE_SUFFIX, DELTA_PERCENT_SUFFIX, fieldAccessor, parseFieldId } from './rows.js';
@@ -105,9 +106,11 @@ export function columnIdToFilterKey(columnId: string): string {
  * `ACOS > 30` has to become `acos > 0.3` exactly once. Delta-percent columns
  * are percent-shaped too, for the same reason.
  */
+const percentDimensions = new Set(ENTITY_LEVELS.flatMap(columnsFor).filter((column) => column.kind === 'dimension' && column.scale === 'percent').map((column) => column.id));
+
 function scaleInputValue(columnId: string, raw: number): number {
   const ref = parseFieldId(columnId);
-  if (ref === null) return raw;
+  if (ref === null) return percentDimensions.has(columnId) ? raw / 100 : raw;
   if (ref.part === 'delta_percent') return raw / 100;
   const spec = metricSpec(ref.metric);
   if (spec === undefined) return raw;
@@ -186,8 +189,13 @@ function compileCondition(columnId: string, condition: FilterCondition): RowPred
 
   // A dimension column holding a number (bid, budget) still compares
   // numerically -- but only when the operator is one a number understands.
-  const numeric = operator === 'LIKE' || operator === 'NOT_LIKE' ? null : toNumber(condition.values[0]);
+  const rawNumeric = operator === 'LIKE' || operator === 'NOT_LIKE' ? null : toNumber(condition.values[0]);
+  const numeric = rawNumeric === null ? null : scaleInputValue(columnId, rawNumeric);
   const setMembership = operator === 'IN' || operator === 'NOT_IN';
+  if (setMembership && percentDimensions.has(columnId)) {
+    const expected = new Set(condition.values.flatMap((value) => { const parsed = toNumber(value); return parsed === null ? [] : [scaleInputValue(columnId, parsed)]; }));
+    return (row) => { const actual = read(row); return typeof actual === 'number' && (operator === 'IN' ? expected.has(actual) : !expected.has(actual)); };
+  }
   const needles = condition.values.map((value) =>
     (setMembership ? value.trim() : value).toLowerCase(),
   );
@@ -195,6 +203,7 @@ function compileCondition(columnId: string, condition: FilterCondition): RowPred
 
   return (row) => {
     const actual = read(row);
+    if (numeric !== null && actual == null) return false;
     if (numeric !== null && typeof actual === 'number') return compare(actual, operator, numeric);
     const text = actual === null || actual === undefined ? null : String(actual);
     return matchText(text, operator, needles, exactNeedles);
