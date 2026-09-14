@@ -1,8 +1,11 @@
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { tagSwatchStyle } from '../../app/tags/colors.js';
 
-const css = readFileSync(new URL('./theme.css', import.meta.url), 'utf8');
+const css = readFileSync(new URL('../../../../packages/ui/src/tokens.css', import.meta.url), 'utf8')
+  + readFileSync(new URL('./theme.css', import.meta.url), 'utf8');
 const tokensSource = readFileSync(new URL('./tokens.ts', import.meta.url), 'utf8');
 
 const BRAND_TOKENS = {
@@ -72,7 +75,7 @@ describe('WP-47B brand contract', () => {
 
   it('gives warn its own hue instead of a second helping of the accent', () => {
     const warnDeclarations = css.match(/--wa-warn-(?:text|bg|border):[^;]+;/g) ?? [];
-    expect(warnDeclarations).toHaveLength(9);
+    expect(warnDeclarations).toHaveLength(['text', 'bg', 'border'].length * 3);
     for (const declaration of warnDeclarations) {
       expect(declaration).not.toContain('--wa-accent');
       expect(declaration).toContain('--wa-warn');
@@ -80,12 +83,12 @@ describe('WP-47B brand contract', () => {
 
     // Every rule whose selector is a warn variant paints from a warn token.
     const warnRules = [...css.matchAll(/([^{}]*--warn[^{}]*)\{([^{}]*)\}/g)];
-    expect(warnRules.map((rule) => rule[1]?.trim())).toEqual([
+    expect([...new Set(warnRules.map((rule) => rule[1]?.trim()))].sort()).toEqual([
       '.wa-badge--warn',
       '.wa-banner--warn',
       '.wa-freshness--warn',
       '.wa-kpi-mini--warn',
-    ]);
+    ].sort());
     for (const [, , body] of warnRules) {
       expect(body).not.toContain('var(--wa-accent');
       expect(body).toContain('var(--wa-warn-');
@@ -255,5 +258,36 @@ describe('WP-211 brand icon set', () => {
     expect(
       readFileSync(new URL('../../public/brand/wizards-ai-icon.svg', import.meta.url), 'utf8'),
     ).toContain('viewBox="0 0 378 378"');
+  });
+});
+
+
+describe('Figma CSS mix parity', () => {
+  it('matches the CSS reference for opaque and alpha mixes and preserves export bytes', () => {
+    const root = fileURLToPath(new URL('../../../../', import.meta.url));
+    const result = JSON.parse(execFileSync('python3', ['-c', `
+import json, runpy
+m = runpy.run_path('tools/figma-tokens/resolve.py')
+expressions = ['color-mix(in srgb, #F59E0B 55%, #11151C)',
+ 'color-mix(in srgb, #FD4807 12%, transparent)',
+ 'color-mix(in srgb, transparent 50%, transparent)',
+ 'color-mix(in srgb, color-mix(in srgb, #FD4807 12%, transparent) 50%, #11151C)']
+print(json.dumps([m['resolve_value'](v, {}, set()) for v in expressions]))
+`], { cwd: root, encoding: 'utf8' })) as number[][];
+    const opaque = result[0] as number[];
+    expect('#' + opaque.slice(0, 3).map((value) => Math.round(value).toString(16).padStart(2, '0').toUpperCase()).join(''))
+      .toBe(mix('#F59E0B', '#11151C', 55));
+    [253, 72, 7, 0.12].forEach((value, index) => expect(result[1]?.[index]).toBeCloseTo(value));
+    expect(result[2]).toEqual([0, 0, 0, 0]);
+    // Composite the alpha mix over Ink. Its effective opaque weight is 6/56.
+    const nested = result[3] as number[];
+    expect(nested[3]).toBeCloseTo(0.56);
+    expect('#' + nested.slice(0, 3).map((value) => Math.round(value).toString(16).padStart(2, '0').toUpperCase()).join(''))
+      .toBe(mix('#FD4807', '#11151C', 100 * 0.06 / 0.56));
+    const artifact = new URL('../../../../tools/figma-tokens/tokens.figma.json', import.meta.url);
+    const before = readFileSync(artifact, 'utf8');
+    execFileSync('python3', ['tools/figma-tokens/resolve.py'], { cwd: root });
+    expect(readFileSync(artifact, 'utf8')).toBe(before);
+    execFileSync('python3', ['-B', '-m', 'unittest', 'discover', '-s', 'tools/figma-tokens'], { cwd: root });
   });
 });

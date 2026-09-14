@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { filterSetOf } from './filter.js';
+import type { GridRow } from './rows.js';
 import { isGroupedRow } from './aggregate.js';
 import { syntheticSearchTermRows } from './fixtures.js';
 import { buildGridModel } from './pipeline.js';
@@ -47,5 +49,20 @@ describe('nested grid pipeline', () => {
     });
     expect(model.groupBy).toEqual(['campaign_name', 'match_type']);
     expect(model.rows.every((row) => !isGroupedRow(row) || row.groupBy.length === 2)).toBe(true);
+  });
+});
+
+describe('custom totals policy', () => {
+  it('receives filtered source rows once and preserves the custom result', () => {
+    const rows = syntheticSearchTermRows(8);
+    const seen: (readonly GridRow[])[] = [];
+    const result = buildGridModel(rows, {
+      filter: filterSetOf({ key: 'SPEND', conditions: [{ operator: '>', values: [String(rows[0]?.totals.spend ?? 0)] }] }),
+      totals: 'custom', customTotals: (matched) => { seen.push(matched); return null; },
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toEqual(result.matchedRows);
+    expect(result.totals).toBe('custom');
+    expect(result.totalsRow).toBeNull();
   });
 });

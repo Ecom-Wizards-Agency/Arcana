@@ -5,12 +5,13 @@ import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { Period } from '../../app/_lib/periods';
-import { dateRangeHref, dateRangePresets, selectedDateRangeLabel } from './date-range';
+import { comparisonLengthState, dateRangeHref, dateRangePresets, selectedDateRangeLabel } from './date-range';
 
 export function DateRangePicker({
   path,
   period,
   today,
+  comparison,
   includeToday = false,
   selectedPresetId,
   preserved = {},
@@ -18,11 +19,13 @@ export function DateRangePicker({
   path: string;
   period: Period;
   today: string;
+  comparison?: Period;
   includeToday?: boolean;
   selectedPresetId?: string;
   preserved?: Readonly<Record<string, string | undefined>>;
 }): ReactNode {
   const router = useRouter();
+  const comparisonState = comparison === undefined ? null : comparisonLengthState(period, comparison);
   const root = useRef<HTMLDetailsElement | null>(null);
   const presets = dateRangePresets(today, includeToday);
   const latestSelectableDay = presets[0]?.period.end ?? today;
@@ -32,6 +35,10 @@ export function DateRangePicker({
   ) as Array<[string, string]>;
 
   return (
+    <>
+      {comparisonState?.mismatch === true ? <p role="status" className="wa-banner wa-banner--warn">
+        Date ranges differ: {comparisonState.currentDays} days compared with {comparisonState.comparisonDays} days.
+      </p> : null}
     <details className="wa-date-range" ref={root}>
       <summary className="wa-date-range__trigger" aria-label={`Date range: ${selectedLabel}`}>
         <svg aria-hidden="true" viewBox="0 0 20 20" width="16" height="16">
@@ -98,5 +105,6 @@ export function DateRangePicker({
         </form>
       </div>
     </details>
+    </>
   );
 }

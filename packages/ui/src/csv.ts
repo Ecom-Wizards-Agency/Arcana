@@ -54,7 +54,7 @@ export interface CsvOptions {
 export function toCsv(model: GridModel, options: CsvOptions): CsvResult {
   const lines: string[] = [];
   const provenance = [
-    `# OpenSpell ${options.label}`,
+    `# Arcana ${options.label}`,
     options.period ? `period ${options.period.start}..${options.period.end}` : null,
     options.comparisonPeriod
       ? `comparison ${options.comparisonPeriod.start}..${options.comparisonPeriod.end}`

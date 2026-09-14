@@ -8,8 +8,8 @@ loading and authorization belong in `apps/web`.
 ## Components and data contracts
 
 [src/index.ts](src/index.ts) is the public export list. It includes `DataGrid`,
-`GridViewport`, `GridToolbar`, `GroupBar`, `TrendChart`, `StatTile`, `PacingWidget`,
-`FlagsPanel` and `FreshnessBanner`, plus their model helpers and types. Use those
+`GridViewport`, `GridToolbar`, `GroupBar`, `TrendChart`, `BidCorridorChart`,
+`Tabs`, `RouteTabs`, `StatusChip`, `EmptyState` and `FreshnessBanner`, plus their model helpers and types. Use those
 exports instead of duplicating grid or metric behavior in a page.
 
 Ratios are derived at the displayed grain. ACOS is total spend divided by total
@@ -20,11 +20,11 @@ automatically an improvement. Keep missing data distinct from zero.
 
 ## Theme contract
 
-The application stylesheet is
-[apps/web/src/ui/theme.css](../../apps/web/src/ui/theme.css). It owns semantic CSS
-custom properties. [src/theme.ts](src/theme.ts) provides matching `var()` references
-and standalone fallback values for this package. Application surfaces consume the
-semantic tokens rather than adding literal colors.
+[src/tokens.css](src/tokens.css) owns semantic CSS custom properties. The app's
+component stylesheet imports it. Run `pnpm --filter @wizard-ads/ui tokens:generate`
+after changing tokens; the package test rejects stale generated TypeScript.
+[src/theme.ts](src/theme.ts) uses those generated light values as standalone
+fallbacks. `pnpm tokens:figma` exports resolved RGBA values for both themes.
 
 Themes have three scopes, in order: light `:root`, OS dark preference scoped to
 `:root:not([data-theme='light'])`, and explicit `:root[data-theme='dark']`. Preserve
@@ -46,7 +46,7 @@ The maintained palette includes Signal Orange `#FD4807`, Electric Indigo `#3322E
 Ink `#11151C`, Cloud `#F5F6F8`, Obsidian `#0F1318` and Carbon `#171C24`. Semantic
 status bases are `#22C55E`, `#F59E0B` and `#EF4444`; text/background/border variants
 are separate derived tokens. Exact theme formulas and fallback values live in the
-two source files above, which take precedence over copied palette tables.
+token source and generated file, which take precedence over copied palette tables.
 
 Inter is loaded through Next's font integration. Use the existing font, size,
 weight, spacing and radius tokens. The size scale includes 11px eyebrows, 13px grid
@@ -105,3 +105,17 @@ pnpm --filter @wizard-ads/ui test
 The package test script keeps its performance suite isolated. Application theme,
 metadata and interaction checks live with the web application and its E2E suite;
 run the relevant checks when changing those consumers.
+
+## Grid totals and state primitives
+
+`buildGridModel(rows, { totals: 'none' })` suppresses totals and contribution
+shares for overlapping populations. The default is `sum`; `custom` requires a
+`customTotals(matchedRows)` callback that receives filtered source rows.
+Group shares use additive metrics and the model total, never ratios or deltas.
+Numeric columns have a minimum width and scroll when the formatted value exceeds
+it; their title preserves the full value.
+
+`Tabs` is controlled with `value` and `onValueChange`. Use `tabFromSearchParams`
+to initialize from `?tab=` and `onSearchParamsChange` to persist query changes.
+`RouteTabs` keeps ordinary link navigation. `StatusChip` accepts `working`,
+`needs-data`, or `idea`; `EmptyState` accepts `empty`, `not-measured`, or `gated`.

@@ -13,7 +13,7 @@ import {
   corridorBandSegments,
   stepPath,
   type BidCorridorPoint,
-} from './viz';
+} from '@wizard-ads/ui';
 
 // Identity-ish projections keep the assertions about shape, not scale.
 const x = (index: number): number => index;

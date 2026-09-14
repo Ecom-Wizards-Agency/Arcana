@@ -53,7 +53,7 @@ import { createColumnHelper, getCoreRowModel, useReactTable } from '@tanstack/re
 import type { ColumnDef } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { observeGridOffset, observeGridRect } from './grid/virtualizer-observers.js';
-import type { GridColumn } from './columns.js';
+import { minimumColumnWidth, type GridColumn } from './columns.js';
 import { isGroupedRow } from './aggregate.js';
 import type { GroupedRow } from './aggregate.js';
 import { DEFAULT_DENSITY, rowHeightFor } from './density.js';
@@ -267,8 +267,8 @@ export function DataGrid({
   }, [collapsedGroupIds, model.grouped, model.rows]);
 
   const environment = useMemo<GridCellEnvironment>(
-    () => ({ context: formatContext, collapsedGroupIds, onToggleGroup: toggleGroup }),
-    [collapsedGroupIds, formatContext, toggleGroup],
+    () => ({ context: formatContext, totalsRow: model.totalsRow, collapsedGroupIds, onToggleGroup: toggleGroup }),
+    [collapsedGroupIds, formatContext, toggleGroup, model.totalsRow],
   );
 
   const columnDefs = useMemo<ColumnDef<GridRow, unknown>[]>(
@@ -278,7 +278,8 @@ export function DataGrid({
         return helper.accessor((row) => resolveField(row, column.id), {
           id: column.id,
           header: column.header,
-          size: column.width,
+          size: Math.max(column.width, minimumColumnWidth(column)),
+          minSize: minimumColumnWidth(column),
           cell: (info) => {
             const row = info.row.original;
             // A group row is an aggregate of many source rows; a checkbox or a

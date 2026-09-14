@@ -11,7 +11,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import { deriveMetric } from '@wizard-ads/ui';
+import { deriveMetric, TrendChart as SharedTrendChart } from '@wizard-ads/ui';
 import type { KpiTileModel } from '../optimizer/view';
 
 export interface CockpitDay {
@@ -339,10 +339,6 @@ function formatExactValue(value: number | null, scale: KpiTileModel['scale'], cu
   });
 }
 
-function formatCompactAxis(value: number): string {
-  return value.toLocaleString('en-US', { notation: 'compact', maximumFractionDigits: 1 });
-}
-
 export function bucketKey(date: string, granularity: Granularity): string {
   if (granularity === 'D') return date;
   if (granularity === 'M') return date.slice(0, 7);
@@ -599,7 +595,7 @@ export function Cockpit({
         </details>
       )}
 
-      <TrendChart
+      <CockpitChart
         charted={charted}
         selectedCount={selected.length}
         currencyCode={currencyCode}
@@ -659,7 +655,7 @@ function MetricTile({
   );
 }
 
-function TrendChart({
+function CockpitChart({
   charted,
   selectedCount,
   currencyCode,
@@ -680,67 +676,19 @@ function TrendChart({
   settlingStart: string | null;
   coverageStart: string | null;
 }): ReactNode {
-  const [activeIndex, setActiveIndex] = useState<number | null>(null);
-  const width = 1160;
-  const height = 328;
-  const padding = { top: 18, right: 64, bottom: 34, left: 64 };
   const points = charted[0]?.points ?? [];
-  const dates = points.map((point) => point.date);
-  const innerWidth = width - padding.left - padding.right;
-  const innerHeight = height - padding.top - padding.bottom;
-  const step = dates.length === 0 ? innerWidth : innerWidth / dates.length;
-  const x = (index: number): number => padding.left + step * (index + 0.5);
-
-  const axisMaximum = (axis: SeriesAxis): number => {
-    const values = charted
-      .filter((series) => series.presentation.axis === axis)
-      .flatMap((series) => series.points.map((point) => point.value))
-      .filter((value): value is number => value !== null && Number.isFinite(value));
-    if (values.length === 0) return 1;
-    return Math.max(...values) * 1.08 || 1;
+  const coverage = points.length === 0 ? null : {
+    start: points[0]?.periodStart as string, end: points.at(-1)?.periodEnd as string,
   };
-  const maxima = { left: axisMaximum('left'), right: axisMaximum('right') };
-  const y = (value: number, axis: SeriesAxis): number =>
-    padding.top + innerHeight - (value / maxima[axis]) * innerHeight;
-
-  const barSeries = charted.filter((series) => series.presentation.mark === 'bar');
-  const barWidth = Math.min(22, Math.max(3, (step * 0.66) / Math.max(1, barSeries.length)));
-  const barOffset = (metric: string): number => {
-    const index = barSeries.findIndex((series) => series.metric === metric);
-    return (index - (barSeries.length - 1) / 2) * barWidth;
-  };
-
-  const settlingIndex =
-    settlingStart === null ? -1 : points.findIndex((point) => point.periodEnd >= settlingStart);
-  const anyData = charted.some((series) => series.points.some((point) => point.value !== null));
-  const coverage = points.length === 0
-    ? null
-    : {
-        start: points[0]?.periodStart as string,
-        end: points.at(-1)?.periodEnd as string,
-      };
-
-  const axisScale = (axis: SeriesAxis): KpiTileModel['scale'] | null => {
-    const scales = new Set(
-      charted.filter((series) => series.presentation.axis === axis).map((series) => series.scale),
-    );
-    return scales.size === 1 ? ([...scales][0] as KpiTileModel['scale']) : null;
-  };
-  const tickLabel = (axis: SeriesAxis, value: number): string => {
-    const scale = axisScale(axis);
-    return scale === null ? formatCompactAxis(value) : formatValue(value, scale, currencyCode);
-  };
-
-  const activePoint = activeIndex === null ? null : points[activeIndex] ?? null;
-  const tooltipWidth = 236;
-  const tooltipHeight = 34 + charted.length * 19;
-  const tooltipX = activeIndex === null
-    ? 0
-    : Math.min(width - padding.right - tooltipWidth, Math.max(padding.left, x(activeIndex) - tooltipWidth / 2));
-  const tooltipY = padding.top + 8;
-
   return (
-    <figure className="wa-cockpit__chart">
+    <SharedTrendChart className="wa-cockpit__chart" title="Performance trend"
+      ariaLabel={`Performance trend: ${charted.map((entry) => entry.label).join(', ')}`}
+      series={charted.map((entry) => ({ ...entry, mark: entry.presentation.mark, axis: entry.presentation.axis }))}
+      scale="integer" currencyCode={currencyCode} width={1160} height={328}
+      periodAriaLabel={(index) => periodAriaLabel(points[index] as SeriesPoint, charted, index, currencyCode)}
+      periodLabel={(index) => formatPeriod(points[index] as SeriesPoint)}
+      {...(settlingStart === null ? {} : { settlingWindow: { label: 'Attribution settling', start: settlingStart, end: null } })}
+      header={<>
       <div className="wa-cockpit__chart-head">
         <div>
           <div className="wa-cockpit__chart-titleline">
@@ -815,201 +763,16 @@ function TrendChart({
         ))}
       </div>
 
-      {!anyData ? (
-        <div className="wa-empty wa-cockpit__chart-empty">
-          <p className="wa-empty__body">No values for the selected metrics in this window.</p>
-        </div>
-      ) : (
-        <div className="wa-cockpit__plot">
-          <svg
-            viewBox={`0 0 ${width} ${height}`}
-            role="group"
-            aria-label={`Performance trend: ${charted.map((series) => series.label).join(', ')}`}
-            onMouseLeave={() => setActiveIndex(null)}
-          >
-            {settlingIndex >= 0 ? (
-              <g aria-label={`Attribution settling from ${settlingStart as string}`}>
-                <rect
-                  x={x(settlingIndex) - step / 2}
-                  y={padding.top}
-                  width={padding.left + innerWidth - (x(settlingIndex) - step / 2)}
-                  height={innerHeight}
-                  fill="var(--wa-accent)"
-                  opacity="0.06"
-                />
-                <text
-                  x={x(settlingIndex) - step / 2 + 6}
-                  y={padding.top + 14}
-                  className="wa-cockpit__svg-label wa-cockpit__svg-label--settling"
-                >
-                  settling
-                </text>
-              </g>
-            ) : null}
-
-            {[0.25, 0.5, 0.75, 1].map((fraction) => (
-              <line
-                key={fraction}
-                x1={padding.left}
-                x2={padding.left + innerWidth}
-                y1={padding.top + innerHeight * (1 - fraction)}
-                y2={padding.top + innerHeight * (1 - fraction)}
-                stroke="var(--wa-viz-grid)"
-                strokeWidth="1"
-              />
-            ))}
-
-            {(['left', 'right'] as const).map((axis) => {
-              const hasAxis = charted.some((series) => series.presentation.axis === axis);
-              if (!hasAxis) return null;
-              return (
-                <g key={axis} aria-label={`${axis} axis`}>
-                  {[0.5, 1].map((fraction) => (
-                    <text
-                      key={fraction}
-                      x={axis === 'left' ? padding.left - 8 : padding.left + innerWidth + 8}
-                      y={y(maxima[axis] * fraction, axis) + 4}
-                      className="wa-cockpit__svg-label"
-                      textAnchor={axis === 'left' ? 'end' : 'start'}
-                    >
-                      {tickLabel(axis, maxima[axis] * fraction)}
-                    </text>
-                  ))}
-                </g>
-              );
-            })}
-
-            {charted.map((series) => {
-              if (series.presentation.mark === 'bar') {
-                return (
-                  <g key={series.metric} data-series-mark="bar" aria-label={`${series.label} bars`}>
-                    {series.points.map((point, index) => {
-                      if (point.value === null) return null;
-                      const top = y(point.value, series.presentation.axis);
-                      return (
-                        <rect
-                          key={point.date}
-                          x={x(index) + barOffset(series.metric) - barWidth / 2}
-                          y={top}
-                          width={barWidth}
-                          height={Math.max(1, padding.top + innerHeight - top)}
-                          rx="1.5"
-                          fill={series.color}
-                          opacity="0.82"
-                        />
-                      );
-                    })}
-                  </g>
-                );
-              }
-              return (
-                <g key={series.metric} data-series-mark="line" aria-label={`${series.label} line`}>
-                  <path
-                    fill="none"
-                    stroke={series.color}
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d={series.points
-                      .map((point, index) =>
-                        point.value === null
-                          ? null
-                          : `${index === 0 || series.points[index - 1]?.value === null ? 'M' : 'L'}${x(index).toFixed(1)},${y(point.value, series.presentation.axis).toFixed(1)}`,
-                      )
-                      .filter((command): command is string => command !== null)
-                      .join(' ')}
-                  />
-                </g>
-              );
-            })}
-
-            <g aria-label="Chart periods">
-              {points.map((point, index) => (
-                <rect
-                  key={point.date}
-                  className="wa-cockpit__period-hit"
-                  role="img"
-                  tabIndex={0}
-                  aria-label={periodAriaLabel(point, charted, index, currencyCode)}
-                  x={x(index) - step / 2}
-                  y={padding.top}
-                  width={step}
-                  height={innerHeight}
-                  fill="transparent"
-                  onMouseEnter={() => setActiveIndex(index)}
-                  onFocus={() => setActiveIndex(index)}
-                  onBlur={() => setActiveIndex(null)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Escape') setActiveIndex(null);
-                  }}
-                />
-              ))}
-            </g>
-
-            {activePoint === null ? null : (
-              <g className="wa-cockpit__tooltip" pointerEvents="none" aria-hidden="true">
-                <line
-                  x1={x(activeIndex as number)}
-                  x2={x(activeIndex as number)}
-                  y1={padding.top}
-                  y2={padding.top + innerHeight}
-                  stroke="var(--wa-viz-axis)"
-                  strokeDasharray="3 3"
-                />
-                <rect
-                  x={tooltipX}
-                  y={tooltipY}
-                  width={tooltipWidth}
-                  height={tooltipHeight}
-                  rx="6"
-                  fill="var(--wa-surface-2)"
-                  stroke="var(--wa-border-strong)"
-                />
-                <text x={tooltipX + 12} y={tooltipY + 19} className="wa-cockpit__tooltip-period">
-                  {formatPeriod(activePoint)}
-                </text>
-                {charted.map((series, index) => (
-                  <g key={series.metric}>
-                    <circle cx={tooltipX + 15} cy={tooltipY + 37 + index * 19} r="3" fill={series.color} />
-                    <text x={tooltipX + 25} y={tooltipY + 41 + index * 19} className="wa-cockpit__tooltip-label">
-                      {series.label}
-                    </text>
-                    <text
-                      x={tooltipX + tooltipWidth - 12}
-                      y={tooltipY + 41 + index * 19}
-                      textAnchor="end"
-                      className="wa-cockpit__tooltip-value"
-                    >
-                      {formatExactValue(series.points[activeIndex as number]?.value ?? null, series.scale, currencyCode)}
-                    </text>
-                  </g>
-                ))}
-              </g>
-            )}
-
-            {points.length > 0 ? (
-              <>
-                <text x={x(0)} y={height - 9} className="wa-cockpit__svg-label" textAnchor="start">
-                  {formatDate(points[0]?.periodStart as string, { month: 'short', day: 'numeric' })}
-                </text>
-                <text x={x(points.length - 1)} y={height - 9} className="wa-cockpit__svg-label" textAnchor="end">
-                  {formatDate(points.at(-1)?.periodEnd as string, { month: 'short', day: 'numeric' })}
-                </text>
-              </>
-            ) : null}
-          </svg>
-        </div>
-      )}
-
-      {coverage !== null ? (
-        <figcaption className="wa-cockpit__note">
+      </>}
+      caption={coverage !== null ? (
+        <span className="wa-cockpit__note">
           Coverage {coverage.start} to {coverage.end}
           {coverageStart !== null && coverageStart > coverage.start
             ? `; synced facts begin ${coverageStart}`
             : ''}
           {' '}· Gaps within coverage show zero activity · Ratios without a denominator show —.
-        </figcaption>
+        </span>
       ) : null}
-    </figure>
+    />
   );
 }

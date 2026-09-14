@@ -4,7 +4,7 @@
  * Vercel protects immutable deployment URLs, so plain browser navigation lands
  * on Vercel's login screen. This gate lets the authenticated Vercel CLI resolve
  * the existing protection context and supplies the already authenticated
- * OpenSpell session to curl through stdin. Cookie names and values never enter
+ * Arcana session to curl through stdin. Cookie names and values never enter
  * arguments, files, logs, or the candidate report, and the persistent Chrome
  * profile is never modified.
  *

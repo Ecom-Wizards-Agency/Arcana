@@ -403,3 +403,43 @@ describe('DataGrid over 50k rows', () => {
     expect(screen.getByText('0 of 500 rows')).toBeTruthy();
   });
 });
+
+describe('totals policy and numeric disclosure', () => {
+  const sample = syntheticSearchTermRows(2).map((row, index) => ({ ...row,
+    dimensions: { ...row.dimensions, campaign_name: `Group ${index}` },
+    totals: { ...row.totals, spend: index === 0 ? 25 : 75 },
+  }));
+  const columns = available.filter((column) => ['campaign_name', 'spend'].includes(column.id));
+  const mount = (model: ReturnType<typeof buildGridModel>, narrowed = false) => render(<DataGrid
+    model={model} columns={columns.map((column) => narrowed && column.id === 'spend' ? { ...column, width: 20 } : column)}
+    currencyCode="USD" sort={[{ columnId: 'spend', direction: 'desc' }]} onSortChange={() => {}}
+    height={VIEWPORT.height} initialRect={VIEWPORT} />);
+
+  it('omits all totals for none and retains explicit sum', () => {
+    mount(buildGridModel(sample, { totals: 'none' }));
+    expect(screen.queryByText(/^Total ·/)).toBeNull();
+    expect(screen.queryByText('$100.00')).toBeNull();
+    cleanup();
+    mount(buildGridModel(sample, { totals: 'sum' }));
+    expect(screen.getByText(`Total · ${sample.length} rows`)).toBeTruthy();
+    expect(screen.getAllByText('$100.00').length).toBeGreaterThan(0);
+  });
+
+  it('shows each additive group share of the filtered grand total', () => {
+    mount(buildGridModel(sample, { groupBy: ['campaign_name'] }));
+    const shares = screen.getAllByText(/of total$/).map((element) => element.textContent);
+    expect(shares).toEqual(sample.map((row) => `${row.totals.spend.toFixed(1)}% of total`));
+    expect(shares).toHaveLength(sample.length);
+  });
+
+  it('keeps the entire numeric value available when a column is narrowed', () => {
+    const rows = sample.map((row) => ({ ...row, totals: { ...row.totals, spend: 123456789012.34 } }));
+    mount(buildGridModel(rows, { totals: 'none' }), true);
+    const disclosed = screen.getAllByTitle('$123,456,789,012.34');
+    expect(disclosed).toHaveLength(rows.length);
+    const cell = disclosed[0]?.closest('[role="cell"]') as HTMLElement;
+    expect(cell.style.overflow).toBe('auto');
+    expect(cell.style.textOverflow).not.toBe('ellipsis');
+    expect(Number.parseFloat(cell.style.width)).toBeGreaterThanOrEqual(96);
+  });
+});

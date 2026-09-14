@@ -5,7 +5,7 @@ import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent, ReactNode } from 
 import type { BidHistoryPayload } from '../../app/_lib/bid-corridor';
 import { bidHistoryKpiTiles } from '../optimizer/view';
 import { KpiTile } from './dashboard';
-import { BidCorridorChart } from './viz';
+import { BidCorridorChart } from '@wizard-ads/ui';
 
 export interface BidHistoryModalProps {
   profileId: string;
