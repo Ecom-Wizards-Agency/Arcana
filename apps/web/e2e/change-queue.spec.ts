@@ -122,6 +122,8 @@ test('builds and reviews only the two ready restore rows without creating execut
       await db.sql`update public.recommendations set status='exported',export_batch_id=${batchId} where id=${rec}`;
     }
     await recordEntityChanges(db,entities.slice(0,5).map(amazonId=>({orgId,profileId,entityType:'keyword' as const,amazonId,field:'bid',oldValue:1,newValue:2,source:'sync' as const,observedAt:new Date()})));
+    // Restore evidence needs a mirror read at or after the linked observation; the stale seventh row keeps its old read.
+    await db.sql`update public.keywords set synced_at=clock_timestamp() where org_id=${orgId} and profile_id=${profileId} and amazon_id=any(${entities.slice(0,6)}::text[])`;
     await page.goto(`/change-queue?${new URLSearchParams({profile:profileId,batch:batchId})}`);
     await expect(page.getByTestId('reversion-row')).toHaveCount(7);
     await expect(page.locator('.cq-counts')).toHaveText('ROWS IN BATCH7READY TO RESTORE2BLOCKED4NOTHING TO DO1');
