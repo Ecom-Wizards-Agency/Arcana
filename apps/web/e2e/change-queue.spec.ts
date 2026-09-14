@@ -107,7 +107,7 @@ test('builds and reviews only the two ready restore rows without creating execut
       select g.grant_id,${version},g.org_id,g.profile_id,true,g.amazon_profile_id,${connectionId},g.region,g.marketplace_id,g.currency_code,g.api_dialect,g.created_by
       from public.sp_write_profile_grant_versions g join public.sp_write_profile_grant_heads h on h.version_id=g.version_id where h.org_id=${orgId} and h.profile_id=${profileId}`;
     await db.sql`update public.sp_write_profile_grant_heads set version_id=${version} where org_id=${orgId} and profile_id=${profileId}`;
-    const rows:ApplyRow[]=entities.map((entityId,i)=>({entityType:'keyword',entityId,field:i===5?'placement':'bid',old:1,new:2}));
+    const rows:ApplyRow[]=entities.map((entityId,i)=>({entityType:'keyword',entityId,field:i===5?'placement':'bid',old:1,new:2,name:`Synthetic restore ${i+1}`}));
     const hash=createHash('sha256').update(serializeApplyRows(rows)).digest('hex');
     await db.sql`insert into public.apply_batches(id,org_id,profile_id,tag,opt_group,lever,note,exported_at,exported_proposals,reversible_rows,unsupported_rows,artifact_sha256)
       values(${batchId},${orgId},${profileId},${batchId},'synthetic','bid','Synthetic browser restore',now()-interval '1 hour',7,7,0,${hash})`;
@@ -122,6 +122,9 @@ test('builds and reviews only the two ready restore rows without creating execut
       await db.sql`update public.recommendations set status='exported',export_batch_id=${batchId} where id=${rec}`;
     }
     await recordEntityChanges(db,entities.slice(0,5).map(amazonId=>({orgId,profileId,entityType:'keyword' as const,amazonId,field:'bid',oldValue:1,newValue:2,source:'sync' as const,observedAt:new Date()})));
+    // Admission matches each observation to its apply row and batch.
+    await db.sql`update public.entity_changes ec set apply_row_id=ar.id,apply_batch_id=ar.batch_id from public.apply_rows ar
+      where ar.batch_id=${batchId} and ec.org_id=${orgId} and ec.profile_id=${profileId} and ec.entity_type='keyword' and ec.amazon_id=ar.entity_id and ec.field=ar.field and ec.apply_row_id is null`;
     // Restore evidence needs a mirror read at or after the linked observation; the stale seventh row keeps its old read.
     await db.sql`update public.keywords set synced_at=clock_timestamp() where org_id=${orgId} and profile_id=${profileId} and amazon_id=any(${entities.slice(0,6)}::text[])`;
     await page.goto(`/change-queue?${new URLSearchParams({profile:profileId,batch:batchId})}`);
