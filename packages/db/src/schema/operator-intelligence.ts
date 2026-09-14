@@ -64,7 +64,13 @@ export const reportCoverage = pgTable(
     profileId: uuid('profile_id').notNull(),
     reportType: text('report_type').notNull(),
     grain: text('grain').notNull(),
-    source: reportDataSource('source').notNull(),
+    source: text('source').notNull(),
+    sourceRows: count('source_rows'),
+    parsedRows: count('parsed_rows'),
+    loadedRows: count('loaded_rows'),
+    refusedRows: count('refused_rows'),
+    observedAt: ts('observed_at'),
+    countsMatch: boolean('counts_match'),
     status: historicalBootstrapStatus('status').notNull().default('pending'),
     earliestRequestedDate: date('earliest_requested_date'),
     earliestReturnedDate: date('earliest_returned_date'),
@@ -76,6 +82,12 @@ export const reportCoverage = pgTable(
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },
   (t) => [
+    check('report_coverage_source_nonempty', sql`btrim(${t.source}) <> ''`),
+    check('report_coverage_counts_nonnegative', sql`
+      (${t.sourceRows} is null or ${t.sourceRows} >= 0) and
+      (${t.parsedRows} is null or ${t.parsedRows} >= 0) and
+      (${t.loadedRows} is null or ${t.loadedRows} >= 0) and
+      (${t.refusedRows} is null or ${t.refusedRows} >= 0)`),
     foreignKey({ columns: [t.orgId, t.profileId], foreignColumns: [adProfiles.orgId, adProfiles.id] })
       .onDelete('cascade'),
     uniqueIndex('report_coverage_profile_id_report_type_grain_source_key').on(

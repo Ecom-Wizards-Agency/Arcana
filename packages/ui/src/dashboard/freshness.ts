@@ -1,36 +1,10 @@
-/**
- * Data freshness, read from the report ledger and nowhere else.
- *
- * This is the one rule in the brief with a "NOT" in it: freshness comes from
- * `report_requests`, **not** from the facts. The reason is structural, not
- * stylistic. Amazon omits zero-impression rows, so "the newest fact row is from
- * Tuesday" is equally consistent with "the sync stopped on Tuesday" and "the
- * account has spent nothing since Tuesday". Only the ledger distinguishes them,
- * and the difference is the whole question an operator is asking when they look
- * at the banner.
- *
- * A profile can therefore be **fresh and wrong** (ledger green, numbers disagree
- * with the incumbent) or **stale and verified** (ledger red, last comparison
- * passed). That is why this banner and the crosscheck chip are two separate
- * things on the dashboard and must never be merged into one traffic light.
- */
+/** Freshness comes from coverage observations or the legacy request ledger, never fact timestamps. */
+import type { FreshnessCoverage, FreshnessLedgerEntry } from '@wizard-ads/shared';
 import { formatInteger } from '../format.js';
 
 export type FreshnessTone = 'good' | 'warn' | 'bad' | 'muted';
 
-export interface ReportLedgerEntry {
-  reportType: string;
-  status: string;
-  /** Newest day the report covers. */
-  endDate: string;
-  requestedAt: string;
-  completedAt: string | null;
-  rowsParsed: number | null;
-  rowsLoaded: number | null;
-  /** Generated column on `report_requests`; null when nothing has been loaded. */
-  countsMatch: boolean | null;
-  error: string | null;
-}
+export type ReportLedgerEntry = FreshnessLedgerEntry;
 
 export interface FreshnessAssessment {
   tone: FreshnessTone;
@@ -58,7 +32,7 @@ export interface FreshnessOptions {
 const HOUR_MS = 3_600_000;
 
 export function assessFreshness(
-  entries: readonly ReportLedgerEntry[],
+  entries: readonly (ReportLedgerEntry | FreshnessCoverage)[],
   options: FreshnessOptions,
 ): FreshnessAssessment {
   if (entries.length === 0) {
@@ -77,7 +51,18 @@ export function assessFreshness(
 
   const staleAfter = (options.staleAfterHours ?? 30) * HOUR_MS;
   const byType = new Map<string, ReportLedgerEntry[]>();
-  for (const entry of entries) {
+  for (const input of entries) {
+    const entry: ReportLedgerEntry = 'coveredThrough' in input ? {
+      reportType: `${input.source}/${input.reportType}`,
+      status: input.status === 'complete' && input.coveredThrough !== null ? 'completed' : input.status,
+      endDate: input.coveredThrough ?? '',
+      requestedAt: input.observedAt,
+      completedAt: input.status === 'complete' ? input.observedAt : null,
+      rowsParsed: input.parsedRows,
+      rowsLoaded: input.loadedRows,
+      countsMatch: input.countsMatch,
+      error: null,
+    } : input.source === undefined ? input : { ...input, reportType: `${input.source}/${input.reportType}` };
     const bucket = byType.get(entry.reportType);
     if (bucket === undefined) byType.set(entry.reportType, [entry]);
     else bucket.push(entry);

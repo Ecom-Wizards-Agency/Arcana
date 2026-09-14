@@ -493,3 +493,22 @@ Accepted keyword rows enter the existing mirror upsert, which asserts listed ver
 upserted counts. SP keyword sync is unchanged. The creative read model independently
 falls back to an unambiguous preset Keyword slot when no synchronized SB keyword
 exists; conflicting keywords and malformed names remain unresolved.
+
+### Coverage initialization
+
+After applying the coverage freshness migration, run
+`pnpm --filter @wizard-ads/worker backfill-coverage` with the installation's authorized
+worker database connection injected as `DATABASE_URL`. The command performs no Amazon
+calls. It prints ledger groups, written rows and unchanged rows and asserts that the
+counts reconcile. It selects the successful request with the furthest end date per
+profile/source/report type, breaking ties by completion time and request ID. Repeating it
+preserves existing observations and their timestamps.
+
+Legacy source/refusal counts remain null when the ledger never recorded them; fact
+rows cannot reconstruct omitted source records. Settled dates are not inferred from
+ledger completion. Live SP promotions supply settlement evidence and all four counts,
+including explicit zero-row ranges. Superseded promotions do not refresh coverage; the backfill also excludes requests
+superseded by newer promotion watermarks. Imported ledger groups retain a separate
+`secondary_import` source.
+The coverage source column is text with a nonempty check, so integrations can publish
+coverage without expanding the enums used by Ads promotion and attribution records.

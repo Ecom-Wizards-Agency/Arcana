@@ -1052,6 +1052,8 @@ export class SyncWorker {
       await this.store.finishAttributedReport(ledger.id, accounting, {
         status: 'completed',
         bytesDownloaded,
+        coverage: { sourceRows: result.reportSourceRows, parsedRows: result.reportParsedRows,
+          refusedRows: result.reportRefusedRows, observedAt: this.now().toISOString(), settledThrough: null },
       });
       this.logger.info('Sponsored Brands Video report ingested', {
         reportRequestId: ledger.id,
@@ -1096,7 +1098,12 @@ export class SyncWorker {
     const loaded = await this.store.loadFacts(batch);
     // Program rule 4 again: `completeReport` throws on a mismatch, so a fetch
     // that silently dropped rows fails the job instead of reporting success.
-    await this.store.completeReport(ledger.id, { parsed, loaded, bytesDownloaded });
+    await this.store.completeReport(ledger.id, { parsed, loaded, bytesDownloaded,
+      coverage: {
+        sourceRows: batch.sourceRows, parsedRows: batch.sourceRows - skipped, refusedRows: skipped,
+        observedAt: this.now().toISOString(), settledThrough: null,
+      },
+    });
     this.logger.info('report fetched', {
       reportRequestId: ledger.id, reportType: ledger.reportType,
       reportRows: batch.sourceRows, parsed, loaded, skipped, skipReasons: reasons,
@@ -1221,6 +1228,15 @@ export class SyncWorker {
       parsed: acceptedFactRows,
       loaded: canonicalRows,
       bytesDownloaded,
+      // A superseded request must not refresh the observation of a newer report.
+      coverage: supersededDates > 0 ? null : {
+        sourceRows, parsedRows: parsedSourceRows, refusedRows,
+        observedAt: observedAt.toISOString(),
+        settledThrough: staged.filter((date) =>
+          date.attribution.eventDateAgeDays >= date.attribution.attributionWindowDays)
+          .reduce<string | null>((latest, date) => latest === null || date.reportDate > latest
+            ? date.reportDate : latest, null),
+      },
     });
     const result = {
       reportRows: sourceRows,

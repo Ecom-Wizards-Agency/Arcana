@@ -1,3 +1,5 @@
+import { upsertReportCoverage } from '@wizard-ads/db';
+import { createTestDatabase } from '@wizard-ads/db/testing';
 import { describe, expect, it, vi } from 'vitest';
 import type { DbHandle } from '@wizard-ads/db';
 import { readStrategyEvidence } from './overview.js';
@@ -49,3 +51,30 @@ describe('readStrategyEvidence', () => {
     expect(result.diagnostics).toBeNull();
   });
 });
+
+it('reads a real non-Ads coverage observation without replacing unknown settlement with zero', async () => {
+  const database = await createTestDatabase('coverage_strategy');
+  try {
+    const [org] = await database.sql<{ id: string }[]>`
+      select app.seed_tenant_fixture('coverage-strategy', '00000000-0000-4000-8000-000000000256'::uuid) as id
+    `;
+    const orgId = org!.id;
+    const [profile] = await database.sql<{ id: string }[]>`
+      select id from public.ad_profiles where org_id = ${orgId} limit 1
+    `;
+    const profileId = profile!.id;
+    await database.sql`delete from public.report_coverage where profile_id = ${profileId}`;
+    expect((await readStrategyEvidence(database, { orgId, profileId })).coverage).toEqual([]);
+    await upsertReportCoverage(database, {
+      orgId, profileId, source: 'selling_partner_api', reportType: 'sales_and_traffic', grain: 'asin',
+      status: 'complete', earliestDate: '2026-08-10', coveredThrough: '2026-08-12', settledThrough: null,
+      sourceRows: 3, parsedRows: 3, loadedRows: 3, refusedRows: 0, countsMatch: true,
+      observedAt: '2026-08-14T08:00:00.000Z',
+    }, 3);
+    const evidence = await readStrategyEvidence(database, { orgId, profileId });
+    expect(evidence.coverage).toHaveLength(1);
+    expect(evidence.coverage[0]).toMatchObject({
+      source: 'selling_partner_api', latestLoadedDate: '2026-08-12', latestSettledDate: null,
+    });
+  } finally { await database.drop(); }
+}, 120_000);

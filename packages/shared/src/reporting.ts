@@ -5,6 +5,36 @@ import { AdProduct, IsoDate, Uuid } from './primitives.js';
 const count = z.number().int().nonnegative();
 const metric = z.number().nonnegative();
 
+/** Source-neutral freshness evidence; null counts mean accounting is unavailable. */
+export const FreshnessCoverage = z.object({
+  source: z.string().min(1),
+  reportType: z.string().min(1),
+  status: z.string().min(1),
+  coveredThrough: IsoDate.nullable(),
+  observedAt: z.iso.datetime(),
+  sourceRows: count.nullable(),
+  parsedRows: count.nullable(),
+  loadedRows: count.nullable(),
+  refusedRows: count.nullable(),
+  /** Producer assertion; aggregation can make parsed and loaded counts differ. */
+  countsMatch: z.boolean().nullable(),
+});
+export type FreshnessCoverage = z.infer<typeof FreshnessCoverage>;
+
+export const FreshnessLedgerEntry = z.object({
+  source: z.string().optional(),
+  reportType: z.string(),
+  status: z.string(),
+  endDate: IsoDate,
+  requestedAt: z.iso.datetime(),
+  completedAt: z.iso.datetime().nullable(),
+  rowsParsed: count.nullable(),
+  rowsLoaded: count.nullable(),
+  countsMatch: z.boolean().nullable(),
+  error: z.string().nullable(),
+});
+export type FreshnessLedgerEntry = z.infer<typeof FreshnessLedgerEntry>;
+
 export const ReportDataSource = z.enum([
   'amazon_reporting_v3',
   'amazon_unified_reporting',
@@ -27,7 +57,13 @@ export const ReportCoverage = z.object({
   profileId: Uuid,
   reportType: z.string().min(1),
   grain: z.string().min(1),
-  source: ReportDataSource,
+  source: z.string().min(1),
+  sourceRows: count.nullable().optional(),
+  parsedRows: count.nullable().optional(),
+  loadedRows: count.nullable().optional(),
+  refusedRows: count.nullable().optional(),
+  observedAt: z.iso.datetime().nullable().optional(),
+  countsMatch: z.boolean().nullable().optional(),
   status: HistoricalBootstrapStatus,
   earliestRequestedDate: IsoDate.nullable(),
   earliestReturnedDate: IsoDate.nullable(),
@@ -122,3 +158,27 @@ export type BidSeriesReconciliationCounts = z.infer<typeof BidSeriesReconciliati
 export function bidRecommendationTargetKey(target: BidRecommendationTarget): string {
   return JSON.stringify([target.campaignId, target.adGroupId, target.isKeyword, target.targetId]);
 }
+/** One successful range observation; legacy ledger accounting can be unknown. */
+export const ReportCoverageObservation = FreshnessCoverage.extend({
+  orgId: Uuid,
+  profileId: Uuid,
+  grain: z.string().min(1),
+  status: z.enum(['complete', 'partial']),
+  coveredThrough: IsoDate,
+  earliestDate: IsoDate,
+  settledThrough: IsoDate.nullable(),
+}).refine((row) => row.earliestDate <= row.coveredThrough &&
+  (row.settledThrough === null || row.settledThrough <= row.coveredThrough),
+  'coverage date bounds do not reconcile');
+export type ReportCoverageObservation = z.infer<typeof ReportCoverageObservation>;
+
+/** Additional source accounting supplied by the worker after its load assertion. */
+export const ReportCoverageAccounting = z.object({
+  sourceRows: count,
+  parsedRows: count,
+  refusedRows: count,
+  observedAt: z.iso.datetime(),
+  settledThrough: IsoDate.nullable(),
+}).refine((row) => row.sourceRows === row.parsedRows + row.refusedRows,
+  'coverage source counts do not reconcile');
+export type ReportCoverageAccounting = z.infer<typeof ReportCoverageAccounting>;

@@ -20,6 +20,7 @@
  * use: anonymous visitors are sent to `/login`, and every read below is scoped
  * by the org the gate resolved.
  */
+import { loadFreshness } from '../../src/server/load-freshness';
 import { Suspense } from 'react';
 import { redirect } from 'next/navigation';
 import { analyzeAccount, classifyCampaignCategory, computePacing, evaluate, pacingFlag } from '@wizard-ads/core';
@@ -27,7 +28,6 @@ import type { DailyRow, Flag } from '@wizard-ads/core';
 import { withAuthenticatedActor, type DbHandle } from '@wizard-ads/db';
 import type { OrgActor } from '@wizard-ads/shared';
 import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
-import { assessFreshness } from '@wizard-ads/ui';
 import { CrosscheckChip } from '../crosscheck/panel';
 import { gate } from '../../src/auth/guard';
 import { gateMessage } from '../../src/ui/gate-message';
@@ -39,7 +39,7 @@ import type { FlagView, PacingView } from '../../src/ui/dashboard';
 import { page } from '../../src/ui/tokens';
 import { OperatorContext } from '../../src/ui/operator-context';
 import { readDashboardOperatingStatus } from '../../src/dashboard/operating-status';
-import { loadCampaignDailyRows, loadProfileDailyRows, loadReportLedger } from '../_lib/dashboard-data';
+import { loadCampaignDailyRows, loadProfileDailyRows } from '../_lib/dashboard-data';
 import { withExistingDatabase } from '../_lib/db';
 import { addDays, periodFromParams, settledComparisonWindows, todayIso } from '../_lib/periods';
 import { listProfiles, requestedProfileId, selectProfile } from '../_lib/profiles';
@@ -85,12 +85,9 @@ export default async function DashboardPage({ searchParams }: PageProps) {
           : analysisWindow.start,
       end: period.end,
     };
-    const [ledger, accountRows] = await Promise.all([
-      loadReportLedger(handle, orgId, profile.id),
-      loadProfileDailyRows(handle, orgId, profile.id, profile.label, accountWindow),
-    ]);
+    const accountRows = await loadProfileDailyRows(handle, orgId, profile.id, profile.label, accountWindow);
 
-    return { profiles, profile, ledger, accountRows };
+    return { profiles, profile, accountRows };
   });
 
   if (data === null) {
@@ -122,7 +119,6 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   const {
     profile,
     accountRows = [],
-    ledger = [],
   } = data;
   const context = { currencyCode: profile.currencyCode };
 
@@ -140,7 +136,7 @@ export default async function DashboardPage({ searchParams }: PageProps) {
   );
   const pacingAlert = pacingFlag(pacing, null);
 
-  const freshness = assessFreshness(ledger, { now: new Date() });
+  const freshness = await loadFreshness(actor, profile.id);
   const inPeriod = accountRows.filter((row) => row.date >= period.start && row.date <= period.end);
   // A young profile's facts may begin after the settled window opens. Claiming
   // a sixteen-day window while summing four days of rows overstates confidence,

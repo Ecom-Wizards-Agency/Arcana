@@ -79,7 +79,7 @@ describe('optimizer page loading plan', () => {
     await Promise.resolve();
     expect(mocks.readWorkspace).toHaveBeenCalledTimes(1);
     expect(mocks.loadAccountRows).toHaveBeenCalledTimes(1);
-    expect(mocks.loadLedger).toHaveBeenCalledTimes(1);
+    expect(mocks.loadLedger).not.toHaveBeenCalled();
     expect(mocks.loadCampaignFacts).toHaveBeenCalledTimes(1);
     expect(sql).toHaveBeenCalledTimes(1);
     expect(mocks.listRuns).toHaveBeenCalledWith(expect.anything(), {
@@ -111,7 +111,6 @@ describe('optimizer page loading plan', () => {
     mocks.listRuns.mockReturnValue(after(40, []));
     mocks.readWorkspace.mockReturnValue(after(60, { groups: [], campaigns: [] }));
     mocks.loadAccountRows.mockReturnValue(after(60, []));
-    mocks.loadLedger.mockReturnValue(after(60, []));
     mocks.loadCampaignFacts.mockReturnValue(after(60, []));
 
     let resolved = false;
@@ -183,10 +182,9 @@ describe('optimizer page loading plan', () => {
     const slow = deferred<[]>();
     mocks.listRuns.mockImplementation(() => failure === 'discovery' ? Promise.reject(rejected) : Promise.resolve([]));
     mocks.readWorkspace.mockImplementation(() => failure === 'workspace' ? Promise.reject(rejected) : Promise.resolve({ groups: [], campaigns: [] }));
-    mocks.loadAccountRows.mockResolvedValue([]);
-    mocks.loadLedger.mockReturnValue(slow.promise);
+    mocks.loadAccountRows.mockReturnValue(slow.promise);
     // A second independent failure must also be observed, including while run
-    // selection or the slower ledger read is still pending.
+    // selection or the slower account read is still pending.
     mocks.loadCampaignFacts.mockImplementation(() => new Promise((_, reject) => setTimeout(() => reject(new Error('Synthetic second refusal')), 5)));
     let finished = false;
     const outcome = loadOptimizerPageData({
