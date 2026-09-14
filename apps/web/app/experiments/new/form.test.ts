@@ -173,8 +173,8 @@ describe('experiment scope selectors', () => {
     expect(markup).toContain('Preserved from the link or manual entry');
     expect(markup).toContain('Synthetic product');
     expect(markup).toContain('ASIN B0TEST0001');
-    expect(markup).toContain('Keyword / target IDs (optional)');
-    expect(markup).toContain('Search terms (optional)');
+    expect(markup).toContain('for="scope-targets">Targets');
+    expect(markup).toContain('for="scope-terms">Search terms');
     expect(markup).not.toContain('<img');
   });
 

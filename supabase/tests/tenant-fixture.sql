@@ -357,8 +357,11 @@ begin
           jsonb_build_object('campaignIds', jsonb_build_array('c-1'), 'targetIds', jsonb_build_array('kw-1')),
           'sales', now() - interval '7 days', 'running', p_user_id)
   returning id into v_experiment;
-  insert into public.experiment_events (experiment_id, org_id, from_status, to_status, note, actor_id)
-  values (v_experiment, v_org, null, 'running', 'Seeded by the tenant fixture.', p_user_id);
+  -- Older migration-window tests predate the automatic creation trail.
+  if not exists(select 1 from public.experiment_events where experiment_id=v_experiment) then
+    insert into public.experiment_events (experiment_id, org_id, from_status, to_status, note, actor_id)
+    values (v_experiment, v_org, null, 'running', 'Seeded by the tenant fixture.', p_user_id);
+  end if;
 
   -- Reserved seams
   insert into public.spapi_connections
@@ -743,6 +746,10 @@ begin
       '{"id":"fixture-layout","name":"Synthetic fixture layout","entity":"placements","columns":[],"pinned":[],"widths":{},"filter":{"groups":[]},"sort":[],"groupBy":[],"dateRange":null,"updatedAt":"2026-09-14"}'::jsonb);
   end if;
 
+  if to_regclass('public.timeline_events') is not null then
+    insert into public.timeline_events(org_id,profile_id,name,kind,start_on,scope_text,note,created_by) values(v_org,v_profile,'Synthetic listing note','listing',p_date,'Recorded only','Fixture observation',p_user_id);
+  insert into public.timeline_evidence_settings(org_id,profile_id) values(v_org,v_profile);
+  end if;
   return v_org;
 end;
 $$;

@@ -54,3 +54,32 @@ it('renders named rank endpoints, a dashed threshold and a dated alert window wi
   expect(container.querySelector('details')).toBeNull();
   for (const path of container.querySelectorAll('[data-series-mark="line"] path')) expect(path.getAttribute('d')?.match(/M/g)).toHaveLength(2);
 });
+
+it('draws dated boundaries and outside margins without event shading, and keeps named end labels',()=>{
+  const points=[{date:'2026-08-01',value:1},{date:'2026-08-02',value:2},{date:'2026-08-03',value:3},{date:'2026-08-04',value:4}];
+  const clicks:string[]=[];
+  render(<TrendChart title="Timeline" ariaLabel="Timeline" series={[{label:'Spend',points}]} scale="money" currencyCode="USD" namedEndLabels
+    focusWindow={{id:'event',label:'Synthetic event',start:'2026-08-02',end:'2026-08-03'}} eventMarkers={[{id:'event',label:'Synthetic event',start:'2026-08-02',end:null}]} onEventClick={(id)=>clicks.push(id)}/>);
+  expect(screen.queryAllByTestId('experiment-window')).toHaveLength(0);expect(screen.getAllByTestId('outside-event-window')).toHaveLength(2);
+  expect(screen.getAllByTestId('event-marker').map((marker)=>marker.getAttribute('data-date'))).toEqual(['2026-08-02','2026-08-04']);
+  fireEvent.keyDown(screen.getByRole('button',{name:'Synthetic event: running'}),{key:'Enter'});expect(clicks).toEqual(['event']);expect(screen.getByTestId('end-label-0').textContent).toContain('Spend');
+});
+
+it('limits crowded boundary labels to two rows and reveals shorter markers on focus', () => {
+  render(<TrendChart title="Spend" ariaLabel="Crowded events" scale="money" currencyCode="USD" width={400}
+    series={[{label:'Spend',points:[{date:'2026-08-01',value:1},{date:'2026-08-31',value:2}]}]}
+    eventMarkers={[
+      {id:'short',label:'Short',start:'2026-08-01',end:'2026-08-02'},
+      {id:'long',label:'Long',start:'2026-08-01',end:'2026-08-31'},
+      {id:'medium',label:'Medium',start:'2026-08-01',end:'2026-08-20'},
+    ]} onEventClick={() => {}} />);
+  const markers = screen.getAllByTestId('event-marker');
+  expect(markers.every((marker) => ['-1','0','1'].includes(marker.getAttribute('data-label-lane')!))).toBe(true);
+  const shorter = screen.getByRole('button',{name:'Short: 1 Aug'});
+  expect(shorter.querySelector('[data-testid="event-marker-label"]')).toBeNull();
+  expect(screen.getByRole('button',{name:'Long: 1 Aug'}).querySelector('[data-testid="event-marker-label"]')).not.toBeNull();
+  fireEvent.focus(shorter);
+  expect(shorter.querySelector('[data-testid="event-marker-label"]')).not.toBeNull();
+  fireEvent.blur(shorter);
+  expect(shorter.querySelector('[data-testid="event-marker-label"]')).toBeNull();
+});

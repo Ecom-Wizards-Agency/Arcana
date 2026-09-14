@@ -270,13 +270,15 @@ export function IdentityMenu({ email }: { email: string | null }): ReactNode {
 
 /** Registry title and resolved windows follow App Router query changes. */
 export function ScreenTopbar({ screens, today, profiles = [], now }: {
-  screens: readonly { path: string; title: string }[]; today: string; profiles?: readonly NavProfile[]; now?: string;
+  screens: readonly { path: string; title: string; matchDynamic?: boolean }[]; today: string; profiles?: readonly NavProfile[]; now?: string;
 }) {
   const pathname = usePathname() ?? '/';
   const search = useSearchParams();
   const entity = search.get('entity') ?? 'search_terms';
   const screen = screens.find((candidate) => candidate.path === `${pathname}?entity=${entity}`)
     ?? screens.find((candidate) => candidate.path === pathname)
+    ?? screens.find((candidate) => candidate.matchDynamic && candidate.path.split('/').length === pathname.split('/').length
+      && candidate.path.split('/').every((segment, index) => /^\[[^/]+\]$/.test(segment) || segment === pathname.split('/')[index]))
     ?? [...screens].sort((a, b) => b.path.length - a.path.length)
       .find((candidate) => candidate.path !== '/' && pathname.startsWith(`${candidate.path}/`));
   const preserved = Object.fromEntries(search.entries());

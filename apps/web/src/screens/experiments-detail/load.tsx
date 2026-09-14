@@ -125,6 +125,8 @@ async function loadDetail(
       fromStatus: event.fromStatus,
       toStatus: event.toStatus,
       note: event.note,
+      actorId: event.actorId,
+      systemActor: event.systemActor,
       createdAt: event.createdAt.toISOString(),
     })),
     trend,

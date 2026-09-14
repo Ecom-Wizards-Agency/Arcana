@@ -43,7 +43,7 @@ test(
       await expect(switcher).not.toContainText('All profiles');
       const activeAccount = (await switcher.locator('strong').innerText()).trim();
       expect(activeAccount).not.toBe('');
-      if (surface.route === '/') await expect(page.locator('main.wa-home')).toHaveAttribute('data-profile-id', fixtureProfileId);
+      if (surface.route === '/') await expect(page.locator('main.wa-home[data-profile-id]')).toHaveAttribute('data-profile-id', fixtureProfileId);
       else await expect(page.locator('#wa-main')).toContainText(activeAccount);
       verified.push(url.pathname);
     }

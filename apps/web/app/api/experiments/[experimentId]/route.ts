@@ -6,7 +6,7 @@
  * An analyst may edit their own experiments; owners/admins may edit any in
  * the selected agency. RLS also constrains every query in the transaction.
  */
-import { getExperiment, mutateExperimentForActor } from '@wizard-ads/db';
+import { getExperiment, listExperimentEvents, listExperimentInferredBatchNotes, mutateExperimentForActor } from '@wizard-ads/db';
 import { authenticatedRead, readUuid } from '../../../../src/server/authenticated-read';
 import { authenticatedMutation, mutationBody } from '../../../../src/server/authenticated-mutation';
 import { experimentCommand, experimentErrorResponse, experimentMutationResponse } from '../../../../src/experiments/http';
@@ -21,7 +21,9 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
     readUuid(experimentId, 'experimentId');
     const item = await getExperiment(database, { orgId: actor.orgId, experimentId });
     if (!item) return Response.json({ error: 'Experiment not found' }, { status: 404 });
-    return Response.json({ item });
+    const events = await listExperimentEvents(database,{orgId:actor.orgId,experimentId});
+    const inferredBatchNotes = await listExperimentInferredBatchNotes(database, {orgId:actor.orgId,experimentId});
+    return Response.json({ item, events, inferredBatchNotes });
   });
 }
 

@@ -11,6 +11,7 @@
  */
 import { bigint, index, jsonb, pgEnum, pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { ts } from './columns.js';
+import type { ExperimentSystemActor } from '@wizard-ads/shared';
 import { adProfiles, authUsers, orgs } from './tenancy.js';
 
 export const experimentType = pgEnum('experiment_type', [
@@ -95,6 +96,7 @@ export const experimentEvents = pgTable(
     toStatus: experimentStatus('to_status').notNull(),
     note: text('note'),
     actorId: uuid('actor_id').references(() => authUsers.id, { onDelete: 'set null' }),
+    systemActor: jsonb('system_actor').$type<ExperimentSystemActor>(),
     createdAt: ts('created_at').notNull().defaultNow(),
   },
   (t) => [index('experiment_events_experiment_idx').on(t.orgId, t.experimentId, t.createdAt)],

@@ -14,11 +14,11 @@
  */
 import type { DbHandle, QueryHandle } from '../client.js';
 import {
-  ExperimentCommand, ExperimentCommandResult, OrgActor, OrgRole, ORG_CAPABILITY_ROLES,
+  ExperimentInferredBatchNote, ExperimentCommand, ExperimentCommandResult, OrgActor, OrgRole, ORG_CAPABILITY_ROLES,
   EXPERIMENT_TYPES, EXPERIMENT_METRICS, EXPERIMENT_STATUSES,
   canTransitionExperiment as canTransition,
   type ExperimentType, type ExperimentMetric, type ExperimentStatus,
-  type ExperimentRecord, type ExperimentEventRecord,
+  type ExperimentRecord, type ExperimentEventRecord, type ExperimentSystemActor,
 } from '@wizard-ads/shared';
 import { AgencyAccessDenied, withAuthenticatedOrgEditor, type AuthenticatedEditorTransaction } from './authenticated-actor.js';
 export { EXPERIMENT_TYPES, EXPERIMENT_METRICS, EXPERIMENT_STATUSES, canTransition };
@@ -319,10 +319,6 @@ export async function createExperiment(
   `;
   const id = rows[0]?.id;
   if (!id) throw new Error('Creating an experiment returned no row');
-  await handle.sql`
-    insert into public.experiment_events (experiment_id, org_id, from_status, to_status, note, actor_id)
-    values (${id}, ${input.orgId}, null, ${status}::public.experiment_status, 'Created', ${input.createdBy ?? null})
-  `;
   const created = await getExperiment(handle, { orgId: input.orgId, experimentId: id });
   if (!created) throw new Error('An experiment was created but could not be read back');
   return created;
@@ -430,8 +426,8 @@ export async function updateExperiment(
   if (!current) throw new ExperimentNotFound();
 
   const name = input.name === undefined ? current.name : normalizeExperimentName(input.name);
-  const hypothesis =
-    input.hypothesis === undefined ? current.hypothesis : normalizeExperimentText(input.hypothesis, 'hypothesis');
+  if (input.hypothesis !== undefined && normalizeExperimentText(input.hypothesis, 'hypothesis') !== current.hypothesis) throw new ExperimentCommandError('invalid');
+  const hypothesis = current.hypothesis;
   const type = input.type ?? current.type;
   if (!EXPERIMENT_TYPES.includes(type)) throw new Error(`Unknown experiment type: ${type}`);
   const metricFocus = input.metricFocus ?? current.metricFocus;
@@ -461,8 +457,8 @@ export async function updateExperiment(
 
 /**
  * Move the status, recording the transition and honouring the window rules:
- * moving to `ended` stamps `end_at` if it is not already set; moving back to
- * `running` clears it so the band re-opens.
+ * closing stamps `end_at` if it is not already set. The database trigger owns
+ * the transition, date invariants and atomic trail; closed tests never reopen.
  *
  * The stamp is `greatest(now(), start_at)`, not `now()`. A test scheduled to
  * start tomorrow and abandoned today would otherwise end before it began, which
@@ -478,6 +474,8 @@ export async function transitionExperiment(
     note?: string | null;
     resultNote?: string | null;
     actorId?: string | null;
+    /** Service-role calls without a user must bind a real job in this scope. */
+    systemJobId?: string;
   },
 ): Promise<ExperimentRecord> {
   if (!EXPERIMENT_STATUSES.includes(input.to)) throw new Error(`Unknown experiment status: ${input.to}`);
@@ -487,32 +485,20 @@ export async function transitionExperiment(
     throw new InvalidExperimentTransition(current.status, input.to);
   }
 
+  if (input.resultNote !== undefined && (input.resultNote?.trim() || null) !== current.resultNote && (current.resultNote !== null || current.status !== 'ended' || input.to !== 'analyzed' || !input.resultNote?.trim())) throw new ExperimentCommandError('conflict');
   const noteProvided = input.resultNote !== undefined;
   const resultNote = noteProvided ? (input.resultNote?.trim() || null) : null;
 
-  const rows = await handle.sql<{ id: string }[]>`
-    update public.experiments
-       set status = ${input.to}::public.experiment_status,
-           end_at = case
-                      when ${input.to} = 'ended' then coalesce(end_at, greatest(now(), start_at))
-                      when ${input.to} = 'running' then null
-                      else end_at
-                    end,
-           result_note = case when ${noteProvided} then ${resultNote}::text else result_note end
-     where org_id = ${input.orgId} and id = ${input.experimentId}
-    returning id
-  `;
-  if (!rows[0]) throw new ExperimentNotFound();
-
-  // Only log an event when the status actually moved: a result-note edit that
-  // leaves the status alone is not a transition.
-  if (current.status !== input.to) {
-    await handle.sql`
-      insert into public.experiment_events (experiment_id, org_id, from_status, to_status, note, actor_id)
-      values (${input.experimentId}, ${input.orgId}, ${current.status}::public.experiment_status,
-              ${input.to}::public.experiment_status, ${input.note ?? null}, ${input.actorId ?? null})
-    `;
+  if (input.to === 'analyzed' && !(noteProvided ? resultNote : current.resultNote)) {
+    throw new ExperimentCommandError('conflict');
   }
+  const rows = await handle.sql<{ id: string | null }[]>`
+    select app.transition_timeline_experiment(
+      ${input.orgId}::uuid, ${input.experimentId}::uuid, ${input.to}::public.experiment_status,
+      ${input.note ?? null}::text, ${resultNote}::text, ${noteProvided}, ${input.actorId ?? null}::uuid, ${input.systemJobId ?? null}::uuid
+    ) as id
+  `;
+  if (!rows[0]?.id) throw new ExperimentNotFound();
 
   const updated = await getExperiment(handle, input);
   if (!updated) throw new ExperimentNotFound();
@@ -532,11 +518,12 @@ export async function listExperimentEvents(
       to_status: ExperimentStatus;
       note: string | null;
       actor_id: string | null;
+      system_actor: ExperimentSystemActor | null;
       created_at: Date | string;
     }[]
   >`
     select id, experiment_id, org_id, from_status::text as from_status, to_status::text as to_status,
-           note, actor_id, created_at
+           note, actor_id, system_actor, created_at
       from public.experiment_events
      where org_id = ${input.orgId} and experiment_id = ${input.experimentId}
      order by created_at, id
@@ -549,6 +536,7 @@ export async function listExperimentEvents(
     toStatus: row.to_status,
     note: row.note,
     actorId: row.actor_id,
+    systemActor: row.system_actor,
     createdAt: toDate(row.created_at),
   }));
 }
@@ -876,4 +864,38 @@ export async function readMethodExperiments(
   }));
   if (experiments.length !== rows.length) throw new Error('Experiment lock evidence count mismatch');
   return experiments;
+}
+
+/** Annotate the read side without changing any recorded transition or claiming a durable link. */
+export async function listExperimentInferredBatchNotes(
+  handle: ExperimentQueryHandle,
+  input: { orgId: string; experimentId: string },
+): Promise<ExperimentInferredBatchNote[]> {
+  const rows = await handle.sql<{
+    row_id: string; batch_id: string; tag: string; applied_on: string;
+    entity_id: string; field: string; new_value: unknown;
+  }[]>`
+    select r.id as row_id, b.id as batch_id, b.tag,
+      coalesce(b.applied_on, (b.applied_at at time zone 'UTC')::date)::text as applied_on,
+      r.entity_id, r.field, r.new_value
+    from public.experiments e
+    join public.apply_batches b on b.org_id=e.org_id and b.profile_id=e.profile_id
+    join public.apply_rows r on r.batch_id=b.id and r.org_id=b.org_id and r.profile_id=b.profile_id
+    where e.org_id=${input.orgId} and e.id=${input.experimentId}
+      and b.status in ('applied','reverted')
+      and coalesce(b.applied_on, (b.applied_at at time zone 'UTC')::date)
+        between (e.start_at at time zone 'UTC')::date and coalesce((e.end_at at time zone 'UTC')::date, (now() at time zone 'UTC')::date)
+      and (
+        (r.entity_type='campaign' and coalesce(e.scope->'campaignIds','[]'::jsonb) ? r.entity_id)
+        or (r.entity_type in ('target','keyword') and (
+          coalesce(e.scope->'targetIds','[]'::jsonb) ? r.entity_id
+          or exists (select 1 from public.targets t where r.entity_type='target' and t.org_id=e.org_id and t.profile_id=e.profile_id and t.amazon_id=r.entity_id and coalesce(e.scope->'campaignIds','[]'::jsonb) ? t.campaign_id)
+          or exists (select 1 from public.keywords k where r.entity_type='keyword' and k.org_id=e.org_id and k.profile_id=e.profile_id and k.amazon_id=r.entity_id and coalesce(e.scope->'campaignIds','[]'::jsonb) ? k.campaign_id)
+        ))
+      )
+    order by applied_on, b.id, r.id
+  `;
+  return rows.map((row) => ExperimentInferredBatchNote.parse({ rowId: row.row_id, batchId: row.batch_id,
+    batchTag: row.tag, appliedOn: row.applied_on, entityId: row.entity_id, field: row.field,
+    newValue: row.new_value, inference: 'scope-and-window' }));
 }

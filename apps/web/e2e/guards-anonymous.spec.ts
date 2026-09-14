@@ -24,7 +24,8 @@ test('the index sends an anonymous visitor directly to sign in', async ({ page }
 test('every guarded screen sends an anonymous visitor to the login page', async ({ page }) => {
   // One goto per guarded route; in CI each first visit pays a dev-server
   // compile, so the loop needs more than the per-test default.
-  test.setTimeout(300_000);
+  // Match the signed-in route loop's allowance for night mode.
+  test.setTimeout(900_000);
   await signOut(page);
 
   const landed: string[] = [];

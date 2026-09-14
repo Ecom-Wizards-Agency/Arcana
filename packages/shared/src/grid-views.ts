@@ -1,4 +1,14 @@
 import { z } from 'zod';
+import { TimelineMeasure, TimelineEventKind } from './timeline-events.js';
+
+export const TimelineViewState = z.object({
+  mode: z.enum(['performance', 'organic', 'bsr']).default('performance'),
+  hiddenKinds: z.array(TimelineEventKind).default([]),
+  eventId: z.string().nullable().default(null),
+  asin: z.string().default(''), keyword: z.string().default(''), category: z.string().default(''),
+}).strict();
+export type TimelineViewState = z.infer<typeof TimelineViewState>;
+
 
 const strings = z.array(z.string()).readonly();
 export const GridEntity = z.enum(['campaigns', 'ad_groups', 'targets', 'search_terms', 'placements']);
@@ -22,6 +32,8 @@ export const GridSavedView = z.object({
   groupBy: strings,
   collapsedGroupIds: strings.optional(),
   dateRange: z.object({ start: z.string(), end: z.string() }).strict().nullable(),
+  chartedMeasures: z.array(TimelineMeasure).min(1).max(4).refine((values) => new Set(values).size === values.length).optional(),
+  timeline: TimelineViewState.optional(),
   updatedAt: z.string(),
 }).strict();
 export type GridSavedView = z.infer<typeof GridSavedView>;

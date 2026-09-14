@@ -122,16 +122,17 @@ describe.skipIf(!available)('WP-19 experiment queries', () => {
       orgId: orgA,
       experimentId: created.id,
       to: 'ended',
-      resultNote: 'ACOS fell four points.',
       actorId: OWNER_A,
     });
     expect(ended.status).toBe('ended');
     expect(ended.endAt).not.toBeNull();
-    expect(ended.resultNote).toBe('ACOS fell four points.');
+    expect(ended.resultNote).toBeNull();
+    const analyzed = await transitionExperiment(database, {orgId:orgA,experimentId:created.id,to:'analyzed',resultNote:'ACOS fell four points.',actorId:OWNER_A});
+    expect(analyzed.resultNote).toBe('ACOS fell four points.');
 
     const events = await listExperimentEvents(database, { orgId: orgA, experimentId: created.id });
     // created, running, ended
-    expect(events.map((event) => event.toStatus)).toEqual(['planned', 'running', 'ended']);
+    expect(events.map((event) => event.toStatus)).toEqual(['planned', 'running', 'ended', 'analyzed']);
   });
 
   it('refuses an impossible transition', async () => {
@@ -251,7 +252,7 @@ describe.skipIf(!available)('WP-19 experiment queries', () => {
       scope: { campaignIds: ['c-9'] },
       startAt: `${duringStart}T00:00:00Z`,
       endAt: `${duringEnd}T00:00:00Z`,
-      status: 'ended',
+      status: 'running',
     });
 
     const comparison = await computeComparison(
@@ -346,10 +347,12 @@ describe.skipIf(!available)('WP-19 experiment queries', () => {
     const edited = await updateExperiment(database, {
       orgId: orgA,
       experimentId: created.id,
-      hypothesis: 'A revised hypothesis.',
+      name: 'Revised description',
       scope: { asins: ['B0TEST0001'] },
     });
-    expect(edited.hypothesis).toBe('A revised hypothesis.');
+    expect(edited.name).toBe('Revised description');
+    await expect(updateExperiment(database,{orgId:orgA,experimentId:created.id,hypothesis:'Changed'})).rejects.toThrow();
+    expect(edited.hypothesis).toBe(created.hypothesis);
     expect(edited.scope.asins).toEqual(['B0TEST0001']);
     expect(edited.status).toBe('planned');
     const listed = await listExperiments(database, { orgId: orgA, profileId: profileA });
@@ -417,8 +420,8 @@ describe.skipIf(!available)('WP-19 experiment queries', () => {
       metricFocus: 'ctr',
       startAt: '2026-08-01T00:00:00Z',
     });
-    await transitionExperiment(database, { orgId: orgA, experimentId: created.id, to: 'running' });
-    const ended = await transitionExperiment(database, { orgId: orgA, experimentId: created.id, to: 'ended' });
+    await transitionExperiment(database, { orgId: orgA, experimentId: created.id, to: 'running', actorId: OWNER_A });
+    const ended = await transitionExperiment(database, { orgId: orgA, experimentId: created.id, to: 'ended', actorId: OWNER_A });
     expect(ended.endAt).not.toBeNull();
 
     // Moving the start past the recorded end is the edit that used to reach the
