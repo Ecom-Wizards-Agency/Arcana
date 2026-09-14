@@ -2451,7 +2451,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
                (${orgId}, 'mrp', 'schedule-test-mrp', 'active')
       `;
       const store = new PostgresWorkerStore(database);
-      expect(await store.ensureIntegrationSchedules()).toBe(4);
+      expect(await store.ensureIntegrationSchedules()).toBe(3);
       expect(await store.ensureIntegrationSchedules()).toBe(0);
 
       const schedules = await database.sql<{
@@ -2476,8 +2476,21 @@ describe.skipIf(!available)('worker + real Postgres', () => {
         { type: 'economics.sync', cadence: '1 day', reportType: null, enabled: true },
         { type: 'keepa.sync', cadence: '1 day', reportType: null, enabled: true },
         { type: 'rank.sync', cadence: '1 day', reportType: null, enabled: true },
-        { type: 'sqp.categorize', cadence: '7 days', reportType: null, enabled: true },
       ]);
+      // Repair a schedule left by an older deployment even with DataDive active.
+      await database.sql`
+        insert into public.sync_schedules
+          (org_id, profile_id, job_type, variant, cadence, payload, enabled)
+        values (${orgId}, ${profileId}, 'sqp.categorize', 'integration', interval '7 days', '{}'::jsonb, true)
+      `;
+      expect(await store.ensureIntegrationSchedules()).toBe(1);
+      expect(await store.ensureIntegrationSchedules()).toBe(0);
+      const unsupported = await database.sql<{ enabled: boolean }[]>`
+        select enabled from public.sync_schedules
+         where profile_id = ${profileId}
+           and job_type in ('sqp.categorize', 'history.bootstrap', 'report.promote')
+      `;
+      expect(unsupported).toEqual([{ enabled: false }]);
       expect(schedules.find((row) => row.job_type === 'keepa.sync')?.payload).toEqual({
         includeCompetitors: true,
       });

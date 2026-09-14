@@ -13,16 +13,13 @@ import {
   JobPayload,
   type EconomicsSyncJob,
   type CreativeSyncJob,
-  type HistoryBootstrapJob,
   type JobType,
   type KeepaSyncJob,
   type MarketingStreamNormalizeJob,
   type RankSyncJob,
   type Region,
   type ReportType,
-  type ReportPromoteJob,
   type SqpRequestJob,
-  type SqpCategorizeJob,
 } from '@wizard-ads/shared';
 import { SpApiAuthError, SpApiError, SpApiParseError } from '@wizard-ads/sp-api';
 import { isPermanentCrosscheckError, type CrosscheckIngest } from './crosscheck.js';
@@ -148,14 +145,11 @@ export interface IntegrationHandlers {
   keepaSync?: (payload: KeepaSyncJob) => Promise<Record<string, unknown>>;
   rankSync?: (payload: RankSyncJob) => Promise<Record<string, unknown>>;
   economicsSync?: (payload: EconomicsSyncJob) => Promise<Record<string, unknown>>;
-  sqpCategorize?: (payload: SqpCategorizeJob) => Promise<Record<string, unknown>>;
   creativeSync?: (payload: CreativeSyncJob) => Promise<Record<string, unknown>>;
   sqpRequest?: (
     payload: SqpRequestJob,
     context: SqpQueuedJobContext,
   ) => Promise<Record<string, unknown>>;
-  historyBootstrap?: (payload: HistoryBootstrapJob) => Promise<Record<string, unknown>>;
-  reportPromote?: (payload: ReportPromoteJob) => Promise<Record<string, unknown>>;
   marketingStreamNormalize?: (payload: MarketingStreamNormalizeJob) => Promise<Record<string, unknown>>;
 }
 
@@ -623,7 +617,9 @@ export class SyncWorker {
       case 'economics.sync':
         return this.runIntegration(payload.type, this.integrations.economicsSync, payload);
       case 'sqp.categorize':
-        return this.runIntegration(payload.type, this.integrations.sqpCategorize, payload);
+      case 'history.bootstrap':
+      case 'report.promote':
+        throw new PermanentJobError(`${payload.type} is declared but unimplemented`);
       case 'creative.sync': {
         const sbVideo = this.sbVideo;
         if (sbVideo) {
@@ -640,10 +636,6 @@ export class SyncWorker {
           throw new PermanentJobError(`${payload.type} handler not deployed in this runtime`);
         }
         return this.integrations.sqpRequest(payload, { jobId: job.id });
-      case 'history.bootstrap':
-        return this.runIntegration(payload.type, this.integrations.historyBootstrap, payload);
-      case 'report.promote':
-        return this.runIntegration(payload.type, this.integrations.reportPromote, payload);
       case 'marketing_stream.normalize':
         return this.runIntegration(payload.type, this.integrations.marketingStreamNormalize, payload);
     }

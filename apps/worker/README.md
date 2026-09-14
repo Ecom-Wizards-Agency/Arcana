@@ -206,6 +206,22 @@ JSON output contains counts and catalog names only, never profile identifiers.
 
 ### Weekly SQP
 
+| Job type | Runtime and prerequisites |
+|---|---|
+| `sqp.request` | Always-on `general` worker; `WORKER_JOB_TYPES` set to `keepa.sync,rank.sync,economics.sync,sqp.request` (or unset); both `SP_API_LWA_CLIENT_ID` and `SP_API_LWA_CLIENT_SECRET`; active credentialed SP-API connection and exact profile/marketplace binding. |
+| `sqp.categorize`, `history.bootstrap`, `report.promote` | Declared but unimplemented; permanently rejected. No schedules are provisioned; reconciliation disables legacy `sqp.categorize` integration schedules. |
+
+The weekly producer remains in `ScheduleProvisioner`, which runs only with
+`startsBackgroundPasses=true` on the general worker. The configured allowlist
+must include `sqp.request` (or be unset). Vercel cron and the Evo report lane do
+not produce or consume this job. Keep the general worker online for weekly SQP.
+
+`enqueue_due_schedules()` does not construct SQP's exact bound marketplace,
+validated and counted ASIN set, or completed profile-local week. Moving the
+producer there requires a SQL scheduler migration outside the schedule-removal
+scope of WP-247. Keeping it beside the credential-gated consumer avoids producing
+jobs on deployments without an SP-API handler. The Evo lane contract is unchanged.
+
 When both SP-API LWA application variables are present, the schedule
 provisioner also inspects active `spapi_profile_bindings`. Each eligible
 binding must match one sync-enabled Ads profile, one active credentialed
