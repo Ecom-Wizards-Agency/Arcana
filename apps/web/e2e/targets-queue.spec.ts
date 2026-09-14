@@ -25,7 +25,9 @@ test('target stages an immutable change and review records approval without outb
       on conflict(profile_id,date,ad_product,campaign_id,ad_group_id,target_id) do update set impressions=excluded.impressions,clicks=excluded.clicks,cost=excluded.cost,sales_7d=excluded.sales_7d,purchases_7d=excluded.purchases_7d,units_sold_7d=excluded.units_sold_7d returning target_id`;
     expect(facts).toHaveLength(13);
     await db.sql`update public.profile_strategy set doc=doc||'{"rank_protection":{"protection_rank":2}}'::jsonb where org_id=${orgId} and (profile_id=${fixtureProfileId} or profile_id is null)`;
-    await db.sql`insert into public.rank_observations(org_id,profile_id,asin,keyword,observed_on,organic_rank) values(${orgId},${fixtureProfileId},'SYNTHETIC2','widget',current_date,1)`;
+    await db.sql`insert into public.rank_observations(org_id,profile_id,asin,keyword,observed_on,organic_rank) values(${orgId},${fixtureProfileId},'SYNTHETIC2','widget',current_date,1) on conflict do nothing returning id`;
+    const ranks = await db.sql`select organic_rank from public.rank_observations where org_id=${orgId} and profile_id=${fixtureProfileId} and asin='SYNTHETIC2' and keyword='widget' and observed_on=current_date`;
+    expect(ranks).toEqual([{organic_rank:1}]);
     const changes = await db.sql`insert into public.entity_changes(org_id,profile_id,entity_type,amazon_id,field,old_value,new_value,source) values(${orgId},${fixtureProfileId},'keyword','kw-1','bid','4','5','sync') returning id`;
     expect(changes).toHaveLength(1);
     const [before]=await db.sql`select count(*)::int as count from public.sp_write_execution_requests`;
@@ -85,8 +87,17 @@ test('target stages an immutable change and review records approval without outb
     await expect(page.locator('main li')).toHaveCount(5);
     await expect(page.getByRole('button',{name:'Approve after checks pass'})).toBeEnabled();
     await page.screenshot({path:testInfo.outputPath('target-review-ready.png'),style:'nextjs-portal { display: none; }'});
+    await expect(page.getByRole('status')).toBeEmpty();
+    const approvalResponse = page.waitForResponse(response => response.request().method() === 'POST' && /\/queue\/[^/]+$/.test(new URL(response.url()).pathname));
     await page.getByRole('button',{name:'Approve after checks pass'}).click();
     await expect(page.getByRole('status')).toContainText('Approval was recorded');
+    const approval = await approvalResponse;
+    expect(approval.ok()).toBe(true);
+    const timing = approval.headers()['server-timing'];
+    expect(timing).toContain('total;dur=');
+    console.log(`Target approval Server-Timing: ${timing}`);
+    await testInfo.attach('approval-server-timing', {body:timing!,contentType:'text/plain'});
+    expect((await approval.json()).approval.approvedAt).toBeTruthy();
     await page.screenshot({path:testInfo.outputPath('target-approved.png')});
     const [after]=await db.sql`select count(*)::int as count from public.sp_write_execution_requests`;
     expect(after).toEqual(before);
