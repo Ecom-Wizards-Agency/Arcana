@@ -18,8 +18,8 @@ import type {
   ExperimentStatus,
   ExperimentType,
 } from '@wizard-ads/db';
-import { TrendChart } from '../../../src/ui/viz';
-import type { TrendPoint } from '../../../src/ui/viz';
+import { TrendChart } from '@wizard-ads/ui';
+import type { TrendPoint } from '@wizard-ads/ui';
 import { canTransition } from '../../../src/experiments/ui';
 import {
   EXPERIMENT_STATUS_OPTIONS,

@@ -12,13 +12,14 @@
  * sorted header, so a total and a body cell can never format differently.
  */
 import type { ReactNode } from 'react';
-import { isGroupedRow } from '../aggregate.js';
+import { type GroupedRow, isGroupedRow } from '../aggregate.js';
 import type { GridColumn } from '../columns.js';
 import { formatDelta, formatInteger, formatValue } from '../format.js';
 import type { FormatContext } from '../format.js';
 import { metricSpec } from '../metrics.js';
 import type { GridRow } from '../rows.js';
 import { parseFieldId, resolveField } from '../rows.js';
+import { StatusChip } from '../primitives/StatusChip.js';
 import { deltaColor } from '../theme.js';
 import {
   cellSubline,
@@ -35,6 +36,7 @@ import {
 /** What every cell needs beyond its own row and column. */
 export interface GridCellEnvironment {
   context: FormatContext;
+  totalsRow?: GroupedRow | null;
   collapsedGroupIds: ReadonlySet<string>;
   onToggleGroup: (groupId: string) => void;
 }
@@ -44,7 +46,7 @@ export interface GridCellProps extends GridCellEnvironment {
   column: GridColumn;
 }
 
-export function GridCell({ row, column, context, collapsedGroupIds, onToggleGroup }: GridCellProps): ReactNode {
+export function GridCell({ row, column, context, totalsRow, collapsedGroupIds, onToggleGroup }: GridCellProps): ReactNode {
   // A control column has no value anywhere: not on a source row, not on a
   // group, not in the totals. Formatting its absent field would print `—` in
   // the totals row under a checkbox, which reads as a figure that failed.
@@ -81,11 +83,17 @@ export function GridCell({ row, column, context, collapsedGroupIds, onToggleGrou
     );
   }
 
+  if (column.cell === 'status') {
+    return value === 'working' || value === 'needs-data' || value === 'idea'
+      ? <StatusChip status={value} /> : <>{formatValue(value, column.scale, context)}</>;
+  }
+
   if (column.cell === 'suggested_bid') {
     const low = resolveField(row, 'suggested_bid_low');
     const high = resolveField(row, 'suggested_bid_high');
     return (
-      <span data-testid="suggested-bid-cell" style={twoLineCell}>
+      <span data-testid="suggested-bid-cell" style={{ ...twoLineCell, minWidth: '100%', width: 'max-content' }}
+        title={`${formatValue(value, column.scale, context)} · ${formatValue(low, column.scale, context)} – ${formatValue(high, column.scale, context)}`}>
         <span>{formatValue(value, column.scale, context)}</span>
         {value === null ? null : (
           <span style={cellSubline}>
@@ -100,11 +108,22 @@ export function GridCell({ row, column, context, collapsedGroupIds, onToggleGrou
     const spec = metricSpec(ref.metric);
     const numeric = typeof value === 'number' ? value : null;
     return (
-      <span style={deltaStyle(deltaColor(numeric, spec?.better ?? null))}>
+      <span title={formatDelta(numeric, column.scale, context)} style={{ ...deltaStyle(deltaColor(numeric, spec?.better ?? null)), display: 'block', width: 'max-content', minWidth: '100%' }}>
         {formatDelta(numeric, column.scale, context)}
       </span>
     );
   }
 
-  return <>{formatValue(value, column.scale, context)}</>;
+  const formatted = formatValue(value, column.scale, context);
+  const denominator = totalsRow == null ? null : resolveField(totalsRow, column.id);
+  const share = isGroupedRow(row) && row.groupDepth >= 0 && (ref?.part === 'value' || ref?.part === 'comparison')
+    && metricSpec(ref.metric)?.derived === null && typeof value === 'number'
+    && typeof denominator === 'number' && denominator > 0 ? value / denominator : null;
+  return <span title={column.scale !== 'text' || column.cell === 'numeric' ? formatted : undefined}
+    style={column.scale !== 'text' || column.cell === 'numeric' ? { display: 'block', width: 'max-content', minWidth: '100%' } : undefined}>
+    {formatted}
+    {share === null ? null : <span style={{ ...cellSubline, marginLeft: '0.375rem' }}>
+      {formatValue(share, 'percent', context)} of total
+    </span>}
+  </span>;
 }

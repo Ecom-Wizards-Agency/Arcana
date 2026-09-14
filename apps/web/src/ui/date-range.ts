@@ -78,3 +78,14 @@ function shortDate(value: string): string {
     year: 'numeric',
   }).format(new Date(Date.UTC(year, month - 1, day)));
 }
+
+/** Inclusive windows; callers can provide a comparison independent of presets. */
+export function comparisonLengthState(period: Period, comparison: Period): {
+  currentDays: number; comparisonDays: number; mismatch: boolean;
+} {
+  const days = (window: Period): number =>
+    Math.round((Date.parse(window.end) - Date.parse(window.start)) / 86_400_000) + 1;
+  const currentDays = days(period);
+  const comparisonDays = days(comparison);
+  return { currentDays, comparisonDays, mismatch: currentDays !== comparisonDays };
+}

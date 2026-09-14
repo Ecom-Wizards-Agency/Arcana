@@ -209,7 +209,7 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
   }, [available, groupBy, visible]);
 
   const { model, filterError } = useMemo(
-    () => buildGridModelSafely(gridRows, { filter, sort, groupBy }),
+    () => buildGridModelSafely(gridRows, { filter, sort, groupBy, totals: 'none' }),
     [filter, gridRows, groupBy, sort],
   );
 

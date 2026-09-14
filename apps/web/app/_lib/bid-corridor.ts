@@ -12,7 +12,7 @@
  */
 import type { QueryHandle } from '@wizard-ads/db';
 import type { BaseTotals } from '@wizard-ads/ui';
-import type { BidCorridorPoint } from '../../src/ui/viz';
+import type { BidCorridorPoint } from '@wizard-ads/ui';
 
 /** One target's corridor over the window, oldest first, as chart points. */
 export async function loadCorridor(

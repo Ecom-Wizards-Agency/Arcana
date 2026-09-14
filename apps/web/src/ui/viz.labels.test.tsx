@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { stackEndLabelYs, TrendChart } from './viz.js';
+import { stackEndLabelYs, TrendChart } from '@wizard-ads/ui';
 
 describe('trend endpoint labels', () => {
   it('stacks colliding labels and keeps them inside the plot', () => {

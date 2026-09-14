@@ -1,62 +1,40 @@
-/**
- * Design tokens.
- *
- * Inline styles rather than a CSS pipeline, matching what already ships in
- * `apps/web` (the crosscheck panel): every component here is drop-in and cannot
- * collide with a stylesheet somebody adds later. Tokens live in one object so
- * the eventual move to CSS variables is a find-and-replace rather than an
- * archaeology exercise.
- *
- * Colours are the neutral-plus-semantic set the crosscheck chip already uses,
- * so a verdict chip on the dashboard and a verdict cell in the grid are the
- * same green.
- */
+import { tokenValues, type TokenName } from './tokens.generated.js';
+
+/** Standalone light fallbacks are generated from the shared CSS source. */
+export const token = (name: TokenName): string => `var(${name}, ${tokenValues.light[name]})`;
+
 export const tokens = {
   font: {
-    sans: 'var(--wa-font, Inter, sans-serif)',
-    mono: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace',
-    size: { eyebrow: '0.6875rem', xs: '0.75rem', sm: '0.8125rem', base: '0.875rem', lg: '1rem', xl: '1.5rem', kpi: '1.75rem' },
+    sans: token('--wa-font'),
+    mono: token('--wa-font-mono'),
+    size: { eyebrow: token('--wa-fs-2xs'), xs: token('--wa-fs-xs'), sm: token('--wa-fs-sm'), base: token('--wa-fs-base'), lg: token('--wa-fs-md'), xl: token('--wa-fs-xl'), kpi: token('--wa-fs-2xl') },
   },
-  /*
-   * Custom properties with the original literal as the fallback.
-   *
-   * These are written into `style` attributes, and a host that themes itself
-   * cannot reach them there: the browser re-serialises an inline hex color to
-   * an `rgb()` value through the CSSOM, so the attribute-substring bridge
-   * `apps/web` used to retheme this palette never matched a single element. The
-   * grid rendered the host's light-on-dark text over this package's white rows.
-   *
-   * A `var()` inverts that: the host supplies the value when it defines one, and
-   * the fallback keeps this package standalone — Storybook, a test renderer, or
-   * any consumer without the wizard-ads stylesheet still gets the light palette
-   * these literals always were. Light mode resolves to identical values.
-   */
   color: {
-    text: 'var(--wa-text, #11151C)',
-    textMuted: 'var(--wa-text-muted, #5B6573)',
-    textFaint: 'var(--wa-text-faint, #5B6573)',
-    border: 'var(--wa-border, #DADCE0)',
-    borderStrong: 'var(--wa-border-strong, #C6C8CD)',
-    surface: 'var(--wa-surface, #F5F6F8)',
-    surfaceAlt: 'var(--wa-surface-2, #FFFFFF)',
-    surfaceHover: 'var(--wa-surface-3, #E5E7EA)',
-    accent: 'var(--wa-accent, #FD4807)',
-    accentGradient: 'var(--wa-accent-grad, linear-gradient(#FF8A2B, #E2120A))',
-    accentSoft: 'var(--wa-accent-soft, rgba(253, 72, 7, 0.12))',
-    indigo: 'var(--wa-indigo, #3322E0)',
-    indigoSoft: 'var(--wa-indigo-soft, rgba(51, 34, 224, 0.12))',
-    onAccent: 'var(--wa-on-accent, #11151C)',
-    good: 'var(--wa-good-text, #1B7F44)',
-    goodSoft: 'var(--wa-good-bg, #DCEFE4)',
-    goodBorder: 'var(--wa-good-border, #86CFA1)',
-    warn: 'var(--wa-warn-text, #C23B0C)',
-    warnSoft: 'var(--wa-warn-bg, #FBE8E1)',
-    warnBorder: 'var(--wa-warn-border, #E7A084)',
-    bad: 'var(--wa-bad-text, #C33B3C)',
-    badSoft: 'var(--wa-bad-bg, #F8E4E5)',
-    badBorder: 'var(--wa-bad-border, #E89A9A)',
+    text: token('--wa-text'),
+    textMuted: token('--wa-text-muted'),
+    textFaint: token('--wa-text-faint'),
+    border: token('--wa-border'),
+    borderStrong: token('--wa-border-strong'),
+    surface: token('--wa-surface'),
+    surfaceAlt: token('--wa-surface-2'),
+    surfaceHover: token('--wa-surface-3'),
+    accent: token('--wa-accent'),
+    accentGradient: token('--wa-accent-grad'),
+    accentSoft: token('--wa-accent-soft'),
+    indigo: token('--wa-indigo'),
+    indigoSoft: token('--wa-indigo-soft'),
+    onAccent: token('--wa-on-accent'),
+    good: token('--wa-good-text'),
+    goodSoft: token('--wa-good-bg'),
+    goodBorder: token('--wa-good-border'),
+    warn: token('--wa-warn-text'),
+    warnSoft: token('--wa-warn-bg'),
+    warnBorder: token('--wa-warn-border'),
+    bad: token('--wa-bad-text'),
+    badSoft: token('--wa-bad-bg'),
+    badBorder: token('--wa-bad-border'),
   },
-  radius: { sm: '0.25rem', md: '0.375rem', pill: '999px' },
+  radius: { sm: token('--wa-radius-sm'), md: token('--wa-radius'), pill: token('--wa-radius-pill') },
   space: (n: number) => `${n * 0.25}rem`,
 } as const;
 
@@ -67,7 +45,7 @@ export const toneStyle: Record<Tone, { background: string; border: string; color
   warn: { background: tokens.color.warnSoft, border: tokens.color.warnBorder, color: tokens.color.warn },
   bad: { background: tokens.color.badSoft, border: tokens.color.badBorder, color: tokens.color.bad },
   muted: { background: tokens.color.surfaceAlt, border: tokens.color.border, color: tokens.color.textMuted },
-  neutral: { background: tokens.color.indigoSoft, border: 'var(--wa-info-border, #938BEF)', color: tokens.color.indigo },
+  neutral: { background: tokens.color.indigoSoft, border: token('--wa-info-border'), color: tokens.color.indigo },
 };
 
 /**

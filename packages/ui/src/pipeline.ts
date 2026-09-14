@@ -18,7 +18,12 @@ import type { GridRow } from './rows.js';
 import type { SortRule } from './sort.js';
 import { applySort } from './sort.js';
 
-export interface GridQuery {
+export type GridTotalsPolicy =
+  | { totals?: 'sum'; customTotals?: never }
+  | { totals: 'none'; customTotals?: never }
+  | { totals: 'custom'; customTotals: (rows: readonly GridRow[]) => GroupedRow | null };
+
+export type GridQuery = GridTotalsPolicy & {
   filter?: FilterSet;
   sort?: readonly SortRule[];
   /** Dimension column ids. Empty means no grouping. */
@@ -26,6 +31,7 @@ export interface GridQuery {
 }
 
 export interface GridModel {
+  totals: 'sum' | 'none' | 'custom';
   /** The rows to render, in display order. */
   rows: GridRow[];
   /** Source rows after filtering and before grouping; safe for action scope. */
@@ -119,7 +125,9 @@ export function buildGridModel(rows: readonly GridRow[], query: GridQuery = {}):
     // Totals always come from the pre-grouping filtered set: summing group rows
     // and summing their members give the same base sums, but only one of them
     // stays right if grouping ever drops a row.
-    totalsRow: grandTotal(filtered),
+    totals: query.totals ?? 'sum',
+    totalsRow: query.totals === 'none' ? null
+      : query.totals === 'custom' ? query.customTotals(filtered) : grandTotal(filtered),
     grouped,
     groupBy,
   };

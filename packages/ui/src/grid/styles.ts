@@ -8,7 +8,7 @@
  * the helpers only fold a column's width, alignment and pinning into a style.
  */
 import type { CSSProperties } from 'react';
-import type { GridColumn } from '../columns.js';
+import { minimumColumnWidth, type GridColumn } from '../columns.js';
 import type { GridDensity } from '../density.js';
 import { tokens } from '../theme.js';
 
@@ -252,6 +252,8 @@ export function headerCellStyle(
   return {
     ...headerCell,
     width,
+    flexShrink: 0,
+    ...(definition === undefined ? {} : { minWidth: minimumColumnWidth(definition) }),
     // A control header does not sort, so it must not offer a sort cursor.
     ...(definition?.kind === 'control' ? { cursor: 'default' } : {}),
     justifyContent: definition?.align === 'right' ? 'flex-end' : 'flex-start',
@@ -277,7 +279,11 @@ export function totalsCellStyle(
 ): CSSProperties {
   return {
     ...bodyCell,
+    ...(definition?.scale !== 'text' || definition?.cell === 'numeric'
+      ? { overflow: 'auto', textOverflow: 'unset' } : {}),
     width,
+    flexShrink: 0,
+    ...(definition === undefined ? {} : { minWidth: minimumColumnWidth(definition) }),
     textAlign: definition?.align ?? 'left',
     fontWeight: 600,
     ...sticky(pinned, 2, tokens.color.surfaceAlt),
@@ -292,8 +298,12 @@ export function bodyCellStyle(
 ): CSSProperties {
   return {
     ...bodyCell,
+    ...(definition?.scale !== 'text' || definition?.cell === 'numeric'
+      ? { overflow: 'auto', textOverflow: 'unset' } : {}),
     padding: CELL_PADDING[density],
     width,
+    flexShrink: 0,
+    ...(definition === undefined ? {} : { minWidth: minimumColumnWidth(definition) }),
     textAlign: definition?.align ?? 'left',
     ...sticky(pinned, 1, 'inherit'),
   };

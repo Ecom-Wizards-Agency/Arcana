@@ -71,6 +71,14 @@ export function isSortableColumn(column: GridColumn): boolean {
   return column.kind !== 'control';
 }
 
+export type GridCellKind = 'suggested_bid' | 'text' | 'numeric' | 'status';
+
+export const NUMERIC_MIN_WIDTH = 96;
+export function minimumColumnWidth(column: GridColumn): number {
+  return column.scale !== 'text' || column.cell === 'numeric'
+    ? Math.max(NUMERIC_MIN_WIDTH, column.minWidth ?? 0) : column.minWidth ?? 20;
+}
+
 export interface GridColumn {
   id: string;
   header: string;
@@ -79,12 +87,13 @@ export interface GridColumn {
   align: 'left' | 'right';
   /** Starting width in pixels; the operator drags from here. */
   width: number;
+  minWidth?: number;
   /** Pinned columns sit left of the pin line and do not scroll horizontally. */
   pinned?: boolean;
   /** Shown in the column picker, so a name never has to be self-explanatory. */
   description?: string;
   /** The rare cell whose visual hierarchy carries more than its sort value. */
-  cell?: 'suggested_bid';
+  cell?: GridCellKind;
   /**
    * How an operator filters this field. Omitted values resolve to numeric for
    * metrics/money/percent/integer columns and free text otherwise.

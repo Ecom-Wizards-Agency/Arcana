@@ -10,7 +10,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { niceTicks, TrendChart, windowBand } from './viz';
+import { niceTicks, TrendChart, windowBand } from '@wizard-ads/ui';
 
 // The chart's own projection: PAD.left is 62 and the plot is 620 wide.
 const PLOT_WIDTH = 620;

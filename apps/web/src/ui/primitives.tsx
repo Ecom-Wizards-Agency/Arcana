@@ -214,35 +214,8 @@ export function Banner({
 
 /* ---------------------------------------------------------------- tabs --- */
 
-export interface TabItem {
-  href: string;
-  label: string;
-}
-
-export function Tabs({
-  items,
-  current,
-  ariaLabel,
-}: {
-  items: readonly TabItem[];
-  current: string;
-  ariaLabel: string;
-}): ReactNode {
-  return (
-    <nav aria-label={ariaLabel} className="wa-tabs">
-      {items.map((item) => (
-        <a
-          key={item.href}
-          href={item.href}
-          className="wa-tab"
-          {...(item.href === current ? { 'aria-current': 'page' as const } : {})}
-        >
-          {item.label}
-        </a>
-      ))}
-    </nav>
-  );
-}
+export { RouteTabs as Tabs } from '@wizard-ads/ui';
+export type { TabItem } from '@wizard-ads/ui';
 
 /* --------------------------------------------------------------- table --- */
 
@@ -277,28 +250,7 @@ export function TableFrame({
  * next. A bare "no data" is indistinguishable from a broken query, which is the
  * single most common way a working tool looks broken.
  */
-export function EmptyState({
-  title,
-  body,
-  meta,
-  action,
-  ...rest
-}: {
-  title: string;
-  body: ReactNode;
-  /** Timestamp or result context that distinguishes a completed empty run. */
-  meta?: ReactNode;
-  action?: ReactNode;
-} & DataProps): ReactNode {
-  return (
-    <div {...rest} className="wa-empty">
-      <p className="wa-empty__title">{title}</p>
-      <p className="wa-empty__body">{body}</p>
-      {meta === undefined ? null : <p className="wa-empty__meta">{meta}</p>}
-      {action}
-    </div>
-  );
-}
+export { EmptyState, StatusChip } from '@wizard-ads/ui';
 
 /* -------------------------------------------------------- page furniture -- */
 

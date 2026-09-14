@@ -239,3 +239,12 @@ describe('n-gram drill-down', () => {
     );
   });
 });
+
+
+it('does not sum overlapping grams into a totals row', () => {
+  const input = [term(1, { searchTerm: 'blue widget large' })];
+  const host = mount(input);
+  const grid = gramGrid(host);
+  expect(rows(grid).length).toBeGreaterThan(input.length);
+  expect(grid.textContent).not.toMatch(/Total ·/);
+});
