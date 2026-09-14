@@ -44,7 +44,7 @@ test('target page and goto restore the complete shared grid analysis', async ({ 
   const targetGate = new Promise<void>((resolve) => { releaseTarget = resolve; });
   await page.route('**/api/targets/kw-1?**',async (request) => { await targetGate; await request.continue(); });
   const row = rowLink.locator('xpath=ancestor::*[@role="row"][1]');
-  await row.getByRole('cell').nth(1).click();
+  await row.getByRole('button', { name: 'Open Target 360 for widget', exact: true }).click();
   await expect(page.getByText('Loading bid history…')).toBeVisible();
   await page.screenshot({path:testInfo.outputPath('target-loading.png'),style:'nextjs-portal { display: none; }'});
   releaseTarget();
@@ -65,7 +65,7 @@ test('target page and goto restore the complete shared grid analysis', async ({ 
   expect(parseGridView(new URL(page.url()).searchParams.get('view'))?.target).toEqual(drawerView?.target);
   expect(parseGridView(new URL(page.url()).searchParams.get('view'))?.compare).toEqual(drawerView?.compare);
   await page.getByLabel('Row density').selectOption('compact');
-  await row.getByRole('cell').nth(1).click();
+  await row.getByRole('button', { name: 'Open Target 360 for widget', exact: true }).click();
   await expect(drawer.getByLabel('Realised CPC', { exact: true })).not.toBeChecked();
   await expect(drawer.getByRole('region', { name: 'Compare targets', exact: true })).toContainText('(1/4)');
   await drawer.getByLabel('Realised CPC', { exact: true }).check();

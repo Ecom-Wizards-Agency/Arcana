@@ -76,10 +76,13 @@ test('target stages an immutable change and review records approval without outb
     await expect(page.getByRole('button',{name:'Add to change queue'})).toBeDisabled();
     await captureThemes('rank-gated');
     await page.getByRole('button',{name:'Match suggested $8.40'}).click();
-    const responsePromise = page.waitForResponse((response) => response.url().includes('/api/targets/kw-1/queue') && response.request().method()==='POST');
+    const responsePromise = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/targets/kw-1/queue' && response.request().method()==='POST');
     await page.getByRole('button',{name:'Add to change queue'}).click();
     const response = await responsePromise;
     expect(response.status(),await response.text()).toBe(201);
+    const staged = await response.json() as { id: string };
+    expect(staged.id).toEqual(expect.any(String));
+    const approvalPath = '/api/targets/kw-1/queue/' + encodeURIComponent(staged.id);
     await expect(page.getByRole('status')).toContainText('Change added to queue');
     await page.screenshot({path:testInfo.outputPath('target-queued.png')});
     await page.getByRole('link',{name:'Review queued change'}).click();
@@ -88,7 +91,7 @@ test('target stages an immutable change and review records approval without outb
     await expect(page.getByRole('button',{name:'Approve after checks pass'})).toBeEnabled();
     await page.screenshot({path:testInfo.outputPath('target-review-ready.png'),style:'nextjs-portal { display: none; }'});
     await expect(page.getByRole('status')).toBeEmpty();
-    const approvalResponse = page.waitForResponse(response => response.request().method() === 'POST' && /\/queue\/[^/]+$/.test(new URL(response.url()).pathname));
+    const approvalResponse = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname === approvalPath);
     await page.getByRole('button',{name:'Approve after checks pass'}).click();
     await expect(page.getByRole('status')).toContainText('Approval was recorded');
     const approval = await approvalResponse;

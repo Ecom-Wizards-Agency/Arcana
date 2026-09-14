@@ -15,6 +15,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { TargetDrawerProvider, TargetDrawerTrigger } from '../../src/screens/targets/drawer-trigger';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { gridWork } from '../../src/screens/grid/performance-timing';
 import type { ReactNode } from 'react';
@@ -652,7 +653,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     if (column.id === 'rank_grid') return <DataGrid.cells.RankGridCell days={props.performance?.rankDays[row.id] ?? Array.from({ length: 14 }, (_, index) => ({ date: new Date(Date.parse(props.period.end) - (13 - index) * 86400000).toISOString().slice(0, 10), observed: false, rank: null }))} reason={reason('RANK')} />;
     if (column.id === 'verdict') return <DataGrid.cells.VerdictCell verdict={{ diagnosis: PerformanceVerdict.shape.diagnosis.safeParse(row.dimensions['verdict']).data ?? 'Insufficient evidence', reason: String(row.dimensions['verdict_reason'] ?? 'no threshold configured') }} />;
     if (column.id === 'rank_change' || column.id === 'acos_vs_target' || column.id === 'conversion_points') return <DataGrid.cells.DeltaCell value={number(row, column.id)} suffix={column.id === 'rank_change' ? '' : ' pts'} better={column.id === 'acos_vs_target' ? 'lower' : 'higher'} />;
-    if (column.id === 'targeting' && props.entity === 'targets') return <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}><Link href={rowHref(row)} prefetch={false} onClick={(event) => event.stopPropagation()}>{String(row.dimensions['targeting'] ?? row.dimensions['target_id'])}</Link><small style={{ color: tokens.color.textMuted }}>{String(row.dimensions['match_type'] ?? '')}{row.dimensions['campaign_purpose'] ? ` · ${row.dimensions['campaign_purpose']}` : ''} {row.dimensions['not_the_query'] === true ? <DataGrid.cells.NotTheQueryChip /> : null}</small></span>;
+    if (column.id === 'targeting' && props.entity === 'targets') return <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}><span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}><Link href={rowHref(row)} prefetch={false} onClick={(event) => event.stopPropagation()}>{String(row.dimensions['targeting'] ?? row.dimensions['target_id'])}</Link><TargetDrawerTrigger label={String(row.dimensions['targeting'] ?? row.dimensions['target_id'])} targetId={String(row.dimensions['target_id'])} /></span><small style={{ color: tokens.color.textMuted }}>{String(row.dimensions['match_type'] ?? '')}{row.dimensions['campaign_purpose'] ? ` · ${row.dimensions['campaign_purpose']}` : ''} {row.dimensions['not_the_query'] === true ? <DataGrid.cells.NotTheQueryChip /> : null}</small></span>;
     if (row.dimensions[column.id] == null && column.kind === 'dimension' && column.subject !== 'Identity') return <DataGrid.cells.NotMeasuredCell reason={column.subject === 'BRAND ANALYTICS' ? 'Brand Analytics ingestion is not configured.' : reason(column.subject === 'SQP' ? 'SQP' : column.subject === 'RANK & ORGANIC' ? 'RANK' : 'PPC')} />;
     return undefined;
   }]));
@@ -722,7 +723,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
      */
     <>
     <PerformanceSummary rows={model.matchedRows} performance={props.performance} view={view} onChange={update} currencyCode={props.currencyCode} profileId={props.profileId} />
-    <GridViewport
+    <TargetDrawerProvider profileId={props.profileId} window={props.period} currencyCode={props.currencyCode}><GridViewport
       fullscreen={fullscreen}
       onExitFullscreen={() => setFullscreen(false)}
       minHeight={GRID_MIN_HEIGHT}
@@ -834,7 +835,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       <p data-testid="grid-scroll-disclosure" style={{ fontSize: 11, margin: 0, padding: '5px 24px', color: tokens.color.textMuted }}>Scroll sideways to see every selected column. No columns are dropped. {viewReady ? <a data-testid="grid-start-experiment" href={experimentHref} style={{ marginLeft: 16 }}>Start experiment from this view</a> : null}</p>
     </div>
     </div>
-    </GridViewport>
+    </GridViewport></TargetDrawerProvider>
     </>
   );
 }
