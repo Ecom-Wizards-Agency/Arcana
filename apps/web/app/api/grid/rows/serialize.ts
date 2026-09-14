@@ -37,6 +37,31 @@ export function serializeGridPayloadWithinBudget(
   if (source.rowCount !== source.rows.length) {
     throw new Error('Grid payload row count does not match its rows');
   }
+  if (source.performance !== undefined) {
+    // The legacy row-only encoder remains the fast path for existing callers.
+    // Evidence is counted with its row and removed with any truncated prefix.
+    const performance = source.performance;
+    const base = { ...performance, rankDays: {} };
+    const baseBytes = utf8Bytes(JSON.stringify(base));
+    const serializedRows: string[] = [];
+    const rankEntries: string[] = [];
+    let used = utf8Bytes('{"rows":[] ,"performance":') + baseBytes + utf8Bytes(',"rowCount":50000,"truncated":false}');
+    for (const row of source.rows) {
+      const encoded = JSON.stringify(row);
+      const days = performance.rankDays[row.id];
+      const rank = days === undefined ? null : `${JSON.stringify(row.id)}:${JSON.stringify(days)}`;
+      const added = utf8Bytes(encoded) + (serializedRows.length ? 1 : 0) + (rank === null ? 0 : utf8Bytes(rank) + (rankEntries.length ? 1 : 0));
+      if (used + added > maxBytes) break;
+      used += added; serializedRows.push(encoded); if (rank !== null) rankEntries.push(rank);
+    }
+    const rowCount = serializedRows.length;
+    const truncated = source.truncated || rowCount < source.rows.length;
+    const evidence = { ...performance, rankDays: Object.fromEntries(source.rows.slice(0, rowCount).flatMap((row) => performance.rankDays[row.id] ? [[row.id, performance.rankDays[row.id]!]] : [])) };
+    const body = `${ROWS_PREFIX}${serializedRows.join(',')}],"performance":${JSON.stringify(evidence)},"rowCount":${rowCount},"truncated":${truncated}}`;
+    const byteLength = utf8Bytes(body);
+    if (byteLength > maxBytes) throw new RangeError('Grid response byte budget cannot hold the payload envelope');
+    return { body, byteLength, payload: { rows: source.rows.slice(0, rowCount), rowCount, truncated, performance: evidence } };
+  }
 
   const serializedRows: string[] = [];
   let rowsByteLength = 0;

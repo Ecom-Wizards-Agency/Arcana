@@ -2,6 +2,7 @@ import { IngestionSource, type IngestionLane, type JobType } from '@wizard-ads/s
 
 /** Ordered once so deployed claim-set serialization remains stable. */
 export const INGESTION_SOURCES: readonly IngestionSource[] = [
+  { jobType: 'translation.request', source: 'target_translation', laneAffinity: ['integrations'], counts: ['requested', 'completed', 'superseded', 'alreadyCompleted'] },
   { jobType: 'entity.sync', source: 'amazon_ads', laneAffinity: ['vercel-default', 'vercel-reduced'], counts: ['listed', 'upserted', 'duplicates'] },
   { jobType: 'creative.sync', source: 'amazon_ads', laneAffinity: ['evo-report', 'evo-report-unified'], counts: ['adsReceived', 'adsPersisted'] },
   ...(['report.request', 'report.poll', 'report.fetch'] as const).map((jobType) => ({

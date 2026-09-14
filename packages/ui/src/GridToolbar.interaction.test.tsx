@@ -278,15 +278,15 @@ describe('column picker', () => {
     renderToolbar();
     fireEvent.click(screen.getByRole('button', { name: /^Columns \(/ }));
     const picker = screen.getByRole('region', { name: 'Column picker' });
-    expect(within(picker).getByRole('group', { name: 'Attributes' })).toBeTruthy();
-    expect(within(picker).getByRole('group', { name: 'Metrics, selected period' })).toBeTruthy();
-    expect(within(picker).getByRole('group', { name: 'Change (Δ%)' })).toBeTruthy();
+    expect(within(picker).getByRole('group', { name: 'Identity' })).toBeTruthy();
+    expect(within(picker).getByRole('group', { name: 'SPONSORED PRODUCTS' })).toBeTruthy();
+    expect(within(picker).getByLabelText('ACOS Δ%')).toBeTruthy();
 
     fireEvent.change(within(picker).getByLabelText('Search columns'), { target: { value: 'acos prev' } });
     const boxes = within(picker).getAllByRole('checkbox');
     expect(boxes).toHaveLength(1);
     expect(within(picker).getByLabelText('ACOS (prev)')).toBeTruthy();
-    expect(within(picker).queryByRole('group', { name: 'Attributes' })).toBeNull();
+    expect(within(picker).queryByRole('group', { name: 'Identity' })).toBeNull();
 
     fireEvent.change(within(picker).getByLabelText('Search columns'), { target: { value: 'zzz' } });
     expect(within(picker).getByText('No columns match this search.')).toBeTruthy();

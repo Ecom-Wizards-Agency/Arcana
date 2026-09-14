@@ -62,8 +62,11 @@ interface PageProps {
     view?: string;
     entity?: string;
     campaign?: string;
+    asin?: string;
     from?: string;
     to?: string;
+    compareFrom?: string;
+    compareTo?: string;
   }>;
 }
 
@@ -86,7 +89,9 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   const entity = parseEntity(params.entity);
   const today = todayIso();
   const period = periodFromParams(params, today);
-  const comparison = precedingPeriod(period);
+  const comparison = params.compareFrom && params.compareTo
+    ? periodFromParams({ from: params.compareFrom, to: params.compareTo }, today)
+    : precedingPeriod(period);
   const settled = settledComparisonWindows(period, today);
 
   const data = await access.readNullable(async (handle) => {

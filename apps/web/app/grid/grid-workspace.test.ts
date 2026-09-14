@@ -117,7 +117,7 @@ describe('Grid row transport', () => {
     expect(host.textContent).not.toContain('Export CSV');
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch.mock.calls[0]?.[0]).toBe(
-      '/api/grid/rows?profile=50505050-5050-4050-8050-505050505050&entity=search_terms&from=2026-06-30&to=2026-06-30',
+      '/api/grid/rows?profile=50505050-5050-4050-8050-505050505050&entity=search_terms&from=2026-06-30&to=2026-06-30&compareFrom=2026-06-29&compareTo=2026-06-29',
     );
     expect(fetch.mock.calls[0]?.[1]).toMatchObject({
       cache: 'no-store',
@@ -301,10 +301,12 @@ describe('Grid row transport', () => {
     expect(durations[Math.ceil(durations.length * 0.95) - 1]).toBeLessThan(150);
   });
 
-  it('builds a request without exposing currency or comparison control to the browser', () => {
+  it('carries the chosen comparison while leaving currency and agency authority on the server', () => {
     const url = gridRowsRequestUrl(props());
     expect(url).toContain('profile=50505050-5050-4050-8050-505050505050');
     expect(url).toContain('entity=search_terms');
-    expect(url).not.toMatch(/currency|comparison|org/i);
+    expect(url).not.toMatch(/currency|org/i);
+    expect(new URL(url, 'https://example.test').searchParams.get('compareFrom')).toBe(props().comparisonPeriod.start);
+    expect(new URL(url, 'https://example.test').searchParams.get('compareTo')).toBe(props().comparisonPeriod.end);
   });
 });

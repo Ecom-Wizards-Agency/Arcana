@@ -19,6 +19,7 @@ import type { TestDatabase } from '@wizard-ads/db/testing';
 import { ensureFactPartitions, withAuthenticatedActor } from '@wizard-ads/db';
 import { buildGridModel, groupRows, resolveField } from '@wizard-ads/ui';
 import type { GridRow } from '@wizard-ads/ui';
+import { serializeGridPayloadWithinBudget } from '../app/api/grid/rows/serialize';
 import { loadGridRows } from '../app/_lib/grid-data.js';
 import { loadBidHistory } from '../app/_lib/bid-corridor.js';
 import { listProfiles } from '../app/_lib/profiles.js';
@@ -503,6 +504,53 @@ suite('grid and roster reads against SQL aggregates', () => {
       // And the level is one that actually has rows to leak, or the assertion
       // above proves nothing.
       if (level !== 'placements') expect(own.rows.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('preserves absent current bases from SQL through transport and totals', async () => {
+    const payload = await loadGridRows(database, 'targets', { orgId, profileId, currencyCode: 'USD', period: { start: '2026-08-01', end: '2026-08-14' }, comparison: PERIOD });
+    expect(payload.rowCount).toBeGreaterThan(0);
+    const transported = JSON.parse(serializeGridPayloadWithinBudget(payload).body) as { rows: GridRow[]; rowCount: number };
+    expect(transported.rows).toHaveLength(payload.rowCount);
+    const model = buildGridModel(transported.rows);
+    for (const row of [...transported.rows, model.totalsRow!]) {
+      for (const key of ['impressions', 'clicks', 'spend', 'sales', 'orders', 'units', 'acos', 'cpc']) expect(resolveField(row, key)).toBeNull();
+    }
+    expect(resolveField(model.totalsRow!, 'spend_comparison')).toBeGreaterThan(0);
+  });
+
+  it('joins rank and whole SQP weeks, computes TOS ranges and counts unattributed spend from product mirrors', async () => {
+    const asin = 'B000SYN001';
+    const options = { orgId, profileId, currencyCode: 'USD', period: PERIOD, comparison: COMPARISON };
+    try {
+      await database.sql`insert into public.product_ads(org_id,profile_id,amazon_id,ad_product,name,state,campaign_id,ad_group_id,asin)
+        values(${orgId},${profileId},'synthetic-product-one','SP','Synthetic product','enabled','c-skew-a','c-skew-a-ag',${asin})`;
+      await database.sql`insert into public.rank_observations(org_id,profile_id,asin,keyword,observed_on,organic_rank)
+        values(${orgId},${profileId},${asin},'widget',${COMPARISON.end},12),
+        (${orgId},${profileId},${asin},'widget',${PERIOD.start},8),(${orgId},${profileId},${asin},'widget',${PERIOD.end},4)`;
+      await database.sql`update public.fact_sp_target_daily set top_of_search_impression_share=case when date=${PERIOD.start} then 0.2 else 0.4 end
+        where org_id=${orgId} and profile_id=${profileId} and target_id='c-skew-a-kw0' and date in (${PERIOD.start},${PERIOD.end})`;
+      await database.sql`insert into public.fact_sqp_weekly(org_id,profile_id,week_start,asin,search_query,total_impressions,asin_impressions,total_clicks,asin_clicks,total_purchases,asin_purchases)
+        values(${orgId},${profileId},'2026-07-05',${asin},'widget',1000,100,200,20,20,4),
+        (${orgId},${profileId},'2026-07-12',${asin},'widget',10000,9000,200,100,20,20)`;
+      const targets = await loadGridRows(database, 'targets', options);
+      const target = targets.rows.find((row) => row.dimensions['target_id'] === 'c-skew-a-kw0')!;
+      expect(target.dimensions).toMatchObject({ asin, organic_rank: 4, rank_change: 8, top_of_search_range: '20.0–40.0%', break_even_bid: 10, sqp_impression_share: 0.1, sqp_purchase_share: 0.2, market_cvr: 0.1, asin_cvr: 0.2, conversion_points: 10 });
+      expect(targets.performance?.rankDays[target.id]).toHaveLength(14);
+      expect(targets.performance?.rankDays[target.id]?.filter((day) => day.observed)).toHaveLength(2);
+      const products = await loadGridRows(database, 'products', options);
+      expect(products.rows.find((row) => row.dimensions['asin'] === asin)?.totals.spend).toBe(1680);
+      expect(products.rows.find((row) => row.dimensions['asin'] === asin)?.dimensions['gap']).toBeNull();
+      await database.sql`insert into public.product_ads(org_id,profile_id,amazon_id,ad_product,name,state,campaign_id,ad_group_id,asin)
+        values(${orgId},${profileId},'synthetic-product-two','SP','Synthetic second product','enabled','c-skew-a','c-skew-a-ag','B000SYN002')`;
+      const ambiguous = await loadGridRows(database, 'targets', options);
+      expect(ambiguous.performance?.unattributed).toEqual({ adGroups: 1, spend: 1680, days: 14 });
+      expect(ambiguous.rows.find((row) => row.id === target.id)?.dimensions['organic_rank']).toBeNull();
+    } finally {
+      await database.sql`delete from public.product_ads where org_id=${orgId} and amazon_id in ('synthetic-product-one','synthetic-product-two')`;
+      await database.sql`delete from public.rank_observations where org_id=${orgId} and asin=${asin}`;
+      await database.sql`delete from public.fact_sqp_weekly where org_id=${orgId} and asin=${asin}`;
+      await database.sql`update public.fact_sp_target_daily set top_of_search_impression_share=null where org_id=${orgId} and target_id='c-skew-a-kw0'`;
     }
   });
 

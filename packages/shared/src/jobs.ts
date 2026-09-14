@@ -27,6 +27,7 @@ export const JobType = z.enum([
   'report.promote',
   'marketing_stream.normalize',
   'report.unified.advance',
+  'translation.request',
 ]);
 export type JobType = z.infer<typeof JobType>;
 
@@ -270,6 +271,16 @@ export const UnifiedReportAdvanceJob = z.object({
   operationId: Uuid,
 });
 
+/** The worker resolves the original text and language from the scoped saved request. */
+export const TargetTranslationJob = z.strictObject({
+  ...jobBase,
+  type: z.literal(JobType.enum['translation.request']),
+  translationId: Uuid,
+  /** Identifies this attempt so an older completion cannot overwrite a retry. */
+  requestId: Uuid,
+});
+export type TargetTranslationJob = z.infer<typeof TargetTranslationJob>;
+
 export const JobPayload = z.discriminatedUnion('type', [
   EntitySyncJob,
   ReportRequestJob,
@@ -287,6 +298,7 @@ export const JobPayload = z.discriminatedUnion('type', [
   ReportPromoteJob,
   MarketingStreamNormalizeJob,
   UnifiedReportAdvanceJob,
+  TargetTranslationJob,
 ]);
 export type JobPayload = z.infer<typeof JobPayload>;
 

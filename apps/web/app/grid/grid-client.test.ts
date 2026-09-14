@@ -421,7 +421,7 @@ describe('grid density and grouped headers', () => {
     const headers = [...host.querySelectorAll<HTMLElement>('[role="columnheader"]')].map(
       (header) => header.getAttribute('aria-label'),
     );
-    expect(headers).toEqual(['State', 'Campaign', 'Ad type', 'Clicks', 'Spend']);
+    expect(headers).toEqual(['Select', 'State', 'Campaign', 'Ad type', 'Clicks', 'Spend']);
     expect(host.querySelector('[data-testid="grid-shell"]')?.getAttribute('data-density')).toBe('normal');
     expect(host.querySelector('[data-testid="grid-scroller"]')?.getAttribute('style')).not.toContain('620px');
 

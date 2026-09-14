@@ -1,4 +1,6 @@
 'use client';
+import { tokens } from './theme.js';
+import * as performanceCells from './cells/performance.js';
 
 /**
  * The data grid.
@@ -48,7 +50,7 @@
  * here instead of reimplementing money, ratios and the empty marker.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent, ReactNode } from 'react';
+import type { CSSProperties, KeyboardEvent, ReactNode } from 'react';
 import { createColumnHelper, getCoreRowModel, useReactTable } from '@tanstack/react-table';
 import type { ColumnDef } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -82,6 +84,9 @@ import {
 
 export interface DataGridProps {
   model: GridModel;
+  style?: CSSProperties;
+  /** Compact header controls and neutral totals for the performance screen. */
+  presentation?: 'performance';
   /** Visible columns, in display order. */
   columns: readonly GridColumn[];
   currencyCode: string;
@@ -165,6 +170,8 @@ const EMPTY_COLLAPSED_GROUPS: ReadonlySet<string> = new Set();
 
 export function DataGrid({
   model,
+  style,
+  presentation,
   columns,
   currencyCode,
   locale,
@@ -486,7 +493,18 @@ export function DataGrid({
   const fill = height === undefined;
 
   return (
-    <div style={fill ? shellFill : shell} data-testid="grid-shell" data-density={density}>
+    <div data-grouped-headers={columns.some((column) => column.id === 'rank_grid')} className={presentation === 'performance' ? 'wa-performance-grid' : undefined} style={{ ...(fill ? shellFill : shell), ...style }} data-testid="grid-shell" data-density={density}>
+      {presentation === 'performance' ? <style>{`
+        .wa-performance-grid [role="columnheader"][aria-sort] { padding-inline: 6px !important; font-size: 9px !important; text-transform: uppercase; }
+        .wa-performance-grid [role="columnheader"] > button { position: absolute; right: 2px; top: 1px; opacity: 0 !important; background: ${tokens.color.surfaceAlt} !important; }
+        .wa-performance-grid [role="columnheader"]:hover > button, .wa-performance-grid [role="columnheader"]:focus-within > button { opacity: 1 !important; }
+        .wa-performance-grid [data-testid^="sorted-column-aggregate-"] { display: none; }
+        .wa-performance-grid [role="row"]:has(> [role="columnheader"][aria-sort]) + [role="row"],
+        .wa-performance-grid [role="row"]:has(> [role="columnheader"][aria-sort]) + [role="row"] > [role="cell"] { background: ${tokens.color.surface} !important; height: 34px; }
+        .wa-performance-grid[data-grouped-headers="true"] [role="row"]:has(> [role="columnheader"][aria-sort]) { height: 32px !important; }
+        .wa-performance-grid[data-grouped-headers="true"] [role="row"]:has(> [role="columnheader"][aria-sort]) + [role="row"] { top: 32px !important; }
+        .wa-performance-grid [role="columnheader"][aria-label="Select"] > button { display: none; }
+      `}</style> : null}
       <div
         ref={scrollRef}
         className="wa-grid-scroller"
@@ -503,6 +521,13 @@ export function DataGrid({
         }}
       >
         <div style={{ width: totalWidth, minWidth: '100%' }}>
+          {columns.some((column) => column.id === 'rank_grid') ? <div role="row" data-testid="grid-subject-headers" style={{ display: 'flex', height: 26, background: tokens.color.surfaceAlt, color: tokens.color.textMuted, fontSize: 9 }}>
+            {leafColumns.map((column, index) => {
+              const definition = columns.find((item) => item.id === column.id);
+              const prior = columns.find((item) => item.id === leafColumns[index - 1]?.id);
+              return <span role="columnheader" key={column.id} style={{ width: column.getSize(), flexShrink: 0, padding: '6px', boxSizing: 'border-box', whiteSpace: 'nowrap' }}>{definition?.subject !== prior?.subject ? definition?.subject : ''}</span>;
+            })}
+          </div> : null}
           <GridHeader
             leafColumns={leafColumns}
             columns={columns}
@@ -577,3 +602,6 @@ function pageSize(element: HTMLElement | null, rowHeight: number): number {
   if (element === null) return 10;
   return Math.max(1, Math.floor(element.clientHeight / Math.max(1, rowHeight)) - 1);
 }
+
+/** Reusable presentation cells for performance grids. */
+DataGrid.cells = performanceCells;

@@ -1,3 +1,4 @@
+import { JobType } from '@wizard-ads/shared';
 import { readFile } from 'node:fs/promises';
 import { is, getTableName } from 'drizzle-orm';
 import { PgTable, getTableConfig } from 'drizzle-orm/pg-core';
@@ -111,14 +112,8 @@ describe.skipIf(!available)('migrations', () => {
        where t.typname = 'sync_job_type'
        order by e.enumsortorder
     `;
-    expect(labels.slice(-6).map((row) => row.enumlabel)).toEqual([
-      'creative.sync',
-      'sqp.request',
-      'history.bootstrap',
-      'report.promote',
-      'marketing_stream.normalize',
-      'report.unified.advance',
-    ]);
+    expect(labels.map((row) => row.enumlabel).sort()).toEqual([...JobType.options].sort());
+
   });
 
   it('installs canonical weekday scheduling and immutable run context', async () => {

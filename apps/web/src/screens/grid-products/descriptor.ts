@@ -13,7 +13,7 @@ export const descriptor = {
   "guard": null,
   "prefetch": "expensive",
   "rollout": {
-    "enabled": false
+    "enabled": true
   },
   "states": [
     "gated"

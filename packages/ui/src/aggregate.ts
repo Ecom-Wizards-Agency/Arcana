@@ -18,6 +18,15 @@ import { addTotals, emptyTotals } from './metrics.js';
 import type { DimensionValue, GridRow } from './rows.js';
 import { resolveField } from './rows.js';
 
+/** An aggregate never presents an incomplete base as a complete total. */
+function mergeMeasurement(into: Pick<GridRow, 'measurement'>, row: GridRow): void {
+  if (row.measurement === undefined) return;
+  into.measurement = {
+    missing: [...new Set([...(into.measurement?.missing ?? []), ...row.measurement.missing])],
+    comparisonMissing: [...new Set([...(into.measurement?.comparisonMissing ?? []), ...row.measurement.comparisonMissing])],
+  };
+}
+
 export class MixedCurrencyError extends Error {
   constructor(readonly currencies: readonly string[]) {
     super(
@@ -161,6 +170,7 @@ export function groupRows(rows: readonly GridRow[], columnIds: readonly string[]
         else siblings.push(bucket);
       }
 
+      mergeMeasurement(bucket, row);
       addTotals(bucket.totals, row.totals);
       bucket.groupSize += 1;
       if (row.comparison !== null) {
@@ -225,6 +235,7 @@ function groupRowsSingleLevel(
       buckets.set(key, bucket);
     }
 
+    mergeMeasurement(bucket, row);
     addTotals(bucket.totals, row.totals);
     bucket.groupSize += 1;
     if (row.comparison !== null) {
@@ -258,6 +269,7 @@ function groupRowsSingleLevel(
 export function grandTotal(rows: readonly GridRow[], label = 'Total'): GroupedRow | null {
   if (rows.length === 0) return null;
   const totals = emptyTotals();
+  const measurement: Pick<GridRow, 'measurement'> = {};
   let comparison: BaseTotals | null = null;
   let currency: string | null = null;
 
@@ -266,6 +278,7 @@ export function grandTotal(rows: readonly GridRow[], label = 'Total'): GroupedRo
     else if (currency !== row.currencyCode) {
       throw new MixedCurrencyError([currency, row.currencyCode].sort());
     }
+    mergeMeasurement(measurement, row);
     addTotals(totals, row.totals);
     if (row.comparison !== null) {
       if (comparison === null) comparison = emptyTotals();
@@ -275,6 +288,7 @@ export function grandTotal(rows: readonly GridRow[], label = 'Total'): GroupedRo
 
   return {
     id: 'grand-total',
+    ...measurement,
     dimensions: { __total__: label },
     totals,
     comparison,

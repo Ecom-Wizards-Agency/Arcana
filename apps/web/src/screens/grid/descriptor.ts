@@ -12,7 +12,7 @@ export const descriptor = {
   rollout: { "enabled": true },
   states: ["loading", "error", "gated", "empty", "not-measured"],
   entry: "gate-message",
-  specs: [{ "file": "grid-performance.spec.ts", "suite": "grid-performance" }, { "file": "grid.spec.ts", "suite": "auth" }],
+  specs: [{ file: "grid-layout.spec.ts", suite: "auth" }, { "file": "grid-performance.spec.ts", "suite": "grid-performance" }, { "file": "grid.spec.ts", "suite": "auth" }],
   load: (actor, params) => import('./load').then((module) => module.load(actor, params)),
   client: (): Promise<typeof ScreenView> => import('./view').then((module) => module.default),
 } satisfies ScreenDescriptor<Awaited<ReturnType<typeof load>>>;

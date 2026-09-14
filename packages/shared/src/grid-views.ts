@@ -9,9 +9,45 @@ export const TimelineViewState = z.object({
 }).strict();
 export type TimelineViewState = z.infer<typeof TimelineViewState>;
 
+import { TranslationView } from './translation.js';
 
 const strings = z.array(z.string()).readonly();
-export const GridEntity = z.enum(['campaigns', 'ad_groups', 'targets', 'search_terms', 'placements']);
+/** Base-sum slots may be placeholders only when explicitly marked unmeasured. */
+export const GridMeasurement = z.strictObject({
+  missing: z.array(z.enum(['impressions', 'clicks', 'spend', 'sales', 'orders', 'units'])),
+  comparisonMissing: z.array(z.enum(['impressions', 'clicks', 'spend', 'sales', 'orders', 'units'])),
+});
+export type GridMeasurement = z.infer<typeof GridMeasurement>;
+export const GridEntity = z.enum(['campaigns', 'ad_groups', 'targets', 'search_terms', 'products', 'placements']);
+export const VerdictThresholds = z.strictObject({
+  ownedRank: z.number().positive().nullable(),
+  rankGap: z.number().positive().nullable(),
+  targetAcos: z.number().nonnegative().nullable(),
+});
+export type VerdictThresholds = z.infer<typeof VerdictThresholds>;
+export const VerdictEvidence = z.strictObject({
+  clicks: z.number().nonnegative().nullable(), spend: z.number().nonnegative().nullable(),
+  acos: z.number().nonnegative().nullable(), organicRank: z.number().positive().nullable(),
+  topOfSearchShare: z.number().min(0).max(1).nullable(),
+});
+export type VerdictEvidence = z.infer<typeof VerdictEvidence>;
+export const PerformanceVerdict = z.strictObject({
+  diagnosis: z.enum(['Paying for rank we own', 'Rank gap', 'Ranked, unfunded', 'Efficient', 'Insufficient evidence']),
+  reason: z.string().min(1),
+});
+export type PerformanceVerdict = z.infer<typeof PerformanceVerdict>;
+export const GridFeedCoverage = z.strictObject({
+  feed: z.enum(['PPC', 'RANK', 'SQP']), daysHeld: z.number().int().nonnegative(),
+  daysRequested: z.number().int().nonnegative(), notScraped: z.number().int().nonnegative(),
+  status: z.enum(['complete', 'partial', 'not-measured']), reason: z.string().min(1),
+});
+export type GridFeedCoverage = z.infer<typeof GridFeedCoverage>;
+export const GridPerformanceEvidence = z.strictObject({
+  feeds: z.array(GridFeedCoverage),
+  unattributed: z.strictObject({ adGroups: z.number().int().nonnegative(), spend: z.number().nonnegative(), days: z.number().int().nonnegative() }).nullable(),
+  rankDays: z.record(z.string(), z.array(z.strictObject({ date: z.string(), observed: z.boolean(), rank: z.number().int().positive().nullable() })).length(14)),
+});
+export type GridPerformanceEvidence = z.infer<typeof GridPerformanceEvidence>;
 export const GridSavedView = z.object({
   id: z.string().min(1).max(200),
   name: z.string().min(1).max(200),
@@ -34,6 +70,8 @@ export const GridSavedView = z.object({
   dateRange: z.object({ start: z.string(), end: z.string() }).strict().nullable(),
   chartedMeasures: z.array(TimelineMeasure).min(1).max(4).refine((values) => new Set(values).size === values.length).optional(),
   timeline: TimelineViewState.optional(),
+  chart: z.strictObject({ series: z.array(z.enum(['impressions', 'clicks', 'spend', 'sales', 'orders', 'acos', 'cvr', 'cpc'])).max(4).refine((series) => new Set(series).size === series.length) }).optional(),
+  translation: TranslationView.optional(),
   updatedAt: z.string(),
 }).strict();
 export type GridSavedView = z.infer<typeof GridSavedView>;

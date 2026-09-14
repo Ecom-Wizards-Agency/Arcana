@@ -97,7 +97,7 @@ test('sidebar, date, entity, back and forward stay in one document and retain th
   await expect(page.getByRole('heading', { name: 'Search terms', exact: true })).toBeVisible();
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
 
-  await page.getByRole('tab', { name: 'Campaigns', exact: true }).click();
+  await page.getByRole('link', { name: 'Campaigns', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Campaigns', exact: true })).toBeVisible();
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
 

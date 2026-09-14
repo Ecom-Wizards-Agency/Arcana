@@ -79,3 +79,8 @@ it('does not read freshness for empty or populated rosters', async () => {
   await expect(render(data.props.freshness.props)).resolves.toMatchObject({ props: { children: null } });
   expect(mocks.freshness).not.toHaveBeenCalled();
 });
+
+it('uses the topbar comparison dates in the workspace', async () => {
+  const data = await load(access(), { searchParams: { from: '2026-07-01', to: '2026-07-14', compareFrom: '2026-05-01', compareTo: '2026-05-14' }, params: {} });
+  expect(data).toMatchObject({ view: 'ready', props: { period: { start: '2026-07-01', end: '2026-07-14' }, comparison: { start: '2026-05-01', end: '2026-05-14' } } });
+});
