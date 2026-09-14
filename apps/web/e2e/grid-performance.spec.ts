@@ -1,7 +1,7 @@
 /** Authenticated browser proof that Grid rows moved out of the initial document. */
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
-import type { Response as PlaywrightResponse } from '@playwright/test';
+import type { Response as PlaywrightResponse, Request as PlaywrightRequest } from '@playwright/test';
 import { createDb } from '@wizard-ads/db';
 import { readState } from './support/fixture';
 import { signIn } from './support/auth';
@@ -80,6 +80,10 @@ test('initial document stays small while one counted request powers the complete
   await expect(page.getByRole('button', { name: 'Export CSV (0 of 0)' })).toBeVisible();
 
   const rowResponses: PlaywrightResponse[] = [];
+  const shellRequests: PlaywrightRequest[] = [];
+  page.on('request', (request) => {
+    if (request.headers()['next-action'] !== undefined) shellRequests.push(request);
+  });
   page.on('response', (response) => {
     if (new URL(response.url()).pathname === '/api/grid/rows') rowResponses.push(response);
   });
@@ -120,6 +124,18 @@ test('initial document stays small while one counted request powers the complete
   expect(payload.rows.every((row) => String(row.dimensions['search_term']).startsWith(MARKER))).toBe(true);
   expect(responseBody.byteLength).toBeLessThanOrEqual(4_000_000);
 
+  // This check runs after usableMs is captured. Shell evidence must settle
+  // independently, without becoming a counted Grid request or preceding load.
+  await expect(page.locator('.wa-shell-chips')).toHaveAttribute('aria-busy', 'false');
+  const loadEndedAt = await page.evaluate(() => {
+    const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
+    return performance.timeOrigin + navigation.loadEventEnd;
+  });
+  const measuredShellRequests = shellRequests.filter((request) => new URL(request.url()).searchParams.get('from') === DATE);
+  expect(measuredShellRequests).toHaveLength(1);
+  expect(measuredShellRequests[0]!.timing().startTime).toBeGreaterThanOrEqual(loadEndedAt);
+  expect(rowResponses).toHaveLength(1);
+
   const exportButton = page.getByRole('button', { name: /Export CSV/ });
   const [download] = await Promise.all([page.waitForEvent('download'), exportButton.click()]);
   const downloadPath = await download.path();
@@ -138,6 +154,8 @@ test('initial document stays small while one counted request powers the complete
     rowResponseBytes: responseBody.byteLength,
     rows: payload.rowCount,
     requests: rowResponses.length,
+    shellRequests: measuredShellRequests.length,
+    shellAfterLoadMs: Math.round((measuredShellRequests[0]!.timing().startTime - loadEndedAt) * 100) / 100,
   };
   console.info(JSON.stringify({ event: 'openspell.grid_boundary_e2e', ...measurements }));
   await testInfo.attach('grid-boundary-measurements.json', {

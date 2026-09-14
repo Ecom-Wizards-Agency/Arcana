@@ -8,6 +8,7 @@ export interface NavLink {
   tag?: string;
   badgeSource?: 'change-queue' | 'timeline';
   prefetch: boolean;
+  disabled?: boolean;
 }
 
 export interface NavGroup {
@@ -22,21 +23,23 @@ export interface NavGroup {
 export function navigationFor(
   screens: readonly ScreenMetadata[] = SCREEN_REGISTRY,
   env: Readonly<Record<string, string | undefined>> = process.env,
+  includePlanned = false,
 ): readonly NavGroup[] {
   return SCREEN_GROUPS.map((group) => ({
     ...group,
-    links: screens.filter((screen) => screen.nav?.group === group.id && screenEnabled(screen, env))
+    links: screens.filter((screen) => screen.nav?.group === group.id && (includePlanned || screenEnabled(screen, env)))
       .sort((left, right) => (left.nav?.order ?? 0) - (right.nav?.order ?? 0))
       .flatMap((screen): NavLink[] => screen.nav === null ? [] : [{
         href: screen.path,
         label: screen.nav.label,
         icon: screen.nav.icon,
         prefetch: screen.prefetch === 'cheap',
+        ...(!screenEnabled(screen, env) || screen.route === 'planned' ? { disabled: true } : {}),
         ...(screen.nav.tag === undefined ? {} : { tag: screen.nav.tag }),
         ...(screen.nav.badgeSource === undefined ? {} : { badgeSource: screen.nav.badgeSource }),
       }]),
   })).filter((group) => group.links.length > 0);
 }
 
-export const NAV_GROUPS = navigationFor();
-export const NAV_LINKS: readonly NavLink[] = NAV_GROUPS.flatMap((group) => group.links);
+export const NAV_GROUPS = navigationFor(SCREEN_REGISTRY, process.env, true);
+export const NAV_LINKS: readonly NavLink[] = NAV_GROUPS.flatMap((group) => group.links).filter((link) => !link.disabled);

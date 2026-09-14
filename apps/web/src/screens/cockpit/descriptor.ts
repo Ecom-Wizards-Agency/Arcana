@@ -6,7 +6,7 @@ export const descriptor = {
   id: "cockpit",
   path: "/",
   route: "page",
-  nav: { "group": "home", "label": "Home", "icon": "gauge", "order": 0 },
+  nav: { "group": "home", "label": "Home", "icon": "icon/home", "order": 0 },
   guard: { "kind": "requested", "canonicalProfile": true, "heading": "Dashboard" },
   prefetch: "expensive",
   rollout: { "enabled": true },

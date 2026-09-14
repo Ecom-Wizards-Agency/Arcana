@@ -112,7 +112,7 @@ describe('the sidebar and the chosen profile', () => {
     expect(current).toEqual(['/settings?profile=ENTITY1TEST']);
   });
 
-  it('opens only the current workflow group by default and keeps utilities quiet', () => {
+  it('opens the registry workflow groups by default and keeps utilities quiet', () => {
     window.history.replaceState(null, '', '/optimizer?profile=ENTITY1TEST');
     const host = document.createElement('div');
     document.body.append(host);
@@ -125,9 +125,17 @@ describe('the sidebar and the chosen profile', () => {
     const openGroups = [...host.querySelectorAll('details.wa-navgroup[open] summary')].map(
       (summary) => summary.textContent?.trim(),
     );
-    expect(openGroups).toEqual(['ACT']);
+    expect(openGroups).toEqual(NAV_GROUPS.filter((group) => group.placement === 'workflow').map((group) => group.label));
     expect([...host.querySelectorAll('details.wa-navgroup summary')].map((summary) => summary.textContent?.trim())).toEqual(NAV_GROUPS.filter((group) => group.placement === 'workflow').map((group) => group.label));
     expect(host.querySelector('footer.wa-sidebar-utilities')?.textContent).toContain('Connect AI');
     expect(host.querySelector('footer.wa-sidebar-utilities')?.textContent).toContain('Settings');
+    const rows = [...host.querySelectorAll('.wa-navlink-label')].map((row) => row.textContent).filter((text) => text !== 'Collapse');
+    expect(rows).toEqual(NAV_GROUPS.flatMap((group) => group.links.map((link) => link.label)));
+    const planned = NAV_GROUPS.flatMap((group) => group.links).filter((link) => link.disabled);
+    const disabled = [...host.querySelectorAll('.wa-navlink[aria-disabled="true"]')];
+    expect(disabled).toHaveLength(planned.length);
+    expect(NAV_GROUPS.find((group) => group.id === 'creators')?.links.filter((link) => link.disabled)).toHaveLength(3);
+    expect(disabled.map((row) => row.querySelector('.wa-navlink-label')?.textContent)).toEqual(planned.map((link) => link.label));
+    expect(disabled.every((row) => row.tagName === 'SPAN' && !row.hasAttribute('href') && !row.hasAttribute('tabindex'))).toBe(true);
   });
 });

@@ -2,43 +2,43 @@ export const SCREEN_GROUPS = [
   {
     "id": "home",
     "label": "Home",
-    "icon": "gauge",
+    "icon": "icon/home",
     "placement": "primary"
   },
   {
     "id": "performance",
     "label": "PERFORMANCE",
-    "icon": "grid",
+    "icon": "icon/campaigns",
     "placement": "workflow"
   },
   {
     "id": "research",
     "label": "RESEARCH",
-    "icon": "search",
+    "icon": "icon/queries",
     "placement": "workflow"
   },
   {
     "id": "act",
     "label": "ACT",
-    "icon": "sliders",
+    "icon": "icon/optimize-now",
     "placement": "workflow"
   },
   {
     "id": "creators",
     "label": "CREATORS",
-    "icon": "chat",
+    "icon": "icon/inbox",
     "placement": "workflow"
   },
   {
     "id": "timeline",
     "label": "Timeline",
-    "icon": "history",
+    "icon": "icon/timeline",
     "placement": "after-workflow"
   },
   {
     "id": "utility",
     "label": "Utilities",
-    "icon": "cog",
+    "icon": "icon/settings",
     "placement": "utility"
   }
 ] as const;

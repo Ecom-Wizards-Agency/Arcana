@@ -6,7 +6,7 @@ export const descriptor = {
   id: "tags",
   path: "/tags",
   route: "page",
-  nav: { "group": "utility", "label": "Tags", "icon": "tag", "order": 1 },
+  nav: { "group": "utility", "label": "Tags", "icon": "icon/brand-lens", "order": 1 },
   guard: { "kind": "requested" },
   prefetch: "cheap",
   rollout: { "enabled": true },

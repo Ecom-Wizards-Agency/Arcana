@@ -48,6 +48,30 @@ describe.skipIf(!available)('migrations', () => {
     await database?.drop();
   });
 
+  it('installs one profile-local market preference with tenant RLS and bounded percentages', async () => {
+    const columns = await database.sql<{ column_name: string; is_nullable: string }[]>`
+      select column_name, is_nullable from information_schema.columns
+       where table_schema='public' and table_name='market_position_settings' order by column_name
+    `;
+    expect(columns).toEqual([
+      { column_name: 'org_id', is_nullable: 'NO' },
+      { column_name: 'profile_id', is_nullable: 'NO' },
+      { column_name: 'threshold_percent', is_nullable: 'NO' },
+      { column_name: 'updated_at', is_nullable: 'NO' },
+    ]);
+    const [table] = await database.sql<{ relrowsecurity: boolean }[]>`
+      select relrowsecurity from pg_class where oid='public.market_position_settings'::regclass
+    `;
+    expect(table?.relrowsecurity).toBe(true);
+    const constraints = await database.sql<{ definition: string }[]>`
+      select pg_get_constraintdef(oid) as definition from pg_constraint
+       where conrelid='public.market_position_settings'::regclass
+    `;
+    expect(constraints.some((row) => row.definition === 'PRIMARY KEY (profile_id)')).toBe(true);
+    expect(constraints.some((row) => row.definition.includes('FOREIGN KEY (org_id, profile_id)'))).toBe(true);
+    expect(constraints.some((row) => row.definition.includes('threshold_percent') && row.definition.includes('100'))).toBe(true);
+  });
+
   it('applies every migration file in order', async () => {
     const files = await migrationFiles();
     expect(files.length).toBeGreaterThan(0);

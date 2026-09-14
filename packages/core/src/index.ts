@@ -30,3 +30,5 @@ export * from './query-intelligence/index.js';
 export * from './optimization/index.js';
 export * from './methods/registry.js';
 export * from './methods/reference.js';
+
+export * from './market-position.js';

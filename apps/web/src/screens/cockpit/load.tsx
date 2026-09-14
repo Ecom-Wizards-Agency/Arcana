@@ -1,3 +1,4 @@
+import type { FreshnessAssessment } from '@wizard-ads/ui';
 import type { ScreenActor } from '../../server/page-read';
 
 import type { ScreenParams } from '../types';
@@ -35,7 +36,7 @@ import type { OrgActor } from '@wizard-ads/shared';
 
 import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
 
-import { loadFreshness } from '../../server/load-freshness';
+
 
 import { CrosscheckChip } from '../../../app/crosscheck/panel';
 
@@ -121,7 +122,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   );
   const pacingAlert = pacingFlag(pacing, null);
 
-  const freshness = await loadFreshness(actor, profile.id);
+  const freshness = undefined as FreshnessAssessment | undefined; // The shell owns the coverage read.
   const inPeriod = accountRows.filter((row) => row.date >= period.start && row.date <= period.end);
   // A young profile's facts may begin after the settled window opens. Claiming
   // a sixteen-day window while summing four days of rows overstates confidence,

@@ -22,7 +22,7 @@ export interface NavContext {
 
 const EMPTY: NavContext = { orgName: null, profiles: [] };
 
-type NavProfileSource = Pick<NavProfile, 'id' | 'label' | 'countryCode' | 'syncEnabled'>;
+type NavProfileSource = Pick<NavProfile, 'id' | 'label' | 'countryCode' | 'syncEnabled' | 'currencyCode' | 'syncLabel' | 'timezone'>;
 
 /** Keep the roster whole while reducing it to exactly what the frame renders. */
 export function mapNavProfiles(rows: readonly NavProfileSource[]): NavProfile[] {
@@ -31,6 +31,9 @@ export function mapNavProfiles(rows: readonly NavProfileSource[]): NavProfile[] 
     label: row.label,
     countryCode: row.countryCode,
     syncEnabled: row.syncEnabled,
+    ...(row.timezone === undefined ? {} : { timezone: row.timezone }),
+    ...(row.syncLabel === undefined ? {} : { syncLabel: row.syncLabel }),
+    ...(row.currencyCode === undefined ? {} : { currencyCode: row.currencyCode }),
   }));
 }
 
@@ -48,7 +51,18 @@ export async function navContext(user: SessionUser): Promise<NavContext> {
     const { listProfiles } = await import('../../app/_lib/profiles');
     const { withAuthenticatedActor } = await import('@wizard-ads/db');
     const rows = await withAuthenticatedActor(handle, { orgId: active.orgId, userId: user.id },
-      (sql) => listProfiles({ sql }, active.orgId));
+      async (sql) => {
+        const profiles = await listProfiles({ sql }, active.orgId);
+        const timestamps = await sql<{ id: string; synced_at: string | null }[]>`
+          select id, synced_at::text from public.ad_profiles where org_id = ${active.orgId}
+        `;
+        const synced = new Map(timestamps.map((row) => [row.id, row.synced_at]));
+        return profiles.map((profile) => {
+          const value = synced.get(profile.id);
+          const hours = value == null ? null : Math.max(0, Math.floor((Date.now() - Date.parse(value)) / 3_600_000));
+          return { ...profile, syncLabel: hours === null ? 'Not synced' : `synced ${hours < 1 ? '<1' : hours}h ago` };
+        });
+      });
     return {
       orgName: active.name,
       profiles: mapNavProfiles(rows),

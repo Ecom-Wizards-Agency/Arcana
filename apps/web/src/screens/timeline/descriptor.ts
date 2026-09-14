@@ -7,7 +7,7 @@ export const descriptor = {
   "nav": {
     "group": "timeline",
     "label": "Timeline",
-    "icon": "history",
+    "icon": "icon/timeline",
     "order": 0,
     "badgeSource": "timeline"
   },

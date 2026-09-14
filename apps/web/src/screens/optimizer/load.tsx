@@ -1,3 +1,4 @@
+import type { FreshnessAssessment } from '@wizard-ads/ui';
 import type { ScreenActor } from '../../server/page-read';
 
 import type { ScreenParams } from '../types';
@@ -21,7 +22,7 @@ import type { ScreenParams } from '../types';
  * every read below is scoped by the org the gate resolved.
  */
 
-import { loadFreshness } from '../../server/load-freshness';
+
 
 import { can } from '../../auth/roles';
 
@@ -66,7 +67,6 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   }
   const { handle, context } = entry;
   const orgId = context.active?.orgId ?? '';
-  const actor = access.actor();
   const mayRunOptimizer = can(context.active?.role, 'editTargets');
 
   const params = await searchParams;
@@ -131,7 +131,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
     proposals,
     true,
   );
-  const freshness = await loadFreshness(actor, profile.id);
+  const freshness = undefined as FreshnessAssessment | undefined; // The shell owns the coverage read.
 
   const cockpitDays = periodRows.map((row) => ({
     date: row.date,

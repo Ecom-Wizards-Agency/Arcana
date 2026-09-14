@@ -37,7 +37,7 @@ beforeEach(() => {
   mocks.authenticate.mockImplementation(async (_handle, _actor, run) => run(handle.sql));
 });
 
-it('returns the workspace after one roster read and streams concurrent freshness/crosscheck reads', async () => {
+it('returns the workspace after one roster read and streams crosscheck without a page freshness read', async () => {
   const freshness = deferred<{ tone: 'good'; details: never[] }>();
   const crosscheck = deferred<null>();
   mocks.freshness.mockReturnValue(freshness.promise);
@@ -55,17 +55,18 @@ it('returns the workspace after one roster read and streams concurrent freshness
   const banner = data.props.freshness;
   const render = banner.type as (props: unknown) => Promise<ReactElement>;
   const pending = render(banner.props);
-  expect(mocks.freshness).toHaveBeenCalledWith(actor, profile.id);
-  // Both have started while neither source has resolved. A serial await fails.
+  expect(mocks.freshness).not.toHaveBeenCalled();
+  // Crosscheck starts independently; freshness is owned by the shell.
   expect(mocks.crosscheck).toHaveBeenCalledWith({ sql: handle.sql }, { orgId: actor.orgId, profileId: profile.id });
   expect(mocks.authenticate).toHaveBeenCalledWith(handle, actor, expect.any(Function));
   freshness.resolve({ tone: 'good', details: [] });
   crosscheck.resolve(null);
   const result = await pending;
-  expect(result.props).toMatchObject({ assessment: { tone: 'good', details: [] }, children: null });
+  expect(result.props).toMatchObject({ children: null });
+  expect(mocks.freshness).not.toHaveBeenCalled();
 });
 
-it('preserves freshness failures and does not read secondary evidence for an empty roster', async () => {
+it('does not read freshness for empty or populated rosters', async () => {
   mocks.profiles.mockResolvedValue([]);
   expect(await load(access(), { searchParams: {}, params: {} })).toMatchObject({ view: 'empty' });
   expect(mocks.freshness).not.toHaveBeenCalled();
@@ -75,5 +76,6 @@ it('preserves freshness failures and does not read secondary evidence for an emp
   const data = await load(access(), { searchParams: {}, params: {} });
   if (data.view !== 'ready') throw new Error('Missing workspace');
   const render = data.props.freshness.type as (props: unknown) => Promise<ReactElement>;
-  await expect(render(data.props.freshness.props)).rejects.toThrow('Synthetic freshness failure');
+  await expect(render(data.props.freshness.props)).resolves.toMatchObject({ props: { children: null } });
+  expect(mocks.freshness).not.toHaveBeenCalled();
 });

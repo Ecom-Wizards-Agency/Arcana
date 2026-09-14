@@ -6,7 +6,7 @@ export const descriptor = {
   id: "query-intelligence",
   path: "/query-intelligence",
   route: "page",
-  nav: { "group": "research", "label": "Queries", "icon": "search", "order": 1 },
+  nav: { "group": "research", "label": "Queries", "icon": "icon/queries", "order": 1 },
   guard: { "kind": "requested", "heading": "Query Intelligence" },
   prefetch: "expensive",
   rollout: { "enabled": true },

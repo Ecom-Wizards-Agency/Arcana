@@ -7,7 +7,7 @@ export const descriptor = {
   "nav": {
     "group": "research",
     "label": "Brand lens",
-    "icon": "search",
+    "icon": "icon/brand-lens",
     "order": 3
   },
   "guard": null,

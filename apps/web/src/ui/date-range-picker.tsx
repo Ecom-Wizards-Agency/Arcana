@@ -9,6 +9,7 @@ import { comparisonLengthState, dateRangeHref, dateRangePresets, selectedDateRan
 
 export function DateRangePicker({
   path,
+  trigger,
   period,
   today,
   comparison,
@@ -17,6 +18,7 @@ export function DateRangePicker({
   preserved = {},
 }: {
   path: string;
+  trigger?: ReactNode;
   period: Period;
   today: string;
   comparison?: Period;
@@ -41,10 +43,10 @@ export function DateRangePicker({
       </p> : null}
     <details className="wa-date-range" ref={root}>
       <summary className="wa-date-range__trigger" aria-label={`Date range: ${selectedLabel}`}>
-        <svg aria-hidden="true" viewBox="0 0 20 20" width="16" height="16">
+        {trigger === undefined ? <svg aria-hidden="true" viewBox="0 0 20 20" width="16" height="16">
           <path d="M5 2.5v3m10-3v3M3.5 8h13M5 4h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
-        </svg>
-        <span>{selectedLabel}</span>
+        </svg> : null}
+        {trigger ?? <span>{selectedLabel}</span>}
         <svg aria-hidden="true" className="wa-date-range__chevron" viewBox="0 0 12 12" width="12" height="12">
           <path d="m3 4.5 3 3 3-3" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
         </svg>

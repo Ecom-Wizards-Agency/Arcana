@@ -6,7 +6,7 @@ export const descriptor = {
   id: "sync-status",
   path: "/sync-status",
   route: "page",
-  nav: { "group": "utility", "label": "Sync status", "icon": "clock", "order": 3 },
+  nav: { "group": "utility", "label": "Sync status", "icon": "icon/timeline", "order": 3 },
   guard: { "kind": "requested" },
   prefetch: "cheap",
   rollout: { "enabled": true },

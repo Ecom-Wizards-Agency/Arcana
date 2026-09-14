@@ -1,5 +1,4 @@
-import { loadFreshness } from '../../server/load-freshness';
-import { FreshnessBanner } from '@wizard-ads/ui';
+import { ShellFreshnessBanner } from '../../ui/shell-evidence';
 
 import type { ScreenActor } from '../../server/page-read';
 
@@ -230,9 +229,6 @@ async function GridFreshness({ handle, actor, profileId }: {
   actor: OrgActor;
   profileId: string;
 }) {
-  const [freshness, crosscheck] = await Promise.all([
-    loadFreshness(actor, profileId),
-    GridCrosscheck({ handle, actor, profileId }),
-  ]);
-  return <FreshnessBanner assessment={freshness}>{crosscheck}</FreshnessBanner>;
+  const crosscheck = await GridCrosscheck({ handle, actor, profileId });
+  return <ShellFreshnessBanner>{crosscheck}</ShellFreshnessBanner>;
 }

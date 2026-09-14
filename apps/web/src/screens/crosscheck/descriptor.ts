@@ -6,7 +6,7 @@ export const descriptor = {
   id: "crosscheck",
   path: "/crosscheck",
   route: "page",
-  nav: { "group": "utility", "label": "Crosscheck", "icon": "shield", "order": 2 },
+  nav: { "group": "utility", "label": "Crosscheck", "icon": "icon/change-queue", "order": 2 },
   guard: { "kind": "requested", "heading": "Crosscheck" },
   prefetch: "cheap",
   rollout: { "enabled": true },

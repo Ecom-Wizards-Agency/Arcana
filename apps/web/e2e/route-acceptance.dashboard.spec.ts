@@ -73,7 +73,7 @@ async function exerciseEveryPreset({
 
   const visited: string[] = [];
   for (const preset of expectedPresets(serverDate, includeToday)) {
-    const picker = page.locator('details.wa-date-range');
+    const picker = page.locator('.wa-topbar details.wa-date-range:not(.wa-shell-comparison)');
     await picker.locator('summary').click();
     await picker.getByRole('link', { name: preset.label, exact: true }).click();
     await page.waitForURL((url) => (
@@ -89,7 +89,7 @@ async function exerciseEveryPreset({
     expect(selected.searchParams.get('from')).toBe(preset.from);
     expect(selected.searchParams.get('to')).toBe(preset.to);
     await expect(
-      page.locator('details.wa-date-range > summary'),
+      page.locator('.wa-topbar details.wa-date-range:not(.wa-shell-comparison) > summary'),
     ).toHaveAttribute('aria-label', `Date range: ${preset.label}`);
     visited.push(preset.label);
   }
