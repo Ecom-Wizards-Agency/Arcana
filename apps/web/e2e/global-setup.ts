@@ -345,12 +345,15 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock): SpawnedWe
       stdio: ['ignore', 'inherit', 'inherit'],
       env: {
         ...process.env,
-        // Each authenticated suite owns one bounded dev process. Retain the
-        // existing heap ceiling without allowing a development-memory restart
-        // to discard an in-process fixture.
+        // Each authenticated suite owns one bounded dev process. The signed-in
+        // guard suite compiles every route in that one process; with the full
+        // Targets column set the webpack module cache crossed 4 GB while
+        // compiling /grid/translation and the server died mid-suite. Keep a
+        // bounded ceiling (the runner has 16 GB) without allowing a
+        // development-memory restart to discard an in-process fixture.
         NODE_OPTIONS: appendNodeOption(
           process.env['NODE_OPTIONS'],
-          '--max-old-space-size=4096',
+          '--max-old-space-size=6144',
         ),
         NODE_ENV: 'development',
         DATABASE_URL: connectionString,
