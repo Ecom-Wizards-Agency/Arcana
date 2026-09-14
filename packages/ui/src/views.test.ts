@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { EntityLevel } from './columns.js';
 import {
   DEFAULT_LAYOUT_WRITE_DELAY_MS,
   LayoutWriteBuffer,
@@ -383,4 +384,57 @@ describe('LayoutWriteBuffer', () => {
     await vi.advanceTimersByTimeAsync(DEFAULT_LAYOUT_WRITE_DELAY_MS);
     expect(offered.map((layout) => layout.widths['campaign_name'])).toEqual([200, 260, 300]);
   });
+});
+
+describe('DbViewStore', () => {
+  it('migrates every legacy entity on first save, then round trips remote views', async () => {
+    const { DbViewStore } = await import('./views.js');
+    const local = new LocalViewStore(new FakeStorage(), actor);
+    const remote = new MemoryViewStore();
+    const first = view({ id: 'one' });
+    const second = view({ id: 'two', entity: 'targets' });
+    await local.save(first); await local.save(second);
+    const batches: number[] = [];
+    const store = new DbViewStore({
+      list: (entity) => remote.list(entity), remove: (id) => remote.remove(id),
+      async save(views) { batches.push(views.length); for (const entry of views) await remote.save(entry); return views.length; },
+    }, local);
+    const third = view({ id: 'three' });
+    await store.save(third);
+    expect(batches).toEqual([3]);
+    expect(await store.list('campaigns')).toEqual([first, third]);
+    expect(await store.list('targets')).toEqual([second]);
+    await store.save(third);
+    expect(batches).toEqual([3, 1]);
+    await store.remove(third.id);
+    expect(await store.list('campaigns')).toEqual([first]);
+  });
+  it('falls back offline and retries migration only on a later explicit save', async () => {
+    const { DbViewStore } = await import('./views.js');
+    const local = new LocalViewStore(new FakeStorage(), actor);
+    const save = vi.fn().mockRejectedValueOnce(new TypeError('offline')).mockResolvedValueOnce(2);
+    const store = new DbViewStore({ list: async () => { throw new TypeError('offline'); }, save, remove: async () => {} }, local);
+    const first = view({ id: 'one' }); const second = view({ id: 'two' });
+    await store.save(first);
+    expect(await store.list('campaigns')).toEqual([first]);
+    await store.save(second);
+    expect(save.mock.calls.map(([rows]) => rows.length)).toEqual([1, 2]);
+  });
+});
+
+it('keeps migration receipts across store instances and uploads later offline saves', async () => {
+  const { DbViewStore } = await import('./views.js');
+  const storage = new FakeStorage();
+  const remote = new MemoryViewStore();
+  const save = vi.fn(async (views: readonly SavedView[]) => { for (const entry of views) await remote.save(entry); return views.length; });
+  const transport = { list: (entity: EntityLevel) => remote.list(entity), save, remove: (id: string) => remote.remove(id) };
+  const first = view({ id: 'one' }); const second = view({ id: 'two' });
+  await new DbViewStore(transport, new LocalViewStore(storage, actor)).save(first);
+  await new DbViewStore(transport, new LocalViewStore(storage, actor)).save(second);
+  expect(save.mock.calls.map(([views]) => views.map((entry) => entry.id))).toEqual([['one'], ['two']]);
+  const offline = new DbViewStore({ ...transport, save: async () => { throw new TypeError('offline'); } }, new LocalViewStore(storage, actor));
+  const third = view({ id: 'three' }); await offline.save(third);
+  await new DbViewStore(transport, new LocalViewStore(storage, actor)).save(second);
+  expect(save.mock.calls.at(-1)?.[0].map((entry) => entry.id)).toEqual(['three', 'two']);
+  expect(await remote.list('campaigns')).toHaveLength(3);
 });

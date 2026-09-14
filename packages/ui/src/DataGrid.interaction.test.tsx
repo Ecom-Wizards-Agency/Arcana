@@ -458,3 +458,56 @@ describe('DataGrid footer counts and scroll reset', () => {
     expect(scroller().scrollTop).toBe(0);
   });
 });
+
+
+it('restores controlled collapse and waits for its owner to apply keyboard changes', () => {
+  const model = buildGridModel(syntheticSearchTermRows(120, { seed: 51, campaigns: 1 }), {
+    groupBy: ['campaign_name', 'match_type'],
+  });
+  const groupId = model.rows[0]!.id;
+  const onChange = vi.fn();
+  const props: DataGridProps = { model, columns: visible, currencyCode: 'USD', sort: [],
+    onSortChange: () => {}, initialRect: VIEWPORT, height: VIEWPORT.height,
+    collapsedGroupIds: [groupId], onCollapsedGroupIdsChange: onChange };
+  const screen = render(<DataGrid {...props} />);
+  expect(gridRows()).toHaveLength(1);
+  fireEvent.keyDown(gridRows()[0]!, { key: 'ArrowRight' });
+  expect(onChange).toHaveBeenCalledExactlyOnceWith([]);
+  expect(gridRows()).toHaveLength(1);
+  screen.rerender(<DataGrid {...props} collapsedGroupIds={[]} />);
+  expect(gridRows().length).toBeGreaterThan(1);
+  fireEvent.keyDown(gridRows()[0]!, { key: 'ArrowLeft' });
+  expect(onChange).toHaveBeenLastCalledWith([groupId]);
+});
+
+
+it('retains totals, group shares and numeric disclosure across controlled collapse', () => {
+  const rows = syntheticSearchTermRows(2).map((row, index) => ({ ...row,
+    dimensions: { ...row.dimensions, campaign_name: 'Parent', match_type: index === 0 ? 'exact' : 'broad' },
+    totals: { ...row.totals, spend: index === 0 ? 25 : 75 },
+  }));
+  const grouped = buildGridModel(rows, { groupBy: ['campaign_name', 'match_type'], totals: 'sum' });
+  const columns = visible.map((column) => column.id === 'spend' ? { ...column, width: 20 } : column);
+  const props: DataGridProps = { model: grouped, columns, currencyCode: 'USD', sort: [],
+    onSortChange: () => {}, initialRect: VIEWPORT, height: VIEWPORT.height,
+    collapsedGroupIds: [], onCollapsedGroupIdsChange: () => {} };
+  const mounted = render(<DataGrid {...props} />);
+  expect(gridRows()).toHaveLength(3);
+  expect(screen.getAllByText(/of total$/).map((cell) => cell.textContent).sort()).toEqual([
+    '100.0% of total', '25.0% of total', '75.0% of total',
+  ]);
+  mounted.rerender(<DataGrid {...props} collapsedGroupIds={[grouped.rows[0]!.id]} />);
+  expect(gridRows()).toHaveLength(1);
+  expect(screen.getByText('Total · 2 source rows')).toBeTruthy();
+  expect(screen.getAllByText(/of total$/).map((cell) => cell.textContent)).toEqual(['100.0% of total']);
+  expect(within(gridRows()[0]!).getByTitle('$100.00')).toBeTruthy();
+  const numericCell = within(gridRows()[0]!).getByTitle('$100.00').closest('[role="cell"]') as HTMLElement;
+  expect(Number.parseFloat(numericCell.style.width)).toBeGreaterThanOrEqual(96);
+  expect(numericCell.style.overflow).toBe('auto');
+  mounted.rerender(<DataGrid {...props} model={buildGridModel(rows, {
+    groupBy: ['campaign_name', 'match_type'], totals: 'none',
+  })} collapsedGroupIds={[grouped.rows[0]!.id]} />);
+  expect(gridRows()).toHaveLength(1);
+  expect(screen.queryByText(/^Total ·/)).toBeNull();
+  expect(screen.queryAllByText(/of total$/)).toHaveLength(0);
+});

@@ -1,3 +1,4 @@
+import { parseGridView } from '@wizard-ads/shared';
 import { createGotoLink } from '@wizard-ads/db';
 import type { JsonValue } from '@wizard-ads/db';
 import { authenticatedMutation, mutationBody, MutationInputError } from '../../../src/server/authenticated-mutation';
@@ -15,6 +16,11 @@ export async function POST(request: Request): Promise<Response> {
     if (expiresAt && Number.isNaN(expiresAt.getTime())) throw new MutationInputError('expiresAt is invalid');
     if (body['label'] !== undefined && body['label'] !== null && typeof body['label'] !== 'string') {
       throw new MutationInputError('label must be text');
+    }
+    const state = body['state'];
+    if (state !== null && typeof state === 'object' && !Array.isArray(state) && 'view' in state
+      && (typeof state.view !== 'string' || parseGridView(state.view) === null)) {
+      throw new MutationInputError('Invalid grid view');
     }
     const signingSecret = process.env['GOTO_LINK_SIGNING_SECRET'];
     if (!signingSecret) throw new Error('Goto signing is unavailable');

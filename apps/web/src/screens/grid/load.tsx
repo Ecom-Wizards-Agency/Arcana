@@ -60,6 +60,7 @@ import { CrosscheckChip } from '../../../app/crosscheck/panel';
 interface PageProps {
   searchParams: Promise<{
     profile?: string;
+    view?: string;
     entity?: string;
     campaign?: string;
     from?: string;

@@ -733,6 +733,12 @@ begin
           md5(p_slug || ':sp-late') || md5(p_slug || ':sp-late:2'),
           now() - interval '2 minutes', 1, array[]::text[]);
 
+  if to_regclass('public.grid_views') is not null then
+    insert into public.grid_views(org_id, owner_id, id, name, view)
+    values (v_org, p_user_id, 'fixture-layout', 'Synthetic fixture layout',
+      '{"id":"fixture-layout","name":"Synthetic fixture layout","entity":"placements","columns":[],"pinned":[],"widths":{},"filter":{"groups":[]},"sort":[],"groupBy":[],"dateRange":null,"updatedAt":"2026-09-14"}'::jsonb);
+  end if;
+
   return v_org;
 end;
 $$;

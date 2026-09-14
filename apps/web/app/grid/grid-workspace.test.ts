@@ -82,6 +82,7 @@ function props(profileId = '50505050-5050-4050-8050-505050505050') {
     comparisonPeriod: { start: '2026-06-29', end: '2026-06-29' },
     freshness,
     campaignId: null,
+    viewStore: null,
   };
 }
 
@@ -99,6 +100,7 @@ afterEach(() => {
     for (const root of mounted.splice(0)) root.unmount();
   });
   document.body.replaceChildren();
+  window.history.replaceState(null, '', '/');
   navigation.push.mockReset();
   vi.unstubAllGlobals();
 });

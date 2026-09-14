@@ -11,7 +11,7 @@ import {
   todayIso
 } from '../../../app/_lib/periods';
 
-import { OperatorContext } from '../../ui/operator-context';
+import { GridOperatorContext } from '../../../app/grid/grid-context';
 
 import { GridWorkspace } from '../../../app/grid/grid-client';
 
@@ -66,7 +66,7 @@ function renderReady({ entity, profile, period, comparison, params, slot1, actor
 
     </header>
 
-    <OperatorContext
+    <GridOperatorContext
       account={profile.label}
       marketplace={profile.countryCode}
       currencyCode={profile.currencyCode}
@@ -77,6 +77,7 @@ function renderReady({ entity, profile, period, comparison, params, slot1, actor
       preserved={{
         profile: profile.id,
         entity,
+        ...(params.view === undefined ? {} : { view: params.view }),
         ...(params.campaign === undefined ? {} : { campaign: params.campaign }),
       }}
     />
@@ -86,7 +87,7 @@ function renderReady({ entity, profile, period, comparison, params, slot1, actor
     </Suspense>
 
     <GridWorkspace
-      key={`${profile.id}:${entity}:${period.start}:${period.end}:${params.campaign ?? ''}`}
+      key={`${profile.id}:${entity}:${period.start}:${period.end}:${params.campaign ?? ''}:${params.view ?? ''}`}
       actor={actor}
       entity={entity}
       currencyCode={profile.currencyCode}

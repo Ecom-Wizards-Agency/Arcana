@@ -218,3 +218,17 @@ export async function loadBidHistory(
     points,
   };
 }
+
+/** Profile-scoped keyword observations; do not infer keyword ranks for product targets. */
+export async function loadTargetRanks(handle: QueryHandle, orgId: string, profileId: string, payload: BidHistoryPayload) {
+  if (payload.target.targetKind !== 'keyword') return [];
+  const rows = await handle.sql<{ date: string; asin: string; organic_rank: number | null; sponsored_rank: number | null }[]>`
+    select observed_on::text as date, asin, organic_rank, sponsored_rank
+      from public.rank_observations
+     where org_id = ${orgId} and profile_id = ${profileId}
+       and keyword = ${payload.target.targeting}
+       and observed_on between ${payload.window.from}::date and ${payload.window.to}::date
+     order by observed_on, asin, id
+  `;
+  return rows.map((row) => ({ date: row.date, asin: row.asin, organicRank: row.organic_rank, sponsoredRank: row.sponsored_rank }));
+}

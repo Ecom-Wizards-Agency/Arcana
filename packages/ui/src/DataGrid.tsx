@@ -93,6 +93,9 @@ export interface DataGridProps {
   onPinChange?: (columnId: string, pinned: boolean) => void;
   onReorder?: (columnId: string, beforeColumnId: string | null) => void;
   onRowClick?: (row: GridRow) => void;
+  /** Controlled collapse for persisted and shareable layouts. */
+  collapsedGroupIds?: readonly string[];
+  onCollapsedGroupIdsChange?: (ids: string[]) => void;
   /** Selected row ids are the caller's state; the grid paints them and asks to change them. */
   selectedRowIds?: readonly string[];
   /** Omit and Space does nothing: a grid without a selection consumer has no selection. */
@@ -171,6 +174,8 @@ export function DataGrid({
   onPinChange,
   onReorder,
   onRowClick,
+  collapsedGroupIds: controlledCollapsedGroupIds,
+  onCollapsedGroupIdsChange,
   selectedRowIds = [],
   onSelectionChange,
   height,
@@ -192,10 +197,14 @@ export function DataGrid({
     groupingKey: string;
     ids: ReadonlySet<string>;
   }>(() => ({ groupingKey, ids: EMPTY_COLLAPSED_GROUPS }));
-  const collapsedGroupIds =
+  const controlledCollapse = useMemo(
+    () => controlledCollapsedGroupIds === undefined ? undefined : new Set(controlledCollapsedGroupIds),
+    [controlledCollapsedGroupIds],
+  );
+  const collapsedGroupIds = controlledCollapse ?? (
     collapseState.groupingKey === groupingKey
       ? collapseState.ids
-      : EMPTY_COLLAPSED_GROUPS;
+      : EMPTY_COLLAPSED_GROUPS);
   const formatContext = useMemo<FormatContext>(
     () => ({ currencyCode, ...(locale === undefined ? {} : { locale }) }),
     [currencyCode, locale],
@@ -230,6 +239,14 @@ export function DataGrid({
   }, [collapsibleGroupIds, groupingKey]);
 
   const setGroupCollapsed = useCallback((groupId: string, collapsed: boolean | 'toggle') => {
+    if (controlledCollapse !== undefined) {
+      const next = new Set(controlledCollapse);
+      const want = collapsed === 'toggle' ? !next.has(groupId) : collapsed;
+      if (want === next.has(groupId)) return;
+      if (want) next.add(groupId); else next.delete(groupId);
+      onCollapsedGroupIdsChange?.([...next]);
+      return;
+    }
     setCollapseState((current) => {
       const ids = current.groupingKey === groupingKey
         ? current.ids
@@ -242,7 +259,7 @@ export function DataGrid({
       else next.delete(groupId);
       return { groupingKey, ids: next };
     });
-  }, [groupingKey]);
+  }, [groupingKey, controlledCollapse, onCollapsedGroupIdsChange]);
 
   const toggleGroup = useCallback(
     (groupId: string) => setGroupCollapsed(groupId, 'toggle'),
