@@ -53,7 +53,7 @@ function renderReady({ entity, profile, period, comparison, params, slot1: _slot
     <p className="wa-sr-only">{profile.label} · {profile.countryCode} · {profile.currencyCode} · {period.start} to {period.end}</p>
 
     <GridWorkspace
-      key={`${profile.id}:${entity}:${period.start}:${period.end}:${params.campaign ?? ''}:${params.view ?? ''}`}
+      key={`${profile.id}:${entity}:${period.start}:${period.end}:${params.campaign ?? ''}:${params.view ?? ''}:${params.asin ?? ''}`}
       actor={actor}
       entity={entity}
       currencyCode={profile.currencyCode}

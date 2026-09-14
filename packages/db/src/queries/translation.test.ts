@@ -26,7 +26,8 @@ describe('target translation authority and queue', () => {
     const jobs = await db.sql<{ payload: unknown }[]>`select payload from public.sync_jobs where org_id=${a.orgId} and job_type='translation.request'`;
     expect(jobs).toHaveLength(1);
     const old = { type: 'translation.request' as const, orgId: a.orgId, profileId: a.profileId, translationId: first.id, requestId: first.provenance.requestId };
-    const next = await withAuthenticatedOrgEditor(db, { orgId: a.orgId, userId: a.userId }, (tx) => retryTargetTranslation(tx, { profileId: a.profileId, translationId: first.id }));
+    expect(await completeTranslationAttempt(db, old, { status: 'unavailable', text: null, reason: 'provider not configured' }, 'not-configured')).toBe(1);
+    const next = await withAuthenticatedOrgEditor(db, { orgId: a.orgId, userId: a.userId }, (tx) => retryTargetTranslation(tx, { profileId: a.profileId, translationId: first.id, expectedRequestId: first.provenance.requestId }));
     expect(next.provenance.requestId).not.toBe(first.provenance.requestId);
     expect(await readTranslationAttempt(db, old)).toBeNull();
     expect(await completeTranslationAttempt(db, old, { status: 'unavailable', text: null, reason: 'provider not configured' }, 'not-configured')).toBe(0);
@@ -36,12 +37,28 @@ describe('target translation authority and queue', () => {
     expect(saved?.result.status).toBe('unavailable');
     expect(await db.sql`select id from public.sync_jobs where org_id=${a.orgId} and job_type='translation.request'`).toHaveLength(2);
   });
+  it('replays identical Retry inputs without superseding waiting or completed replacement attempts', async () => {
+    const a = actors[0]!;
+    const actor = { orgId: a.orgId, userId: a.userId };
+    const first = await withAuthenticatedOrgEditor(db, actor, (tx) => requestTargetTranslation(tx, { profileId: a.profileId, originalText: 'Synthetic retry replay' }));
+    const input = { profileId: a.profileId, translationId: first.id, expectedRequestId: first.provenance.requestId };
+    const retry = () => withAuthenticatedOrgEditor(db, actor, (tx) => retryTargetTranslation(tx, input));
+    expect((await retry()).provenance.requestId).toBe(first.provenance.requestId);
+    const job = { type: 'translation.request' as const, orgId: a.orgId, profileId: a.profileId, translationId: first.id, requestId: first.provenance.requestId };
+    await completeTranslationAttempt(db, job, { status: 'unavailable', text: null, reason: 'provider not configured' }, 'not-configured');
+    const [next, replay] = await Promise.all([retry(), retry()]);
+    expect(next.provenance.requestId).not.toBe(first.provenance.requestId);
+    expect(replay.provenance.requestId).toBe(next.provenance.requestId);
+    await completeTranslationAttempt(db, { ...job, requestId: next.provenance.requestId }, { status: 'unavailable', text: null, reason: 'provider not configured' }, 'not-configured');
+    expect((await retry()).provenance.requestId).toBe(next.provenance.requestId);
+    expect(await db.sql`select id from public.sync_jobs where payload->>'translationId'=${first.id}`).toHaveLength(2);
+  });
   it('refuses foreign agency reads, profile binding and retry', async () => {
     const a = actors[0]!; const b = actors[1]!;
     const row = await withAuthenticatedOrgEditor(db, { orgId: a.orgId, userId: a.userId }, (tx) => requestTargetTranslation(tx, { profileId: a.profileId, originalText: 'Private synthetic text' }));
     expect(await withAuthenticatedReadSnapshot(db, { orgId: b.orgId, userId: b.userId }, (tx) => listTargetTranslations(tx, a.orgId, a.profileId))).toEqual([]);
     await expect(withAuthenticatedOrgEditor(db, { orgId: b.orgId, userId: b.userId }, (tx) => requestTargetTranslation(tx, { profileId: a.profileId, originalText: 'Forbidden' }))).rejects.toThrow();
-    await expect(withAuthenticatedOrgEditor(db, { orgId: b.orgId, userId: b.userId }, (tx) => retryTargetTranslation(tx, { profileId: b.profileId, translationId: row.id }))).rejects.toThrow();
+    await expect(withAuthenticatedOrgEditor(db, { orgId: b.orgId, userId: b.userId }, (tx) => retryTargetTranslation(tx, { profileId: b.profileId, translationId: row.id, expectedRequestId: row.provenance.requestId }))).rejects.toThrow();
   });
   it('refuses viewer admission and direct result modification', async () => {
     const a = actors[0]!; const viewer = { orgId: a.orgId, userId: randomUUID() };

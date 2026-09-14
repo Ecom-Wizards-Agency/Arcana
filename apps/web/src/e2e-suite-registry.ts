@@ -26,7 +26,7 @@ export const E2E_SUITE_DEFINITIONS = [
     config: 'playwright.grid-performance.config.ts',
     project: 'grid-performance',
     expectedSpecFiles: specsFor('grid-performance'),
-    expectedTests: 1,
+    expectedTests: 2,
   },
   {
     name: 'optimization-groups',

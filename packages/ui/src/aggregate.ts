@@ -14,16 +14,16 @@
  * three client calls before anybody catches it.
  */
 import type { BaseTotals } from './metrics.js';
-import { addTotals, emptyTotals } from './metrics.js';
+import { addTotals, emptyTotals, BASE_METRICS } from './metrics.js';
 import type { DimensionValue, GridRow } from './rows.js';
 import { resolveField } from './rows.js';
 
 /** An aggregate never presents an incomplete base as a complete total. */
 function mergeMeasurement(into: Pick<GridRow, 'measurement'>, row: GridRow): void {
-  if (row.measurement === undefined) return;
+  if (row.measurement === undefined && row.comparison !== null) return;
   into.measurement = {
-    missing: [...new Set([...(into.measurement?.missing ?? []), ...row.measurement.missing])],
-    comparisonMissing: [...new Set([...(into.measurement?.comparisonMissing ?? []), ...row.measurement.comparisonMissing])],
+    missing: [...new Set([...(into.measurement?.missing ?? []), ...(row.measurement?.missing ?? [])])],
+    comparisonMissing: [...new Set([...(into.measurement?.comparisonMissing ?? []), ...(row.comparison === null ? BASE_METRICS : row.measurement?.comparisonMissing ?? [])])],
   };
 }
 

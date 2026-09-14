@@ -31,7 +31,7 @@ export async function requestTargetTranslation(context: AuthenticatedEditorTrans
 
 export async function retryTargetTranslation(context: AuthenticatedEditorTransaction, raw: unknown): Promise<TargetTranslation> {
   const input = TranslationRetry.parse(raw);
-  const rows = await context.sql<{ id: string }[]>`select app.request_target_translation(${context.actor.orgId},${input.profileId},null,null,${input.translationId}) as id`;
+  const rows = await context.sql<{ id: string }[]>`select app.request_target_translation(${context.actor.orgId},${input.profileId},null,null,${input.translationId},${input.expectedRequestId}) as id`;
   const saved = await context.sql<TranslationRow[]>`select * from public.target_translations where org_id=${context.actor.orgId} and profile_id=${input.profileId} and id=${input.translationId}`;
   if (rows.length !== 1 || rows[0]?.id !== input.translationId || saved.length !== 1) throw new Error('Translation retry count mismatch');
   return parse(saved[0]!);

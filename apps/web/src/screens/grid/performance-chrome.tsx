@@ -1,5 +1,6 @@
 'use client';
-import { useState, type ReactNode } from 'react';
+import { buildPerformanceModel, verdictFilter } from './performance-model';
+import { useMemo, useState, type ReactNode } from 'react';
 import { deltaColor, grandTotal, resolveField, describeFilter, formatValue, metricSpec, GridToolbar, groupColumns, readEntitySearch, writeEntitySearch, entitySearchColumn, tokens, type GridToolbarProps, type GridRow, type SavedView } from '@wizard-ads/ui';
 import { TRANSLATION_LANGUAGES, TranslationLanguage, PerformanceVerdict, type GridPerformanceEvidence } from '@wizard-ads/shared';
 
@@ -45,7 +46,7 @@ export function PerformanceSummary({ rows, performance, view, onChange, currency
   </>;
 }
 
-export function PerformanceToolbar(props: GridToolbarProps & { view: SavedView; update: (patch: Partial<SavedView>) => void; profileId: string; onTranslation: () => void; asinScope?: string | null; onRemoveScope?: () => void }): ReactNode {
+export function PerformanceToolbar(props: GridToolbarProps & { view: SavedView; update: (patch: Partial<SavedView>) => void; profileId: string; onTranslation: () => void; onRefreshTranslation: () => void; asinScope?: string | null; onRemoveScope?: () => void }): ReactNode {
   const [panel, setPanel] = useState<'advanced' | 'columns' | null>(null);
   const [columnSearch, setColumnSearch] = useState('');
   const [share, setShare] = useState('Share');
@@ -59,8 +60,7 @@ export function PerformanceToolbar(props: GridToolbarProps & { view: SavedView; 
     if (ordered.includes('translation')) { ordered.splice(ordered.indexOf('translation'), 1); ordered.splice(1, 0, 'translation'); }
     props.onVisibleChange([...new Set(ordered)]);
   };
-  const counts = new Map<string, number>();
-  for (const row of props.optionRows ?? []) { const verdict = row.dimensions['verdict']; if (typeof verdict === 'string') counts.set(verdict, (counts.get(verdict) ?? 0) + 1); }
+  const counts = useMemo(() => new Map(props.entity === 'targets' ? PerformanceVerdict.shape.diagnosis.options.map((diagnosis) => [diagnosis, buildPerformanceModel(props.optionRows ?? [], { filter: verdictFilter(props.filter, diagnosis) }).model.matched] as const) : []), [props.entity, props.optionRows, props.filter]);
   return <div style={{ position: 'relative' }}>
     <div data-testid="grid-performance-toolbar" style={{ height: 47, boxSizing: 'border-box', padding: '12px 24px 8px', display: 'flex', alignItems: 'center', gap: 8 }}>
       <input style={{ ...button, width: 240, minWidth: 100 }} aria-label={`Search ${props.entity.replace('_', ' ')}`} placeholder={`Search ${props.entity.replace('_', ' ')}…`} value={readEntitySearch(filters, identity)} onChange={(event) => props.onFilterChange({ groups: [{ filters: writeEntitySearch(filters, identity, event.target.value) }] })} />
@@ -79,8 +79,8 @@ export function PerformanceToolbar(props: GridToolbarProps & { view: SavedView; 
         {filter.key.endsWith('_STATE') ? <small>default </small> : null}{filter.key === 'ASIN' ? `Product is ${filter.conditions.flatMap((condition) => condition.values).join(', ')}` : describeFilter(filter, props.available)}
         <button aria-label={`Remove filter ${filter.key}`} style={{ border: 0, color: tokens.color.textMuted, background: 'transparent' }} onClick={() => props.onFilterChange({ ...props.filter, groups: [{ filters: filters.filter((_, position) => position !== index) }, ...props.filter.groups.slice(1)] })}>×</button>
       </span>)}
-      {props.entity === 'targets' ? PerformanceVerdict.shape.diagnosis.options.map((diagnosis) => <button key={diagnosis} data-quick-verdict={diagnosis} style={{ ...button, padding: '3px 8px', fontSize: 11, borderRadius: 999, background: tokens.color.accentSoft }} onClick={() => props.onFilterChange({ ...props.filter, groups: [{ filters: [...filters.filter((filter) => filter.key !== 'VERDICT'), { key: 'VERDICT', conditions: [{ operator: '=', values: [diagnosis] }] }] }, ...props.filter.groups.slice(1)] })}>{diagnosis} ({counts.get(diagnosis) ?? 0})</button>) : null}
-      {props.visible.includes('translation') ? <><button style={button} onClick={() => applyColumns(props.visible.filter((id) => id !== 'translation'))}>Hide Translation</button><a href={`/grid/translation?profile=${props.profileId}&language=${language}`} style={{ fontSize: 11 }}>Translation status</a></> : null}
+      {props.entity === 'targets' ? PerformanceVerdict.shape.diagnosis.options.map((diagnosis) => <button key={diagnosis} data-quick-verdict={diagnosis} style={{ ...button, padding: '3px 8px', fontSize: 11, borderRadius: 999, background: tokens.color.accentSoft }} onClick={() => props.onFilterChange(verdictFilter(props.filter, diagnosis))}>{diagnosis} ({counts.get(diagnosis) ?? 0})</button>) : null}
+      {props.visible.includes('translation') ? <><button style={button} onClick={props.onRefreshTranslation}>Refresh translations</button><button style={button} onClick={() => applyColumns(props.visible.filter((id) => id !== 'translation'))}>Hide Translation</button><a href={`/grid/translation?profile=${props.profileId}&language=${language}`} style={{ fontSize: 11 }}>Translation status</a></> : null}
     </div>
     {panel === null ? null : <section role="region" aria-label={panel === 'columns' ? 'Column picker' : 'Grid controls'} style={{ position: panel === 'advanced' ? 'relative' : 'absolute', top: panel === 'advanced' ? 0 : 47, left: panel === 'advanced' ? 0 : 24, right: 24, zIndex: 20, background: tokens.color.surface, border: `1px solid ${tokens.color.border}`, borderRadius: 8, padding: 16, maxHeight: 540, overflow: 'auto', boxShadow: 'var(--wa-shadow)' }}>
       <button style={{ ...button, float: 'right' }} onClick={() => setPanel(null)}>Close controls</button>

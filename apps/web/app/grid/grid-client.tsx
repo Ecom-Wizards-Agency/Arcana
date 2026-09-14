@@ -17,7 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { ReactNode } from 'react';
-import { GridPerformanceEvidence, GridMeasurement, PerformanceVerdict, parseGridView, serializeGridView, type OrgActor } from '@wizard-ads/shared';
+import { decodeGridPerformance, type GridPerformanceEvidence, GridMeasurement, PerformanceVerdict, parseGridView, serializeGridView, type OrgActor } from '@wizard-ads/shared';
 import { browserViewStore } from './view-store';
 import {
   DataGrid,
@@ -26,7 +26,6 @@ import {
   GridViewport,
   LayoutWriteBuffer,
   STATE_COLUMN,
-  buildGridModelSafely,
   columnsFor,
   defaultVisibleColumns,
   formatInteger,
@@ -47,6 +46,7 @@ import type {
   ViewStore,
 } from '@wizard-ads/ui';
 import { FreshnessBanner, tokens } from '@wizard-ads/ui';
+import { buildPerformanceModel, scopeRows } from '../../src/screens/grid/performance-model';
 import type { GridPayload } from '../_lib/grid-data';
 import { PerformanceSummary, PerformanceToolbar } from '../../src/screens/grid/performance-chrome';
 import { useTranslationColumn } from '../../src/screens/grid/translation-column';
@@ -137,7 +137,7 @@ export function parseGridRowsPayload(value: unknown): GridPayload {
     rows: value['rows'],
     rowCount: Number(value['rowCount']),
     truncated: value['truncated'],
-    ...(value['performance'] === undefined ? {} : { performance: GridPerformanceEvidence.parse(value['performance']) }),
+    ...(value['performance'] === undefined ? {} : { performance: decodeGridPerformance(value['performance']) }),
   };
 }
 
@@ -255,10 +255,15 @@ export function experimentScopeIds(rows: readonly GridRow[], key: string): strin
   return ids;
 }
 
+export function gridExperimentHref(profileId: string, entity: EntityLevel, rows: readonly GridRow[]): string {
+  const experimentScope = ({ campaigns: ['campaigns', 'campaign_id'], ad_groups: ['adgroups', 'ad_group_id'], targets: ['targets', 'target_id'], search_terms: ['terms', 'search_term'], products: ['asins', 'asin'], placements: ['campaigns', 'campaign_id'] } as const)[entity];
+  return `/experiments/new?${new URLSearchParams({ profile: profileId, [experimentScope[0]]: experimentScopeIds(rows, experimentScope[1]).join(',') })}`;
+}
+
 export function GridWorkspace(props: GridWorkspaceProps): ReactNode {
   // Identity replacement owns the entire hook subtree: rows, late requests,
   // saved views, selections and buffered writes. Callers need no special key.
-  return <ScopedGridWorkspace key={JSON.stringify([props.actor.userId, props.actor.orgId])} {...props} />;
+  return <ScopedGridWorkspace key={JSON.stringify([props.actor.userId, props.actor.orgId, props.asin ?? null])} {...props} />;
 }
 
 function ScopedGridWorkspace(props: GridWorkspaceProps): ReactNode {
@@ -558,14 +563,10 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     [layoutWrites, viewReady],
   );
 
+  const scopedRows = useMemo(() => scopeRows(props.rows, asinScope), [props.rows, asinScope]);
   const { model, filterError } = useMemo(
-    () =>
-      buildGridModelSafely(props.rows, {
-        filter: asinScope === null ? view.filter : { groups: (view.filter.groups.length ? view.filter.groups : [{ filters: [] }]).map((group) => ({ filters: [...group.filters, { key: 'ASIN', conditions: [{ operator: '=' as const, values: [asinScope] }] }] })) },
-        sort: view.sort,
-        groupBy: view.groupBy,
-      }),
-    [props.rows, view.filter, view.sort, view.groupBy, asinScope],
+    () => buildPerformanceModel(scopedRows, { filter: view.filter, sort: view.sort, groupBy: view.groupBy }),
+    [scopedRows, view.filter, view.sort, view.groupBy],
   );
 
   /**
@@ -599,9 +600,8 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   }, [available, model.groupBy, model.grouped, view.columns, view.pinned, view.widths, props.entity]);
 
   const density: GridDensity = view.density ?? DEFAULT_DENSITY;
-  const translationCell = useTranslationColumn(props.profileId, view.translation?.language ?? 'en', viewReady && view.columns.includes('translation'), props.rows);
-  const experimentScope = ({ campaigns: ['campaigns', 'campaign_id'], ad_groups: ['adGroups', 'ad_group_id'], targets: ['targets', 'target_id'], search_terms: ['terms', 'search_term'], products: ['asins', 'asin'], placements: ['campaigns', 'campaign_id'] } as const)[props.entity];
-  const experimentHref = `/experiments/new?${new URLSearchParams({ profile: props.profileId, [experimentScope[0]]: experimentScopeIds(model.matchedRows, experimentScope[1]).join(',') })}`;
+  const translation = useTranslationColumn(props.profileId, view.translation?.language ?? 'en', viewReady && view.columns.includes('translation'), props.rows);
+  const experimentHref = gridExperimentHref(props.profileId, props.entity, model.matchedRows);
   const rowHref = (row: GridRow) => {
     const back = `/grid?${new URLSearchParams({ profile: props.profileId, entity: props.entity, from: props.period.start, to: props.period.end, compareFrom: props.comparisonPeriod.start, compareTo: props.comparisonPeriod.end, view: serializeGridView(view), ...(asinScope ? { asin: asinScope } : {}) })}`;
     return `/targets/${encodeURIComponent(String(row.dimensions['target_id']))}?${new URLSearchParams({ profile: props.profileId, from: props.period.start, to: props.period.end, compareFrom: props.comparisonPeriod.start, compareTo: props.comparisonPeriod.end, back })}`;
@@ -610,7 +610,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   const number = (row: GridRow, key: string) => typeof row.dimensions[key] === 'number' ? row.dimensions[key] as number : null;
   const renderCells = Object.fromEntries(available.map((column) => [column.id, (row: GridRow): ReactNode | undefined => {
     if (column.kind === 'metric' && resolveField(row, column.id) === null) return <DataGrid.cells.NotMeasuredCell reason={column.id.includes('comparison') || column.id.includes('delta') ? 'The comparison is not measured, or its denominator is unavailable.' : 'This metric is not measured, or its denominator is unavailable.'} />;
-    if (column.id === 'translation') return translationCell(row);
+    if (column.id === 'translation') return translation.cell(row);
     if (column.id === 'suggested_bid' && props.entity === 'targets') {
       const value = number(row, 'suggested_bid');
       if (value === null) return <DataGrid.cells.NotMeasuredCell reason="The Amazon suggested-bid corridor is not measured for this ad group and theme." />;
@@ -710,6 +710,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
             view={view}
             update={update}
             profileId={props.profileId}
+            onRefreshTranslation={translation.refresh}
             asinScope={asinScope}
             onRemoveScope={() => { setAsinScope(null); const url = new URL(window.location.href); url.searchParams.delete("asin"); window.history.replaceState(window.history.state, "", url); }}
             onTranslation={() => update({ translation: { language: view.translation?.language ?? 'en' } })}
@@ -731,7 +732,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
             groupBy={model.groupBy}
             onGroupByChange={(groupBy) => update({ groupBy, collapsedGroupIds: [] })}
             model={model}
-            optionRows={props.rows}
+            optionRows={scopedRows}
             onExport={handleExport}
             views={saved}
             onApplyView={(applied) => {

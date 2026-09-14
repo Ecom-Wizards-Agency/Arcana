@@ -519,6 +519,23 @@ suite('grid and roster reads against SQL aggregates', () => {
     expect(resolveField(model.totalsRow!, 'spend_comparison')).toBeGreaterThan(0);
   });
 
+  it('reads early current ranks when the custom comparison follows the current period', async () => {
+    const asin = 'B000SYN003';
+    try {
+      await database.sql`insert into public.product_ads(org_id,profile_id,amazon_id,ad_product,name,state,campaign_id,ad_group_id,asin)
+        values(${orgId},${profileId},'synthetic-rank-window','SP','Synthetic product','enabled','c-skew-a','c-skew-a-ag',${asin})`;
+      await database.sql`insert into public.rank_observations(org_id,profile_id,asin,keyword,observed_on,organic_rank)
+        values(${orgId},${profileId},${asin},'widget','2026-07-10',8),(${orgId},${profileId},${asin},'widget','2026-08-10',12)`;
+      const payload = await loadGridRows(database, 'targets', { orgId, profileId, currencyCode: 'USD', period: { start: '2026-07-01', end: '2026-07-31' }, comparison: { start: '2026-08-01', end: '2026-08-31' } });
+      const target = payload.rows.find((row) => row.id === 'target:c-skew-a-kw0')!;
+      expect(target.dimensions).toMatchObject({ organic_rank: 8, rank_change: 4 });
+      expect(payload.performance?.rankDays[target.id]).toBeUndefined();
+    } finally {
+      await database.sql`delete from public.rank_observations where org_id=${orgId} and asin=${asin}`;
+      await database.sql`delete from public.product_ads where org_id=${orgId} and amazon_id='synthetic-rank-window'`;
+    }
+  });
+
   it('joins rank and whole SQP weeks, computes TOS ranges and counts unattributed spend from product mirrors', async () => {
     const asin = 'B000SYN001';
     const options = { orgId, profileId, currencyCode: 'USD', period: PERIOD, comparison: COMPARISON };

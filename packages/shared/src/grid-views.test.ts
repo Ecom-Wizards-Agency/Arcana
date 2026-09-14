@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseGridView, serializeGridView, type GridSavedView } from './grid-views.js';
+import { encodeGridPerformance, decodeGridPerformance, parseGridView, serializeGridView, type GridSavedView } from './grid-views.js';
 const view: GridSavedView = {
   id: 'synthetic', name: '分析 café', entity: 'targets', columns: ['targeting', 'spend'],
   widths: { targeting: 301 }, pinned: ['targeting'], density: 'compact',
@@ -14,5 +14,19 @@ describe('shareable grid view', () => {
   });
   it('rejects unknown versions, malformed input and invalid schema', () => {
     expect(['2.e30', '1.!', '1.e30', '1._w', null].map(parseGridView)).toEqual(Array(5).fill(null));
+  });
+});
+
+
+describe('compact rank transport', () => {
+  it('shares dates, omits untouched histories and distinguishes unobserved from never ranked', () => {
+    const days = Array.from({ length: 14 }, (_, index) => ({ date: `2026-07-${String(index + 1).padStart(2, '0')}`, observed: index > 0, rank: index > 1 ? index : null }));
+    const evidence = { feeds: [], unattributed: null, rankDays: { measured: days, untouched: days.map((day) => ({ ...day, observed: false, rank: null })) } };
+    const wire = encodeGridPerformance(evidence);
+    expect(wire.rankAxis).toHaveLength(14);
+    expect(Object.keys(wire.rankValues)).toEqual(['measured']);
+    expect(wire.rankValues['measured']!.slice(0, 3)).toEqual([null, 0, 2]);
+    expect(decodeGridPerformance(wire).rankDays).toEqual({ measured: days });
+    expect(() => decodeGridPerformance({ ...wire, rankAxis: [] })).toThrow('date axis');
   });
 });

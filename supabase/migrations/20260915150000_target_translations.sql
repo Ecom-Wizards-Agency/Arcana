@@ -32,7 +32,7 @@ select app.install_tenant_rls('public.target_translations');
 
 -- Only this command may admit a user request. Queue insertion and waiting state
 -- commit together, under current editor authority and exact profile ownership.
-create function app.request_target_translation(p_org uuid, p_profile uuid, p_original text, p_language text, p_retry uuid default null)
+create function app.request_target_translation(p_org uuid, p_profile uuid, p_original text, p_language text, p_retry uuid default null, p_expected uuid default null)
 returns uuid language plpgsql security definer set search_path = pg_catalog, public, app as $$
 declare v_row public.target_translations%rowtype; v_request uuid := gen_random_uuid();
 begin
@@ -43,6 +43,10 @@ begin
   if p_retry is not null then
     select * into v_row from public.target_translations where org_id=p_org and profile_id=p_profile and id=p_retry for update;
     if not found then raise exception 'Resource not found' using errcode='42501'; end if;
+    if p_expected is null then raise exception 'Expected translation attempt is required' using errcode='22023'; end if;
+    -- A replay is bound to the prior attempt, even after the replacement completes.
+    -- Waiting work is never superseded by Retry.
+    if v_row.request_id <> p_expected or v_row.status <> 'unavailable' then return v_row.id; end if;
     p_original := v_row.original_text; p_language := v_row.language;
   else
     if p_original is null or length(p_original) not between 1 and 2048 or length(btrim(p_original))=0
@@ -66,5 +70,5 @@ begin
       'profileId',p_profile,'translationId',v_row.id,'requestId',v_request), 'translation:' || v_request::text);
   return v_row.id;
 end $$;
-revoke all on function app.request_target_translation(uuid,uuid,text,text,uuid) from public, anon;
-grant execute on function app.request_target_translation(uuid,uuid,text,text,uuid) to authenticated;
+revoke all on function app.request_target_translation(uuid,uuid,text,text,uuid,uuid) from public, anon;
+grant execute on function app.request_target_translation(uuid,uuid,text,text,uuid,uuid) to authenticated;

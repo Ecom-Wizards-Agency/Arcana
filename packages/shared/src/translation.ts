@@ -11,7 +11,7 @@ export const TranslationRequest = z.strictObject({
   language: TranslationLanguage.default('en'),
 });
 export type TranslationRequest = z.infer<typeof TranslationRequest>;
-export const TranslationRetry = z.strictObject({ profileId: z.uuid(), translationId: z.uuid() });
+export const TranslationRetry = z.strictObject({ profileId: z.uuid(), translationId: z.uuid(), expectedRequestId: z.uuid() });
 export const TranslationProvenance = z.strictObject({
   requestedAt: z.iso.datetime(),
   completedAt: z.iso.datetime().nullable(),

@@ -48,6 +48,34 @@ export const GridPerformanceEvidence = z.strictObject({
   rankDays: z.record(z.string(), z.array(z.strictObject({ date: z.string(), observed: z.boolean(), rank: z.number().int().positive().nullable() })).length(14)),
 });
 export type GridPerformanceEvidence = z.infer<typeof GridPerformanceEvidence>;
+/** One date axis per response. null = unobserved; 0 = observed, never ranked. */
+export const GridPerformanceTransport = GridPerformanceEvidence.omit({ rankDays: true }).extend({
+  rankAxis: z.array(z.string()).length(14).or(z.tuple([])),
+  rankValues: z.record(z.string(), z.array(z.number().int().nonnegative().nullable()).length(14)),
+});
+export type GridPerformanceTransport = z.infer<typeof GridPerformanceTransport>;
+
+export function encodeGridPerformance(evidence: GridPerformanceEvidence): GridPerformanceTransport {
+  const histories = Object.entries(evidence.rankDays).filter(([, days]) => days.some((day) => day.observed));
+  const rankAxis = histories[0]?.[1].map((day) => day.date) ?? [];
+  for (const [, days] of histories) {
+    if (days.some((day, index) => day.date !== rankAxis[index])) throw new Error('Rank history date axes disagree');
+  }
+  return { feeds: evidence.feeds, unattributed: evidence.unattributed, rankAxis,
+    rankValues: Object.fromEntries(histories.map(([id, days]) => [id, days.map((day) => day.observed ? day.rank ?? 0 : null)])) };
+}
+
+export function decodeGridPerformance(raw: unknown): GridPerformanceEvidence {
+  // Accept domain fixtures and previously cached responses as well as compact transport.
+  if (typeof raw === 'object' && raw !== null && 'rankDays' in raw) return GridPerformanceEvidence.parse(raw);
+  const value = GridPerformanceTransport.parse(raw);
+  if (Object.keys(value.rankValues).length && value.rankAxis.length !== 14) throw new Error('Rank history date axis is missing');
+  return { feeds: value.feeds, unattributed: value.unattributed,
+    rankDays: Object.fromEntries(Object.entries(value.rankValues).map(([id, ranks]) => [id, ranks.map((rank, index) => ({
+      date: value.rankAxis[index]!, observed: rank !== null, rank: rank === 0 ? null : rank,
+    }))])) };
+}
+
 export const GridSavedView = z.object({
   id: z.string().min(1).max(200),
   name: z.string().min(1).max(200),

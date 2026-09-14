@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { TargetTranslation, TranslationLanguage, TranslationRequest, TranslationStatus } from './translation.js';
+import { TargetTranslation, TranslationLanguage, TranslationRequest, TranslationRetry, TranslationStatus } from './translation.js';
 import { GridSavedView, parseGridView, serializeGridView } from './grid-views.js';
 import { JobPayload } from './jobs.js';
 
 const uuid = (digit: string) => `${digit.repeat(8)}-${digit.repeat(4)}-4${digit.repeat(3)}-8${digit.repeat(3)}-${digit.repeat(12)}`;
 describe('translation contracts', () => {
+  it('requires the expected previous attempt for idempotent Retry', () => {
+    expect(TranslationRetry.safeParse({ profileId: uuid('1'), translationId: uuid('2') }).success).toBe(false);
+    expect(TranslationRetry.parse({ profileId: uuid('1'), translationId: uuid('2'), expectedRequestId: uuid('3') }).expectedRequestId).toBe(uuid('3'));
+  });
   it('defaults to English without changing original wording', () => {
     const request = TranslationRequest.parse({ profileId: uuid('1'), originalText: '  synthetic wording  ' });
     expect(request.language).toBe('en');

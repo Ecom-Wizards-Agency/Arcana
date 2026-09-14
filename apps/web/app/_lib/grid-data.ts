@@ -22,7 +22,7 @@
  *
  * Read-only. Every write in this product happens in the worker.
  */
-import { classifyCampaignCategory, classifyPerformanceVerdict, grossBreakEvenBid, rankChange, shareOfSpend, acosVsTarget, conversionPoints, marketPositionGap } from '@wizard-ads/core';
+import { classifyCampaignCategory, classifyPerformanceVerdict, grossBreakEvenBid, rankChange, acosVsTarget, conversionPoints, marketPositionGap } from '@wizard-ads/core';
 import { readLatestBidSeriesByTargetIds, listMarketPositionLinks, readMarketRankSeries } from '@wizard-ads/db';
 import { TenantStrategy, type GridMeasurement, type GridPerformanceEvidence } from '@wizard-ads/shared';
 import { parseCampaignName } from '@wizard-ads/campaigns';
@@ -371,7 +371,7 @@ async function loadTargets(
   const latestByTarget = new Map(latest.map((row) => [row.targetId, row]));
   const asins = [...new Set(rows.flatMap((row) => row.asin ? [row.asin] : []))];
   const rankStart = new Date(Date.parse(period.end) - 13 * 86_400_000).toISOString().slice(0, 10);
-  const rankFrom = comparison.start < rankStart ? comparison.start : rankStart;
+  const rankFrom = [period.start, comparison.start, rankStart].sort()[0]!;
   const observations = asins.length === 0 ? [] : await handle.sql<{ asin: string; keyword: string; date: string; rank: number | null }[]>`
     select distinct on (asin,keyword,observed_on) asin, keyword, observed_on::text as date, organic_rank as rank
     from public.rank_observations where org_id=${orgId} and profile_id=${profileId} and asin=any(${asins}::text[])
@@ -390,7 +390,6 @@ async function loadTargets(
     const days = ranks.get(key) ?? []; days.push(observation); ranks.set(key, days);
   }
   const sqpByQuery = new Map(sqp.map((row) => [`${row.asin}\u0000${row.query}`, row]));
-  const totalSpend = rows.reduce((total, row) => total + num(row.spend), 0);
   const measured = (value: string | number | null | undefined) => value === null || value === undefined ? null : Number(value);
 
   return rows.map((row) => {
@@ -406,7 +405,7 @@ async function loadTargets(
     const previous = history.filter((day) => day.date >= comparison.start && day.date <= comparison.end).at(-1)?.rank ?? null;
     const query = literal ? sqpByQuery.get(key) : undefined;
     const dayMap = new Map(history.map((day) => [day.date, day]));
-    rankDays[`target:${row.target_id}`] = Array.from({ length: 14 }, (_, index) => {
+    if (history.some((day) => day.date >= rankStart && day.date <= period.end)) rankDays[`target:${row.target_id}`] = Array.from({ length: 14 }, (_, index) => {
       const date = new Date(Date.parse(rankStart) + index * 86_400_000).toISOString().slice(0, 10);
       const observation = dayMap.get(date);
       return { date, observed: observation !== undefined, rank: observation?.rank ?? null };
@@ -434,7 +433,7 @@ async function loadTargets(
         organic_rank: current, rank_change: rankChange(current, previous),
         top_of_search_share: measured(row.tos_share),
         top_of_search_range: row.tos_low == null || row.tos_high == null ? null : `${(Number(row.tos_low) * 100).toFixed(1)}–${(Number(row.tos_high) * 100).toFixed(1)}%`,
-        break_even_bid: grossBreakEvenBid(cpc, acos), spend_share: shareOfSpend(spend, totalSpend), acos_vs_target: acosVsTarget(acos, targetAcos),
+        break_even_bid: grossBreakEvenBid(cpc, acos), acos_vs_target: acosVsTarget(acos, targetAcos),
         sqp_impression_share: measured(query?.impression_share), sqp_purchase_share: measured(query?.purchase_share),
         market_cvr: measured(query?.market_cvr), asin_cvr: measured(query?.asin_cvr),
         conversion_points: conversionPoints(measured(query?.asin_cvr), measured(query?.market_cvr)),

@@ -11,7 +11,7 @@ import type {
   SynchronousLayoutSource,
   ViewStore,
 } from '@wizard-ads/ui';
-import { GridWorkspace, experimentScopeIds, withValidGrouping } from './grid-client';
+import { GridWorkspace, gridExperimentHref, experimentScopeIds, withValidGrouping } from './grid-client';
 
 const navigation = vi.hoisted(() => ({ push: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => navigation }));
@@ -670,4 +670,55 @@ it('restores URL before an asynchronous local layout and replaces history on cha
   const back = new URL(link.href).searchParams.get('back')!;
   expect(parseGridView(new URL(back, window.location.origin).searchParams.get('view'))?.density).toBe('comfortable');
   vi.restoreAllMocks();
+});
+
+
+describe('grid navigation scope', () => {
+  it('follows same-route ASIN A to B to unscoped navigation', async () => {
+    const rows = ['B000SYN001', 'B000SYN002'].map((asin, index) => ({ ...row('targets'), id: `target:${index}`, dimensions: { ...row('targets').dimensions, asin } }));
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ rows, rowCount: rows.length, truncated: false })));
+    const store = new MemoryViewStore();
+    const host = document.createElement('div'); document.body.append(host);
+    const root = createRoot(host); mounted.push(root);
+    for (const asin of ['B000SYN001', 'B000SYN002', null]) {
+      window.history.replaceState(null, '', `/grid?entity=targets${asin ? `&asin=${asin}` : ''}`);
+      act(() => root.render(createElement(GridWorkspace, { ...workspaceProps('targets', store), asin })));
+      await flushGridLoad();
+      expect(host.textContent).toContain(asin ? `Product is ${asin}` : 'Export CSV (2 of 2)');
+      if (asin) {
+        expect(host.textContent).toContain('Export CSV (1 of 1)');
+        expect(host.textContent).not.toContain(`Product is ${asin === 'B000SYN001' ? 'B000SYN002' : 'B000SYN001'}`);
+      } else expect(host.querySelector('[aria-label="Remove product scope"]')).toBeNull();
+    }
+  });
+  it('prefills experiment ad-group ids with the destination adgroups parameter', () => {
+    const rows = ['ag-a', 'ag-b', 'ag-a'].map((id) => ({ ...row('ad_groups'), dimensions: { ad_group_id: id } }));
+    const query = new URL(gridExperimentHref('synthetic-profile', 'ad_groups', rows), 'https://example.invalid').searchParams;
+    expect(query.get('adgroups')?.split(',')).toEqual(['ag-a', 'ag-b']);
+    expect(query.has('adGroups')).toBe(false);
+  });
+});
+
+describe('verdict chip population', () => {
+  it('counts active non-verdict filters and ASIN scope exactly as each chip click', async () => {
+    const rows = [
+      ['one', 'B000SYN001', 'Efficient'], ['two', 'B000SYN001', 'Rank gap'],
+      ['other', 'B000SYN001', 'Efficient'], ['one', 'B000SYN002', 'Efficient'],
+    ].map(([name, asin, verdict], index) => ({ ...row('targets'), id: `target:${index}`, dimensions: { ...row('targets').dimensions, targeting: name!, asin: asin!, verdict: verdict! } }));
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ rows, rowCount: rows.length, truncated: false })));
+    const saved = scopedView('targets', { columns: ['targeting', 'verdict', 'spend'], filter: { groups: [{ filters: [{ key: 'TARGETING', conditions: [{ operator: '<>', values: ['other'] }] }] }] }, sort: [], groupBy: [] });
+    const query = new URLSearchParams({ entity: 'targets', asin: 'B000SYN001', view: serializeGridView(saved) });
+    window.history.replaceState(null, '', '/grid?' + query);
+    const host = document.createElement('div'); document.body.append(host);
+    const root = createRoot(host); mounted.push(root);
+    act(() => root.render(createElement(GridWorkspace, { ...workspaceProps('targets', new MemoryViewStore()), asin: 'B000SYN001' })));
+    await flushGridLoad();
+    for (const chip of host.querySelectorAll<HTMLButtonElement>('[data-quick-verdict]')) {
+      const diagnosis = chip.dataset['quickVerdict'];
+      const count = diagnosis === 'Efficient' || diagnosis === 'Rank gap' ? 1 : 0;
+      expect(chip.textContent).toBe(`${diagnosis} (${count})`);
+      await act(async () => chip.click());
+      expect(host.textContent).toContain(`Export CSV (${count} of 3)`);
+    }
+  });
 });

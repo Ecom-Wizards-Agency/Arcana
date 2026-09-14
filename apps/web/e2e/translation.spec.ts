@@ -33,6 +33,9 @@ test('translation preserves the original, persists language and retries through 
     await expect(status).toContainText('Waiting');
     const jobs = await database.sql<{ count: number }[]>`select count(*)::int as count from public.sync_jobs where payload->>'translationId'=${row.id}`;
     expect(jobs[0]?.count).toBe(2);
+    await database.sql`update public.target_translations set status='unavailable', reason='provider not configured', completed_at=now() where id=${row.id}`;
+    await page.getByRole('button', { name: 'Refresh translations', exact: true }).click();
+    await expect(status).toContainText('Translation unavailable');
     await expect(page.getByRole('link', { name: 'Back to targets' })).toBeVisible();
   } finally { await database.close(); }
 });
