@@ -14,7 +14,7 @@ export interface TrendSeries {
   label: string;
   points: readonly TrendPoint[];
   scale?: ValueScale;
-  mark?: 'line' | 'bar';
+  mark?: 'line' | 'bar' | 'points';
   axis?: 'left' | 'right';
   tone?: 'own' | 'competitor' | 'muted' | 'faint' | 'threshold';
 }
@@ -75,6 +75,11 @@ export interface TrendChartProps {
   windows?: readonly ChartWindow[];
   /** Trailing attribution-restatement window, rendered with its own neutral band. */
   settlingWindow?: ChartWindow;
+  /** Dated event boundaries, without shading the event itself. */
+  eventMarkers?: readonly ChartWindow[];
+  focusWindow?: ChartWindow;
+  onEventClick?: (id: string) => void;
+  namedEndLabels?: boolean;
 }
 
 const GRANULARITIES: readonly Granularity[] = ['D', 'W', 'M'];
@@ -174,12 +179,14 @@ export function TrendChart({
   showNumbers = true,
   windows = [],
   settlingWindow,
+  eventMarkers = [], focusWindow, onEventClick, namedEndLabels = false,
 }: TrendChartProps): ReactNode {
-  const PAD = rankLabels ? { top: 14, right: 112, bottom: 26, left: 52 } : { top: 14, right: 78, bottom: 26, left: 62 };
+  const PAD = namedEndLabels ? { top: 30, right: 128, bottom: 26, left: 52 } : rankLabels ? { top: 14, right: 112, bottom: 26, left: 52 } : { top: 14, right: 78, bottom: 26, left: 62 };
   const W = width;
   const H = height;
   const PLOT_W = W - PAD.left - PAD.right;
   const PLOT_H = H - PAD.top - PAD.bottom;
+  const [activeMarker, setActiveMarker] = useState<string | null>(null);
   const [hover, setHover] = useState<number | null>(null);
   const [gran, setGran] = useState<Granularity>('D');
   const context = useMemo(() => ({ currencyCode, locale: 'en-US' }), [currencyCode]);
@@ -268,6 +275,28 @@ export function TrendChart({
     endpoints.map((entry, index) => [entry.seriesIndex, stackedLabelYs[index] ?? axisY(entry.last.value, gseries[entry.seriesIndex]?.axis ?? 'left') + 3.5]),
   );
 
+  const dateX = (date: string): number | null => {
+    const first = dates[0], last = dates.at(-1);
+    if (!first || !last || date < first || date > last) return null;
+    const span = Date.parse(last) - Date.parse(first);
+    return span === 0 ? x(0) : PAD.left + (Date.parse(date) - Date.parse(first)) / span * PLOT_W;
+  };
+  const markerLabelLanes: { left: number; right: number }[][] = [[], []];
+  // Longer windows keep their labels when several boundaries share a date.
+  const datedMarkers = eventMarkers.map((marker, index) => ({ marker, index }))
+    .sort((a, b) => (Date.parse(b.marker.end ?? dates.at(-1)!) - Date.parse(b.marker.start)) - (Date.parse(a.marker.end ?? dates.at(-1)!) - Date.parse(a.marker.start)))
+    .flatMap(({ marker, index }) => [
+    { date: marker.start, label: `${dateLabel(marker.start)}${focusWindow ? ' · start' : ''}` },
+    { date: marker.end ?? dates.at(-1)!, label: marker.end === null ? 'running' : `${dateLabel(marker.end)}${focusWindow ? ' · end' : ''}` },
+  ].flatMap((boundary, boundaryIndex) => {
+    const position = dateX(boundary.date);
+    if (position === null) return [];
+    const width = boundary.label.length * 5.5 + 10;
+    const left = Math.max(PAD.left, Math.min(position + 2, PAD.left + PLOT_W - width));
+    const lane = markerLabelLanes.findIndex((entries) => entries.every((entry) => left > entry.right + 4 || left + width < entry.left - 4));
+    if (lane !== -1) markerLabelLanes[lane]!.push({ left, right: left + width });
+    return [{ marker, index, boundaryIndex, boundary, position, left, width, lane, labelY: 1 + Math.max(0, lane) * 15 }];
+  }));
   const hovered = hover === null ? null : Math.min(Math.max(hover, 0), dates.length - 1);
 
   return (
@@ -288,6 +317,26 @@ export function TrendChart({
             setHover(Math.round(ratio * (dates.length - 1)));
           }}
         >
+          {focusWindow ? [
+            { start: dates[0]!, end: focusWindow.start },
+            { start: focusWindow.end ?? dates.at(-1)!, end: dates.at(-1)! },
+          ].map((margin, i) => {
+            const left = dateX(margin.start), right = dateX(margin.end);
+            return left === null || right === null || right <= left ? null : <rect key={i} data-testid="outside-event-window" x={left} y={PAD.top} width={right-left} height={PLOT_H} fill="var(--wa-surface)" />;
+          }) : null}
+          {datedMarkers.map(({ marker, index, boundaryIndex, boundary, position, left, width, lane, labelY }) => (
+            <g key={`${marker.id ?? index}-${boundaryIndex}`} data-testid="event-marker" data-date={boundary.date} data-label-lane={lane}
+              onMouseEnter={() => setActiveMarker(`${index}-${boundaryIndex}`)} onMouseLeave={() => setActiveMarker(null)}
+              onFocus={() => setActiveMarker(`${index}-${boundaryIndex}`)} onBlur={() => setActiveMarker(null)}
+              role={onEventClick ? 'button' : undefined} tabIndex={onEventClick ? 0 : undefined} aria-label={`${marker.label}: ${boundary.label}`}
+              onClick={() => marker.id && onEventClick?.(marker.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (marker.id) onEventClick?.(marker.id); } }}>
+              <title>{`${marker.label}: ${boundary.label}`}</title>
+              <rect x={position - 4} y={PAD.top} width={8} height={PLOT_H} fill="transparent" />
+              <line x1={position} x2={position} y1={PAD.top} y2={PAD.top + PLOT_H} stroke={seriesStyle(index).color} opacity={0.55} />
+              {lane !== -1 || activeMarker === `${index}-${boundaryIndex}` ? <g data-testid="event-marker-label"><rect x={left} y={labelY} width={width} height={14} rx={3} fill={seriesStyle(index).color} />
+              <text x={left + 5} y={labelY + 10} fill="var(--wa-white)" fontSize={9}>{boundary.label}</text></g> : null}
+            </g>
+          ))}
           {/* Background windows sit behind axes, series, and hover marks. */}
           {windows.map((window, index) => {
             const rankStart = dates.findIndex((date) => date >= window.start);
@@ -351,7 +400,7 @@ export function TrendChart({
                 <text x={axis === 'left' ? PAD.left - 8 : PAD.left + PLOT_W + 8}
                   y={axisY(tick, axis) + 3.5} textAnchor={axis === 'left' ? 'end' : 'start'}
                   fill="var(--wa-viz-ink)" fontSize={rankLabels ? 10 : 12}>
-                  {rankLabels ? `#${formatValue(tick, 'integer', context)}` : axisScale === null ? formatValue(tick, 'integer', context) : formatValue(tick, axisScale, context)}
+                  {rankLabels ? `#${formatValue(tick, 'integer', context)}` : namedEndLabels && axisScale === 'money' ? new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode, currencyDisplay: 'narrowSymbol', notation: 'compact', maximumFractionDigits: 1 }).format(tick) : axisScale === null ? formatValue(tick, 'integer', context) : formatValue(tick, axisScale, context)}
                 </text>
               </g>)}
             </g>;
@@ -373,7 +422,7 @@ export function TrendChart({
             fontSize={rankLabels ? 10 : 12}
             style={{ fontVariantNumeric: 'tabular-nums' }}
           >
-            {rankLabels && dates[0] ? dateLabel(dates[0]) : dates[0]}
+            {(rankLabels || namedEndLabels) && dates[0] ? dateLabel(dates[0]) : dates[0]}
           </text>
           <text
             x={PAD.left + PLOT_W}
@@ -383,10 +432,10 @@ export function TrendChart({
             fontSize={rankLabels ? 10 : 12}
             style={{ fontVariantNumeric: 'tabular-nums' }}
           >
-            {rankLabels && dates.at(-1) ? dateLabel(dates.at(-1)!) : dates.at(-1)}
+            {(rankLabels || namedEndLabels) && dates.at(-1) ? dateLabel(dates.at(-1)!) : dates.at(-1)}
           </text>
 
-          {rankLabels ? [0.33, 0.65, 0.85].map((fraction) => {
+          {rankLabels || namedEndLabels ? [0.25, 0.5, 0.75].map((fraction) => {
             const index = Math.round((dates.length - 1) * fraction);
             return dates.length > 5 && dates[index] ? <text key={fraction} x={x(index)} y={H - 8} textAnchor="middle" fontSize={10} fill="var(--wa-viz-ink)">{dateLabel(dates[index])}</text> : null;
           }) : null}
@@ -405,7 +454,7 @@ export function TrendChart({
             const visual = styleOf(entry, index);
             const color = visual.color;
             const y = seriesY(entry);
-            const path = linePath(entry.points, x, y);
+            const path = entry.mark === 'points' ? '' : linePath(entry.points, x, y);
             if (entry.mark === 'bar') return <g key={entry.label} data-series-mark="bar" aria-label={`${entry.label} bars`}>
               {entry.points.map((point, pointIndex) => point.value === null ? null : <rect key={point.date}
                 x={x(pointIndex) + (bars.indexOf(entry) - bars.length / 2) * barWidth}
@@ -439,7 +488,8 @@ export function TrendChart({
                     />
                   </>
                 )}
-                {invertedAxis ? entry.points.map((point, pointIndex) =>
+                {entry.mark === 'points' ? entry.points.map((point, pointIndex) => point.value === null || pointIndex === last?.index ? null : <circle key={point.date} data-observed-point={point.date} cx={x(pointIndex)} cy={y(point.value)} r={4} fill={color} />) : null}
+                {invertedAxis && entry.mark !== 'points' ? entry.points.map((point, pointIndex) =>
                   point.value !== null && pointIndex !== last?.index
                     && (entry.points[pointIndex - 1]?.value ?? null) === null
                     && (entry.points[pointIndex + 1]?.value ?? null) === null
@@ -475,7 +525,7 @@ export function TrendChart({
                       fontSize={rankLabels ? 10 : 12}
                       style={{ fontVariantNumeric: 'tabular-nums' }}
                     >
-                      {rankLabels ? `${entry.label} #${formatValue(last.value, 'integer', context)}` : formatValue(last.value, entry.scale ?? scale, context)}
+                      {rankLabels ? `${entry.label} #${formatValue(last.value, 'integer', context)}` : `${namedEndLabels ? `${entry.label} ` : ''}${formatValue(last.value, entry.scale ?? scale, context)}`}
                     </text>
                   </>
                 )}

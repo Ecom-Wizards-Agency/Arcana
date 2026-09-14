@@ -71,7 +71,7 @@ export function NavBar({ user, profiles = [], groups = NAV_GROUPS }: NavBarProps
 
       <header className="wa-topbar">
         <ScreenTopbar today={todayIso()} profiles={profiles} now={new Date().toISOString()} screens={SCREEN_REGISTRY.filter((screen) => screen.route !== 'redirect' && screen.route !== 'planned').map((screen) => ({
-          path: screen.path, title: screen.nav?.label ?? screen.guard?.heading ?? screen.id.split('-').map((word) => word[0]?.toUpperCase() + word.slice(1)).join(' '),
+          path: screen.path, matchDynamic: screen.title !== undefined, title: screen.title ?? screen.nav?.label ?? screen.guard?.heading ?? screen.id.split('-').map((word) => word[0]?.toUpperCase() + word.slice(1)).join(' '),
         }))} />
       </header>
     </div>

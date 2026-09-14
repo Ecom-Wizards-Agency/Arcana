@@ -61,8 +61,8 @@ export const ExperimentCommand = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('create'), profileId: Uuid, name: ExperimentName, hypothesis: ExperimentText.optional(),
     type: ExperimentType, metricFocus: ExperimentMetric, scope: ExperimentScopeInput.optional(),
-    startAt: ExperimentStart.nullable().optional(), status: z.enum(['planned', 'running']).optional(),
-  }).strict(),
+    startAt: ExperimentStart.nullable().optional(), endAt: ExperimentStart.nullable().optional(), status: z.enum(['planned', 'running']).optional(),
+  }).strict().refine((value) => !value.startAt || !value.endAt || value.endAt >= value.startAt, { message: 'Ends must be on or after Starts' }),
   z.object({ kind: z.literal('edit'), experimentId: Uuid, ...editable }).strict()
     .refine((value) => Object.keys(editable).some((key) => value[key as keyof typeof value] !== undefined), {
       message: 'An edit must change at least one experiment field',
@@ -88,6 +88,14 @@ export const ExperimentEventRecord = z.object({
   toStatus: ExperimentStatus, note: z.string().nullable(), actorId: Uuid.nullable(), createdAt: z.date(),
 }).strict();
 export type ExperimentEventRecord = z.infer<typeof ExperimentEventRecord>;
+
+/** Read-time evidence only: scope/window overlap is not a durable experiment link. */
+export const ExperimentInferredBatchNote = z.object({
+  rowId: Uuid, batchId: Uuid, batchTag: z.string(), appliedOn: z.string().date(),
+  entityId: z.string(), field: z.string(), newValue: z.union([z.number(), z.string(), z.boolean(), z.null()]),
+  inference: z.literal('scope-and-window'),
+}).strict();
+export type ExperimentInferredBatchNote = z.infer<typeof ExperimentInferredBatchNote>;
 
 function checkEventLink(
   value: { item: Pick<ExperimentRecord, 'id' | 'orgId' | 'status'>; event: Pick<ExperimentEventRecord, 'experimentId' | 'orgId' | 'toStatus'> | null },

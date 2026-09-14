@@ -743,6 +743,10 @@ begin
       '{"id":"fixture-layout","name":"Synthetic fixture layout","entity":"placements","columns":[],"pinned":[],"widths":{},"filter":{"groups":[]},"sort":[],"groupBy":[],"dateRange":null,"updatedAt":"2026-09-14"}'::jsonb);
   end if;
 
+  if to_regclass('public.timeline_events') is not null then
+    insert into public.timeline_events(org_id,profile_id,name,kind,start_on,scope_text,note,created_by) values(v_org,v_profile,'Synthetic listing note','listing',p_date,'Recorded only','Fixture observation',p_user_id);
+  insert into public.timeline_evidence_settings(org_id,profile_id) values(v_org,v_profile);
+  end if;
   return v_org;
 end;
 $$;

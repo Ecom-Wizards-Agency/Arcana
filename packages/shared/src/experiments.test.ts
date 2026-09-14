@@ -10,7 +10,7 @@ const create = { kind: 'create', profileId: id, name: '  Synthetic\n experiment 
 describe('experiment contracts', () => {
   it('binds writable fields to one intent without admitting authority or initial terminal status', () => {
     expect(ExperimentCommand.parse(create)).toMatchObject({ name: 'Synthetic experiment' });
-    for (const patch of [{ orgId: id }, { createdBy: id }, { actorId: id }, { endAt: null }, { status: 'ended' }]) {
+    for (const patch of [{ orgId: id }, { createdBy: id }, { actorId: id }, { endAt: 'invalid' }, { status: 'ended' }]) {
       expect(ExperimentCommand.safeParse({ ...create, ...patch }).success).toBe(false);
     }
     expect(ExperimentCommand.safeParse({ kind: 'edit', experimentId: id }).success).toBe(false);
@@ -74,4 +74,11 @@ describe('experiment contracts', () => {
     expect(ExperimentCommandResult.safeParse({ kind: 'transitioned', item: { ...item, status: 'running' },
       event: { ...event, fromStatus: 'planned', toStatus: 'running' } }).success).toBe(true);
   });
+});
+
+it('accepts nullable creation ends and refuses an inverted experiment window', () => {
+  const input = { kind: 'create', profileId: '26400000-0000-4000-8000-000000000001', name: 'Synthetic window', type: 'other', metricFocus: 'sales', startAt: '2026-08-01', endAt: '2026-08-15' };
+  expect(ExperimentCommand.parse(input)).toMatchObject({ startAt: new Date('2026-08-01'), endAt: new Date('2026-08-15') });
+  expect(ExperimentCommand.parse({ ...input, status: 'running', endAt: null })).toMatchObject({ endAt: null });
+  expect(ExperimentCommand.safeParse({ ...input, endAt: '2026-07-31' }).success).toBe(false);
 });

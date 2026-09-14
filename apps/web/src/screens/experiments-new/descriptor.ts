@@ -6,6 +6,7 @@ export const descriptor = {
   id: "experiments-new",
   path: "/experiments/new",
   route: "page",
+  title: "New experiment",
   nav: null,
   guard: null,
   prefetch: "cheap",

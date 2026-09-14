@@ -179,8 +179,8 @@ describe('WP-253 agency authority', () => {
     const before = await events(); expect(before).toHaveLength(1);
     await expect(mutateExperimentForActor(database,{ orgId: actor.orgId, userId: actor.userId },{ kind: 'transition',experimentId: item.id,status: 'analyzed' })).rejects.toMatchObject({ code: 'conflict' });
     expect(await events()).toEqual(before);
-    const note = await mutateExperimentForActor(database,{ orgId: actor.orgId, userId: actor.userId },{ kind: 'transition',experimentId: item.id,resultNote: 'Synthetic note' });
-    expect(note.event).toBeNull(); expect(await events()).toHaveLength(1);
+    await expect(mutateExperimentForActor(database,{ orgId: actor.orgId, userId: actor.userId },{ kind: 'transition',experimentId: item.id,resultNote: 'Synthetic note' })).rejects.toMatchObject({ code: 'conflict' });
+    expect(await events()).toEqual(before);
     const results = await Promise.all([1,2].map(() => mutateExperimentForActor(database,{ orgId: actor.orgId, userId: actor.userId },{ kind: 'transition',experimentId: item.id,status: 'running' })));
     expect(results.filter((r) => r.event !== null)).toHaveLength(1); expect(await events()).toHaveLength(2);
   });

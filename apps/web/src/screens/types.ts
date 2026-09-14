@@ -32,6 +32,8 @@ export interface ScreenNavigation {
 export interface ScreenDescriptor<Data = unknown> {
   readonly id: string;
   readonly path: string;
+  /** Explicit shell title for routes without a navigation entry. */
+  readonly title?: string;
   readonly route: 'page' | 'redirect' | 'preset' | 'planned';
   /** Query-preserving aliases can resolve before the application layout. */
   readonly redirectTo?: string;
@@ -47,7 +49,7 @@ export interface ScreenDescriptor<Data = unknown> {
   readonly client: () => Promise<(props: { data: Data; }) => ReactElement | null>;
 }
 
-export type ScreenMetadata = Pick<ScreenDescriptor, 'id' | 'path' | 'route' | 'redirectTo' | 'nav' | 'guard' | 'prefetch' | 'rollout' | 'states' | 'entry' | 'preferredOrg' | 'specs'>;
+export type ScreenMetadata = Pick<ScreenDescriptor, 'id' | 'path' | 'title' | 'route' | 'redirectTo' | 'nav' | 'guard' | 'prefetch' | 'rollout' | 'states' | 'entry' | 'preferredOrg' | 'specs'>;
 
 /** Missing flags use the default. An explicit flag is enabled only by 1 or true. */
 export function screenEnabled(screen: Pick<ScreenMetadata, 'rollout'>, env: Readonly<Record<string, string | undefined>> = process.env): boolean {

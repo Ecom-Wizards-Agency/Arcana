@@ -65,12 +65,14 @@ describe('review authority database commands', () => {
   });
 
   it('returns the appended experiment event even when timestamps are out of order', async () => {
-    const created = await mutateExperimentForActor(database,actor,{ kind: 'create',profileId,name: 'Synthetic chronology',type: 'other',metricFocus: 'sales' });
-    await database.sql`update public.experiment_events set created_at=now()+interval '1 day' where experiment_id=${created.item.id}`;
-    const moved = await mutateExperimentForActor(database,actor,{ kind: 'transition',experimentId: created.item.id,status: 'running' });
+    const [created] = await database.sql<{id:string}[]>`insert into public.experiments(org_id,profile_id,created_by,name,type,metric_focus,status)
+      values(${actor.orgId},${profileId},${actor.userId},'Synthetic chronology','other','sales','planned') returning id`;
+    const [initialEvent] = await database.sql<{id:number}[]>`insert into public.experiment_events(org_id,experiment_id,to_status,note,actor_id,created_at)
+      values(${actor.orgId},${created!.id},'planned','Created',${actor.userId},now()+interval '1 day') returning id`;
+    const moved = await mutateExperimentForActor(database,actor,{ kind: 'transition',experimentId: created!.id,status: 'running' });
     expect(moved.event).toMatchObject({ fromStatus: 'planned',toStatus: 'running',actorId: actor.userId });
-    expect(moved.event!.id).not.toBe(created.event!.id);
-    const rows = await database.sql`select id from public.experiment_events where experiment_id=${created.item.id}`;
+    expect(moved.event!.id).not.toBe(Number(initialEvent!.id));
+    const rows = await database.sql`select id from public.experiment_events where experiment_id=${created!.id}`;
     expect(rows).toHaveLength(2);
   });
 });
