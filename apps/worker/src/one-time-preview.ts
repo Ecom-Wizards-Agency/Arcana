@@ -43,11 +43,14 @@ export function freezeOneTimeRpcSnapshot(
   });
 }
 
-export function oneTimeRpcSnapshotFingerprint(snapshot: OneTimeRpcSnapshot): string {
+export function oneTimeRpcSnapshotFingerprint(snapshot: unknown): string {
   const parsed = OneTimeRpcSnapshot.parse(snapshot);
   const settings = parsed.configuration;
+  // Verify historical immutable snapshots against their original bytes before
+  // the parsing boundary maps their method alias to canonical output.
+  const storedMethod = (snapshot as { configuration: { method: string } }).configuration.method;
   const values = [
-    String(parsed.version), String(settings.version), settings.method,
+    String(parsed.version), String(settings.version), storedMethod,
     numberBits(settings.targetAcos), numberBits(settings.bidFloor), numberBits(settings.bidCeiling),
     numberBits(settings.bidIncreaseCap), numberBits(settings.bidDecreaseCap),
     settings.window.start, settings.window.end,

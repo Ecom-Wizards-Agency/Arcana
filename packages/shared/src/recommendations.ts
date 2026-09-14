@@ -9,6 +9,7 @@
  * audit is a black box with better manners.
  */
 import { z } from 'zod';
+import { CalculationTrace, Hold, MethodId, MethodVersion, MethodMetrics, SettingSources } from './methods.js';
 import { EntityRef, IsoDate, Uuid } from './primitives.js';
 import { DirectionalAdjustmentProvenance } from './optimization.js';
 
@@ -43,6 +44,10 @@ export type RecommendationStatus = z.infer<typeof RecommendationStatus>;
 
 /** Provenance. Every field here answers "why is this number what it is". */
 export const RecommendationInputs = z.object({
+  methodId: MethodId.optional(),
+  methodVersion: MethodVersion.optional(),
+  settingSources: SettingSources.optional(),
+  trace: CalculationTrace.optional(),
   /** Revenue per click over the window, or null when there were no clicks. */
   rpc: z.number().nullable(),
   clicks: z.number().int().nonnegative(),
@@ -94,3 +99,26 @@ export const Recommendation = z.object({
   createdAt: z.iso.datetime().optional(),
 });
 export type Recommendation = z.infer<typeof Recommendation>;
+
+/** Compatibility evidence for the preserved reference evaluator. */
+export const ReferenceBidNote = z.object({ code: z.enum(['stock_unknown', 'rank_unknown']), message: z.string() });
+export const ReferenceConfidence = z.object({
+  level: CvrSourceLevel, metrics: MethodMetrics, cvr: z.number().nullable(), aov: z.number().nullable(),
+  rpc: z.number().nullable(), clicksToConversion: z.number().nullable(),
+});
+export const ReferenceNoProposalReason = z.enum(['on_target', 'no_clicks', 'no_benchmark_data', 'no_change', 'below_minimum']);
+export const ReferenceBidOutcome = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('proposal'), recommendation: Recommendation, notes: z.array(ReferenceBidNote), confidence: ReferenceConfidence }),
+  z.object({ kind: z.literal('suppressed'), recommendation: Recommendation, suppressedReason: z.string(), notes: z.array(ReferenceBidNote), confidence: ReferenceConfidence }),
+  z.object({ kind: z.literal('blocked'), blockedReason: z.literal('out_of_stock'), note: z.string() }),
+  z.object({ kind: z.literal('none'), reason: ReferenceNoProposalReason }),
+]);
+export type ReferenceBidOutcome = z.infer<typeof ReferenceBidOutcome>;
+export const MethodEvaluatorOutput = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('proposal'), changes: z.array(Recommendation).min(1), trace: CalculationTrace,
+    dependencies: z.array(EntityRef), referenceOutcome: ReferenceBidOutcome.optional(),
+  }),
+  z.object({ kind: z.literal('hold'), hold: Hold, referenceOutcome: ReferenceBidOutcome.optional() }),
+]);
+export type MethodEvaluatorOutput = z.infer<typeof MethodEvaluatorOutput>;

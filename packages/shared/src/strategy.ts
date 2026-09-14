@@ -22,6 +22,7 @@
  * field to the engine that reads it.
  */
 import { z } from 'zod';
+import { MethodSelection } from './methods.js';
 import { IsoDate } from './primitives.js';
 
 const severity = z.enum(['warn', 'fail']);
@@ -76,6 +77,7 @@ export type BidBoundUnit = z.infer<typeof BidBoundUnit>;
  * group's CPC without the engine having to guess which.
  */
 export const OptGroupStrategy = z.object({
+  method: MethodSelection.optional(),
   target_acos: z.number().optional(),
   max_increase: z.number().optional(),
   /** Increase cap once the group is in steady state, where one differs from `max_increase`. */

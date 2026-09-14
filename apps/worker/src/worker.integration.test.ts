@@ -1,3 +1,4 @@
+import { CalculationTrace, RecommendationInputs } from '@wizard-ads/shared';
 /**
  * The worker against a real, migrated Postgres.
  *
@@ -291,6 +292,8 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       opt_groups: {
         Profit: {
           target_acos: 0.3,
+          bid_floor_unit: 'absolute', bid_floor_value: 0.07,
+          bid_ceiling_unit: 'absolute', bid_ceiling_value: 3.7,
           max_increase: 0.25,
           max_decrease: 0.5,
           goal_lens: 'profit-maintain',
@@ -341,6 +344,14 @@ describe.skipIf(!available)('worker + real Postgres', () => {
                     sales_7d = excluded.sales_7d
     `;
 
+    await database.sql`
+      update public.optimization_groups set bid_floor = 0.07, bid_ceiling = 3.7
+       where org_id = ${orgId} and profile_id = ${profileId}
+    `;
+
+    // This fixture exercises a proposal; the new lock tests retain active experiments.
+    await database.sql`update public.experiments set status = 'ended' where org_id = ${orgId} and profile_id = ${profileId}`;
+
     const recommendationStore = new PostgresRecommendationRunStore(database);
     const accepted = await recommendationStore.enqueueRecommendationPreviewBatch({
       orgId,
@@ -369,7 +380,11 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       select status::text as status, result from public.sync_jobs where id = ${queued.jobId}
     `;
     expect(job?.status).toBe('succeeded');
-    expect(job?.result).toMatchObject({ runId: queued.runId, proposals: 1 });
+    const [methodEvidence] = await database.sql<{ narrative: unknown }[]>`
+      select payload -> 'narrative' as narrative from public.audit_log
+       where action = 'recommendation.run.succeeded' and target_id = ${queued.runId}
+    `;
+    expect(job?.result, JSON.stringify(methodEvidence?.narrative)).toMatchObject({ runId: queued.runId, proposals: 1 });
 
     const [run] = await database.sql<{
       status: string;
@@ -398,8 +413,9 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       field: string;
       status: string;
       inputs: Record<string, unknown>;
+      proposed_value: number;
     }[]>`
-      select reason::text as reason, entity_id, field, status::text as status, inputs
+      select reason::text as reason, entity_id, field, status::text as status, inputs, proposed_value
         from public.recommendations where run_id = ${queued.runId}
     `;
     expect(proposals).toHaveLength(1);
@@ -408,8 +424,17 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       entity_id: 'kw-1',
       field: 'bid',
       status: 'proposed',
-      inputs: { clicks: 10, cvrSourceLevel: 'keyword' },
+      inputs: { clicks: 10, cvrSourceLevel: 'keyword', methodId: 'sp.reference-efficiency', methodVersion: 'reference.1',
+        settingSources: { targetAcos: { source: 'group' } } },
     });
+
+    const savedInputs = RecommendationInputs.parse(proposals[0]!.inputs);
+    const savedTrace = CalculationTrace.parse(savedInputs.trace);
+    expect(savedTrace.steps.slice(0, 4).map((step) => step.label)).toEqual(['Inputs', 'RPC', 'Target ACOS', 'Raw bid']);
+    expect(savedTrace.roundingStep.label).toContain('Rounding');
+    expect(savedTrace.finalResult).toBe(proposals[0]?.proposed_value);
+    expect(savedInputs.settingSources).toHaveProperty('bidFloor');
+    expect(savedInputs.settingSources).toHaveProperty('bidCeiling');
 
     const [preconditionNote] = await database.sql<{ payload: { note?: string; codes?: string[] } }[]>`
       select payload from public.audit_log

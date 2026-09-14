@@ -43,15 +43,15 @@ export function OneTimeSettingsDialog({ campaignCount, settings, period, profile
         const raw = String(data.get(field.name) ?? '').trim();
         return [field.name, raw === '' ? undefined : Number(raw) / (field.percentage ? 100 : 1)];
       }));
-      const result = OneTimeRpcConfiguration.safeParse({ ...numbers, version: 1, method: 'rpc', window: { start: data.get('start'), end: data.get('end') } });
+      const result = OneTimeRpcConfiguration.safeParse({ ...numbers, version: 1, method: 'sp.reference-efficiency', window: { start: data.get('start'), end: data.get('end') } });
       if (!result.success) { setError(result.error.issues[0]?.message ?? 'Review the preview settings.'); return; }
       if (result.data.window.end >= profileToday) { setError('Choose completed days before today in this account’s timezone.'); return; }
       setError(null);
       onConfirm(result.data);
     }}>
       <h2 id="one-time-preview-title" className="wa-card__title">Confirm one-time preview</h2>
-      <p>{campaignCount.toLocaleString('en-US')} campaigns · RPC · {currencyCode}</p>
-      <p className="wa-hint">Uses revenue per click with the existing bid rules and stock, rank, and observation safeguards. Saved strategies and schedules stay unchanged.</p>
+      <p>{campaignCount.toLocaleString('en-US')} campaigns · SP reference efficiency · {currencyCode}</p>
+      <p className="wa-hint">Uses the reference bid rules with stock, rank, and observation safeguards. Assigned group values override the run fields below; run fields fill missing group values. Saved settings stay unchanged.</p>
       {missing ? <p className="wa-hint">Some settings are mixed or missing. Choose a value for each blank field.</p> : <p className="wa-hint">Matching settings from the selected campaigns are prefilled.</p>}
       <fieldset disabled={submitting} style={{ border: 0, padding: 0, display: 'grid', gap: '0.75rem', gridTemplateColumns: '1fr 1fr' }}>
         {fields.map((field) => <label className="wa-label" key={field.name}>

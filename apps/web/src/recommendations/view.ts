@@ -77,6 +77,13 @@ export function toProposalView(
     ...(options.assignments === undefined ? {} : { assignments: options.assignments }),
   });
 
+  const resolvedAcos = record.inputs.settingSources?.['targetAcos'];
+  if (resolvedAcos !== undefined && typeof resolvedAcos.value === 'number') {
+    strategy.targetAcos = resolvedAcos.value;
+    strategy.explanation = `Target ACOS from ${resolvedAcos.sourceLabel} (${resolvedAcos.source}).`;
+    if (resolvedAcos.source === 'group') { strategy.optGroup = resolvedAcos.sourceLabel; strategy.source = 'opt_group'; }
+  }
+
   const current = numeric(record.currentValue);
   const proposed = numeric(record.proposedValue);
   const delta = current !== null && proposed !== null && current !== 0 ? (proposed - current) / current : null;
@@ -90,7 +97,7 @@ export function toProposalView(
     runId: record.runId,
     reason: record.reason,
     reasonLabel: reasonLabel(record.reason),
-    changeReason: reasonFormula(record.reason),
+    changeReason: record.inputs.trace?.steps.find((step) => step.label === 'Raw bid')?.formula ?? reasonFormula(record.reason),
     limitReason: limitReason(record.inputs),
     entityType: record.entityType,
     entityId: record.entityId,
@@ -105,7 +112,7 @@ export function toProposalView(
     decisionNote: record.decisionNote,
     exportBatchTag: record.exportBatchTag,
     strategy,
-    strategyLabel: strategyLabel(strategy),
+    strategyLabel: resolvedAcos?.source === 'group' ? `${resolvedAcos.sourceLabel} · ${strategy.objective}` : strategyLabel(strategy),
     provenance: provenanceLines(record.inputs),
     exportable: options.executionSnapshot === undefined && EXPORTABLE_ENTITY_TYPES.has(record.entityType),
   };

@@ -345,6 +345,7 @@ async function bundledSourceGraph(entry) {
       `--outfile=${output}`, `--metafile=${metafile}`,
       `--alias:@wizard-ads/db/recommendation-worker=${join(root, 'packages/db/src/recommendation-worker.ts')}`,
       `--alias:@wizard-ads/db/worker=${join(root, 'packages/db/src/worker.ts')}`,
+      `--alias:@wizard-ads/shared/sp-writes=${join(root, 'packages/shared/src/sp-writes.ts')}`,
       `--alias:@wizard-ads/core=${join(root, 'packages/core/src/index.ts')}`,
       `--alias:@wizard-ads/db=${join(root, 'packages/db/src/index.ts')}`,
       `--alias:@wizard-ads/shared=${join(root, 'packages/shared/src/index.ts')}`,

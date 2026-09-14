@@ -9,10 +9,12 @@
  * never exceeded unless a cap held the value back, and a Sponsored Display bid
  * never passes half the daily budget.
  */
-import { describe, expect, it } from 'vitest';
-import type { EntityRef } from '@wizard-ads/shared';
+import { afterAll, describe, expect, it } from 'vitest';
+import { REFERENCE_METHOD, type EntityRef } from '@wizard-ads/shared';
+import { resolveMethod } from '../methods/registry.js';
+import { referenceMethodInput } from '../methods/reference.js';
 
-import { proposeBid, type BidOutcome } from './bid.js';
+import { proposeBid as directProposeBid, type BidOutcome } from './bid.js';
 import {
   applyCeilings,
   applyChangeCap,
@@ -848,3 +850,17 @@ describe('properties', () => {
     }
   });
 });
+
+// Replay the existing fixed inputs and property-loop inputs through both entry points.
+let parityFixtureCount = 0;
+function proposeBid(input: BidRequest): BidOutcome {
+  const direct = directProposeBid(input);
+  const registered = resolveMethod(REFERENCE_METHOD.id, REFERENCE_METHOD.version).evaluate(
+    referenceMethodInput(input, '2026-07-01T00:00:00Z'),
+  );
+  expect(registered.referenceOutcome).toStrictEqual(direct);
+  expect(JSON.stringify(registered.referenceOutcome)).toBe(JSON.stringify(direct));
+  parityFixtureCount += 1;
+  return direct;
+}
+afterAll(() => { expect(parityFixtureCount).toBe(3028); });

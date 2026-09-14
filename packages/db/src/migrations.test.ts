@@ -35,6 +35,19 @@ describe.skipIf(!available)('migrations', () => {
 
   });
 
+  it('adds exactly two nullable method identity columns without defaults', async () => {
+    const columns = await database.sql<{ column_name: string; is_nullable: string; column_default: string | null }[]>`
+      select column_name, is_nullable, column_default from information_schema.columns
+       where table_schema = 'public' and table_name = 'recommendation_runs'
+         and column_name in ('method_id', 'method_version') order by column_name
+    `;
+    expect(columns).toEqual([
+      { column_name: 'method_id', is_nullable: 'YES', column_default: null },
+      { column_name: 'method_version', is_nullable: 'YES', column_default: null },
+    ]);
+
+  });
+
   it('keeps every shared feature job representable in the database queue', async () => {
     const labels = await database.sql<{ enumlabel: string }[]>`
       select e.enumlabel

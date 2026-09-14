@@ -31,3 +31,5 @@ export * from './dayparting.js';
 export * from './campaign-creation.js';
 export * from './tags.js';
 export * from './recommendation-preview.js';
+
+export * from './methods.js';

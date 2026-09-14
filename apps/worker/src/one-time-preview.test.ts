@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
-import { OneTimeRpcPreviewRequest } from '@wizard-ads/shared';
+import { OneTimeRpcPreviewRequest, OneTimeRpcSnapshot } from '@wizard-ads/shared';
 import {
   freezeOneTimeRpcSnapshot,
   oneTimePreviewRequestFingerprint,
@@ -16,7 +16,7 @@ const request = OneTimeRpcPreviewRequest.parse({
   clientRequestId: '00000000-0000-4000-8000-000000000004',
   scope: { mode: 'selected', campaignIds: ['synthetic-b', 'synthetic-a'] },
   configuration: {
-    version: 1, method: 'rpc', targetAcos: 0.37,
+    version: 1, method: 'sp.reference-efficiency', targetAcos: 0.37,
     bidFloor: 0.13, bidCeiling: 4.7, bidIncreaseCap: 0.23, bidDecreaseCap: 0.41,
     window: { start: '2024-02-01', end: '2024-02-29' },
   },
@@ -41,6 +41,21 @@ describe.skipIf(!databaseReady)('one-time snapshot database contract', () => {
     `;
     expect(rows).toHaveLength(1);
     expect(rows[0]).toEqual({ valid: true, fingerprint: oneTimeRpcSnapshotFingerprint(snapshot) });
+  });
+
+  it('keeps historical snapshot digests while normalizing their method on read', async () => {
+    const canonical = freezeOneTimeRpcSnapshot(request.configuration, 'UTC', new Date('2024-03-01T09:00:00Z'));
+    const historical = { ...canonical, configuration: { ...canonical.configuration, method: 'rpc' } };
+    const rows = await database.sql<{ fingerprint: string }[]>`
+      select app.one_time_rpc_snapshot_fingerprint(value) as fingerprint
+        from jsonb_array_elements(${JSON.stringify([historical, canonical])}::jsonb)
+    `;
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.fingerprint)).toEqual([
+      oneTimeRpcSnapshotFingerprint(historical), oneTimeRpcSnapshotFingerprint(canonical),
+    ]);
+    expect(rows[0]!.fingerprint).not.toBe(rows[1]!.fingerprint);
+    expect(OneTimeRpcSnapshot.parse(historical)).toEqual(canonical);
   });
 
   it('refuses unknown fields, invalid dates, missing values and inconsistent profile calendars', async () => {

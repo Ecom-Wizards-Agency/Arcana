@@ -24,6 +24,7 @@ import { AgencyAccessDenied, withAuthenticatedOrgEditor, type AuthenticatedEdito
 export { EXPERIMENT_TYPES, EXPERIMENT_METRICS, EXPERIMENT_STATUSES, canTransition };
 export type { ExperimentType, ExperimentMetric, ExperimentStatus, ExperimentRecord, ExperimentEventRecord };
 import type { ExperimentScope } from '@wizard-ads/shared';
+import type { MethodExperiment } from '@wizard-ads/shared';
 import { toDate, toDateOrNull } from './pg-time.js';
 import type { JsonValue } from './goto.js';
 
@@ -854,4 +855,25 @@ export function assertWindowOrder(
   if (end < start) {
     throw new InvalidExperimentWindow('An experiment cannot end before it starts');
   }
+}
+
+/** Complete read-only lock evidence for one admission; chart-history limits do not apply. */
+export async function readMethodExperiments(
+  handle: QueryHandle, orgId: string, profileId: string, admittedAt: string,
+): Promise<MethodExperiment[]> {
+  const rows = await handle.sql<{
+    id: string; scope: unknown; start_at: Date | string; end_at: Date | string | null;
+  }[]>`
+    select id, scope, start_at, end_at from public.experiments
+     where org_id = ${orgId}::uuid and profile_id = ${profileId}::uuid
+       and status = 'running' and start_at <= ${admittedAt}::timestamptz
+       and (end_at is null or end_at > ${admittedAt}::timestamptz)
+     order by id
+  `;
+  const experiments = rows.map((row) => ({
+    id: row.id, scope: normalizeScope(row.scope), status: 'running' as const,
+    startAt: toDate(row.start_at).toISOString(), endAt: toDateOrNull(row.end_at)?.toISOString() ?? null,
+  }));
+  if (experiments.length !== rows.length) throw new Error('Experiment lock evidence count mismatch');
+  return experiments;
 }

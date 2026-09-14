@@ -27,13 +27,14 @@
  */
 import { createHash } from 'node:crypto';
 import {
-  OptimizationRunScheduleContext,
+  RecommendationRunAdmissionContext,
   OneTimeRpcSnapshot,
   normalizeOptimizationGroupSnapshot,
   serializeApplyRows,
 } from '@wizard-ads/shared';
 import type {
   ApplyRow,
+  OptimizationRunScheduleContext,
   OptimizationGroupSnapshot,
   RecommendationInputs,
 } from '@wizard-ads/shared';
@@ -263,9 +264,8 @@ function toRunSummary(row: RunRow): RecommendationRunSummary {
   const groupSnapshot = row.group_snapshot === null
     ? null
     : normalizeOptimizationGroupSnapshot(row.group_snapshot).group;
-  const scheduleContext = row.schedule_context === null
-    ? null
-    : OptimizationRunScheduleContext.parse(row.schedule_context);
+  const admissionContext = row.schedule_context == null ? null : RecommendationRunAdmissionContext.parse(row.schedule_context);
+  const scheduleContext = admissionContext !== null && 'version' in admissionContext ? admissionContext : null;
   if (groupSnapshot !== null && 'version' in groupSnapshot && scheduleContext === null) {
     throw new Error('weekday recommendation run is missing immutable schedule context');
   }
@@ -273,7 +273,7 @@ function toRunSummary(row: RunRow): RecommendationRunSummary {
     throw new Error('recommendation run group snapshot does not match group_id');
   }
   return {
-    ...(row.execution_snapshot == null ? {} : { executionSnapshot: OneTimeRpcSnapshot.parse(row.execution_snapshot) }),
+    ...(row.execution_snapshot == null ? {} : { executionSnapshot: { ...OneTimeRpcSnapshot.parse(row.execution_snapshot), ...(admissionContext?.methodAdmission === undefined ? {} : { methodId: admissionContext.methodAdmission.methodId, methodVersion: admissionContext.methodAdmission.methodVersion }) } }),
     id: row.id,
     orgId: row.org_id,
     profileId: row.profile_id,

@@ -10,7 +10,7 @@ const revision = 'b'.repeat(40);
 const workerId = 'one-time-export-proof';
 const refusal = 'One-time preview export awaits observation support.';
 const configuration: OneTimeRpcConfiguration = {
-  version: 1, method: 'rpc', targetAcos: 0.37,
+  version: 1, method: 'sp.reference-efficiency', targetAcos: 0.37,
   bidFloor: 0.11, bidCeiling: 4.3, bidIncreaseCap: 0.23, bidDecreaseCap: 0.41,
   window: { start: '2026-08-01', end: '2026-08-26' },
 };

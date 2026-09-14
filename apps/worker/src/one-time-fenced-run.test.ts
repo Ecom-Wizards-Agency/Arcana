@@ -12,7 +12,7 @@ const actorId = 'abababab-abab-4bab-8bab-abababababab';
 const identity = { workerId: 'one-time-fenced-run-worker', revision: 'b'.repeat(40) };
 const runAt = new Date('2026-09-01T12:00:00Z');
 const configuration: OneTimeRpcConfiguration = {
-  version: 1, method: 'rpc', targetAcos: 0.37,
+  version: 1, method: 'sp.reference-efficiency', targetAcos: 0.37,
   bidFloor: 0.11, bidCeiling: 4.3, bidIncreaseCap: 0.23, bidDecreaseCap: 0.41,
   window: { start: '2026-08-01', end: '2026-08-26' },
 };

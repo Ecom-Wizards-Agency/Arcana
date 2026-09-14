@@ -82,7 +82,7 @@ describe('one-time preview HTTP input', () => {
     clientRequestId: REQUEST_ID,
     scope: { mode: 'all' },
     configuration: {
-      version: 1, method: 'rpc', targetAcos: 0.37,
+      version: 1, method: 'sp.reference-efficiency', targetAcos: 0.37,
       bidFloor: 0.13, bidCeiling: 4.7, bidIncreaseCap: 0.23, bidDecreaseCap: 0.41,
       window: { start: '2024-02-01', end: '2024-02-29' },
     },
