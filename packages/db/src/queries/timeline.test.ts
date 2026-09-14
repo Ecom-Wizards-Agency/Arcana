@@ -2,7 +2,8 @@ import { afterAll, beforeAll, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '../testing/harness.js';
 import { withAuthenticatedOrgEditor } from './authenticated-actor.js';
 import { appendTimelineEvent, readManualTimelineEvents, readTimeline } from './timeline.js';
-import { listExperimentEvents, mutateExperimentForActor } from './experiments.js';
+import { listExperimentEvents, mutateExperimentForActor, transitionExperiment } from './experiments.js';
+import { asServiceRole } from '../testing/rls.js';
 import { EXPERIMENT_STATUSES, canTransitionExperiment } from '@wizard-ads/shared';
 const owner = '26400000-0000-4000-8000-000000000001', foreign = '26400000-0000-4000-8000-000000000002';
 let db: TestDatabase, orgId: string, profileId: string, foreignProfile: string;
@@ -194,4 +195,36 @@ it('atomically rolls back a status change if its trail cannot be appended and re
   expect(after).toHaveLength(3);
   expect(after[1]).toMatchObject({ actorId: owner, note: 'Recorded start', fromStatus: 'planned', toStatus: 'running' });
   expect(after[2]).toMatchObject({ actorId: owner, note: null, fromStatus: 'running', toStatus: 'ended' });
+});
+
+it('records a scoped system job for service-role transitions without weakening user or lifecycle authority', async () => {
+  const actor = { orgId, userId: owner };
+  const created = await mutateExperimentForActor(db, actor, { kind: 'create', profileId, name: 'System lifecycle', type: 'other', metricFocus: 'sales' });
+  const id = created.item.id;
+  const [job] = await db.sql<{id:string}[]>`select id from public.sync_jobs where org_id=${orgId} and profile_id=${profileId} and job_type='recommendations.run' limit 1`;
+  expect(job).toBeDefined();
+  await expect(asServiceRole(db, sql => transitionExperiment({sql}, {orgId, experimentId:id, to:'running'}))).rejects.toThrow(/user actor or a scoped system job/);
+  await expect(asServiceRole(db, sql => transitionExperiment({sql}, {orgId, experimentId:id, to:'running',systemJobId:foreign}))).rejects.toThrow(/scoped system job/);
+  const [otherJob] = await db.sql<{id:string}[]>`select id from public.sync_jobs where profile_id=${foreignProfile} limit 1`;
+  await expect(asServiceRole(db, sql => transitionExperiment({sql}, {orgId, experimentId:id, to:'running',systemJobId:otherJob!.id}))).rejects.toThrow(/scoped system job/);
+  expect(await listExperimentEvents(db,{orgId,experimentId:id})).toHaveLength(1);
+  await asServiceRole(db, sql => transitionExperiment({sql}, {orgId, experimentId:id, to:'running',systemJobId:job!.id,note:'Started by the recommendation job'}));
+  // Direct SQL with the same service job context also uses the trigger.
+  await asServiceRole(db, async sql => {
+    await sql`select set_config('app.experiment_job',${job!.id},false)`;
+    try { await sql`update public.experiments set status='ended' where id=${id}`; }
+    finally { await sql`select set_config('app.experiment_job','',false)`; }
+  });
+  const events = await listExperimentEvents(db,{orgId,experimentId:id});
+  expect(events).toHaveLength(3);
+  expect(events.slice(1).map(event=>({from:event.fromStatus,to:event.toStatus,actor:event.actorId,system:event.systemActor}))).toEqual([
+    {from:'planned',to:'running',actor:null,system:{role:'service_role',jobId:job!.id,jobType:'recommendations.run'}},
+    {from:'running',to:'ended',actor:null,system:{role:'service_role',jobId:job!.id,jobType:'recommendations.run'}},
+  ]);
+  await expect(asServiceRole(db, sql => sql`update public.experiments set status='running' where id=${id}`)).rejects.toThrow(/Invalid experiment status transition/);
+  await withAuthenticatedOrgEditor(db, actor, ({sql}) => sql`select app.transition_timeline_experiment(${orgId}::uuid,${id}::uuid,'analyzed',null,'Observed result',true,null,${job!.id}::uuid)`);
+  const analyzed = (await listExperimentEvents(db,{orgId,experimentId:id})).at(-1)!;
+  expect(analyzed.actorId).toBe(owner);
+  expect(analyzed.systemActor).toBeNull();
+  await expect(db.sql`update public.experiment_events set system_actor=null where id=${events[1]!.id}`).rejects.toThrow(/append-only/);
 });

@@ -83,9 +83,13 @@ export const ExperimentRecord = z.object({
   createdAt: z.date(), updatedAt: z.date(), statusChangedAt: z.date(),
 }).strict();
 export type ExperimentRecord = z.infer<typeof ExperimentRecord>;
+/** System attribution comes from the service role and an existing scoped job. */
+export const ExperimentSystemActor = z.object({ role: z.literal('service_role'), jobId: Uuid, jobType: z.string().min(1) }).strict();
+export type ExperimentSystemActor = z.infer<typeof ExperimentSystemActor>;
 export const ExperimentEventRecord = z.object({
   id: z.number().int().positive(), experimentId: Uuid, orgId: Uuid, fromStatus: ExperimentStatus.nullable(),
-  toStatus: ExperimentStatus, note: z.string().nullable(), actorId: Uuid.nullable(), createdAt: z.date(),
+  toStatus: ExperimentStatus, note: z.string().nullable(), actorId: Uuid.nullable(),
+  systemActor: ExperimentSystemActor.nullable().optional(), createdAt: z.date(),
 }).strict();
 export type ExperimentEventRecord = z.infer<typeof ExperimentEventRecord>;
 

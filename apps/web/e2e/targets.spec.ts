@@ -38,7 +38,8 @@ test('target page and goto restore the complete shared grid analysis', async ({ 
   const rowLink = page.locator('a[href^="/targets/kw-1?"]').first();
   await expect(rowLink).toBeVisible();
   await rowLink.click();
-  await expect(page.getByRole('heading', { name: 'widget', exact: true })).toBeVisible();
+  // Target detail compiles on first use in this suite.
+  await expect(page.getByRole('heading', { name: 'widget', exact: true })).toBeVisible({ timeout: 60_000 });
   await expect(page.getByRole('region', { name: 'Bid corridor chart' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Bid corridor chart' }).locator('tbody tr')).toHaveCount(1);
   await expect(page.getByRole('region', { name: 'Target metrics' })).toContainText('Spend');

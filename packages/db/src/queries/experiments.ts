@@ -18,7 +18,7 @@ import {
   EXPERIMENT_TYPES, EXPERIMENT_METRICS, EXPERIMENT_STATUSES,
   canTransitionExperiment as canTransition,
   type ExperimentType, type ExperimentMetric, type ExperimentStatus,
-  type ExperimentRecord, type ExperimentEventRecord,
+  type ExperimentRecord, type ExperimentEventRecord, type ExperimentSystemActor,
 } from '@wizard-ads/shared';
 import { AgencyAccessDenied, withAuthenticatedOrgEditor, type AuthenticatedEditorTransaction } from './authenticated-actor.js';
 export { EXPERIMENT_TYPES, EXPERIMENT_METRICS, EXPERIMENT_STATUSES, canTransition };
@@ -474,6 +474,8 @@ export async function transitionExperiment(
     note?: string | null;
     resultNote?: string | null;
     actorId?: string | null;
+    /** Service-role calls without a user must bind a real job in this scope. */
+    systemJobId?: string;
   },
 ): Promise<ExperimentRecord> {
   if (!EXPERIMENT_STATUSES.includes(input.to)) throw new Error(`Unknown experiment status: ${input.to}`);
@@ -493,7 +495,7 @@ export async function transitionExperiment(
   const rows = await handle.sql<{ id: string | null }[]>`
     select app.transition_timeline_experiment(
       ${input.orgId}::uuid, ${input.experimentId}::uuid, ${input.to}::public.experiment_status,
-      ${input.note ?? null}::text, ${resultNote}::text, ${noteProvided}, ${input.actorId ?? null}::uuid
+      ${input.note ?? null}::text, ${resultNote}::text, ${noteProvided}, ${input.actorId ?? null}::uuid, ${input.systemJobId ?? null}::uuid
     ) as id
   `;
   if (!rows[0]?.id) throw new ExperimentNotFound();
@@ -516,11 +518,12 @@ export async function listExperimentEvents(
       to_status: ExperimentStatus;
       note: string | null;
       actor_id: string | null;
+      system_actor: ExperimentSystemActor | null;
       created_at: Date | string;
     }[]
   >`
     select id, experiment_id, org_id, from_status::text as from_status, to_status::text as to_status,
-           note, actor_id, created_at
+           note, actor_id, system_actor, created_at
       from public.experiment_events
      where org_id = ${input.orgId} and experiment_id = ${input.experimentId}
      order by created_at, id
@@ -533,6 +536,7 @@ export async function listExperimentEvents(
     toStatus: row.to_status,
     note: row.note,
     actorId: row.actor_id,
+    systemActor: row.system_actor,
     createdAt: toDate(row.created_at),
   }));
 }

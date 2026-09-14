@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { act } from 'react';
+import { hydrateRoot } from 'react-dom/client';
+import { renderToString } from 'react-dom/server';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { verifyScreen } from '../render-test-support';
@@ -68,4 +71,35 @@ it('shows independent calibration coverage and baseline contamination in READ de
         events: [experiment, coupon], scoped: { [experiment.id]: ready.snapshot.profile } } }}/>);
     expect(screen.getByText('Confounded by Synthetic baseline promotion (baseline)')).toBeTruthy();
     expect(screen.getByText(/Baseline contaminated by Synthetic baseline promotion/)).toBeTruthy();
+});
+
+it('hydrates the server-rendered timeline without console errors when compact currency defaults differ', async () => {
+    const NativeNumberFormat = Intl.NumberFormat;
+    let server = true;
+    // CI's Node ICU used a $0.0 default; Chromium used $0. Explicit options
+    // must win over both, including the zero tick in the real Timeline chart.
+    const formatter = vi.spyOn(Intl, 'NumberFormat').mockImplementation(function(locales, options) {
+        return new NativeNumberFormat(locales, options?.notation === 'compact'
+            ? { minimumFractionDigits: server ? 1 : 0, ...options } : options);
+    });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const recoverable: unknown[] = [];
+    const container = document.createElement('div');
+    document.body.append(container);
+    let root: ReturnType<typeof hydrateRoot> | undefined;
+    try {
+        container.innerHTML = renderToString(<Screen data={ready}/>);
+        const serverAxis = container.querySelector('[aria-label="left axis"]')!.textContent;
+        expect(serverAxis).toContain('$0');
+        server = false;
+        await act(async () => { root = hydrateRoot(container, <Screen data={ready}/>, {onRecoverableError: error => recoverable.push(error)}); });
+        expect(recoverable).toEqual([]);
+        expect(serverAxis).not.toContain('$0.0');
+        expect(errors.mock.calls).toEqual([]);
+        expect(container.querySelector('[aria-label="left axis"]')!.textContent).toBe(serverAxis);
+        expect(container.querySelectorAll('[data-testid="timeline-event"]')).toHaveLength(7);
+    } finally {
+        if (root) await act(async () => root!.unmount());
+        container.remove();formatter.mockRestore();errors.mockRestore();
+    }
 });

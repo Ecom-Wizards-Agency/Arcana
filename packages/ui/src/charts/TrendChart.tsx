@@ -400,7 +400,7 @@ export function TrendChart({
                 <text x={axis === 'left' ? PAD.left - 8 : PAD.left + PLOT_W + 8}
                   y={axisY(tick, axis) + 3.5} textAnchor={axis === 'left' ? 'end' : 'start'}
                   fill="var(--wa-viz-ink)" fontSize={rankLabels ? 10 : 12}>
-                  {rankLabels ? `#${formatValue(tick, 'integer', context)}` : namedEndLabels && axisScale === 'money' ? new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode, currencyDisplay: 'narrowSymbol', notation: 'compact', maximumFractionDigits: 1 }).format(tick) : axisScale === null ? formatValue(tick, 'integer', context) : formatValue(tick, axisScale, context)}
+                  {rankLabels ? `#${formatValue(tick, 'integer', context)}` : namedEndLabels && axisScale === 'money' ? new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode, currencyDisplay: 'narrowSymbol', notation: 'compact', minimumFractionDigits: 0, maximumFractionDigits: 1 }).format(tick) : axisScale === null ? formatValue(tick, 'integer', context) : formatValue(tick, axisScale, context)}
                 </text>
               </g>)}
             </g>;

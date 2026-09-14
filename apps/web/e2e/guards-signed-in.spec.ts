@@ -29,9 +29,18 @@ test('the index opens the signed-in operator dashboard with its active profile',
 });
 
 test('the same screens open once there is a session', async ({ page }) => {
-  test.setTimeout(300_000); // same routes, same CI compile cost as above
+  // Each guarded route compiles on first visit. Night mode can exceed eight
+  // minutes before Timeline loads; keep the hydration assertions below and
+  // allow the complete route list to finish on the four-core runner.
+  test.setTimeout(900_000);
   await signIn(page, 'admin');
 
+  const timelineErrors: string[] = [];
+  const captureTimelineError = (message: string) => {
+    if (new URL(page.url()).pathname === '/timeline') timelineErrors.push(message);
+  };
+  page.on('pageerror', error => captureTimelineError(error.message));
+  page.on('console', message => { if (message.type() === 'error') captureTimelineError(message.text()); });
   const landed: string[] = [];
   for (const { path, signedIn } of GUARDED_ROUTES) {
     const expectedPath = new URL(path, 'https://example.test').pathname;
@@ -59,6 +68,14 @@ test('the same screens open once there is a session', async ({ page }) => {
     if (signedIn.kind === 'requested' && signedIn.heading !== undefined) {
       // The scoped Home adapter replaces the cockpit presentation; route admission is unchanged.
       await expect(expectedPath === '/' ? page.getByTestId('shell-title') : page.getByRole('heading', { name: signedIn.heading, exact: true })).toBeVisible();
+    }
+    if (expectedPath === '/timeline') {
+      // Exercise a state change so this asserts successful hydration, not only SSR.
+      const kind = page.getByRole('button', {name:'experiment',exact:true});
+      await expect(kind).toHaveAttribute('aria-pressed','true');
+      await kind.click();
+      await expect(kind).toHaveAttribute('aria-pressed','false');
+      expect(timelineErrors).toEqual([]);
     }
     landed.push(new URL(page.url()).pathname);
   }

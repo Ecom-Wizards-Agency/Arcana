@@ -23,6 +23,8 @@ import {
 } from '@wizard-ads/db/testing';
 import {
   createDb,
+  transitionExperiment,
+  listExperimentEvents,
   enqueueDueSchedules,
   readOptimizationWorkspace,
   revokeIntegrationSecret,
@@ -349,8 +351,23 @@ describe.skipIf(!available)('worker + real Postgres', () => {
        where org_id = ${orgId} and profile_id = ${profileId}
     `;
 
-    // This fixture exercises a proposal; the new lock tests retain active experiments.
-    await database.sql`update public.experiments set status = 'ended' where org_id = ${orgId} and profile_id = ${profileId}`;
+    // Fixture setup represents a completed background job. Close the experiment
+    // before admitting the recommendation snapshot, which must retain its locks.
+    const [completionJob] = await database.sql<{id:string}[]>`insert into public.sync_jobs
+      (org_id,profile_id,job_type,payload,status,claimed_by,started_at,finished_at)
+      values(${orgId},${profileId},'entity.sync',jsonb_build_object('type','entity.sync','orgId',${orgId}::text,'profileId',${profileId}::text),
+        'succeeded','synthetic-worker',now(),now()) returning id`;
+    const experiments = await database.sql<{ id: string }[]>`select id from public.experiments
+      where org_id=${orgId} and profile_id=${profileId} and status='running'`;
+    expect(experiments).toHaveLength(1);
+    for (const experiment of experiments) {
+      await transitionExperiment(database, { orgId, experimentId: experiment.id, to: 'ended', systemJobId: completionJob!.id });
+      const trail = await listExperimentEvents(database, { orgId, experimentId: experiment.id });
+      expect(trail).toHaveLength(2);
+      expect(trail[1]).toMatchObject({ actorId: null, fromStatus: 'running', toStatus: 'ended',
+        systemActor: { role: 'service_role', jobId: completionJob!.id, jobType: 'entity.sync' } });
+    }
+
 
     const recommendationStore = new PostgresRecommendationRunStore(database);
     const accepted = await recommendationStore.enqueueRecommendationPreviewBatch({

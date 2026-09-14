@@ -20,7 +20,7 @@ import type {
   ExperimentType,
 } from '@wizard-ads/db';
 import { TrendChart } from '@wizard-ads/ui';
-import type { ExperimentInferredBatchNote } from '@wizard-ads/shared';
+import type { ExperimentInferredBatchNote, ExperimentSystemActor } from '@wizard-ads/shared';
 import type { TrendPoint } from '@wizard-ads/ui';
 import { canTransition } from '../../../src/experiments/ui';
 import {
@@ -65,6 +65,7 @@ interface UiEvent {
   note: string | null;
   createdAt: string;
   actorId?: string | null;
+  systemActor?: ExperimentSystemActor | null;
 }
 
 interface DailyPoint {
@@ -228,7 +229,7 @@ export function ExperimentDetail({
         <div><small>TYPE</small>{TYPE_LABELS[experiment.type]}</div><div><small>MEASURE</small>{METRIC_LABELS[experiment.metricFocus]}</div><div><small>WINDOW</small>{day(experiment.startAt)} → {experiment.endAt?day(experiment.endAt):'running'}</div><div><small>SCOPE</small>{experiment.scope.campaignIds?.length??0} campaigns · {experiment.scope.targetIds?.length??0} targets</div><div><small>STATUS</small><span className="tl-chip" data-testid="experiment-status" style={{color:STATUS_TEXT_COLOR[experiment.status]}}>{STATUS_LABELS[experiment.status]}</span></div>
       </div>
       <section className="tl-trail" data-testid="timeline"><table className="tl-table"><thead><tr>{['WHEN','FROM','TO','WHO','NOTE'].map((label)=><th key={label}>{label}</th>)}</tr></thead><tbody>
-        {events.map((event)=><tr key={event.id} data-testid="timeline-event"><td>{new Date(event.createdAt).toLocaleString('en-GB',{timeZone:'UTC'})} UTC</td><td>{event.fromStatus?STATUS_LABELS[event.fromStatus]:'—'}</td><td><span className="tl-chip">{STATUS_LABELS[event.toStatus]}</span></td><td>{event.actorId??'Actor unavailable'}</td><td>{event.note ?? '—'}{event.toStatus === 'running' ? inferredBatchNotes.map((batch) => <small key={batch.rowId} data-testid="inferred-batch-note">Inferred: {batch.field === 'bid' ? 'Bid' : batch.field} moved to {batch.newValue === null ? '—' : typeof batch.newValue === 'number' && ['bid','budget','dailyBudget'].includes(batch.field) ? money(batch.newValue,currencyCode) : String(batch.newValue)} in batch {batch.batchTag} · {batch.appliedOn} · matching scope and window.</small>) : null}</td></tr>)}
+        {events.map((event)=><tr key={event.id} data-testid="timeline-event"><td>{new Date(event.createdAt).toLocaleString('en-GB',{timeZone:'UTC'})} UTC</td><td>{event.fromStatus?STATUS_LABELS[event.fromStatus]:'—'}</td><td><span className="tl-chip">{STATUS_LABELS[event.toStatus]}</span></td><td>{event.actorId ?? (event.systemActor ? `${event.systemActor.role} (${event.systemActor.jobType}) · job ${event.systemActor.jobId}` : 'Actor unavailable')}</td><td>{event.note ?? '—'}{event.toStatus === 'running' ? inferredBatchNotes.map((batch) => <small key={batch.rowId} data-testid="inferred-batch-note">Inferred: {batch.field === 'bid' ? 'Bid' : batch.field} moved to {batch.newValue === null ? '—' : typeof batch.newValue === 'number' && ['bid','budget','dailyBudget'].includes(batch.field) ? money(batch.newValue,currencyCode) : String(batch.newValue)} in batch {batch.batchTag} · {batch.appliedOn} · matching scope and window.</small>) : null}</td></tr>)}
       </tbody></table></section>
       {experiment.hypothesis && (
         <p style={{ fontSize: '0.9rem' }}>

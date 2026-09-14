@@ -97,6 +97,11 @@ end;
 $$;
 create trigger experiments_evidence_immutable before insert or update or delete on public.experiments for each row execute function app.timeline_experiment_evidence_guard();
 
+alter table public.experiment_events add column system_actor jsonb;
+-- Existing user and historical entries keep their original attribution.
+alter table public.experiment_events add constraint experiment_events_one_actor
+  check (system_actor is null or actor_id is null);
+
 -- Authenticated callers cannot append invented transitions. The AFTER trigger
 -- alone appends the real OLD/NEW pair, under the same statement/transaction.
 revoke insert on public.experiment_events from authenticated;
@@ -105,6 +110,8 @@ create function app.timeline_experiment_append_status() returns trigger language
 declare
   v_actor uuid := auth.uid();
   v_note text;
+  v_system_actor jsonb;
+  v_job uuid;
 begin
   if tg_op='UPDATE' and new.status is not distinct from old.status then return new; end if;
   -- Only trusted database callers may supply an actor when no JWT exists.
@@ -119,9 +126,22 @@ begin
     v_actor := coalesce(v_actor,nullif(current_setting('app.experiment_actor',true),'')::uuid);
     v_note := nullif(current_setting('app.experiment_note',true),'');
   end if;
-  if v_actor is null then raise exception 'An experiment status change requires an actor' using errcode='23514'; end if;
-  insert into public.experiment_events(experiment_id,org_id,from_status,to_status,note,actor_id,created_at)
-    values(new.id,new.org_id,case when tg_op='UPDATE' then old.status else null end,new.status,v_note,v_actor,new.status_changed_at);
+  if v_actor is null then
+    -- Never infer a system identity from a user-supplied role or a made-up id.
+    -- The service role must identify an existing job for this exact scope.
+    if current_setting('role',true) in ('authenticated','anon') or not app.is_service_role() then
+      raise exception 'Only the service role may record a system experiment actor' using errcode='42501';
+    end if;
+    v_job := nullif(current_setting('app.experiment_job',true),'')::uuid;
+    select jsonb_build_object('role','service_role','jobId',job.id,'jobType',job.job_type::text)
+      into v_system_actor from public.sync_jobs job
+      where job.id=v_job and job.org_id=new.org_id and job.profile_id=new.profile_id;
+    if v_system_actor is null then
+      raise exception 'An experiment status change requires a user actor or a scoped system job' using errcode='23514';
+    end if;
+  end if;
+  insert into public.experiment_events(experiment_id,org_id,from_status,to_status,note,actor_id,system_actor,created_at)
+    values(new.id,new.org_id,case when tg_op='UPDATE' then old.status else null end,new.status,v_note,v_actor,v_system_actor,new.status_changed_at);
   return new;
 end;
 $$;
@@ -133,22 +153,25 @@ create trigger experiments_append_status after insert or update on public.experi
 -- No status, date or result invariants live here: direct SQL uses the same guard.
 create function app.transition_timeline_experiment(
   p_org uuid, p_id uuid, p_status public.experiment_status, p_note text,
-  p_result text, p_result_provided boolean, p_actor uuid
+  p_result text, p_result_provided boolean, p_actor uuid, p_job uuid default null
 ) returns uuid language plpgsql set search_path=pg_catalog as $$
 declare
   v_id uuid;
   v_note text := current_setting('app.experiment_note',true);
   v_actor text := current_setting('app.experiment_actor',true);
+  v_job text := current_setting('app.experiment_job',true);
 begin
   perform set_config('app.experiment_note',coalesce(p_note,''),true);
   perform set_config('app.experiment_actor',coalesce(p_actor::text,''),true);
+  perform set_config('app.experiment_job',coalesce(p_job::text,''),true);
   update public.experiments set status=p_status,
     result_note=case when p_result_provided then p_result else result_note end
     where org_id=p_org and id=p_id returning id into v_id;
   perform set_config('app.experiment_note',coalesce(v_note,''),true);
   perform set_config('app.experiment_actor',coalesce(v_actor,''),true);
+  perform set_config('app.experiment_job',coalesce(v_job,''),true);
   return v_id;
 end;
 $$;
-revoke all on function app.transition_timeline_experiment(uuid,uuid,public.experiment_status,text,text,boolean,uuid) from public,anon;
-grant execute on function app.transition_timeline_experiment(uuid,uuid,public.experiment_status,text,text,boolean,uuid) to authenticated,service_role;
+revoke all on function app.transition_timeline_experiment(uuid,uuid,public.experiment_status,text,text,boolean,uuid,uuid) from public,anon;
+grant execute on function app.transition_timeline_experiment(uuid,uuid,public.experiment_status,text,text,boolean,uuid,uuid) to authenticated,service_role;

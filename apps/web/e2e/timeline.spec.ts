@@ -3,7 +3,8 @@ import { createDb } from '@wizard-ads/db';
 import { signIn } from './support/auth';
 import { readState } from './support/fixture';
 test('timeline measures facts, filters and zooms events, records revisions and preserves rank gaps', async ({ page }, testInfo) => {
-    test.setTimeout(180000);
+    // The complete scenario compiles several routes and captures fourteen frames.
+    test.setTimeout(600_000);
     await page.setViewportSize({ width: 1440, height: 1024 });
     const state = await readState();
     const db = createDb({ connectionString: state.connectionString });
@@ -43,7 +44,11 @@ test('timeline measures facts, filters and zooms events, records revisions and p
         await dialog.getByLabel('Name', { exact: true }).fill('Synthetic promotion');
         await dialog.getByLabel('Starts', { exact: true }).fill('2026-08-01');
         await dialog.getByLabel('Ends', { exact: true }).fill('2026-08-15');
+        const savedEvent = page.waitForResponse(response =>
+            new URL(response.url()).pathname === '/api/timeline' && response.request().method() === 'POST',
+            { timeout: 60_000 });
         await dialog.getByRole('button', { name: 'Save event' }).click();
+        expect((await savedEvent).status()).toBe(201);
         await expect(dialog).toHaveCount(0);
         await expect(page.getByRole('button', { name: 'Synthetic promotion', exact: true })).toBeVisible();
         await expect(page.getByTestId('timeline-event')).toHaveCount(7);
@@ -122,7 +127,7 @@ test('timeline measures facts, filters and zooms events, records revisions and p
         await page.goto(new URL(rankUrl).pathname+new URL(rankUrl).search);
         await page.getByRole('button', {name:'Performance',exact:true}).click();
         await page.getByRole('link', { name: 'Create experiment' }).click();
-        await expect(page.locator('main.tl-create[data-interactive="true"]')).toBeVisible();
+        await expect(page.locator('main.tl-create[data-interactive="true"]')).toBeVisible({ timeout: 60_000 });
         await expect(page.getByTestId('experiment-name')).toBeVisible();
         await page.getByTestId('experiment-name').fill('Timeline synthetic experiment');
         await expect(page.getByTestId('shell-title')).toHaveText('New experiment');
@@ -136,8 +141,12 @@ test('timeline measures facts, filters and zooms events, records revisions and p
         await db.sql`insert into public.apply_rows(batch_id,org_id,profile_id,entity_type,entity_id,field,new_value)
           values(${linked!.id},${state.orgId},${state.fixtureProfileId},'target','timeline-inferred-target','bid','3.4'::jsonb)`;
         await screenshot('create');
+        const savedExperiment = page.waitForResponse(response =>
+            new URL(response.url()).pathname === '/api/experiments' && response.request().method() === 'POST',
+            { timeout: 60_000 });
         await page.getByRole('button', { name: 'Save as planned', exact: true }).click();
-        await expect(page.locator('main.tl-experiment-detail[data-interactive="true"]')).toBeVisible();
+        expect((await savedExperiment).status()).toBe(201);
+        await expect(page.locator('main.tl-experiment-detail[data-interactive="true"]')).toBeVisible({ timeout: 60_000 });
         await expect(page.getByTestId('shell-title')).toHaveText('Experiment');
         await expect(page.getByTestId('experiment-status')).toContainText('Planned');
         const readback = await page.request.get(`/api/experiments/${new URL(page.url()).pathname.split('/').at(-1)}`);
