@@ -81,3 +81,5 @@ export * from './queries/report-lifecycle.js';
 export * from './queries/report-reconciliation.js';
 export * from './queries/recommendations-authority.js';
 export * from './queries/query-intelligence-authority.js';
+export { readProfileFreshness } from './queries/freshness.js';
+export { upsertReportCoverage, recordReportCoverage, backfillReportCoverage } from './queries/report-coverage.js';

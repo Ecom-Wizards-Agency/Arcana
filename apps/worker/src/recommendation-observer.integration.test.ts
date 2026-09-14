@@ -1,3 +1,5 @@
+import { stageReportDate, upsertReportCoverage } from '@wizard-ads/db';
+import { PostgresWorkerStore } from './store.js';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { reconcileRecommendationObservations } from './recommendation-observer.js';
@@ -79,6 +81,7 @@ describe.skipIf(!available)('recommendation observation reconciler + Postgres', 
       .toMatchObject({ scanned: 1, evaluated: 1, inserted: 1, unchanged: 0, refused: 0 });
     expect(await latest(seeded.recommendationId)).toMatchObject({
       evidence_state: 'observing', decision: 'hold', synchronized_value: '1.010000',
+      pre_incremental_volume: null, post_incremental_volume: null,
     });
 
     await insertFact(dates.pre1, 4);
@@ -137,6 +140,64 @@ describe.skipIf(!available)('recommendation observation reconciler + Postgres', 
       evidence_state: 'complete', decision: 'continue',
       pre_incremental_volume: '10.000000', post_incremental_volume: '13.000000',
     });
+  });
+
+  it.each([0, 2])('publishes one range observation after promoting %i synthetic rows', async (count) => {
+    const store = new PostgresWorkerStore(database);
+    const requestedAt = new Date();
+    const [request] = await database.sql<{ id: string }[]>`
+      insert into public.report_requests (org_id, profile_id, report_type, start_date, end_date, requested_at)
+      values (${orgId}, ${profileId}, 'spTargeting', ${dates.pre1}, ${dates.pre2}, ${requestedAt.toISOString()}) returning id
+    `;
+    let loaded = 0;
+    for (const date of [dates.pre1, dates.pre2]) {
+      const rows = count === 0 ? [] : [{
+        orgId, profileId, date, adProduct: 'SP' as const,
+        campaignId: 'campaign-synthetic', adGroupId: 'ad-group-synthetic', targetId: 'target-synthetic',
+        targetKind: 'keyword' as const, matchType: 'exact' as const,
+        impressions: 10, clicks: 1, cost: 1, purchases1d: 1, purchases7d: 1, purchases14d: 1,
+        purchases30d: 1, sales1d: 2, sales7d: 2, sales14d: 2, sales30d: 2, unitsSold7d: 1,
+        topOfSearchImpressionShare: null, reportRequestId: request!.id,
+      }];
+      const result = await store.promoteReportDate(stageReportDate({
+        orgId, profileId, reportType: 'spTargeting', reportDate: date, source: 'amazon_reporting_v3',
+        reportRequestId: request!.id, requestedAt, observedAt: requestedAt,
+        sourceRows: rows.length, parsedRows: rows.length, refusedRows: 0,
+        attribution: { attributionWindowDays: 7, eventDateAgeDays: 12 },
+        batch: { kind: 'sp_target', rows },
+      }));
+      expect(result.status).toBe('promoted');
+      expect(result.watermark.canonicalRows).toBe(rows.length);
+      loaded += result.watermark.canonicalRows;
+    }
+    expect(loaded).toBe(count);
+    await store.completeReport(request!.id, {
+      parsed: count, loaded, bytesDownloaded: 10,
+      coverage: { sourceRows: count, parsedRows: count, refusedRows: 0,
+        observedAt: requestedAt.toISOString(), settledThrough: dates.pre2 },
+    });
+    const coverage = await database.sql`select * from public.report_coverage where profile_id = ${profileId}`;
+    expect(coverage).toHaveLength(1);
+    expect(coverage[0]).toMatchObject({
+      source_rows: String(count), parsed_rows: String(count), loaded_rows: String(loaded), refused_rows: '0',
+      latest_loaded_date: dates.pre2, latest_settled_date: dates.pre2,
+    });
+  });
+
+  it('rolls ledger completion back when coverage accounting is refused', async () => {
+    const store = new PostgresWorkerStore(database);
+    const [request] = await database.sql<{ id: string }[]>`
+      insert into public.report_requests (org_id, profile_id, report_type, start_date, end_date)
+      values (${orgId}, ${profileId}, 'spTargeting', ${dates.pre1}, ${dates.pre2}) returning id
+    `;
+    await expect(store.completeReport(request!.id, {
+      parsed: 1, loaded: 1, bytesDownloaded: 10,
+      coverage: { sourceRows: 2, parsedRows: 1, refusedRows: 0,
+        observedAt: new Date().toISOString(), settledThrough: null },
+    })).rejects.toThrow('coverage source counts do not reconcile');
+    const [ledger] = await database.sql`select status, rows_loaded from public.report_requests where id = ${request!.id}`;
+    expect(ledger).toMatchObject({ status: 'pending', rows_loaded: null });
+    expect(await database.sql`select id from public.report_coverage where profile_id = ${profileId}`).toHaveLength(0);
   });
 
   async function seedExport(options: { withPolicy: boolean }): Promise<{
@@ -228,16 +289,18 @@ describe.skipIf(!available)('recommendation observation reconciler + Postgres', 
   }
 
   async function upsertCoverage(settled: string): Promise<void> {
-    await database.sql`
-      insert into public.report_coverage
-        (org_id, profile_id, report_type, grain, source, status,
-         earliest_returned_date, latest_loaded_date, latest_settled_date)
-      values (${orgId}, ${profileId}, 'spTargeting', 'sp_target', 'amazon_reporting_v3', 'complete',
-              ${dates.pre1}, ${dates.post2}, ${settled})
-      on conflict (profile_id, report_type, grain, source) do update
-        set status = excluded.status, latest_loaded_date = excluded.latest_loaded_date,
-            latest_settled_date = excluded.latest_settled_date
+    const [facts] = await database.sql<{ count: number }[]>`
+      select count(*)::int as count from public.fact_sp_target_daily
+       where org_id = ${orgId} and profile_id = ${profileId}
+         and date between ${dates.pre1} and ${dates.post2}
     `;
+    const count = facts!.count;
+    expect(await upsertReportCoverage(database, {
+      orgId, profileId, reportType: 'spTargeting', grain: 'sp_target', source: 'amazon_reporting_v3',
+      status: 'complete', earliestDate: dates.pre1, coveredThrough: dates.post2, settledThrough: settled,
+      observedAt: new Date().toISOString(), sourceRows: count, parsedRows: count,
+      loadedRows: count, refusedRows: 0, countsMatch: true,
+    }, count)).toEqual({ offered: 1, written: 1, unchanged: 0 });
   }
 
   async function observationCount(recommendationId: string): Promise<number> {

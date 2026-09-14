@@ -7,7 +7,7 @@ import {
 import type { QueryHandle, RecommendationRunDetail } from '@wizard-ads/db';
 import { RECOMMENDATIONS_ENGINE_VERSION } from '@wizard-ads/worker';
 import { loadOptimizerCampaignFacts } from './optimizer-campaigns';
-import { loadProfileDailyRows, loadReportLedger } from './dashboard-data';
+import { loadProfileDailyRows } from './dashboard-data';
 import { precedingPeriod } from './periods';
 import type { Period } from './periods';
 import { withServerTiming } from './server-timing';
@@ -67,11 +67,6 @@ export async function loadOptimizerPageData(input: OptimizerPageDataInput) {
       profile.label,
       accountWindow,
     ),
-    (rows) => rows.length,
-  );
-  const ledgerPromise = withServerTiming(
-    'optimizer.report_ledger',
-    () => loadReportLedger(handle, orgId, profile.id),
     (rows) => rows.length,
   );
   const campaignFactsPromise = loadOptimizerCampaignFacts(handle, {
@@ -134,13 +129,12 @@ export async function loadOptimizerPageData(input: OptimizerPageDataInput) {
   // wave before releasing the authenticated transaction; no query may escape
   // into rollback or become an unhandled rejection while run discovery waits.
   const evidence = await Promise.allSettled([
-    runDataPromise, workspacePromise, accountRowsPromise, ledgerPromise, campaignFactsPromise,
+    runDataPromise, workspacePromise, accountRowsPromise, campaignFactsPromise,
   ]);
   const { runs, run, records } = fulfilled(evidence[0]);
   const optimizationWorkspace = fulfilled(evidence[1]);
   const accountRows = fulfilled(evidence[2]);
-  const ledger = fulfilled(evidence[3]);
-  const campaignFacts = fulfilled(evidence[4]);
+  const campaignFacts = fulfilled(evidence[3]);
   const periodRows = accountRows.filter(
     (row) => row.date >= period.start && row.date <= period.end,
   );
@@ -158,7 +152,6 @@ export async function loadOptimizerPageData(input: OptimizerPageDataInput) {
     optimizationWorkspace,
     periodRows,
     comparisonRows,
-    ledger,
     campaignFacts,
   };
 }

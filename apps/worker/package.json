@@ -16,7 +16,8 @@
     "creative:preflight": "tsx src/creative-pilot-preflight-cli.ts",
     "stream:recover": "tsx src/marketing-stream-recovery-cli.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "backfill-coverage": "tsx src/backfill-coverage.ts"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.1120.0",

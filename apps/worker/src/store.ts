@@ -18,6 +18,7 @@ import {
   recordEntityChanges,
   reconcileEntityChangeLinks,
   reportRequests,
+  recordReportCoverage,
   quarantineReportCreate,
   type ReportCreateEvidence,
   promoteReportDate as promoteDbReportDate,
@@ -31,6 +32,7 @@ import {
   type ClaimedJob,
   type ClaimRef,
   type DbHandle,
+  type QueryHandle,
   type JobOutcome,
   type NewEntityChange,
   type ReportDatePromotionResult,
@@ -39,6 +41,7 @@ import {
 import { MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
 import {
   WorkerReportAccounting,
+  type ReportCoverageAccounting,
   type WorkerReportAccounting as WorkerReportAccountingShape,
   type EntityRow,
   type JobPayload,
@@ -231,12 +234,12 @@ export interface WorkerStore {
   loadFacts(batch: ParsedFactBatch): Promise<number>;
   completeReport(
     reportRequestId: string,
-    counts: { parsed: number; loaded: number; bytesDownloaded: number },
+    counts: { parsed: number; loaded: number; bytesDownloaded: number; coverage?: ReportCoverageAccounting | null },
   ): Promise<void>;
   finishAttributedReport(
     reportRequestId: string,
     counts: AttributedReportCounts,
-    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null },
+    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null; coverage?: ReportCoverageAccounting },
   ): Promise<void>;
 }
 
@@ -917,49 +920,62 @@ export class PostgresWorkerStore implements WorkerStore {
 
   async completeReport(
     reportRequestId: string,
-    counts: { parsed: number; loaded: number; bytesDownloaded: number },
+    counts: { parsed: number; loaded: number; bytesDownloaded: number; coverage?: ReportCoverageAccounting | null },
   ): Promise<void> {
-    const rows = await this.handle.sql<{ id: string }[]>`
-      update public.report_requests
-         set status = ${counts.parsed === counts.loaded ? 'completed' : 'failed'}::public.report_status,
-             completed_at = now(), next_poll_at = null,
-             rows_parsed = ${counts.parsed}, rows_loaded = ${counts.loaded},
-             bytes_downloaded = ${counts.bytesDownloaded},
-             error = ${counts.parsed === counts.loaded ? null : `parsed ${counts.parsed}, loaded ${counts.loaded}`}
-       where id = ${reportRequestId}
-       returning id
-    `;
-    if (rows.length !== 1) throw new Error(`complete report update matched ${rows.length} rows`);
+    await this.handle.sql.begin(async (sql) => {
+      const rows = await sql<{ id: string }[]>`
+        update public.report_requests
+           set status = ${counts.parsed === counts.loaded ? 'completed' : 'failed'}::public.report_status,
+               completed_at = now(), next_poll_at = null,
+               rows_parsed = ${counts.parsed}, rows_loaded = ${counts.loaded},
+               bytes_downloaded = ${counts.bytesDownloaded},
+               error = ${counts.parsed === counts.loaded ? null : `parsed ${counts.parsed}, loaded ${counts.loaded}`}
+         where id = ${reportRequestId}
+         returning id
+      `;
+      if (rows.length !== 1) throw new Error(`complete report update matched ${rows.length} rows`);
+      if (counts.parsed === counts.loaded && counts.coverage !== null) {
+        await recordReportCoverage({ sql }, reportRequestId, counts.coverage);
+      }
+    });
     if (counts.parsed !== counts.loaded) throw new ParsedLoadedMismatch(counts.parsed, counts.loaded);
   }
 
   async finishAttributedReport(
     reportRequestId: string,
     input: AttributedReportCounts,
-    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null },
+    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null; coverage?: ReportCoverageAccounting },
   ): Promise<void> {
     const counts = WorkerReportAccounting.parse(input);
-    const rows = await this.handle.sql<{ id: string; accounting_complete: boolean }[]>`
-      update public.report_requests
-         set status = ${options.status}::public.report_status,
-             completed_at = now(), next_poll_at = null,
-             source_rows = ${counts.sourceRows},
-             rows_parsed = ${counts.parsedRows},
-             refused_rows = ${counts.refusedRows},
-             promoted_rows = ${counts.promotedRows},
-             unpromoted_rows = ${counts.unpromotedRows},
-             rows_loaded = ${counts.canonicalRows},
-             bytes_downloaded = ${options.bytesDownloaded},
-             error = ${options.error ?? null}
-       where id = ${reportRequestId}
-       returning id, accounting_complete
-    `;
-    if (rows.length !== 1) {
-      throw new Error(`attributed report completion matched ${rows.length} rows`);
-    }
-    if (rows[0]?.accounting_complete !== true) {
-      throw new Error('attributed report durable accounting did not reconcile');
-    }
+    const finish = async (sql: QueryHandle['sql']) => {
+      const rows = await sql<{ id: string; accounting_complete: boolean }[]>`
+        update public.report_requests
+           set status = ${options.status}::public.report_status,
+               completed_at = now(), next_poll_at = null,
+               source_rows = ${counts.sourceRows},
+               rows_parsed = ${counts.parsedRows},
+               refused_rows = ${counts.refusedRows},
+               promoted_rows = ${counts.promotedRows},
+               unpromoted_rows = ${counts.unpromotedRows},
+               rows_loaded = ${counts.canonicalRows},
+               bytes_downloaded = ${options.bytesDownloaded},
+               error = ${options.error ?? null}
+         where id = ${reportRequestId}
+         returning id, accounting_complete
+      `;
+      if (rows.length !== 1) {
+        throw new Error(`attributed report completion matched ${rows.length} rows`);
+      }
+      if (rows[0]?.accounting_complete !== true) {
+        throw new Error('attributed report durable accounting did not reconcile');
+      }
+      if (options.status === 'completed' && options.coverage !== undefined) {
+        await recordReportCoverage({ sql }, reportRequestId, options.coverage);
+      }
+    };
+    // Existing callers retain ledger-only completion; the ingestion hook supplies coverage.
+    if (options.coverage === undefined) await finish(this.handle.sql);
+    else await this.handle.sql.begin(finish);
   }
 
   private async upsertCampaignFacts(kind: 'sb' | 'sd', rows: readonly CampaignFactRow[]): Promise<number> {

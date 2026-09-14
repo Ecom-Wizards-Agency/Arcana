@@ -18,12 +18,12 @@
  * visitors are sent to `/login`, and both the roster and the rows are scoped by
  * the org the gate resolved rather than by a profile id anybody could paste.
  */
+import { loadFreshness } from '../../src/server/load-freshness';
 import { Suspense, type CSSProperties } from 'react';
 import { redirect } from 'next/navigation';
 import {
   ENTITY_LABELS,
   ENTITY_LEVELS,
-  assessFreshness,
   tokens,
 } from '@wizard-ads/ui';
 import type { EntityLevel } from '@wizard-ads/ui';
@@ -33,7 +33,7 @@ import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
 import { gate } from '../../src/auth/guard';
 import { canonicalProfilePath } from '../../src/data/active-profile';
 import { gateMessage } from '../../src/ui/gate-message';
-import { loadProfileDailyRows, loadReportLedger } from '../_lib/dashboard-data';
+import { loadProfileDailyRows } from '../_lib/dashboard-data';
 import { withExistingDatabase } from '../_lib/db';
 import {
   periodFromParams,
@@ -92,9 +92,7 @@ export default async function GridPage({ searchParams }: PageProps) {
     const canonical = canonicalProfilePath('/grid', { ...params }, profile.id);
     if (canonical !== null) redirect(canonical);
 
-    const ledger = await loadReportLedger(handle, orgId, profile.id);
-
-    return { profiles, profile, ledger };
+    return { profiles, profile };
   });
 
   if (data === null) {
@@ -119,8 +117,8 @@ export default async function GridPage({ searchParams }: PageProps) {
     );
   }
 
-  const { profile, ledger = [] } = data;
-  const freshness = assessFreshness(ledger, { now: new Date() });
+  const { profile } = data;
+  const freshness = await loadFreshness(actor, profile.id);
 
   return (
     <main style={main}>

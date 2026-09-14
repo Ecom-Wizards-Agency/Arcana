@@ -1,16 +1,7 @@
 /**
- * Everything the dashboard reads, in one module.
- *
- * The freshness read is the one to look at twice. It comes from
- * `report_requests` and never from the fact tables, which is a correctness rule
- * rather than a preference: Amazon omits zero-impression rows, so "the newest
- * fact is from Tuesday" is equally consistent with "the sync broke on Tuesday"
- * and "the account has spent nothing since Tuesday". Only the ledger tells them
- * apart, and telling them apart is the entire question the banner answers.
- *
- * Every read here takes the actor's `orgId` alongside the profile id and puts
- * both in the predicate. The caller runs these queries inside its current-user
- * transaction; explicit predicates also bind deliberately multi-agency users.
+ * Tenant/profile-scoped dashboard data adapters. Page freshness now uses the
+ * server load-freshness helper; loadReportLedger remains a transition adapter.
+ * Fact timestamps cannot prove freshness because reports can contain no rows.
  */
 import type { QueryHandle } from '@wizard-ads/db';
 import { operatorFailureLabel } from '../../src/security/operator-failure';

@@ -1,3 +1,4 @@
+import { loadFreshness } from '../../src/server/load-freshness';
 import { withAuthenticatedActor } from '@wizard-ads/db';
 /**
  * `/optimizer` — the Campaign Optimizer, laid out like AdLabs' "Bid Optimizer"
@@ -19,7 +20,7 @@ import { withAuthenticatedActor } from '@wizard-ads/db';
  */
 import type { CSSProperties, ReactNode } from 'react';
 import { redirect } from 'next/navigation';
-import { assessFreshness, tokens } from '@wizard-ads/ui';
+import { tokens } from '@wizard-ads/ui';
 import { gate } from '../../src/auth/guard';
 import { can } from '../../src/auth/roles';
 import { canonicalProfilePath } from '../../src/data/active-profile';
@@ -117,7 +118,6 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
     optimizationWorkspace,
     periodRows,
     comparisonRows,
-    ledger,
     campaignFacts,
   } = pageData;
   const proposals = records.map((record) =>
@@ -150,7 +150,7 @@ export default async function OptimizerPage({ searchParams }: PageProps): Promis
     proposals,
     true,
   );
-  const freshness = assessFreshness(ledger, { now: new Date() });
+  const freshness = await loadFreshness(actor, profile.id);
 
   const cockpitDays = periodRows.map((row) => ({
     date: row.date,

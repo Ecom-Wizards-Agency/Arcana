@@ -131,3 +131,27 @@ describe('assessFreshness', () => {
     expect(assessFreshness([sixHoursOld], { now: NOW, staleAfterHours: 4 }).tone).toBe('warn');
   });
 });
+
+it('assesses a free-text SP-API source without changing the Ads enum', () => {
+  const assessment = assessFreshness([{
+    source: 'selling_partner_api', reportType: 'sales_and_traffic', status: 'complete',
+    coveredThrough: '2026-08-13', observedAt: '2026-08-14T08:00:00.000Z',
+    sourceRows: 3, parsedRows: 3, loadedRows: 3, refusedRows: 0, countsMatch: true,
+  }], { now: NOW });
+  expect(assessment.tone).toBe('good');
+  expect(assessment.coversThrough).toBe('2026-08-13');
+  expect(assessment.details).toHaveLength(1);
+  expect(assessment.details[0]).toContain('selling_partner_api/sales_and_traffic');
+  expect(assessment.details[0]).toContain('3 rows');
+});
+
+it('keeps unknown coverage counts unknown and respects aggregation assertions', () => {
+  const coverage = {
+    source: 'selling_partner_api', reportType: 'sales_and_traffic', status: 'complete',
+    coveredThrough: '2026-08-13', observedAt: '2026-08-14T08:00:00.000Z',
+    sourceRows: null, parsedRows: null, loadedRows: null, refusedRows: null, countsMatch: null,
+  };
+  expect(assessFreshness([coverage], { now: NOW }).details[0]).not.toContain('0 rows');
+  expect(assessFreshness([{ ...coverage, sourceRows: 5, parsedRows: 5,
+    loadedRows: 1, refusedRows: 0, countsMatch: true }], { now: NOW }).tone).toBe('good');
+});
