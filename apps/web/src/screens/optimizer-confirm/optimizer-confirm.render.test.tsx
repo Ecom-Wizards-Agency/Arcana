@@ -8,6 +8,7 @@ import SharedLoading from '../shared-loading';
 import SharedError from '../shared-error';
 import { profile } from '../synthetic-render-fixtures';
 import { descriptor } from './descriptor';
+import { confirmationProposals } from './render-fixture';
 import Screen, { ConfirmContent } from './view';
 const fixtures = await spWriteApprovalFixtures();
 const batchId = '77777777-7777-4777-8777-777777777777';
@@ -18,12 +19,14 @@ verifyScreen(descriptor, [
   { state: 'gated', name: 'explains the database gate', render: () => <Screen data={{ view: 'gated', props: { entry: { state: 'no-database' } } }} />, text: 'database' },
   { state: 'empty', name: 'keeps missing profiles explicit', render: () => <Screen data={{ view: 'empty', props: {} }} />, text: 'No profiles' },
   { state: 'not-measured', name: 'refuses absent current synchronized state', render: () => <ConfirmContent recorded={fixtures.unavailable} batchId={batchId} onConfirm={() => {}} onRefresh={() => {}} />, text: 'Fresh preview required' },
+  { state: 'stale', name: 'requires refreshed values', render: () => <ConfirmContent recorded={fixtures.stale} batchId={batchId} onConfirm={() => {}} onRefresh={() => {}} />, text: 'Refresh this preview' },
+  { state: 'refused', name: 'refuses unsupported approval', render: () => <ConfirmContent recorded={fixtures.unavailable} batchId={batchId} onConfirm={() => {}} onRefresh={() => {}} />, text: 'Fresh preview required' },
   { state: 'ready', name: 'renders the immutable preview', render: () => <ConfirmContent recorded={fixtures.ready} batchId={batchId} onConfirm={() => {}} onRefresh={() => {}} />, text: spWriteConfirmation(fixtures.ready.preview.plan.counts.logicalChanges) },
 ]);
 it('shows the contract label and sends that exact text in the approval request', async () => {
   const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(fixtures.queued.admission), { status: 200 }));
   vi.stubGlobal('fetch', fetcher);
-  render(<Screen data={{ view: 'ready', props: { profile, batchId, recorded: fixtures.ready, applyBatchId: null } }} />);
+  render(<Screen data={{ view: 'ready', props: { profile, batchId, proposals: [], recorded: fixtures.ready, applyBatchId: null } }} />);
   const text = spWriteConfirmation(fixtures.ready.preview.plan.counts.logicalChanges);
   fireEvent.click(screen.getByRole('button', { name: text }));
   await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
@@ -63,4 +66,15 @@ it('never renders an approval control for a shadow batch', () => {
   render(<ConfirmContent recorded={recorded} batchId={batchId} onConfirm={() => {}} onRefresh={() => {}} />);
   expect(screen.queryByRole('button', { name: /Yes, apply/ })).toBeNull();
   expect((screen.getByRole('button', { name: 'Send to Amazon unavailable in shadow' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('shows campaign scope from the recorded source identities and formats the immutable money', () => {
+  const proposals = confirmationProposals(fixtures.ready);
+  render(<ConfirmContent recorded={fixtures.ready} batchId={batchId} proposals={[...proposals, { ...proposals[0]!, id: 'unrelated-recommendation', campaignId: 'unrelated-campaign' }]} onConfirm={() => {}} onRefresh={() => {}} />);
+  expect(screen.getByText('These changes affect 1 target in 1 campaign.')).toBeTruthy();
+  expect(screen.getByText('Synthetic campaign 1')).toBeTruthy();
+  expect(screen.getByRole('cell', { name: '$0.90' })).toBeTruthy();
+  expect(screen.getByRole('cell', { name: '$0.70' })).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'Review limits and settings' }).className).toContain('action');
+  expect(screen.getByRole('heading', { name: 'Apply 1 bid change to Amazon' }).parentElement?.className).toContain('card');
 });

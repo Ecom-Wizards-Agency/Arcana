@@ -1,5 +1,5 @@
 import { readSpWriteConfirmationSnapshot } from '../../writes/http';
-import { assertOptimizerApplyBatch } from '@wizard-ads/db';
+import { assertOptimizerApplyBatch, readOptimizerReview } from '@wizard-ads/db';
 import { Uuid } from '@wizard-ads/shared';
 import type { ScreenActor } from '../../server/page-read';
 import type { ScreenParams } from '../types';
@@ -12,6 +12,8 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   if (!profile) return { view: 'empty' as const, props: {} };
   const batch = Uuid.safeParse(input.params['batchId']);
   if (!batch.success) return { view: 'error' as const, props: { message: 'Invalid saved preview identity.' } };
+  const review = await access.snapshot((context) => readOptimizerReview(context, { orgId: context.actor.orgId, profileId: profile.id, batchId: batch.data }));
+  const proposals = review?.proposals ?? [];
   const plan = Uuid.safeParse(input.searchParams['plan']);
   if (plan.success) {
     const recorded = await access.snapshot(async (context) => {
@@ -21,10 +23,10 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       await assertOptimizerApplyBatch(context, { orgId: context.actor.orgId, profileId: profile.id, batchId: batch.data, applyBatchId: source.applyBatchId });
       return saved;
     });
-    return { view: 'ready' as const, props: { profile, batchId: batch.data, recorded, applyBatchId: null } };
+    return { view: 'ready' as const, props: { profile, batchId: batch.data, proposals, recorded, applyBatchId: null } };
   }
   const applyBatch = Uuid.safeParse(input.searchParams['applyBatch']);
   if (!applyBatch.success) return { view: 'error' as const, props: { message: 'Select changes and prepare their immutable preview first.' } };
   await access.snapshot((context) => assertOptimizerApplyBatch(context, { orgId: context.actor.orgId, profileId: profile.id, batchId: batch.data, applyBatchId: applyBatch.data }));
-  return { view: 'ready' as const, props: { profile, batchId: batch.data, recorded: null, applyBatchId: applyBatch.data } };
+  return { view: 'ready' as const, props: { profile, batchId: batch.data, proposals, recorded: null, applyBatchId: applyBatch.data } };
 }

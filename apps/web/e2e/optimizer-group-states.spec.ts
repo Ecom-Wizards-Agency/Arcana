@@ -28,6 +28,8 @@ test('groups preserve missing reporting and disclose current members and reload 
   await expect(page.getByRole('cell', { name: 'Unavailable', exact: true })).toHaveCount(12);
   await page.screenshot({ path: resolve(folder, 'group-no-reporting.png'), fullPage: true });
   await page.locator('#wa-main').getByRole('link', { name: 'Settings', exact: true }).click();
+  await expect(page.getByTestId('optimizer-group-settings-ready')).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('button', { name: 'Group members', exact: true })).toBeEnabled();
   await page.screenshot({ path: resolve(folder, 'group-settings.png'), fullPage: true });
   const members = page.getByRole('button', { name: 'Group members', exact: true }); await members.click();
   await expect(page.getByRole('dialog', { name: 'Group members' })).toContainText('current campaigns');

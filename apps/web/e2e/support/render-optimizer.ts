@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import { AppRouterContext } from 'next/dist/shared/lib/app-router-context.shared-runtime.js';
 import { SpWriteRecordedPreview, spWriteExecutionRequirements } from '@wizard-ads/shared/sp-write-application';
+import { confirmationProposals } from '../../src/screens/optimizer-confirm/render-fixture';
 import { referenceRows, review, reviewHold, syntheticProfile, tracedReference, unchangedTarget } from '../../src/screens/optimizer-review/render-fixture';
 import { operationFixture } from '../../src/screens/optimizer-run/render-fixture';
 import { workedPlacementInputs, workedPlacementRow, workedPeakExposures } from '../../src/screens/optimizer-review/worked-example';
@@ -52,7 +53,7 @@ const result = (state: Parameters<typeof operationFixture>[0], retry = false) =>
   }), 3);
 };
 const approvals = await spWriteApprovalFixtures();
-const confirm = (recorded: SpWriteRecordedPreview, retry = false) => createElement(ConfirmContent, { recorded, batchId: review.batchId, onConfirm: noop, onRefresh: noop, ...(retry ? { retry: { excludedSuccessfulNames: ['Synthetic earlier success'] } } : {}) });
+const confirm = (recorded: SpWriteRecordedPreview, retry = false) => createElement(ConfirmContent, { recorded, proposals: confirmationProposals(recorded), batchId: review.batchId, onConfirm: noop, onRefresh: noop, ...(retry ? { retry: { excludedSuccessfulNames: ['Synthetic earlier success'] } } : {}) });
 const views: Record<string, ReactElement> = {
   'choose-campaigns': createElement(ChooseScreen, { data: chooserReady }),
   'run-settings': createElement(RunSettings, { data: chooserReady, initialDraft: { campaignIds: chooserRows.map((row) => row.campaignId) } }),

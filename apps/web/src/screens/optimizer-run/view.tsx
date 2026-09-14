@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { OptimizerOperation, SpWriteOperationDetail, spWriteExecutionRequirements } from '@wizard-ads/shared/sp-write-application';
 import { gateMessage } from '../../ui/gate-message';
 import { OptimizerFrame, OptimizerUnavailable } from '../optimizer/frame';
+import { operationValue } from '../optimizer-review/presentation';
 import { ResultsContent } from './components';
 import { DataTable, Cell } from '../optimizer-review/components';
 import styles from '../optimizer/optimizer.module.css';
@@ -54,7 +55,7 @@ export function RetryReview({ operation, onBack }: { operation: OptimizerOperati
   const unresolved = operation.rows.filter((row) => row.retryEligible);
   const successful = operation.rows.filter((row) => row.status === 'accepted' || row.status === 'observed');
   return <section><h2>Refresh this preview</h2><p>The successful changes are excluded from the retry: {successful.map((row) => row.name).join(', ') || 'None recorded'}.</p>
-    <DataTable headers={['Target', 'Earlier bid', 'Earlier proposal', 'Status']}>{unresolved.map((row) => <tr key={row.actionId}><Cell>{row.name}</Cell><Cell>{row.before ?? 'Unavailable'}</Cell><Cell>{row.requested ?? 'Unavailable'}</Cell><Cell>Fresh preview required</Cell></tr>)}</DataTable>
+    <DataTable headers={['Target', 'Earlier bid', 'Earlier proposal', 'Status']}>{unresolved.map((row) => <tr key={row.actionId}><Cell>{row.name}</Cell><Cell>{operationValue(row.before, operation.plan.actions.find((action) => action.actionId === row.actionId), operation.plan.providerScope.currencyCode)}</Cell><Cell>{operationValue(row.requested, operation.plan.actions.find((action) => action.actionId === row.actionId), operation.plan.providerScope.currencyCode)}</Cell><Cell>Fresh preview required</Cell></tr>)}</DataTable>
     <p role="status">A guarded forward preview restricted to these original rows is required before a retry can be confirmed. This installation does not yet support that source.</p>
     <button className={styles.action} disabled>Refresh unresolved change unavailable</button> <button className={styles.action} onClick={onBack}>Return to results</button>
   </section>;

@@ -2,7 +2,8 @@
 
 import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { RecommendationRecord } from '@wizard-ads/db';
-import type { CalculationTrace, DependencySet, Hold } from '@wizard-ads/shared';
+import type { CalculationTrace, DependencySet, Hold, MethodEvaluatorInput } from '@wizard-ads/shared';
+import { money, changeValue, recommendationReason } from './presentation';
 import { tokens } from '@wizard-ads/ui';
 import { optimizerCalculationHref } from '../optimizer/navigation';
 import { changedPercent, displayValue, holdScope, recordedDependencyExposures, recordedMetric, reviewUnits, selectedChangeCount, selectedIncludesShadow, targetName, type RecordedPlacementInput, type UnchangedTarget } from './model';
@@ -62,6 +63,7 @@ export function DataTable({ headers, children, label }: { headers: readonly stri
 export function Cell({ children }: { children: ReactNode }) { return <td style={optimizerStyles.cell}>{children}</td>; }
 
 export interface ReviewContentProps {
+  snapshots?: readonly MethodEvaluatorInput[];
   rows: readonly RecommendationRecord[];
   holds?: readonly Hold[];
   unchanged?: readonly UnchangedTarget[];
@@ -80,7 +82,7 @@ export interface ReviewContentProps {
   population?: { suggestions: number | null; unchanged: number | null; blocked: number | null };
 }
 
-export function ReviewContent({ rows, holds = [], unchanged = [], evaluatedTargets, selected, onToggle, onContinue, onClear, profileId, batchId, currencyCode, busy = false, details, retry, initialTab = 'suggestions', population }: ReviewContentProps) {
+export function ReviewContent({ snapshots = [], rows, holds = [], unchanged = [], evaluatedTargets, selected, onToggle, onContinue, onClear, profileId, batchId, currencyCode, busy = false, details, retry, initialTab = 'suggestions', population }: ReviewContentProps) {
   const [tab, setTab] = useState<string>(initialTab);
   const units = reviewUnits(rows);
   const count = selectedChangeCount(units, selected);
@@ -107,8 +109,8 @@ export function ReviewContent({ rows, holds = [], unchanged = [], evaluatedTarge
         {units.length === 0 ? <p>No suggestions were recorded for this run.</p> : <DataTable headers={['Target / Campaign', 'Current bid', 'New bid', 'Reason', 'Select']} label="Suggested changes">
           {units.map((unit) => { const row = unit.rows[0]!; return <tr key={unit.id} data-testid={`optimizer-suggestion-${row.id}`}>
             <Cell><strong>{targetName(row)}</strong><div style={optimizerStyles.muted}>{row.campaignName ?? row.campaignId ?? 'Campaign unavailable'}</div><details><summary>View full details</summary><ExpandedRow row={row} currencyCode={currencyCode} />{unit.dependencySet ? <DependencyContent set={unit.dependencySet} currencyCode={currencyCode} peakExposureByStep={recordedDependencyExposures(row)} /> : null}</details></Cell>
-            <Cell>{displayValue(row.currentValue)} {currencyCode}</Cell><Cell>{displayValue(row.proposedValue)} {currencyCode}</Cell>
-            <Cell>{row.reason.replaceAll('_', ' ')}{unit.shadow ? <p>Shadow only · preview available</p> : null}<div><a href={optimizerCalculationHref(batchId, row.id, profileId)}>View calculation</a></div></Cell>
+            <Cell>{changeValue(row.currentValue, row.field, currencyCode)}</Cell><Cell>{changeValue(row.proposedValue, row.field, currencyCode)}</Cell>
+            <Cell>{recommendationReason(row, snapshots)}{unit.shadow ? <p>Shadow only · preview available</p> : null}<div><a href={optimizerCalculationHref(batchId, row.id, profileId)}>View calculation</a></div></Cell>
             <Cell><input type="checkbox" aria-label={`Select ${targetName(row)}${unit.dependencySet ? ' and its dependent changes' : ''}`} checked={unit.rows.every((item) => selected.has(item.id))} disabled={busy || !unit.selectable} onChange={() => onToggle(unit.rows.map((item) => item.id))} /></Cell>
           </tr>; })}
         </DataTable>}
@@ -117,7 +119,7 @@ export function ReviewContent({ rows, holds = [], unchanged = [], evaluatedTarge
           {selected.size > 0 ? <button type="button" style={optimizerStyles.action} disabled={busy} onClick={() => onClear ? onClear() : onToggle([...selected])}>Clear selection</button> : null}
         </div>
       </> : null}
-      {tab === 'unchanged' ? <><h2>Unchanged targets</h2>{unchanged.length === 0 ? <p>{totals.unchanged === null ? 'Retained unchanged outcomes are unavailable for this historical run.' : 'No retained unchanged rows were recorded.'}</p> : <DataTable headers={['Target', 'Current / Proposed', 'Reason']} label="Unchanged targets">{unchanged.map((row) => <tr key={row.id}><Cell>{row.name}<div style={optimizerStyles.muted}>{row.campaignName}</div></Cell><Cell>{displayValue(row.currentValue)} / {displayValue(row.proposedValue)}</Cell><Cell>{row.reason}</Cell></tr>)}</DataTable>}<p>Unchanged targets are included in the evaluated targets. They cannot be selected for sending.</p></> : null}
+      {tab === 'unchanged' ? <><h2>Unchanged targets</h2>{unchanged.length === 0 ? <p>{totals.unchanged === null ? 'Retained unchanged outcomes are unavailable for this historical run.' : 'No retained unchanged rows were recorded.'}</p> : <DataTable headers={['Target', 'Current / Proposed', 'Reason']} label="Unchanged targets">{unchanged.map((row) => <tr key={row.id}><Cell>{row.name}<div style={optimizerStyles.muted}>{row.campaignName}</div></Cell><Cell>{money(row.currentValue, currencyCode)} / {money(row.proposedValue, currencyCode)}</Cell><Cell>{row.reason}</Cell></tr>)}</DataTable>}<p>Unchanged targets are included in the evaluated targets. They cannot be selected for sending.</p></> : null}
       {tab === 'blocked' ? <><h2>Blocked targets</h2>{holds.length === 0 ? <p>{totals.blocked === null ? 'The blocked target count is unavailable for this historical run.' : 'No holds were recorded.'}</p> : holds.map((hold, index) => <HoldContent hold={hold} settingsHref={`/optimizer/settings${suffix}`} key={`${hold.reason}-${index}`} />)}</> : null}
       {tab === 'details' ? details ?? <p>Run snapshot details are unavailable for this historical preview.</p> : null}
     </div>
@@ -139,7 +141,7 @@ function ExpandedRow({ row, currencyCode }: { row: RecommendationRecord; currenc
     ['Rank group', recordedMetric(row, ['rank group', 'rankgroup', 'organic rank'])],
     ['Evidence window', row.inputs.window ? `${row.inputs.window.start} to ${row.inputs.window.end}` : 'Unavailable'],
     ['Clicks', displayValue(row.inputs.clicks)], ['Orders', recordedMetric(row, ['orders'])], ['CVR', recordedMetric(row, ['cvr', 'conversion rate'])],
-    ['RPC', displayValue(row.inputs.rpc)], ['Current bid', `${displayValue(row.currentValue)} ${currencyCode}`], ['Proposed bid', `${displayValue(row.proposedValue)} ${currencyCode}`],
+    ['RPC', money(row.inputs.rpc, currencyCode)], ['Current bid', changeValue(row.currentValue, row.field, currencyCode)], ['Proposed bid', changeValue(row.proposedValue, row.field, currencyCode)],
     ['Change %', percent === null ? 'Unavailable' : `${percent.toFixed(2)}%`],
     ['Bounds hit', [row.inputs.floorApplied, row.inputs.ceilingApplied, row.inputs.capClamped ? 'Change cap' : null].filter(Boolean).join(' · ') || 'None recorded'],
     ['Method · version', `${row.inputs.methodId ?? 'Method unavailable'} · ${row.inputs.methodVersion ?? 'Version unavailable'}`],
@@ -149,7 +151,7 @@ function ExpandedRow({ row, currencyCode }: { row: RecommendationRecord; currenc
 
 export function DependencyContent({ set, currencyCode, peakExposureByStep }: { set: DependencySet; currencyCode: string; peakExposureByStep?: readonly (number | null)[] }) {
   return <section style={optimizerStyles.stack}><h3>Dependent changes</h3><p>These controls depend on each other. The set is selected and reviewed together.</p><DataTable headers={['Order', 'Control', 'Current', 'Proposed', 'Peak exposure after step']} label="Ordered dependent writes">
-    {set.changes.map((change, index) => <tr key={`${change.control}-${index}`}><Cell>{index + 1}</Cell><Cell>{change.control === 'target_bid' ? 'Base bid' : change.control === 'placement_adjustment' ? change.placementKey.replaceAll('_', ' ') : change.control.replaceAll('_', ' ')}<div style={optimizerStyles.muted}>{set.precedenceReasons[index] ?? 'Final dependent write'}</div></Cell><Cell>{change.current}</Cell><Cell>{change.proposed}</Cell><Cell>{peakExposureByStep?.[index] == null ? 'Not recorded' : `${peakExposureByStep[index]} ${currencyCode}`}</Cell></tr>)}
+    {set.changes.map((change, index) => <tr key={`${change.control}-${index}`}><Cell>{index + 1}</Cell><Cell>{change.control === 'target_bid' ? 'Base bid' : change.control === 'placement_adjustment' ? change.placementKey.replaceAll('_', ' ') : change.control.replaceAll('_', ' ')}<div style={optimizerStyles.muted}>{set.precedenceReasons[index] ?? 'Final dependent write'}</div></Cell><Cell>{changeValue(change.current, change.control, currencyCode)}</Cell><Cell>{changeValue(change.proposed, change.control, currencyCode)}</Cell><Cell>{peakExposureByStep?.[index] == null ? 'Not recorded' : money(peakExposureByStep[index], currencyCode)}</Cell></tr>)}
   </DataTable><p><strong>Ordering constraint:</strong> {set.precedenceReasons.join(' Then ')}</p><p><strong>Partial-failure rule:</strong> Stop the dependent sequence and report the partially applied state. Review the remaining controls against fresh synchronized values.</p></section>;
 }
 
@@ -159,7 +161,7 @@ export function TraceContent({ trace }: { trace: CalculationTrace }) {
     <h2>Calculation steps</h2><DataTable headers={['Step', 'Formula / Check', 'Result']} label="Recorded calculation steps">{trace.steps.map((step) => <tr key={step.index}><Cell>{step.index + 1}. {step.label}</Cell><Cell>{step.formula}{step.boundApplied ? <p>Bound: {step.boundApplied.name} = {step.boundApplied.value}; {step.boundApplied.before} → {step.boundApplied.after}</p> : null}{step.intermediateValue !== null ? <p>Intermediate value: {step.intermediateValue}</p> : null}</Cell><Cell>{displayValue(step.result)}</Cell></tr>)}</DataTable><p><strong>Rounded result:</strong> {displayValue(trace.roundingStep.result)} · <strong>Final result:</strong> {displayValue(trace.finalResult)}</p></section>;
 }
 
-export function CalculationContent({ row, currencyCode, backHref, profileId = row.profileId, dependencySet, peakExposureByStep, workedExample = false, placementInputs }: { row: RecommendationRecord; currencyCode: string; backHref: string; profileId?: string; dependencySet?: DependencySet; peakExposureByStep?: readonly (number | null)[]; workedExample?: boolean; placementInputs?: readonly RecordedPlacementInput[] }) {
+export function CalculationContent({ row, currencyCode, backHref, profileId = row.profileId, dependencySet, peakExposureByStep, workedExample = false, placementInputs, snapshots = [] }: { row: RecommendationRecord; currencyCode: string; backHref: string; profileId?: string; dependencySet?: DependencySet; peakExposureByStep?: readonly (number | null)[]; workedExample?: boolean; placementInputs?: readonly RecordedPlacementInput[]; snapshots?: readonly MethodEvaluatorInput[] }) {
   const trace = row.inputs.trace;
   const set = dependencySet ?? row.inputs.dependencySet;
   const shadow = row.inputs.methodId === 'sp.coordinated-efficiency';
@@ -169,9 +171,9 @@ export function CalculationContent({ row, currencyCode, backHref, profileId = ro
   return <section style={optimizerStyles.stack} aria-label={shadow ? 'Placement calculation' : 'Calculation details'}>
     {workedExample ? <p style={optimizerStyles.muted}>Synthetic worked example adapted from the documented placement calculation. Its recorded inputs and limits are illustrative; they do not describe a saved account run.</p> : null}
     {shadow ? <div style={optimizerStyles.shadow}><strong>{set ? `Shadow preview: ${set.changes.length} changes reviewed together.` : 'Shadow preview · Dependent change count unavailable.'}</strong><p>This method cannot send changes to Amazon.</p>{!set ? <p>Recorded dependency evidence is unavailable for this preview.</p> : null}</div> : null}
-    <DataTable headers={['Target / Campaign', 'Current bid', 'New bid']} label="Calculation target"><tr><Cell>{targetName(row)}<div style={optimizerStyles.muted}>{row.campaignName}</div></Cell><Cell>{displayValue(row.currentValue)} {currencyCode}</Cell><Cell>{displayValue(row.proposedValue)} {currencyCode}</Cell></tr></DataTable>
+    <DataTable headers={['Target / Campaign', 'Current bid', 'New bid', 'Reason']} label="Calculation target"><tr><Cell>{targetName(row)}<div style={optimizerStyles.muted}>{row.campaignName}</div></Cell><Cell>{changeValue(row.currentValue, row.field, currencyCode)}</Cell><Cell>{changeValue(row.proposedValue, row.field, currencyCode)}</Cell><Cell>{recommendationReason(row, snapshots)}</Cell></tr></DataTable>
     <p>Method: {row.inputs.methodId === 'sp.reference-efficiency' ? 'SP reference efficiency' : row.inputs.methodId === 'sp.coordinated-efficiency' ? 'SP coordinated efficiency' : 'Unavailable'} · {row.inputs.methodVersion ?? 'Version unavailable'}</p>
-    {placementInputs && placementInputs.length > 0 ? <section><h2>Inputs: placement report</h2><DataTable headers={['Placement', 'Clicks', 'Revenue', 'RPC', 'Click share']} label="Placement report inputs">{placementInputs.map((placement) => <tr key={placement.placement}><Cell>{placement.placement}</Cell><Cell>{placement.clicks}</Cell><Cell>{placement.revenue} {currencyCode}</Cell><Cell>{displayValue(placement.rpc)}</Cell><Cell>{(placement.clickShare * 100).toFixed(2)}%</Cell></tr>)}<tr><Cell>Total</Cell><Cell>{totalClicks}</Cell><Cell>{totalRevenue} {currencyCode}</Cell><Cell>{totalClicks > 0 ? totalRevenue / totalClicks : 'Unavailable'}</Cell><Cell>{totalClicks > 0 ? '100%' : 'Unavailable'}</Cell></tr></DataTable></section> : shadow ? <p>Recorded placement report inputs are unavailable for this preview.</p> : null}
+    {placementInputs && placementInputs.length > 0 ? <section><h2>Inputs: placement report</h2><DataTable headers={['Placement', 'Clicks', 'Revenue', 'RPC', 'Click share']} label="Placement report inputs">{placementInputs.map((placement) => <tr key={placement.placement}><Cell>{placement.placement}</Cell><Cell>{placement.clicks}</Cell><Cell>{money(placement.revenue, currencyCode)}</Cell><Cell>{money(placement.rpc, currencyCode)}</Cell><Cell>{(placement.clickShare * 100).toFixed(2)}%</Cell></tr>)}<tr><Cell>Total</Cell><Cell>{totalClicks}</Cell><Cell>{money(totalRevenue, currencyCode)}</Cell><Cell>{money(totalClicks > 0 ? totalRevenue / totalClicks : null, currencyCode)}</Cell><Cell>{totalClicks > 0 ? '100%' : 'Unavailable'}</Cell></tr></DataTable></section> : shadow ? <p>Recorded placement report inputs are unavailable for this preview.</p> : null}
     {trace ? <TraceContent trace={trace} /> : <div style={optimizerStyles.warning}><h2>Recorded calculation unavailable</h2><p>The proposed bid was saved without the inputs needed to reproduce its calculation.</p></div>}
     <p>Change: (new − old) ÷ old = {change === null ? 'Unavailable because a nonzero numeric earlier bid was not recorded.' : `${change.toFixed(2)}%, displayed as ${Math.round(change)}%.`}</p>
     {set ? <DependencyContent set={set} currencyCode={currencyCode} peakExposureByStep={peakExposureByStep ?? recordedDependencyExposures(row)} /> : null}

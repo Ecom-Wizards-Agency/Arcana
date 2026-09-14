@@ -233,6 +233,7 @@ test('selects filtered campaigns across a filter and polls the exact read-only p
   // Emulate worker completion in the queue/run ledgers. The browser must
   // discover this through its bounded polling loop without a manual reload.
   await succeedQueuedRecommendationRuns(state, accepted.childCount);
+  await expect(page.getByRole('heading', { name: 'Review suggestions', exact: true })).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText('Preview completed. No changes were recommended.', { exact: false }))
     .toBeVisible({ timeout: 10_000 });
   const completedUrl = new URL(page.url());

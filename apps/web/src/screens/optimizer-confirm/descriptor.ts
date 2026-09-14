@@ -5,7 +5,7 @@ export const descriptor = {
   id: 'optimizer-confirm', path: '/optimizer/confirm/[batchId]', title: 'Confirm changes', route: 'page', nav: null,
   guard: { kind: 'requested', canonicalProfile: true, heading: 'Confirm changes' },
   prefetch: 'expensive', rollout: { enabled: true },
-  states: ['loading', 'error', 'gated', 'empty', 'not-measured'], entry: 'gate-message', specs: [],
+  states: ['loading', 'error', 'gated', 'empty', 'not-measured', 'stale', 'refused'], entry: 'gate-message', specs: [],
   load: (actor, params) => import('./load').then((module) => module.load(actor, params)),
   client: (): Promise<typeof ScreenView> => import('./view').then((module) => module.default),
 } satisfies ScreenDescriptor<Awaited<ReturnType<typeof load>>>;

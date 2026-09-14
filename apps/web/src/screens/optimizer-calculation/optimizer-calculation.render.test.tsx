@@ -56,7 +56,7 @@ it('projects all placement facts from the matching saved snapshot and preserves 
   const host = rendered(<Screen data={savedCalculation([unrelated, snapshot])} />);
   const rows = [...host.querySelectorAll('table[aria-label="Placement report inputs"] tbody tr')];
   expect(rows).toHaveLength(snapshot.campaignEvidence.placementFacts.length + 1);
-  expect([...rows[0]!.querySelectorAll('td')].map((cell) => cell.textContent)).toEqual(['Top of search', '30', '90 USD', '3.125', '41.67%']);
+  expect([...rows[0]!.querySelectorAll('td')].map((cell) => cell.textContent)).toEqual(['Top of search', '30', '$90.00', '$3.13', '41.67%']);
   expect(rows[1]!.querySelectorAll('td')[3]!.textContent).toBe('Unavailable');
   expect(rows[2]!.querySelectorAll('td')[3]!.textContent).toBe('Unavailable');
   expect(rows[3]!.querySelectorAll('td')[1]!.textContent).toBe('72');

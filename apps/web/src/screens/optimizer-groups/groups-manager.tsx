@@ -217,6 +217,9 @@ export function OptimizationGroupsManager({
         removedCampaigns?: number;
       };
       if (!response.ok || !body.record) throw new Error(body.error ?? 'Could not save group');
+      if ((body.record.group.method?.id ?? 'sp.reference-efficiency') !== draft.methodId) {
+        throw new Error('The saved method does not match your selection. Reload the group before continuing.');
+      }
       const savedCampaigns = body.record.campaignIds;
       if (![body.assignedCampaigns, body.movedCampaigns, body.removedCampaigns].every((count) => typeof count === 'number' && Number.isSafeInteger(count) && count >= 0)
         || body.assignedCampaigns !== draft.campaignIds.length
@@ -224,9 +227,6 @@ export function OptimizationGroupsManager({
         || new Set(savedCampaigns).size !== savedCampaigns.length
         || !savedCampaigns.every((id) => draft.campaignIds.includes(id))) {
         throw new Error('The saved campaign assignments do not match your selection. Reload the group before continuing.');
-      }
-      if ((body.record.group.method?.id ?? 'sp.reference-efficiency') !== draft.methodId) {
-        throw new Error('The saved method does not match your selection. Reload the group before continuing.');
       }
       if (draft.methodId === 'sp.coordinated-efficiency') {
         const saved = body.record.group.methodSettings;

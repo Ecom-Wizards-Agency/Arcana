@@ -22,3 +22,5 @@
 .fields input, .fields select, .search { padding: 10px 12px; border: 1px solid var(--wa-border); border-radius: 8px; background: var(--wa-surface); color: var(--wa-text); font: inherit; }
 .footer { border-top: 1px solid var(--wa-border); padding-top: 24px; display: flex; flex-wrap: wrap; gap: 12px; }
 @media (max-width: 720px) { .steps { flex-direction: column; } .fields { grid-template-columns: 1fr; } .table { display: block; overflow-x: auto; } }
+
+.card { border: 1px solid var(--wa-border); background: var(--wa-surface-sunken); border-radius: 8px; padding: 20px; }

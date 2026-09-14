@@ -122,7 +122,7 @@ describe('recorded calculation rendering', () => {
     const row = { ...workedPlacementRow, inputs: { ...workedPlacementRow.inputs, trace } };
     render(<CalculationContent row={row} currencyCode="USD" backHref="/optimizer" />);
     const rows = screen.getByRole('table', { name: 'Ordered dependent writes' }).querySelectorAll('tbody tr');
-    expect([...rows].map((row) => row.lastElementChild?.textContent)).toEqual(values.map((value) => `${value} USD`));
+    expect([...rows].map((row) => row.lastElementChild?.textContent)).toEqual(['$0.43', '$0.91', '$1.07']);
     expect(recordedDependencyExposures(workedPlacementRow)).toEqual([null, null, null]);
   });
   it('keeps missing dependency evidence unavailable while blocking shadow sending', () => {

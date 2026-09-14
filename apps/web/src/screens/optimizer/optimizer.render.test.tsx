@@ -14,5 +14,5 @@ verifyScreen(descriptor, [
   { state: 'gated', name: 'explains an unavailable database', render: () => <Screen data={{ view: 'gated', props: { entry: { state: 'no-database' } } }} />, text: 'database' },
   { state: 'gated', name: 'explains missing organization membership', render: () => <Screen data={{ view: 'gated', props: { entry: { state: 'no-org', context: { ...context, active: null, memberships: [] } } } }} />, text: 'organisation' },
   { state: 'empty', name: 'shows an empty profile roster without invented data', render: () => <Screen data={{ view: 'empty', props: {} }} />, text: "profiles" },
-  { state: 'not-measured', name: 'does not substitute measured results for absent evidence', render: () => <Screen data={ready} />, text: "No recommendation preview has run yet." }
+  { state: 'not-measured', name: 'does not substitute measured results for absent evidence', render: () => <Screen data={ready} />, text: 'No campaigns available for this profile.' }
 ]);

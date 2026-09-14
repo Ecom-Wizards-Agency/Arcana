@@ -11,6 +11,5 @@ export default function ScreenView({ data }: { data: ScreenData }) {
   const { profile, campaignRows, period, previewReadiness, mayRunOptimizer, params } = data.props;
   return <OptimizerFrame title="Optimize Now" subtitle={`${profile.label} · ${profile.countryCode} · ${profile.currencyCode}`} step={1}>
     <ChooseCampaigns rows={campaignRows} profileId={profile.id} currencyCode={profile.currencyCode} period={period} today={todayIsoInTimeZone(profile.timezone)} mayRun={mayRunOptimizer} readiness={{ ready: previewReadiness.ready, ...(previewReadiness.ready ? {} : { message: oneTimePreviewUnavailableMessage(previewReadiness.reason) }) }} methods={data.props.savedMethods} initialBatchId={params.batch} />
-    {data.props.run === null ? <p>No recommendation preview has run yet.</p> : null}
   </OptimizerFrame>;
 }

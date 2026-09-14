@@ -7,6 +7,7 @@ import { filterOptimizerCampaignRows, optimizerPreviewError } from '../../optimi
 import { oneTimePreviewUnavailableMessage } from '../../optimizer/preview-availability';
 import { effectiveAcos, readOptimizerDraft, saveOptimizerDraft, savedConfiguration, optimizerAdmissionRequest,
   clearOptimizerAdmission, draftDefaultMethod, type OptimizerDraft } from './draft';
+import { goalLabel } from '../optimizer-review/presentation';
 import styles from './optimizer.module.css';
 
 export interface ChooseCampaignsProps {
@@ -39,7 +40,7 @@ export async function queueSuggestions(body: string, signal?: AbortSignal): Prom
   throw new Error('The preview response was interrupted.');
 }
 
-export function ChooseCampaigns({ rows, profileId, currencyCode, period, today, mayRun, readiness, initialBatchId, methods = {} }: ChooseCampaignsProps) {
+export function ChooseCampaigns({ rows, profileId, period, today, mayRun, readiness, initialBatchId, methods = {} }: ChooseCampaignsProps) {
   const router = useRouter();
   const [draft, setDraft] = useState<OptimizerDraft>({ campaignIds: [] });
   const [query, setQuery] = useState('');
@@ -141,7 +142,7 @@ export function ChooseCampaigns({ rows, profileId, currencyCode, period, today, 
     <table className={styles.table}><thead><tr><th>Campaign</th><th>Saved goal</th><th>Target ACOS</th><th><input ref={all} type="checkbox" data-testid="optimizer-select-filtered" aria-label={`Select all ${filterEligible.length} eligible campaigns matching current filters`} disabled={busy || !mayRun || !filterEligible.length} checked={filterEligible.length > 0 && filterCount === filterEligible.length} onChange={(event) => toggle(filterEligible.map((row) => row.campaignId), event.target.checked)} /></th></tr></thead>
       <tbody>{filtered.map((row) => { const acos = effectiveAcos(row, draft.configuration); const method = draft.campaignMethods?.[row.campaignId] ?? methods[row.campaignId] ?? draftDefaultMethod(draft); return <tr key={row.campaignId}>
         <td>{row.name}<details><summary>Campaign details</summary><p>{row.adProduct} · {row.adProduct === 'SP' ? 'CPC' : 'Cost type unavailable'} · {row.biddingStrategy ?? 'Bidding mode unavailable'}</p><p>{method ? `${method.id} · ${method.version}` : 'SP reference efficiency · reference.1 · run default'}</p><p>{row.currentRows ? 'Reporting data available' : 'No reporting data for this period'}</p><p>Experiment locks are checked when the preview is prepared.</p>{row.eligibilityReason ? <p>{row.eligibilityReason}</p> : null}</details></td>
-        <td>{row.groupRole ?? 'No saved goal'}</td><td>{acos.value === null ? 'Missing target ACOS' : `${Number((acos.value * 100).toPrecision(10))}%`}<small>{acos.source}</small></td>
+        <td>{goalLabel(row.groupRole)}</td><td>{acos.value === null ? 'Missing target ACOS' : `${Number((acos.value * 100).toPrecision(10))}%`}<small>{acos.source}</small></td>
         <td><label><input type="checkbox" disabled={busy || !mayRun || !row.selectable} checked={selected.has(row.campaignId)} aria-label={`Select ${row.name} for this preview`} onChange={(event) => toggle([row.campaignId], event.target.checked)} />{selected.has(row.campaignId) ? 'Selected' : 'Select'}</label></td>
       </tr>; })}</tbody></table>
     {rows.length === 0 ? <p>No campaigns available for this profile.</p> : null}
@@ -156,6 +157,5 @@ export function ChooseCampaigns({ rows, profileId, currencyCode, period, today, 
       <button className={styles.action} disabled={busy || !selectedRows.length} onClick={() => update({ ...draft, campaignIds: [] })}>Clear selected</button>
       <a href={`/optimizer/help?profile=${profileId}`}>Optimization help</a>
     </div>
-    <span className={styles.muted}>{currencyCode} · Completed reporting days</span>
   </>;
 }

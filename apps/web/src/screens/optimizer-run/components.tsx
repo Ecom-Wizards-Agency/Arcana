@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import type { ExecutionVerdict, ObjectiveVerdict } from '@wizard-ads/shared';
 import type { SpWriteOperationDetail, SpWritePreview } from '@wizard-ads/shared/sp-write-application';
 import { Cell, DataTable, optimizerStyles } from '../optimizer-review/components';
-import { displayValue } from '../optimizer-review/model';
+import { operationValue } from '../optimizer-review/presentation';
 import { optimizerBatchHref } from '../optimizer/navigation';
 import { observationAnswers, operationCounts, operationHeadline, resultStatus, type OperationResultRow } from './model';
 
@@ -40,7 +40,7 @@ export function ResultsContent({ detail, plan, rows, executionGate, profileId, b
       {retry ? <p>The earlier successful change{retry.excludedSuccessfulNames.length === 1 ? '' : 's'} {retry.excludedSuccessfulNames.join(', ')} {retry.excludedSuccessfulNames.length === 1 ? 'was' : 'were'} not sent again.</p> : null}
     </div>
     <DataTable headers={['Target', 'Before', 'Requested', 'Observed', 'Result']} label="Run change results">
-      {rows.map((row) => <tr key={row.actionId}><Cell>{row.name}</Cell><Cell>{displayValue(row.before)}</Cell><Cell>{displayValue(row.requested)}</Cell><Cell>{displayValue(row.observed)}</Cell><Cell>{resultStatus(row)}{row.reason ? <p>{row.reason}</p> : null}{row.retryReason ? <p style={optimizerStyles.muted}>{row.retryReason}</p> : null}</Cell></tr>)}
+      {rows.map((row) => <tr key={row.actionId}><Cell>{row.name}</Cell><Cell>{operationValue(row.before, plan.actions.find((action) => action.actionId === row.actionId), plan.providerScope.currencyCode)}</Cell><Cell>{operationValue(row.requested, plan.actions.find((action) => action.actionId === row.actionId), plan.providerScope.currencyCode)}</Cell><Cell>{operationValue(row.observed, plan.actions.find((action) => action.actionId === row.actionId), plan.providerScope.currencyCode)}</Cell><Cell>{resultStatus(row)}{row.reason ? <p>{row.reason}</p> : null}{row.retryReason ? <p style={optimizerStyles.muted}>{row.retryReason}</p> : null}</Cell></tr>)}
     </DataTable>
     {rows.length !== plan.counts.providerRows ? <p role="alert" style={optimizerStyles.warning}>Row detail is incomplete: {rows.length} of {plan.counts.providerRows} approved rows loaded. Totals below come from the saved operation.</p> : null}
     <p data-testid="optimizer-result-counts">Requested {counts.requested} · Attempted {counts.attempted} · Accepted {counts.succeeded} · Failed {counts.failed} · Confirmed in sync {counts.observed}</p>

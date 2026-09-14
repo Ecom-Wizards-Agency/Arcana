@@ -1,4 +1,6 @@
 'use client';
+import type { RecommendationRecord } from '@wizard-ads/db';
+import { changeValue } from '../optimizer-review/presentation';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { SpWriteAdmission, SpWriteConfirmedApprovalRequest, SpWritePreview, SpWriteRecordedPreview, spWriteConfirmation } from '@wizard-ads/shared/sp-write-application';
@@ -15,10 +17,6 @@ export function confirmationRequest(preview: SpWritePreview, approvalRequestId: 
     approvalRequestId, plan: preview.binding, approvalMode: 'manual', confirmationVersion: 'openspell.amazon-sp-write-confirmation.v1', boundedAuthorization: null, preapprovedInversePlan: null,
   } });
 }
-function value(input: unknown): string {
-  if (typeof input === 'object' && input !== null && 'amount' in input) return String(input.amount);
-  return input === null || input === undefined ? 'Unavailable' : typeof input === 'object' ? JSON.stringify(input) : String(input);
-}
 function freshnessMessage(reasons: SpWriteRecordedPreview['freshness']['reasons']): string {
   const messages: Record<SpWriteRecordedPreview['freshness']['reasons'][number], string> = {
     expired: 'This preview has expired.',
@@ -32,22 +30,31 @@ function freshnessMessage(reasons: SpWriteRecordedPreview['freshness']['reasons'
   };
   return reasons.map((reason) => messages[reason]).join(' ') || 'This preview needs a fresh review.';
 }
-export function ConfirmContent({ recorded, batchId, busy = false, onConfirm, onRefresh, retry }: { recorded: SpWriteRecordedPreview; batchId: string; busy?: boolean; onConfirm(): void; onRefresh(): void; retry?: { excludedSuccessfulNames: readonly string[] } }) {
+export function ConfirmContent({ recorded, batchId, busy = false, onConfirm, onRefresh, retry, proposals = [] }: { recorded: SpWriteRecordedPreview; batchId: string; busy?: boolean; onConfirm(): void; onRefresh(): void; retry?: { excludedSuccessfulNames: readonly string[] }; proposals?: readonly RecommendationRecord[] }) {
   const { preview } = recorded;
   const shadow = preview.evidence?.schemaVersion !== 'openspell.sp-write-preview-evidence.v2'
     && preview.evidence?.provenance.rows.some((row) => row.method?.methodId === 'sp.coordinated-efficiency');
   const stale = recorded.freshness.status !== 'current';
   const count = preview.plan.counts.logicalChanges;
+  const evidence = preview.evidence;
+  const sourceRows = evidence && evidence.schemaVersion !== 'openspell.sp-write-preview-evidence.v2' ? evidence.provenance.rows : [];
+  const scopedRows = preview.plan.actions.map((action) => {
+    const ids = action.sources.flatMap((source) => source.kind === 'apply_row' ? sourceRows.filter((row) => row.applyRowId === source.applyRowId).map((row) => row.recommendationId) : []);
+    return proposals.filter((row) => row.profileId === preview.plan.profileId && ids.includes(row.id));
+  });
+  const scopeComplete = scopedRows.every((rows) => rows.length > 0 && rows.every((row) => row.campaignId !== null));
+  const campaigns = new Set(scopedRows.flatMap((rows) => rows.map((row) => row.campaignId)));
+  const scope = scopeComplete ? `These changes affect ${preview.plan.counts.uniqueEntities} target${preview.plan.counts.uniqueEntities === 1 ? '' : 's'} in ${campaigns.size} campaign${campaigns.size === 1 ? '' : 's'}.` : `These changes affect ${preview.plan.counts.uniqueEntities} targets. Campaign scope unavailable.`;
   const query = `?profile=${preview.plan.profileId}`;
   return <OptimizerFrame title={shadow ? 'Shadow preview' : stale ? 'Refresh this preview' : retry ? 'Confirm retry' : 'Confirm changes'} subtitle={`${recorded.profile.label} · ${preview.plan.counts.uniqueEntities} entities · ${recorded.profile.currencyCode}`} step={3}>
-    {shadow ? <div className={styles.shadow}><h2>Shadow preview</h2><p>This method cannot send changes to Amazon.</p></div> : <section className={styles.warning}><h2>{stale ? freshnessMessage(recorded.freshness.reasons) : retry ? `Retry ${count} bid change${count === 1 ? '' : 's'} in Amazon` : `Apply ${count} bid change${count === 1 ? '' : 's'} to Amazon`}</h2><p>{stale ? recorded.freshness.reasons.join(' · ') : `${preview.plan.counts.providerRows} provider rows · ${preview.plan.providerScope.currencyCode} · ${preview.plan.providerScope.marketplaceId}`}</p></section>}
+    {shadow ? <div className={styles.shadow}><h2>Shadow preview</h2><p>This method cannot send changes to Amazon.</p></div> : <section className={stale ? styles.warning : styles.card}><h2>{stale ? freshnessMessage(recorded.freshness.reasons) : retry ? `Retry ${count} bid change${count === 1 ? '' : 's'} in Amazon` : `Apply ${count} bid change${count === 1 ? '' : 's'} to Amazon`}</h2><p>{stale ? recorded.freshness.reasons.join(' · ') : scope}</p></section>}
     {retry ? <p>The earlier successful changes are excluded: {retry.excludedSuccessfulNames.join(', ')}. This confirmation applies to the refreshed preview.</p> : null}
     <DataTable headers={stale ? ['Target', 'Earlier bid', 'Earlier proposal', 'Status'] : ['Campaign / Target', 'Current bid', 'New bid']}>
-      {preview.plan.actions.map((action) => <tr key={action.actionId}><Cell>{recorded.currentRows.find((row) => row.actionId === action.actionId)?.entityName ?? Object.values(action.entity).join(' · ')}</Cell><Cell>{Object.entries(action.changes).map(([field, change]) => <p key={field}>{field}: {value(change?.expected)}</p>)}</Cell><Cell>{Object.entries(action.changes).map(([field, change]) => <p key={field}>{field}: {value(change?.requested)}</p>)}</Cell>{stale ? <Cell>Fresh preview required</Cell> : null}</tr>)}
+      {preview.plan.actions.map((action, index) => <tr key={action.actionId}><Cell><strong>{scopedRows[index]?.[0]?.campaignName ?? scopedRows[index]?.[0]?.campaignId ?? 'Campaign unavailable'}</strong><div>{recorded.currentRows.find((row) => row.actionId === action.actionId)?.entityName ?? Object.values(action.entity).join(' · ')}</div></Cell><Cell>{Object.entries(action.changes).map(([field, change]) => <p key={field}>{changeValue(change?.expected, field, preview.plan.providerScope.currencyCode)}</p>)}</Cell><Cell>{Object.entries(action.changes).map(([field, change]) => <p key={field}>{changeValue(change?.requested, field, preview.plan.providerScope.currencyCode)}</p>)}</Cell>{stale ? <Cell>Fresh preview required</Cell> : null}</tr>)}
     </DataTable>
     <p>Saved campaign limits checked. This approval covers the values shown above.</p>
     <p>If current values or permissions change, Arcana will stop the affected changes and request a fresh review.</p>
-    <a href={optimizerBatchHref('review', batchId, preview.plan.profileId, { tab: 'details' })}>Review limits and settings</a>
+    <div className={styles.actions}><a className={styles.action} href={optimizerBatchHref('review', batchId, preview.plan.profileId, { tab: 'details' })}>Review limits and settings</a></div>
     <div className={styles.footer}><a className={styles.action} href={`/optimizer/review/${batchId}${query}`}>Back to suggestions</a>
       {shadow ? <button className={styles.action} disabled>Send to Amazon unavailable in shadow</button> : recorded.admission ? <a className={styles.action} href={`/optimizer/run/${batchId}${query}&execution=${recorded.admission.operation.executionId}&plan=${recorded.admission.operation.planId}`}>View saved results</a> : stale ? <button className={`${styles.action} ${styles.primary}`} disabled={busy} onClick={onRefresh}>Refresh unresolved change</button> : <button className={`${styles.action} ${styles.primary}`} disabled={busy} onClick={onConfirm}>{spWriteConfirmation(count)}</button>}
     </div>
@@ -102,7 +109,7 @@ function ConfirmScreen({ data }: { data: Extract<ScreenData, { view: 'ready' }> 
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Approval status is unknown. Retry this same confirmation to check the saved result.'); }
     finally { lock.current = false; setBusy(false); }
   }
-  return <>{error ? <p role="alert">{error}</p> : null}{recorded ? <ConfirmContent recorded={recorded} batchId={batchId} busy={busy} onConfirm={() => { void approve(); }} onRefresh={() => { const source = recorded.preview.plan.source; if (source.kind === 'apply_batch') { previewIdentity.current = null; approvalIdentity.current = null; void requestPreview(source.applyBatchId); } }} /> : <OptimizerFrame title="Preparing immutable preview" step={3}><p aria-busy={busy}>The selected rows, saved limits and current values are being checked.</p>{error && applyBatchId ? <button className={styles.action} onClick={() => { void requestPreview(applyBatchId); }}>Check saved preview</button> : null}</OptimizerFrame>}</>;
+  return <>{error ? <p role="alert">{error}</p> : null}{recorded ? <ConfirmContent proposals={data.props.proposals} recorded={recorded} batchId={batchId} busy={busy} onConfirm={() => { void approve(); }} onRefresh={() => { const source = recorded.preview.plan.source; if (source.kind === 'apply_batch') { previewIdentity.current = null; approvalIdentity.current = null; void requestPreview(source.applyBatchId); } }} /> : <OptimizerFrame title="Preparing immutable preview" step={3}><p aria-busy={busy}>The selected rows, saved limits and current values are being checked.</p>{error && applyBatchId ? <button className={styles.action} onClick={() => { void requestPreview(applyBatchId); }}>Check saved preview</button> : null}</OptimizerFrame>}</>;
 }
 function errorMessage(value: unknown): string {
   const code = typeof value === 'object' && value !== null && 'code' in value ? value.code : null;
