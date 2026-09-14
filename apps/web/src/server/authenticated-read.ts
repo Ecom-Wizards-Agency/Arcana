@@ -1,4 +1,4 @@
-import { AgencyAccessDenied, withAuthenticatedActor, type QueryHandle } from '@wizard-ads/db';
+import { AgencyAccessDenied, withAuthenticatedReadSnapshot, type AuthenticatedReadSnapshot } from '@wizard-ads/db';
 import { Uuid, type OrgActor } from '@wizard-ads/shared';
 import { errorResponse, openWebDatabase, requestActor, RequestAuthError } from './request-context';
 import { privateResponse } from './private-response';
@@ -19,19 +19,22 @@ export function readUuid(value: string | null, label: string): string {
 /** One verified actor, one authenticated transaction, and one owned connection. */
 export async function authenticatedRead(
   request: Request,
-  read: (handle: QueryHandle, actor: OrgActor) => Promise<Response>,
+  read: (handle: AuthenticatedReadSnapshot, actor: OrgActor) => Promise<Response>,
+  onError?: (error: unknown) => Response | null,
 ): Promise<Response> {
   try {
     const actor = await requestActor(request.headers);
     const database = openWebDatabase();
     let response: Response;
     try {
-      response = await withAuthenticatedActor(database, actor, (sql) => read({ sql }, actor));
+      response = await withAuthenticatedReadSnapshot(database, actor, (snapshot) => read(snapshot, actor));
     } finally {
       await database.close();
     }
     return privateResponse(response);
   } catch (error) {
+    const mapped = onError?.(error);
+    if (mapped) return privateResponse(mapped);
     if (error instanceof AgencyAccessDenied || error instanceof RequestAuthError || error instanceof SyntaxError) {
       return privateResponse(errorResponse(error));
     }

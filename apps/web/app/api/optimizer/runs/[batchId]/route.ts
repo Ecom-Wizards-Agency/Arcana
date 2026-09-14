@@ -2,7 +2,7 @@ import {
   readRecommendationPreviewBatchStatus,
   RecommendationPreviewError,
 } from '@wizard-ads/worker';
-import { resolveOneTimePreviewReadiness, withAuthenticatedActor } from '@wizard-ads/db';
+import { resolveOneTimePreviewReadiness, withAuthenticatedReadSnapshot } from '@wizard-ads/db';
 import {
   errorResponse,
   openWebDatabase,
@@ -24,17 +24,20 @@ type RouteContext = { params: Promise<{ batchId: string }> };
 export async function GET(request: Request, context: RouteContext): Promise<Response> {
   try {
     const actor = await requestActor(request.headers);
+    // Exception: tenant status uses one authenticated read-only snapshot;
+    // installation readiness requires a service-role read after that snapshot.
+    // No tenant query or write runs on the privileged handle.
     const database = openWebDatabase();
     let response: Response;
     try {
-      const status = await withAuthenticatedActor(database, actor, async (sql) => {
+      const status = await withAuthenticatedReadSnapshot(database, actor, async (snapshot) => {
         const parameters = await context.params;
         const batchId = optimizerPreviewUuid(parameters.batchId, 'batchId');
         const profileId = optimizerPreviewUuid(
           new URL(request.url).searchParams.get('profileId'),
           'profileId',
         );
-        return readRecommendationPreviewBatchStatus({ sql }, {
+        return readRecommendationPreviewBatchStatus(snapshot, {
           orgId: actor.orgId,
           profileId,
           batchId,

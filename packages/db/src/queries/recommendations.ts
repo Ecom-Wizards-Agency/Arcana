@@ -37,12 +37,14 @@ import type {
   OptimizationGroupSnapshot,
   RecommendationInputs,
 } from '@wizard-ads/shared';
-import type { DbHandle, QueryHandle } from '../client.js';
+import type { QueryHandle, QuerySql } from '../client.js';
 import { lockCurrentApplyStates, resolveCurrentApplyStates } from './apply-state.js';
 import type { JsonValue } from './goto.js';
 import { toDate, toDateOrNull } from './pg-time.js';
 
-export type RecommendationQueryHandle = Pick<DbHandle, 'sql'>;
+export class RecommendationReviewError extends Error {}
+
+export type RecommendationQueryHandle = QueryHandle;
 
 export const RECOMMENDATION_STATUSES = [
   'proposed',
@@ -492,7 +494,12 @@ export async function decideRecommendations(
   // One statement, not one per row: a bulk decision over a filtered preview is
   // the interaction this surface exists for, and four thousand round trips is
   // not an audit trail, it is a timeout.
-  if (updated.length > 0) {
+  if (updated.length > 0 && 'actor' in handle) {
+    const [audit] = await handle.sql<{ count: number }[]>`select app.record_recommendation_review_audit(
+      ${options.orgId}::uuid,${`recommendation.${options.decision}`},'recommendation',
+      ${updated.map((row) => row.id)}::text[],${serializeJson({ note })}::text::jsonb) as count`;
+    if (audit?.count !== updated.length) throw new Error('Recommendation audit count mismatch');
+  } else if (updated.length > 0) {
     await handle.sql`
       insert into public.audit_log
         (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
@@ -594,11 +601,13 @@ export async function exportAcceptedRecommendations(
   const tag = options.tag.trim();
   if (tag.length === 0) throw new Error('An export needs a batch tag.');
 
-  return await handle.sql.begin(async (sql) => {
+  return await inTransaction(handle, async (sql) => {
+    if ('actor' in handle) await sql`select app.lock_review_export_rows(
+      ${options.orgId}::uuid,${options.profileId}::uuid,${options.runId}::uuid,'[]'::jsonb)`;
     const runs = await sql<{ scope_version: number | null }[]>`
       select scope_version from public.recommendation_runs
        where org_id = ${options.orgId} and profile_id = ${options.profileId} and id = ${options.runId}
-       for share
+       ${'actor' in handle ? sql`` : sql`for share`}
     `;
     if (runs.length !== 1) throw new Error('Recommendation run not found.');
     if (runs[0]?.scope_version === 2) throw new Error('One-time preview export awaits observation support.');
@@ -624,7 +633,11 @@ export async function exportAcceptedRecommendations(
          and status = 'accepted'
          and (${ids}::uuid[] is null or id = any (${ids}::uuid[]))
        order by created_at, id
+       for update
     `;
+    if (ids !== null && candidates.length !== ids.length) {
+      throw new RecommendationReviewError('Selected proposals are unavailable; reload before exporting.');
+    }
 
     const [acceptedRow] = await sql<{ count: number }[]>`
       select count(*)::int as count
@@ -644,7 +657,9 @@ export async function exportAcceptedRecommendations(
         ? []
         : [{ key: candidate.id, entityType, entityId: candidate.entity_id, field: candidate.field }];
     });
-    await lockCurrentApplyStates({ sql }, {
+    if ('actor' in handle) await sql`select app.lock_review_export_rows(
+      ${options.orgId}::uuid,${options.profileId}::uuid,null,${serializeJson(applyStateTargets)}::text::jsonb)`;
+    else await lockCurrentApplyStates({ sql }, {
       orgId: options.orgId,
       profileId: options.profileId,
       targets: applyStateTargets,
@@ -714,7 +729,7 @@ export async function exportAcceptedRecommendations(
       exportedIds.push(candidate.id);
     }
 
-    if (exportedIds.length === 0) throw new Error('No accepted proposals to export.');
+    if (exportedIds.length === 0) throw new RecommendationReviewError('No accepted proposals to export.');
 
     const artifactSha256 = createHash('sha256')
       .update(serializeApplyRows(rows))
@@ -776,21 +791,28 @@ export async function exportAcceptedRecommendations(
       throw new Error(`Exported ${exportedIds.length} proposals, stamped ${stamped.length}`);
     }
 
-    await sql`
-      insert into public.audit_log
-        (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
-      values (${options.orgId}, 'user', ${options.actorId ?? null}, 'recommendation.exported',
-              'apply_batch', ${batchId},
-              ${serializeJson({
-                note,
-                tag,
-                lever: options.lever,
-                optGroup: options.optGroup,
-                runId: options.runId,
-                rows: rows.length,
-                skipped: skipped.length,
-              })}::text::jsonb, 'web')
-    `;
+    if ('actor' in handle) {
+      const [audit] = await sql<{ count: number }[]>`select app.record_recommendation_review_audit(
+        ${options.orgId}::uuid,'recommendation.exported','apply_batch',${[batchId]}::text[],
+        ${serializeJson({ note, tag, lever: options.lever, optGroup: options.optGroup, runId: options.runId, rows: rows.length, skipped: skipped.length })}::text::jsonb) as count`;
+      if (audit?.count !== 1) throw new Error('Export audit count mismatch');
+    } else {
+      await sql`
+        insert into public.audit_log
+          (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
+        values (${options.orgId}, 'user', ${options.actorId ?? null}, 'recommendation.exported',
+                'apply_batch', ${batchId},
+                ${serializeJson({
+                  note,
+                  tag,
+                  lever: options.lever,
+                  optGroup: options.optGroup,
+                  runId: options.runId,
+                  rows: rows.length,
+                  skipped: skipped.length,
+                })}::text::jsonb, 'web')
+      `;
+    }
 
     return { batchId, tag, exported: stamped.length, accepted, rows, skipped };
   });
@@ -940,7 +962,7 @@ export async function createNegativeProposals(
 ): Promise<NegativeProposalResult> {
   if (options.proposals.length === 0) throw new Error('No negative proposals supplied.');
 
-  return await handle.sql.begin(async (sql) => {
+  return await inTransaction(handle, async (sql) => {
     const [run] = await sql<{ id: string }[]>`
       insert into public.recommendation_runs
         (org_id, profile_id, status, lookback_days, window_start, window_end, engine_version,
@@ -988,4 +1010,11 @@ export async function createNegativeProposals(
 
     return { runId, created };
   });
+}
+
+/** Reuse an admitted transaction; legacy worker callers still own one commit. */
+async function inTransaction<T>(handle: QueryHandle, operation: (sql: QuerySql) => Promise<T>): Promise<T> {
+  if (!('begin' in handle.sql)) return operation(handle.sql);
+  const result = await handle.sql.begin(async (sql) => ({ value: await operation(sql) }));
+  return result.value;
 }

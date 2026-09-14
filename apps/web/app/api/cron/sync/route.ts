@@ -1,3 +1,4 @@
+// Exception: Installation cron authenticates its scheduler secret, not an OrgActor. Its service-role worker validates each claimed payload against the profile org in SyncWorker.execute before dispatch.
 /**
  * `GET /api/cron/sync` — the daily pull, hosted on Vercel Cron.
  *

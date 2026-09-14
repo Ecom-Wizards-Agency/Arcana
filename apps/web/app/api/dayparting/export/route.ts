@@ -1,10 +1,6 @@
 import { exportDaypartingSchedule } from '@wizard-ads/worker';
-import { withAuthenticatedActor, type RequestDatabase } from '@wizard-ads/db';
 import { readDaypartingProposal } from '../../../../src/dayparting/data';
-import {
-  openWebDatabase,
-  requestActor,
-} from '../../../../src/server/request-context';
+import { authenticatedRead } from '../../../../src/server/authenticated-read';
 import { DownloadRequestError, downloadErrorResponse, downloadResponse } from '../../../../src/server/download-response';
 
 export const runtime = 'nodejs';
@@ -19,21 +15,18 @@ export function parseDaypartingExportFormat(value: string | null): 'csv' | 'json
 }
 
 export async function GET(request: Request): Promise<Response> {
-  let database: RequestDatabase | null = null;
-  try {
-    const actor = await requestActor(request.headers);
-    database = openWebDatabase();
+  return authenticatedRead(request, async (database, actor) => {
     const url = new URL(request.url);
     const proposalId = url.searchParams.get('id') ?? '';
     const profileId = url.searchParams.get('profileId') ?? '';
     if (!UUID.test(proposalId)) throw new DownloadRequestError('valid proposal id is required');
     if (!UUID.test(profileId)) throw new DownloadRequestError('valid profile id is required');
     const format = parseDaypartingExportFormat(url.searchParams.get('format'));
-    const proposal = await withAuthenticatedActor(database, actor, (sql) => readDaypartingProposal({ sql }, {
+    const proposal = await readDaypartingProposal(database, {
       orgId: actor.orgId,
       profileId,
       proposalId,
-    }));
+    });
     if (!proposal) throw new DownloadRequestError('Not found', 404);
     const artifact = exportDaypartingSchedule(proposal);
     const body = format === 'csv' ? artifact.csv : artifact.json;
@@ -45,9 +38,5 @@ export async function GET(request: Request): Promise<Response> {
         'x-wizard-ads-effect': DAYPARTING_EXPORT_EFFECT,
       },
     }));
-  } catch (error) {
-    return downloadErrorResponse(error);
-  } finally {
-    await database?.close();
-  }
+  }, downloadErrorResponse);
 }

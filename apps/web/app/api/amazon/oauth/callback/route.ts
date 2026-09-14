@@ -1,3 +1,4 @@
+// Exception: OAuth callback owns signed state and encrypted consent custody; submit/cancel commands own their authenticated transaction and manager lock.
 /** Amazon callback validates browser/session custody and submits one protected operation.
  * Token exchange and profile discovery execute exclusively in the worker.
  */

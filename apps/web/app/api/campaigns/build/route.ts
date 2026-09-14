@@ -5,12 +5,9 @@
  * the synced mirror, builds sparse rows, and hands the operator a workbook for
  * manual Bulk Operations upload — the v1 approval boundary.
  */
-import { loadCampaignUpdateEntities, withAuthenticatedActor, type RequestDatabase } from '@wizard-ads/db';
+import { loadCampaignUpdateEntities } from '@wizard-ads/db';
 import type { EntityRow } from '@wizard-ads/shared';
-import {
-  openWebDatabase,
-  requestActor,
-} from '../../../../src/server/request-context';
+import { authenticatedRead } from '../../../../src/server/authenticated-read';
 import { DownloadRequestError, downloadErrorResponse, downloadResponse } from '../../../../src/server/download-response';
 import { listOrgProfiles } from '../../../../src/recommendations/data';
 import {
@@ -54,27 +51,24 @@ function attachment(filename: string): string {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  let database: RequestDatabase | null = null;
-  try {
-    const actor = await requestActor(request.headers);
-    database = openWebDatabase();
+  return authenticatedRead(request, async (database, actor) => {
     const body = parseCampaignBuildRequest(await request.json());
     const { mode, output } = body;
 
-    const source = await withAuthenticatedActor(database, actor, async (sql) => {
+    const source = await (async () => {
       if (mode === 'create') return { client: 'campaigns', marketplace: 'US', entities: undefined as EntityRow[] | undefined };
       if (typeof body.profileId !== 'string' || body.profileId.length === 0) {
         throw new DownloadRequestError('profileId is required for UPDATE mode');
       }
-      const profiles = await listOrgProfiles({ sql }, actor.orgId);
+      const profiles = await listOrgProfiles(database, actor.orgId);
       const profile = profiles.find((candidate) => candidate.id === body.profileId);
       if (profile === undefined) throw new DownloadRequestError('Not found', 404);
-      const entities = (await loadCampaignUpdateEntities({ sql }, {
+      const entities = (await loadCampaignUpdateEntities(database, {
         orgId: actor.orgId,
         profileId: profile.id,
       })).entities;
       return { client: profile.label, marketplace: profile.countryCode, entities };
-    });
+    })();
 
     let artifact: ReturnType<typeof buildCampaignBuilderArtifact>;
     try {
@@ -102,9 +96,5 @@ export async function POST(request: Request): Promise<Response> {
         'x-wizard-ads-bulk-rows': String(artifact.preview.rows.length),
       },
     }));
-  } catch (error) {
-    return downloadErrorResponse(error);
-  } finally {
-    await database?.close();
-  }
+  }, downloadErrorResponse);
 }

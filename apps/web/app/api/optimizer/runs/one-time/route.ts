@@ -3,7 +3,7 @@ import { OneTimePreviewUnavailableReason } from '@wizard-ads/shared';
 import { PostgresManualRecommendationAdmission, RecommendationPreviewError } from '@wizard-ads/worker';
 import { readOneTimeRpcPreviewRequest } from '../../../../../src/optimizer/preview-http';
 import { oneTimePreviewUnavailableMessage } from '../../../../../src/optimizer/readiness';
-import { optimizerMutation, optimizerMutationError } from '../../../../../src/optimizer/mutation-http';
+import { optimizerMutation, optimizerMutationError } from '../../../../../src/server/optimizer-mutation';
 
 export const runtime = 'nodejs';
 

@@ -33,12 +33,12 @@ import type {
   ReversionBatchPreview as ReversionBatchPreviewType,
   ReversionRowPreview,
 } from '@wizard-ads/shared';
-import type { DbHandle, QueryHandle, QuerySql } from '../client.js';
+import type { QueryHandle, QuerySql } from '../client.js';
 import type { JsonValue } from './goto.js';
 import { lockCurrentApplyStates } from './apply-state.js';
 import { toDate, toDateOrNull } from './pg-time.js';
 
-export type TimeMachineQueryHandle = Pick<DbHandle, 'sql'>;
+export type TimeMachineQueryHandle = QueryHandle;
 interface TimeMachineReadHandle {
   sql: QuerySql;
 }
@@ -604,7 +604,7 @@ export async function createReversionExport(
   const tag = input.tag.trim();
   if (tag.length === 0) throw new Error('A reversion export requires a batch tag.');
 
-  return await handle.sql.begin(async (sql) => {
+  return await inTransaction(handle, async (sql) => {
     await sql`select pg_advisory_xact_lock(hashtextextended(${`time-machine:${input.orgId}:${input.batchId}`}, 0))`;
     await sql`
       select id from public.apply_batches
@@ -616,7 +616,10 @@ export async function createReversionExport(
       batchId: input.batchId,
     });
     if (initialPreview === null) throw new Error('Not found');
-    await lockCurrentApplyStates({ sql }, {
+    if ('actor' in handle) await sql`select app.lock_review_export_rows(
+      ${input.orgId}::uuid,${initialPreview.profileId}::uuid,null,
+      ${JSON.stringify(initialPreview.rows.map((row) => ({ entityType: row.entityType, entityId: row.entityId })))}::text::jsonb)`;
+    else await lockCurrentApplyStates({ sql }, {
       orgId: input.orgId,
       profileId: initialPreview.profileId,
       targets: initialPreview.rows.map((row) => ({
@@ -684,15 +687,29 @@ export async function createReversionExport(
       throw new Error(`Reversion offered ${rows.length} rows, wrote ${inserted.length}`);
     }
 
-    await sql`
-      insert into public.audit_log
-        (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
-      values (${input.orgId}, 'user', ${input.actorId ?? null}, 'reversion.exported',
-              'apply_batch', ${batchId},
-              ${JSON.stringify({ sourceBatchId: preview.batchId, rows: rows.length, artifactSha256 })}::text::jsonb,
-              'web')
-    `;
+    if ('actor' in handle) {
+      const [audit] = await sql<{ count: number }[]>`select app.record_recommendation_review_audit(
+        ${input.orgId}::uuid,'reversion.exported','apply_batch',${[batchId]}::text[],
+        ${JSON.stringify({ sourceBatchId: preview.batchId, rows: rows.length, artifactSha256 })}::text::jsonb) as count`;
+      if (audit?.count !== 1) throw new Error('Reversion audit count mismatch');
+    } else {
+      await sql`
+        insert into public.audit_log
+          (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
+        values (${input.orgId}, 'user', ${input.actorId ?? null}, 'reversion.exported',
+                'apply_batch', ${batchId},
+                ${JSON.stringify({ sourceBatchId: preview.batchId, rows: rows.length, artifactSha256 })}::text::jsonb,
+                'web')
+      `;
+    }
 
     return { batchId, sourceBatchId: preview.batchId, tag, rows, artifactSha256 };
   });
+}
+
+/** Reuse an admitted transaction; legacy worker callers still own one commit. */
+async function inTransaction<T>(handle: QueryHandle, operation: (sql: QuerySql) => Promise<T>): Promise<T> {
+  if (!('begin' in handle.sql)) return operation(handle.sql);
+  const result = await handle.sql.begin(async (sql) => ({ value: await operation(sql) }));
+  return result.value;
 }

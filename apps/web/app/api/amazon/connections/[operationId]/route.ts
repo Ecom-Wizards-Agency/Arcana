@@ -1,3 +1,4 @@
+// Exception: Connection commands own their authenticated transaction and cancellation manager lock. The outer identity/context read is navigation setup, not write authority.
 import { cancelAmazonConnection, readAmazonConnection } from '@wizard-ads/db';
 import { Uuid } from '@wizard-ads/shared';
 import { currentOperatorIdentity, authorizeOperatorRole } from '../../../../../src/auth/security-authorization';

@@ -6,7 +6,7 @@ import {
 import { ScheduledOptimizationGroup } from '@wizard-ads/shared';
 import { ApiReadError, authenticatedRead, readUuid } from '../../../../src/server/authenticated-read';
 import { MutationInputError, mutationBody, mutationUuid } from '../../../../src/server/authenticated-mutation';
-import { optimizerMutation } from '../../../../src/optimizer/mutation-http';
+import { optimizerMutation } from '../../../../src/server/optimizer-mutation';
 
 export const runtime = 'nodejs';
 const settingsSchema = ScheduledOptimizationGroup.omit({ id: true, orgId: true, profileId: true, version: true });

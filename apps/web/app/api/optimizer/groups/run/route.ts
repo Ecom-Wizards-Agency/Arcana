@@ -1,6 +1,6 @@
 import { PostgresManualRecommendationAdmission } from '@wizard-ads/worker';
 import { mutationBody, mutationUuid } from '../../../../../src/server/authenticated-mutation';
-import { optimizerMutation } from '../../../../../src/optimizer/mutation-http';
+import { optimizerMutation } from '../../../../../src/server/optimizer-mutation';
 import {
   OPTIMIZER_PREVIEW_UNAVAILABLE_MESSAGE,
   resolveOptimizerPreviewReadiness,

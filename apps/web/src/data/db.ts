@@ -5,14 +5,16 @@
  * render a dozen times for a single page, and a pool per render exhausts
  * Postgres connections long before it exhausts anyone's patience.
  *
- * This connection is the service role. Authorization for everything WP-04
- * renders and writes is enforced above it, in `src/auth/roles.ts`, applied by
- * the server action or route handler before any statement runs. RLS remains the
- * backstop for anything that reaches the database over PostgREST with a user
- * JWT, and `packages/db`'s suite proves those policies; it is not what guards
- * these routes. The one credential that is *never* reachable from here by
- * design is the Amazon refresh token: it moves only through the security-definer
- * Vault RPCs, and only the OAuth callback calls the one that writes.
+ * The pool starts as service role. Pages and API reads establish authenticated
+ * transactions with local JWT claims and RLS; API read snapshots are read-only.
+ * Mutations hold current membership authority through their database command.
+ *
+ * Service-role access remains for OAuth start/callback context and protected
+ * consent custody (the domain commands authenticate and lock authority),
+ * invitation delivery (server-owned delivery state before membership exists),
+ * and nav-context resolution (selecting the user's active agency before its
+ * authenticated operation). None of those context reads grants write authority.
+ * Amazon credentials and provider calls belong to the worker.
  */
 import { connectionStringFromEnv, createDb } from '@wizard-ads/db';
 import type { DbHandle } from '@wizard-ads/db';

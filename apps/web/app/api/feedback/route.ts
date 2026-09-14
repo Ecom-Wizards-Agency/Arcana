@@ -34,7 +34,7 @@ const asStatus = (value: string | null): FeedbackStatus | null =>
 
 export async function GET(request: Request): Promise<Response> {
   return authenticatedRead(request, async (database, actor) => {
-    const role = await requireOrgRole(database, actor);
+    const role = await requireOrgRole(database);
     const query = new URL(request.url).searchParams;
     const [items, counts] = await Promise.all([
       listFeedbackItems(database, {
