@@ -122,3 +122,17 @@ export const MethodEvaluatorOutput = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('hold'), hold: Hold, referenceOutcome: ReferenceBidOutcome.optional() }),
 ]);
 export type MethodEvaluatorOutput = z.infer<typeof MethodEvaluatorOutput>;
+
+/** Exact population of one database-filtered recommendation window. */
+export const RecommendationPopulation = z.object({
+  loaded: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  limit: z.number().int().min(1).max(20_000),
+  truncated: z.boolean(),
+}).strict().superRefine((value, context) => {
+  if (value.loaded !== Math.min(value.total, value.limit)
+    || value.truncated !== (value.loaded < value.total)) {
+    context.addIssue({ code: 'custom', message: 'recommendation window counts do not reconcile' });
+  }
+});
+export type RecommendationPopulation = z.infer<typeof RecommendationPopulation>;

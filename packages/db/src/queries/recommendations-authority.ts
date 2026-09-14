@@ -20,9 +20,12 @@ export async function decideRecommendationsForActor(
   await requireWriteCapability(context, 'editTargets');
   const result = await decideRecommendations(context, { ...input, orgId: context.actor.orgId, actorId: context.actor.userId });
   const unique = new Set(input.ids).size;
-  const matched = result.updated + result.refused.length;
+  // Invisible and absent IDs have the same public result, including for a user
+  // who belongs to both agencies. The fenced command still reconciles all IDs.
+  const refused = result.refused.filter((row) => row.status !== 'unavailable');
+  const matched = result.updated + refused.length;
   if (matched > unique) throw new Error('Recommendation decision counts do not reconcile');
-  return { ...result, unique, duplicates: input.ids.length - unique, matched, unmatched: unique - matched };
+  return { ...result, refused, unique, duplicates: input.ids.length - unique, matched, unmatched: unique - matched };
 }
 
 export async function exportAcceptedRecommendationsForActor(

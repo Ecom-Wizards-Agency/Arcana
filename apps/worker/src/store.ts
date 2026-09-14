@@ -1,4 +1,6 @@
 import type { ReportCoverageObservation } from '@wizard-ads/shared';
+import { mergeKeywordMirror, readKeywordMirrorStart } from '@wizard-ads/db/sp-write-worker';
+import type { KeywordMirrorMergeCounts, KeywordMirrorMergeRequest } from '@wizard-ads/shared/sp-write-mirror';
 import { PermanentJobError } from './permanent-job-error.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -92,6 +94,8 @@ function asDate(value: Date | string): Date {
 }
 
 export interface EntitySyncOptions {
+  /** Database time captured before provider listing. */
+  readStartedAt?: string;
   /** Unlisted kinds are not refreshed or tombstoned; requires an ad-product scope. */
   excludedEntityTypes?: readonly EntityRow['entityType'][];
   adProduct?: 'SP' | 'SB' | 'SD';
@@ -105,6 +109,7 @@ export interface EntitySyncOptions {
 }
 
 export interface EntitySyncCounts {
+  keywordMirror?: KeywordMirrorMergeCounts;
   listed: number;
   upserted: number;
   /**
@@ -166,6 +171,7 @@ export interface WorkerStore {
    */
   requeueStale(olderThan: string): Promise<number>;
   profile(profileId: string): Promise<AdsProfileContext>;
+  beginEntityRead?(): Promise<string | undefined>;
   syncEntities(
     profile: AdsProfileContext,
     entities: readonly EntityRow[],
@@ -265,6 +271,13 @@ export class ClaimOwnershipLost extends Error {
 
 export interface PostgresWorkerStoreOptions {
   claimProtocol?: 'legacy' | 'fenced';
+  keywordMirror?: KeywordMirrorCapability;
+}
+
+/** Field-fenced keyword synchronization shared by every entity-sync owner. */
+export interface KeywordMirrorCapability {
+  readStartedAt(): Promise<string>;
+  merge(request: KeywordMirrorMergeRequest): Promise<KeywordMirrorMergeCounts>;
 }
 
 /** `deletedAt` arrives as the wire string, not a `Date` — see the note on `asDate`. */
@@ -272,6 +285,7 @@ type ExistingEntity = { amazonId: string; deletedAt: Date | string | null; snaps
 
 export class PostgresWorkerStore implements WorkerStore {
   private readonly logger: StoreLogger;
+  private readonly keywordMirror: KeywordMirrorCapability | undefined;
   private readonly reportedDisabledSbKeywords = new Set<string>();
   private readonly claimProtocol: 'legacy' | 'fenced';
 
@@ -282,6 +296,22 @@ export class PostgresWorkerStore implements WorkerStore {
   ) {
     this.logger = logger ?? { info: (message, details) => console.info(message, details ?? {}) };
     this.claimProtocol = options.claimProtocol ?? 'legacy';
+    this.keywordMirror = options.keywordMirror;
+  }
+
+  /** Activation requires explicit composition; construction never queries the DB. */
+  assertKeywordMirrorConfigured(): void {
+    if (this.keywordMirror === undefined) throw new Error('SP write worker requires keyword mirror configuration');
+  }
+
+  async beginEntityRead(): Promise<string | undefined> {
+    if (this.keywordMirror) return this.keywordMirror.readStartedAt();
+    // Cron and other default stores acquire the same fence after migration. A
+    // worker deployed before the migration keeps the historical sync protocol.
+    const [schema] = await this.handle.sql<{ ready: boolean }[]>`
+      select to_regprocedure('app.reconcile_sp_write_mirror(uuid,text)') is not null as ready`;
+    if (schema?.ready !== true) return undefined;
+    return readKeywordMirrorStart(this.handle);
   }
 
   claim(workerId: string, limit: number, jobTypes?: readonly JobType[]): Promise<ClaimedJob[]> {
@@ -397,6 +427,11 @@ export class PostgresWorkerStore implements WorkerStore {
     options: EntitySyncOptions = {},
   ): Promise<EntitySyncCounts> {
     const { adProduct, full = false } = options;
+    if (this.keywordMirror && options.readStartedAt === undefined) throw new Error('keyword mirror requires the provider read-start time');
+    const keywordCapability = this.keywordMirror ?? (options.readStartedAt === undefined ? undefined : {
+      merge: (request: KeywordMirrorMergeRequest) => mergeKeywordMirror(this.handle, request),
+    });
+    let keywordMirror: KeywordMirrorMergeCounts | undefined;
     const excluded = new Set(options.excludedEntityTypes ?? []);
     if (excluded.size > 0 && adProduct === undefined) {
       throw new Error('Excluded entity kinds require an ad-product scope');
@@ -450,6 +485,14 @@ export class PostgresWorkerStore implements WorkerStore {
           duplicates: collapsed.duplicateIds.length,
           ids: collapsed.duplicateIds.slice(0, MAX_LOGGED_DUPLICATE_IDS),
         });
+      }
+      if (entityType === 'keyword' && keywordCapability) {
+        keywordMirror = await keywordCapability.merge({ orgId: profile.orgId, profileId: profile.id,
+          ...(adProduct === undefined ? {} : { adProduct }), full, readStartedAt: options.readStartedAt!,
+          rows: incoming.filter(isType('keyword')) });
+        upserted += keywordMirror.upserted;
+        tombstoned += keywordMirror.tombstoned;
+        continue;
       }
       const existing = await this.existingEntities(profile.id, entityType, adProduct);
       const byId = new Map(existing.map((row) => [row.amazonId, row]));
@@ -512,7 +555,8 @@ export class PostgresWorkerStore implements WorkerStore {
         `entity sync listed ${entities.length} rows but upserted ${upserted} (${duplicates} duplicates)`,
       );
     }
-    return { listed: entities.length, upserted, duplicates, changes: writtenChanges, tombstoned };
+    return { listed: entities.length, upserted, duplicates, changes: writtenChanges + (keywordMirror?.changes ?? 0), tombstoned,
+      ...(keywordMirror === undefined ? {} : { keywordMirror }) };
   }
 
   async ensureReportRequest(

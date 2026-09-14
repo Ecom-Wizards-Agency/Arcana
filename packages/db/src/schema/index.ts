@@ -25,3 +25,5 @@ export * from './seams.js';
 export * from './operator-intelligence.js';
 export * from './sp-writes.js';
 export * from './sp-write-outbox.js';
+export * from './mcp.js';
+export * from './campaign-creation-previews.js';

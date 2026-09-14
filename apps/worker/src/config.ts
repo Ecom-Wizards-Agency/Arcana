@@ -1,3 +1,4 @@
+import { spWritePolicyFromEnv, type SpWriteWorkerPolicy } from './sp-write-outbox/policy.js';
 import { connectionStringFromEnv } from '@wizard-ads/db';
 import { JobType, type JobType as JobTypeValue } from '@wizard-ads/shared';
 import { isIP } from 'node:net';
@@ -10,6 +11,7 @@ import {
 } from './deployment-role.js';
 
 export interface WorkerConfig {
+  spWrites: SpWriteWorkerPolicy;
   databaseUrl: string;
   workerId: string;
   port: number;
@@ -113,6 +115,10 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     unifiedReady,
   );
   const unifiedReporting = resolveUnifiedReportingDualRunPolicy(env, deployment);
+  const spWrites = spWritePolicyFromEnv(env);
+  if ((spWrites.dispatchEnabled || spWrites.reconcileEnabled) && deployment.role !== 'general') {
+    throw new Error('SP writes require the general worker lane');
+  }
   const amazonConnectionsEnabled = env['OPENSPELL_AMAZON_CONNECTIONS_ENABLED'] === '1';
   const spApiConnectionsEnabled = env['OPENSPELL_SPAPI_CONNECTIONS_ENABLED'] === '1';
   const spApiConnectionRedirects = (env['SP_API_OAUTH_ALLOWED_REDIRECT_URIS'] ?? '').split(',').map((value) => value.trim()).filter(Boolean);
@@ -124,6 +130,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     throw new Error('Amazon connections require a general worker with entity synchronization');
   }
   return {
+    spWrites,
     databaseUrl: connectionStringFromEnv(env),
     workerId: env['WORKER_ID'] ?? `worker-${process.pid}`,
     port: positiveInteger(env['PORT'], 3000, 'PORT'),

@@ -1,3 +1,4 @@
+import { SP_WRITE_APPLICATION_CONSUMERS, SP_WRITE_ACTIVATION_FILES, SP_WRITE_MIGRATIONS } from './testing/sp-write-consumer-scope.js';
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -1502,8 +1503,11 @@ function spWriteDrizzleConfigs() {
   for (const candidate of Object.values(dbSchema)) {
     try {
       const config = getTableConfig(candidate as PgTable);
-      if (config.schema === undefined && config.name.startsWith('sp_write_')) {
-        configs.push(config);
+      // This suite is pinned to WP-187. WP-214 proves its later evidence table separately.
+      if (config.schema === undefined && config.name.startsWith('sp_write_')
+        && !['sp_write_preview_evidence', 'sp_write_mirror_observations'].includes(config.name)) {
+        configs.push({ ...config, uniqueConstraints: config.uniqueConstraints.filter((constraint) =>
+          constraint.name !== 'sp_write_observations_mirror_identity_key') });
       }
     } catch {
       // The schema namespace also exports enums and helpers, which are not tables.
@@ -8029,12 +8033,32 @@ describe('SP write runtime blast radius', () => {
     }).success).toBe(false);
   });
 
-  it('adds no runtime, queue, deployment, hosted, Time Machine, or ApplyRow activation path', async () => {
+  it('confines application sources and runtime activation to the reviewed backend allowlist', async () => {
     const runtimeRoots = ['apps/worker', 'apps/web', 'apps/mcp', 'apps/analyst'];
+    const applicationConsumers: readonly string[] = SP_WRITE_APPLICATION_CONSUMERS;
+    const inertSourceImports: Record<string, readonly string[]> = {
+      'apps/worker/README.md': ['sp-write-outbox'],
+      'apps/worker/src/sp-write-outbox/polling.ts': ['createSpWriteOutboxLoop'],
+      'apps/web/src/writes/approval-fixtures.ts': ['@wizard-ads/shared/sp-writes'],
+      'apps/web/src/writes/approval-fixtures.test.ts': ['@wizard-ads/shared/sp-writes'],
+      'apps/worker/src/sp-write-outbox/artifacts.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter'],
+      'apps/worker/src/sp-write-outbox/loop.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
+      'apps/worker/src/sp-write-outbox/providers.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter', '@wizard-ads/db/sp-write-worker'],
+      'apps/worker/src/sp-write-outbox/loop.test.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter', 'createSpWriteOutboxLoop', 'createSpWriteWorker', '@wizard-ads/db/sp-write-worker'],
+      'apps/worker/src/sp-write-outbox/composition.ts': ['createSpWriteOutboxLoop', 'createSpWriteWorker', '@wizard-ads/db/sp-write-worker'],
+      'apps/worker/src/sp-write-outbox/composition.test.ts': ['createSpWriteOutboxLoop', 'createSpWriteWorker'],
+      'apps/worker/src/sp-write-outbox/mcp-history.test.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
+    };
+    const seenApplicationConsumers: string[] = [];
     const forbidden = [
       '@wizard-ads/shared/sp-writes',
+      '@wizard-ads/db/sp-write-application',
       '@wizard-ads/ads-api/sp-write-adapter',
       'createSpWriteAdapter',
+      'createSpWriteOutboxLoop',
+      'createSpWriteWorker',
+      '@wizard-ads/db/sp-write-worker',
+      'sp-write-outbox',
       'sp_write.dispatch',
       'sp_write.observe',
       'reserve_sp_write_provider_call',
@@ -8050,14 +8074,27 @@ describe('SP write runtime blast radius', () => {
       scannedRuntimeFiles.push(...files);
       for (const path of files) {
         const source = await readFile(path, 'utf8');
+        if (path.includes('.test.')) continue;
         for (const token of forbidden) {
+          if (token === '@wizard-ads/db/sp-write-application' && source.includes(token)
+            && applicationConsumers.includes(path.slice(REPO_ROOT.length))) {
+            seenApplicationConsumers.push(path.slice(REPO_ROOT.length));
+            continue;
+          }
+          if (inertSourceImports[path.slice(REPO_ROOT.length)]?.includes(token)) continue;
+          if ((SP_WRITE_ACTIVATION_FILES as readonly string[]).includes(path.slice(REPO_ROOT.length))) continue;
           if (source.includes(token)) hits.push(`${path.slice(REPO_ROOT.length)}: ${token}`);
         }
       }
     }
+    expect(seenApplicationConsumers.sort()).toEqual(applicationConsumers);
 
     const activationRoots = ['.github', 'docs/deploy'];
     const activationTokens = [
+      'createSpWriteOutboxLoop',
+      'createSpWriteWorker',
+      '@wizard-ads/db/sp-write-worker',
+      'sp-write-outbox',
       'sp_write.dispatch',
       'sp_write.observe',
       'reserve_sp_write_provider_call',
@@ -8160,10 +8197,7 @@ describe('SP write runtime blast radius', () => {
       .toBeGreaterThanOrEqual(2);
     await scanActivationFiles(deploymentCandidates, 'Docker/compose/systemd/deploy candidates');
 
-    const spWriteSourceMigrationSuffixes = [
-      '/20260901020000_sp_write_persistence_ledger.sql',
-      '/20260901030000_sp_write_outbox_delivery.sql',
-    ];
+    const spWriteSourceMigrationSuffixes = SP_WRITE_MIGRATIONS.map((name) => `/${name}`);
     const migrationFiles = await sourceFiles(`${REPO_ROOT}supabase/migrations`);
     const spWriteSourceMigrations = migrationFiles.filter((path) =>
       spWriteSourceMigrationSuffixes.some((suffix) => path.endsWith(suffix)));

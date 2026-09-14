@@ -12,7 +12,11 @@
     "./recommendation-worker": "./src/recommendation-worker.ts",
     "./sp-write-persistence": "./src/sp-write-persistence.ts",
     "./testing": "./src/testing/index.ts",
-    "./worker": "./src/worker.ts"
+    "./worker": "./src/worker.ts",
+    "./sp-write-application": "./src/sp-write-application.ts",
+    "./sp-write-worker": "./src/sp-write-worker.ts",
+    "./mcp-writes": "./src/mcp-writes.ts",
+    "./campaign-creation-previews": "./src/campaign-creation-previews.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

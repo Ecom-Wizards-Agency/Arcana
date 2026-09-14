@@ -10,7 +10,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '../testing/harness.js';
 import type { TestDatabase } from '../testing/harness.js';
+import { seedSyntheticWriteHistory } from '../testing/sp-write-synthetic-execution.js';
 import { reconcileEntityChangeLinks, recordEntityChanges } from './entities.js';
+import { getExportBatch } from './recommendations.js';
 import {
   createReversionExport,
   getReversionBatchPreview,
@@ -22,6 +24,141 @@ import {
 const available = await databaseAvailable();
 const USER_A = '71717171-7171-4171-8171-717171717171';
 const USER_B = '72727272-7272-4272-8272-727272727272';
+
+it.skipIf(!available)('retains an ordinary sync event after legacy linking to a native source batch', async () => {
+  const database = await createTestDatabase('native_link_history');
+  try {
+    const [tenant] = await database.sql<{ id: string }[]>`select app.seed_tenant_fixture('native-link-history', ${USER_A}, 'owner') as id`;
+    const orgId = tenant!.id;
+    const [profile] = await database.sql<{ id: string }[]>`select id from public.ad_profiles where org_id = ${orgId}`;
+    const profileId = profile!.id;
+    const history = await seedSyntheticWriteHistory(database, { orgId, userId: USER_A }, profileId);
+    const before = await listTimeline(database, { orgId, profileId });
+    expect(before.filter((entry) => entry.write !== null)).toHaveLength(2);
+    expect(await getReversionBatchPreview(database, { orgId, batchId: history.sourceBatchId })).toBeNull();
+    expect((await listReversionBatches(database, { orgId, profileId })).some((batch) => batch.batchId === history.sourceBatchId)).toBe(false);
+    await expect(createReversionExport(database, { orgId, batchId: history.sourceBatchId,
+      actorId: USER_A, tag: 'refused-native-legacy-inverse', note: 'Synthetic native source must use guarded inverse' }))
+      .rejects.toThrow('Not found');
+    // The original reviewed recommendation artifact remains inspectable.
+    expect(await getExportBatch(database, { orgId, batchId: history.sourceBatchId })).not.toBeNull();
+    const inserted = await database.sql<{ id: string }[]>`insert into public.entity_changes
+      (org_id, profile_id, entity_type, amazon_id, entity_name, field, old_value, new_value, source, observed_at)
+      select org_id, profile_id, entity_type::text::public.entity_type, entity_id, entity_name, field,
+        old_value, new_value, 'sync', clock_timestamp()
+      from public.apply_rows where batch_id = ${history.sourceBatchId} returning id::text`;
+    expect(inserted).toHaveLength(1);
+    const id = inserted[0]!.id;
+    expect(await listTimeline(database, { orgId, profileId })).toHaveLength(before.length + 1);
+    expect(await reconcileEntityChangeLinks(database, { orgId, profileId })).toMatchObject({ offered: 1, linked: 1 });
+    const [linked] = await database.sql<{ batch: string; receipt: boolean }[]>`select apply_batch_id::text as batch,
+      exists(select 1 from public.sp_write_mirror_observations where entity_change_id = ${id}::bigint) as receipt
+      from public.entity_changes where id = ${id}::bigint`;
+    expect(linked).toEqual({ batch: history.sourceBatchId, receipt: false });
+    const after = await listTimeline(database, { orgId, profileId });
+    expect(after).toHaveLength(before.length + 1);
+    expect(after.find((entry) => entry.id === `change:${id}`)?.source).toBe('sync');
+    expect(after.filter((entry) => entry.write !== null).map((entry) => entry.id))
+      .toEqual(before.filter((entry) => entry.write !== null).map((entry) => entry.id));
+    const ordinary = after.find((entry) => entry.id === `change:${id}`)!;
+    expect((await listTimeline(database, { orgId, profileId,
+      from: ordinary.observedAtExact, to: ordinary.observedAtExact })).map((entry) => entry.id)).toEqual([ordinary.id]);
+  } finally { await database.drop(); }
+}, 60_000);
+
+describe.skipIf(!available)('native history suppression within the requested date window', () => {
+  let database: TestDatabase;
+  let orgId: string;
+  let profileId: string;
+  let legacyId: string;
+  let exportedAt: string;
+  let forward: { id: string; approvedAt: string; changeId: string; observedAt: string };
+  let inverse: typeof forward;
+
+  beforeAll(async () => {
+    database = await createTestDatabase('native_history_dates');
+    const [tenant] = await database.sql<{ id: string }[]>`select app.seed_tenant_fixture('native-history-dates', ${USER_A}, 'owner') as id`;
+    orgId = tenant!.id;
+    const [profile] = await database.sql<{ id: string }[]>`select id from public.ad_profiles where org_id = ${orgId}`;
+    profileId = profile!.id;
+    const history = await seedSyntheticWriteHistory(database, { orgId, userId: USER_A }, profileId);
+    const [legacy] = await database.sql<{ id: string; exported_at: string }[]>`
+      select 'apply:' || ar.id::text as id,
+        to_char(coalesce(ab.applied_at, ab.exported_at, ab.created_at) at time zone 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as exported_at
+      from public.apply_rows ar join public.apply_batches ab on ab.id = ar.batch_id
+      where ar.org_id = ${orgId} and ar.profile_id = ${profileId} and ar.batch_id = ${history.sourceBatchId}`;
+    legacyId = legacy!.id;
+    exportedAt = legacy!.exported_at;
+    const native = (await listTimeline(database, { orgId, profileId })).filter((entry) => entry.write !== null);
+    expect(native).toHaveLength(2);
+    const observations = await database.sql<{ plan_id: string; change_id: string; observed_at: string }[]>`
+      select m.plan_id::text, 'change:' || ec.id::text as change_id,
+        to_char(ec.observed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as observed_at
+      from public.sp_write_mirror_observations m join public.entity_changes ec
+        on ec.org_id = m.org_id and ec.profile_id = m.profile_id and ec.id = m.entity_change_id
+      where m.org_id = ${orgId} and m.profile_id = ${profileId} and m.execution_id = ${history.original.executionId}
+        and m.change_attribution = 'write'`;
+    expect(observations).toHaveLength(2);
+    function operation(planId: string) {
+      const entry = native.find((item) => item.write!.execution.operation.planId === planId)!;
+      const observation = observations.find((item) => item.plan_id === planId)!;
+      return { id: entry.id, approvedAt: entry.observedAtExact,
+        changeId: observation.change_id, observedAt: observation.observed_at };
+    }
+    forward = operation(history.original.planId);
+    inverse = operation(history.inverse.planId);
+    // Every value has the same exact microsecond form; no Date truncation or timing sleeps.
+    expect(exportedAt < forward.approvedAt).toBe(true);
+    expect(forward.approvedAt < forward.observedAt).toBe(true);
+    expect(forward.observedAt < inverse.approvedAt).toBe(true);
+    expect(inverse.approvedAt < inverse.observedAt).toBe(true);
+  }, 60_000);
+
+  afterAll(async () => { await database?.drop(); });
+
+  it('retains the exact legacy export when its native approval is outside the date window', async () => {
+    const filtered = await listTimeline(database, { orgId, profileId, from: exportedAt, to: exportedAt });
+    expect(filtered.map((entry) => entry.id)).toEqual([legacyId]);
+    expect(filtered[0]!.write).toBeNull();
+    // Including the approval at the inclusive upper bound replaces the legacy row once.
+    expect((await listTimeline(database, { orgId, profileId, from: exportedAt, to: forward.approvedAt }))
+      .map((entry) => entry.id)).toEqual([forward.id]);
+  });
+
+  it('retains a later mirror change when its native approval is before the date window', async () => {
+    for (const operation of [forward, inverse]) {
+      const filtered = await listTimeline(database, { orgId, profileId,
+        from: operation.observedAt, to: operation.observedAt });
+      expect(filtered.map((entry) => entry.id)).toEqual([operation.changeId]);
+      expect(filtered[0]!.source).toBe('apply');
+      expect(filtered[0]!.write).toBeNull();
+      // Including the approval at the inclusive lower bound hides its duplicate mirror row.
+      expect((await listTimeline(database, { orgId, profileId,
+        from: operation.approvedAt, to: operation.observedAt })).map((entry) => entry.id)).toEqual([operation.id]);
+    }
+  });
+
+  it('keeps date-filtered deduplication stable across keyset pages', async () => {
+    for (const window of [
+      { from: exportedAt, to: inverse.observedAt, expected: [inverse.id, forward.id] },
+      { from: forward.observedAt, to: inverse.observedAt, expected: [inverse.id, forward.changeId] },
+    ]) {
+      const filter = { orgId, profileId, from: window.from, to: window.to };
+      expect((await listTimeline(database, filter)).map((entry) => entry.id)).toEqual(window.expected);
+      const ids: string[] = [];
+      let before: { observedAt: string; id: string } | undefined;
+      for (let pageIndex = 0; pageIndex <= window.expected.length; pageIndex += 1) {
+        const page = await listTimeline(database, { ...filter, limit: 1, ...(before === undefined ? {} : { before }) });
+        if (page.length === 0) break;
+        ids.push(page[0]!.id);
+        before = { observedAt: page[0]!.observedAtExact, id: page[0]!.id };
+      }
+      expect(ids).toEqual(window.expected);
+      expect(new Set(ids).size).toBe(ids.length);
+    }
+  });
+});
 
 describe.skipIf(!available)('WP-30 Time Machine queries', () => {
   let database: TestDatabase;
@@ -154,7 +291,7 @@ describe.skipIf(!available)('WP-30 Time Machine queries', () => {
         orgId: orgA,
         profileId: profileA,
         limit: 1,
-        before: { observedAt: cursor.observedAt.toISOString(), id: cursor.id },
+        before: { observedAt: cursor.observedAtExact, id: cursor.id },
       });
 
       expect(second).toHaveLength(1);
@@ -163,6 +300,18 @@ describe.skipIf(!available)('WP-30 Time Machine queries', () => {
     } finally {
       await database.sql`delete from public.entity_changes where id = ${inserted?.id ?? ''}`;
     }
+  });
+
+  it('returns an empty exhausted legacy cursor window and preserves the newest history', async () => {
+    const filter = { orgId: orgA, profileId: profileA, limit: 3 };
+    const newest = await listTimeline(database, filter);
+    expect(newest).toHaveLength(3);
+    for (const id of [`change:${'00000000-0000-4000-8000-000000000000'}`, 'apply:42', 'change:0']) {
+      expect(await listTimeline(database, {
+        ...filter, before: { observedAt: '2000-01-01T00:00:00.000Z', id },
+      })).toEqual([]);
+    }
+    expect(await listTimeline(database, filter)).toEqual(newest);
   });
 
   it('never crosses organisations', async () => {
@@ -259,6 +408,8 @@ describe.skipIf(!available)('WP-30 Time Machine queries', () => {
     expect(inverse.rows).toHaveLength(1);
     expect(inverse.rows[0]).toMatchObject({ old: 0.71, new: 0.9 });
     expect(inverse.artifactSha256).toMatch(/^[a-f0-9]{64}$/);
+    // Null recommendation lineage is valid for a legacy inverse export.
+    expect((await getExportBatch(database, { orgId: orgA, batchId: inverse.batchId }))?.rows).toEqual(inverse.rows);
 
     const [stored] = await database.sql<{
       source_batch_id: string | null;

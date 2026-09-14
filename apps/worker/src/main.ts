@@ -1,6 +1,9 @@
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
 import { runSpApiConnectionPass } from './spapi-connections.js';
 import { registerIntegrationSources } from './integration-sources.js';
+import { createKeywordMirrorCapability, createSpWriteWorker } from './sp-write-outbox/composition.js';
+import { startSpWritePolling } from './sp-write-outbox/polling.js';
+import { spWritePolicyFromEnv } from './sp-write-outbox/policy.js';
 import { createDb, loadReportHealth } from '@wizard-ads/db';
 import { createAdsApiClientFromEnv } from './ads-api.js';
 import { AmazonConnectionLoop } from './amazon-connections.js';
@@ -62,7 +65,12 @@ if (!Number.isFinite(reportStaleHours) || reportStaleHours <= 0) {
 const handle = createDb({ connectionString: config.databaseUrl, max: config.maxConcurrentJobs + 2 });
 const store = new PostgresWorkerStore(handle, undefined, {
   claimProtocol: config.claimProtocol,
+  ...((config.spWrites.dispatchEnabled || config.spWrites.reconcileEnabled)
+    ? { keywordMirror: createKeywordMirrorCapability(handle) } : {}),
 });
+const spWriteLoop = config.startsBackgroundPasses && (config.spWrites.dispatchEnabled || config.spWrites.reconcileEnabled)
+  ? createSpWriteWorker(store, { claimantId: `${config.workerId}:sp-writes`, policy: () => spWritePolicyFromEnv(process.env) })
+  : undefined;
 const marketingStream = config.startsBackgroundPasses && config.marketingStreamQueueUrl
   ? createMarketingStreamSqsConsumer({
       handle,
@@ -146,6 +154,7 @@ const worker = new SyncWorker({
   maxConcurrentJobs: config.maxConcurrentJobs,
   pollIntervalMs: config.pollIntervalMs,
 });
+const spWritePolling = spWriteLoop ? startSpWritePolling(spWriteLoop, config.pollIntervalMs) : undefined;
 marketingStream?.start();
 amazonConnections?.start();
 spApiConnections?.start();
@@ -201,6 +210,7 @@ async function performShutdown(): Promise<WorkerShutdownEvidence> {
   provisioner?.stop();
   bidSeries?.stop();
   recommendationObserver?.stop();
+  await spWritePolling?.stop();
   await marketingStream?.stop();
   await amazonConnections?.stop();
   await spApiConnections?.stop();
