@@ -75,8 +75,10 @@ it('renders authoritative zero-uplift CPC separately from missing placement evid
   const view = render(<Screen data={{ ...ready, payload: { ...ready.payload, points: [point] } }} />);
   expect(view.container.textContent).toContain('Placement uplifts: 0%.');
   expect(view.container.textContent).toContain('$5.00 base × (1 + 0% placement uplift)');
-  view.rerender(<Screen data={{ ...ready, payload: { ...ready.payload, points: [{ ...point, maxCpc: null, placementEvidence: 'missing' }] } }} />);
+  view.rerender(<Screen data={{ ...ready, payload: { ...ready.payload, points: [{ ...point, storedMaxCpc: 5, maxCpc: null, placementEvidence: 'missing' }] } }} />);
   expect(view.container.textContent).toContain('Placement modifiers not measured.');
   expect(view.container.textContent).toContain('Placement formula not measured.');
+  const maxCpc = Array.from(view.container.querySelectorAll('dt')).find((node) => node.textContent === 'Max CPC');
+  expect(maxCpc?.nextElementSibling?.textContent).toContain('Not measured');
   expect(view.container.textContent).not.toContain('Placement uplifts: 0%.');
 });

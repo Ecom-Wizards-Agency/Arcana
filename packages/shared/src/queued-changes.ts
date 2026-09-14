@@ -13,12 +13,23 @@ const QueuedBidMoney = SpMoney.refine((money) => {
   return scale !== null && (money.amount.split('.')[1]?.length ?? 0) <= scale;
 }, 'Money must use supported marketplace precision');
 
+/** Stored in modifier_components. All three observations and their markers are required.
+ * Legacy arrays and partial observations deliberately cannot establish completeness. */
+export const ObservedPlacementModifiers = z.array(z.object({
+  name: z.enum(['top_of_search', 'rest_of_search', 'product_pages']),
+  pct: z.number().finite().nonnegative(),
+  fullyObserved: z.literal(true),
+}).strict()).length(3).refine((components) => new Set(components.map((c) => c.name)).size === 3);
+export type ObservedPlacementModifiers = z.infer<typeof ObservedPlacementModifiers>;
+
 /** The common daily evidence consumed by the corridor model and presentation. */
 export const TargetCorridorPoint = z.object({
   date: z.string(), low: z.number().nullable(), median: z.number().nullable(), high: z.number().nullable(),
   bid: z.number().nullable(), cpc: z.number().nullable(), maxCpc: z.number().nullable(),
   components: z.array(z.object({ name: z.string(), pct: z.number() })).readonly(),
   placementEvidence: z.enum(['known-zero', 'components', 'missing']).optional(),
+  /** Raw historical calculation; unusable as a ceiling without complete observations. */
+  storedMaxCpc: z.number().nullable().optional(),
 });
 export type TargetCorridorPoint = z.infer<typeof TargetCorridorPoint>;
 export const TargetDailyPerformance = z.object({

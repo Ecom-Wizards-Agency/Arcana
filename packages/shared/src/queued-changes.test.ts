@@ -26,3 +26,14 @@ it('requires string money and marketplace precision for both sides of the previe
   expect(QueuedBidRequest.safeParse({ ...request, expectedBid: { amount: '5', currencyCode: 'JPY' }, newBid: { amount: '6.1', currencyCode: 'JPY' } }).success).toBe(false);
   expect(QueuedBidRequest.safeParse({ ...request, expectedBid: { amount: '5', currencyCode: 'JPY' }, newBid: { amount: '6', currencyCode: 'JPY' } }).success).toBe(true);
 });
+
+it('requires an explicit complete placement observation set, never an arithmetic inference', async () => {
+  const { ObservedPlacementModifiers } = await import('./queued-changes.js');
+  const observed = ['top_of_search', 'rest_of_search', 'product_pages'].map((name) => ({ name, pct: 0, fullyObserved: true }));
+  expect(ObservedPlacementModifiers.safeParse(observed).success).toBe(true);
+  expect(ObservedPlacementModifiers.safeParse([{ ...observed[0], pct: 100 }, ...observed.slice(1)]).success).toBe(true);
+  for (const unknown of [null, [], observed.slice(0, 2), observed.map(({ name, pct }) => ({ name, pct })),
+    observed.map((c) => ({ ...c, fullyObserved: false })), [observed[0], observed[0], observed[2]]]) {
+    expect(ObservedPlacementModifiers.safeParse(unknown).success).toBe(false);
+  }
+});

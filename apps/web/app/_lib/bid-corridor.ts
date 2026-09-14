@@ -11,6 +11,7 @@
  * and explicit selected-agency predicates apply together.
  */
 import type { TargetDailyPerformance } from '@wizard-ads/shared';
+import { ObservedPlacementModifiers } from '@wizard-ads/shared';
 import type { QueryHandle } from '@wizard-ads/db';
 import type { BaseTotals } from '@wizard-ads/ui';
 import type { BidCorridorPoint } from '@wizard-ads/ui';
@@ -32,7 +33,7 @@ export async function loadCorridor(
       bid: string | number | null;
       cpc: string | number | null;
       max_potential_cpc: string | number | null;
-      modifier_components: Array<{ name: string; pct: number }> | null;
+      modifier_components: unknown;
     }[]
   >`
     select date::text as date,
@@ -52,19 +53,24 @@ export async function loadCorridor(
   `;
   const nullableNumber = (value: string | number | null): number | null =>
     value === null ? null : Number(value);
-  return rows.map((row) => ({
-    date: row.date,
-    low: nullableNumber(row.suggested_bid_low),
-    median: nullableNumber(row.suggested_bid_median),
-    high: nullableNumber(row.suggested_bid_high),
-    bid: nullableNumber(row.bid),
-    cpc: nullableNumber(row.cpc),
-    maxCpc: nullableNumber(row.max_potential_cpc),
-    placementEvidence: row.modifier_components === null ? 'missing'
-      : row.modifier_components.length > 0 ? 'components'
-      : row.bid !== null && row.max_potential_cpc !== null && Number(row.bid) === Number(row.max_potential_cpc) ? 'known-zero' : 'missing',
-    components: (row.modifier_components ?? []).map((c) => ({ ...c, name: c.name.replaceAll('_', ' ').replace(/^./, (letter) => letter.toUpperCase()) })),
-  }));
+  return rows.map((row) => {
+    const observed = ObservedPlacementModifiers.safeParse(row.modifier_components);
+    return {
+      date: row.date,
+      low: nullableNumber(row.suggested_bid_low),
+      median: nullableNumber(row.suggested_bid_median),
+      high: nullableNumber(row.suggested_bid_high),
+      bid: nullableNumber(row.bid),
+      cpc: nullableNumber(row.cpc),
+      storedMaxCpc: nullableNumber(row.max_potential_cpc),
+      maxCpc: observed.success ? nullableNumber(row.max_potential_cpc) : null,
+      placementEvidence: !observed.success ? 'missing' as const
+        : observed.data.every((c) => c.pct === 0) ? 'known-zero' as const : 'components' as const,
+      components: observed.success ? observed.data.map(({ name, pct }) => ({ pct,
+        name: name.replaceAll('_', ' ').replace(/^./, (letter) => letter.toUpperCase()),
+      })) : [],
+    };
+  });
 }
 
 export interface BidHistoryTarget {

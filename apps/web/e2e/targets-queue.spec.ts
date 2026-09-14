@@ -15,10 +15,10 @@ test('target stages an immutable change and review records approval without outb
     await db.sql`update public.keywords set bid=5,synced_at=now(),bid_observed_at=null where org_id=${orgId} and profile_id=${fixtureProfileId} and amazon_id='kw-1'`;
     await db.sql`update public.campaigns set placement_bidding='{"topOfSearch":100,"restOfSearch":0,"productPages":0}' where org_id=${orgId} and profile_id=${fixtureProfileId} and amazon_id='c-1'`;
     await db.sql`update public.optimization_groups set bid_floor=1,bid_ceiling=12,bid_increase_cap=1,bid_decrease_cap=0.5 where org_id=${orgId} and profile_id=${fixtureProfileId}`;
-    const seeded = await db.sql`insert into public.bid_series_daily(org_id,profile_id,target_id,campaign_id,ad_group_id,is_keyword,date,bid,suggested_bid_low,suggested_bid_median,suggested_bid_high,modifier_components)
-      select ${orgId},${fixtureProfileId},'kw-1','c-1','ag-1',true,current_date-12+n,5,case when n<3 then 4 else 6 end,case when n<3 then 5.85 else 8.4 end,11,
-        '[{"name":"Top of search","pct":100},{"name":"Rest of search","pct":0},{"name":"Product pages","pct":0}]'::jsonb from generate_series(0,12) n
-      on conflict(profile_id,date,campaign_id,ad_group_id,target_id) do update set bid=excluded.bid,suggested_bid_low=excluded.suggested_bid_low,suggested_bid_median=excluded.suggested_bid_median,suggested_bid_high=excluded.suggested_bid_high,modifier_components=excluded.modifier_components returning target_id`;
+    const seeded = await db.sql`insert into public.bid_series_daily(org_id,profile_id,target_id,campaign_id,ad_group_id,is_keyword,date,bid,suggested_bid_low,suggested_bid_median,suggested_bid_high,max_potential_cpc,modifier_components)
+      select ${orgId},${fixtureProfileId},'kw-1','c-1','ag-1',true,current_date-12+n,5,case when n<3 then 4 else 6 end,case when n<3 then 5.85 else 8.4 end,11,10,
+        '[{"name":"top_of_search","pct":100,"fullyObserved":true},{"name":"rest_of_search","pct":0,"fullyObserved":true},{"name":"product_pages","pct":0,"fullyObserved":true}]'::jsonb from generate_series(0,12) n
+      on conflict(profile_id,date,campaign_id,ad_group_id,target_id) do update set bid=excluded.bid,suggested_bid_low=excluded.suggested_bid_low,suggested_bid_median=excluded.suggested_bid_median,suggested_bid_high=excluded.suggested_bid_high,max_potential_cpc=excluded.max_potential_cpc,modifier_components=excluded.modifier_components returning target_id`;
     expect(seeded).toHaveLength(13);
     const facts = await db.sql`insert into public.fact_sp_target_daily(org_id,profile_id,date,ad_product,campaign_id,ad_group_id,target_id,target_kind,match_type,impressions,clicks,cost,sales_7d,purchases_7d,units_sold_7d)
       select ${orgId},${fixtureProfileId},current_date-12+n,'SP','c-1','ag-1','kw-1','keyword','exact',100,10,20+n,100,2,2 from generate_series(0,12) n

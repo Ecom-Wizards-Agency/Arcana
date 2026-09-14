@@ -54,6 +54,8 @@ export interface BidSeriesTargetInput extends BidRecommendationTarget {
    * largest binds the max-potential CPC.
    */
   placementModifiers: ModifierComponent[];
+  /** Explicit source observation, never inferred from the composed maximum. */
+  placementModifiersObserved?: boolean;
 }
 
 export interface BidSeriesStore {
@@ -154,7 +156,11 @@ export async function syncBidSeriesForProfile(
       // Only meaningful when there is a bid to inflate; null otherwise so the
       // chart draws a gap rather than a zero line.
       maxPotentialCpc: target.bid === null ? null : composed.value,
-      modifierComponents: composed.components,
+      // Persist the full observed placement set, including zeros, with completeness.
+      // Extra JSON fields survive the base component type used by the DB upsert.
+      modifierComponents: target.placementModifiers.map((component) => ({
+        ...component, fullyObserved: target.placementModifiersObserved === true,
+      })),
     };
   });
 
@@ -342,6 +348,11 @@ export class PostgresBidSeriesStore implements BidSeriesStore {
         bid: row.bid === null ? null : Number(row.bid),
         cpc: clicks > 0 ? Number((cost / clicks).toFixed(4)) : null,
         placementModifiers: placementModifiersOf(row.placement_bidding),
+        placementModifiersObserved: row.placement_bidding !== null &&
+          (['topOfSearch', 'restOfSearch', 'productPages'] as const).every((key) => {
+            const pct = row.placement_bidding?.[key];
+            return typeof pct === 'number' && Number.isFinite(pct) && pct >= 0;
+          }),
       };
     });
   }
@@ -352,7 +363,7 @@ export class PostgresBidSeriesStore implements BidSeriesStore {
   }
 }
 
-/** The campaign's non-zero placement uplifts, as modifier components. */
+/** Every observed placement value, including zero; unobserved values remain absent. */
 function placementModifiersOf(
   bidding: { topOfSearch: number | null; productPages: number | null; restOfSearch: number | null } | null,
 ): ModifierComponent[] {
@@ -364,7 +375,7 @@ function placementModifiersOf(
   ];
   const components: ModifierComponent[] = [];
   for (const [name, pct] of named) {
-    if (pct !== null && pct > 0) components.push({ name, pct });
+    if (typeof pct === 'number' && Number.isFinite(pct) && pct >= 0) components.push({ name, pct });
   }
   return components;
 }

@@ -80,7 +80,8 @@ const kw = (over: Partial<BidSeriesTargetInput> = {}): BidSeriesTargetInput => (
     : { type: 'KEYWORD_EXACT_MATCH', value: over.targetId ?? 'kw-1' },
   bid: 1.0,
   cpc: 1.4,
-  placementModifiers: [{ name: 'top_of_search', pct: 50 }],
+  placementModifiers: [{ name: 'top_of_search', pct: 50 }, { name: 'rest_of_search', pct: 0 }, { name: 'product_pages', pct: 0 }],
+  placementModifiersObserved: true,
   ...over,
 });
 
@@ -108,7 +109,11 @@ describe('syncBidSeriesForProfile', () => {
     expect(keyword?.suggestedBidMedian).toBe(0.8);
     // 1.0 base bid x (1 + 50/100) = 1.5.
     expect(keyword?.maxPotentialCpc).toBe(1.5);
-    expect(keyword?.modifierComponents).toEqual([{ name: 'top_of_search', pct: 50 }]);
+    expect(keyword?.modifierComponents).toEqual([
+      { name: 'top_of_search', pct: 50, fullyObserved: true },
+      { name: 'rest_of_search', pct: 0, fullyObserved: true },
+      { name: 'product_pages', pct: 0, fullyObserved: true },
+    ]);
     // No modifiers: max-potential CPC is just the bid.
     const target = store.written.find((r) => r.targetId === 'tg-1');
     expect(target?.maxPotentialCpc).toBe(2.0);
@@ -264,4 +269,24 @@ describe('PostgresBidSeriesStore expression selection', () => {
     }
     expect(targets[0]?.targetingExpression?.value).toBe('synthetic keyword');
   });
+});
+
+it('persists missing placement observation markers even when the composed maximum equals the bid', async () => {
+  const store = new FakeStore([PROFILE], [
+    kw({ targetId: 'unknown', bid: 5, placementModifiers: [], placementModifiersObserved: false }),
+    kw({ targetId: 'partial', bid: 5, placementModifiers: [{ name: 'top_of_search', pct: 0 }], placementModifiersObserved: false }),
+    kw({ targetId: 'zero', bid: 5, placementModifiers: [
+      { name: 'top_of_search', pct: 0 }, { name: 'rest_of_search', pct: 0 }, { name: 'product_pages', pct: 0 },
+    ], placementModifiersObserved: true }),
+  ]);
+  await syncBidSeriesForProfile(PROFILE, { store, client: fakeClient({}), buckets: defaultRegionTokenBuckets });
+  expect(store.written).toHaveLength(3);
+  expect(store.written.map((row) => row.maxPotentialCpc)).toEqual([5, 5, 5]);
+  expect(store.written[0]!.modifierComponents).toEqual([]);
+  expect(store.written[1]!.modifierComponents).toEqual([{ name: 'top_of_search', pct: 0, fullyObserved: false }]);
+  expect(store.written[2]!.modifierComponents).toEqual([
+    { name: 'top_of_search', pct: 0, fullyObserved: true },
+    { name: 'rest_of_search', pct: 0, fullyObserved: true },
+    { name: 'product_pages', pct: 0, fullyObserved: true },
+  ]);
 });
