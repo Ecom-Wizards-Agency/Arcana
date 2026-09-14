@@ -3,6 +3,7 @@ import {
   SpWriteAccounting,
   SpWriteAuthorizationReceipt,
   SpWriteAuthoritySettlement,
+  SpWriteDependencySettlement,
   SpWriteExecutionSnapshot,
   SpWriteExecutionStatus,
   SpWriteObservation,
@@ -66,6 +67,7 @@ export type SpWritePersistenceOperation =
   | 'defer_outbox_claim'
   | 'complete_outbox_claim'
   | 'settle_delegated_authority'
+  | 'settle_dependencies'
   | 'acquire_dispatch_lease'
   | 'reserve_provider_call'
   | 'read_dispatch_ticket'
@@ -779,6 +781,29 @@ class DefaultSpWriteStagingLedger implements SpWriteStagingLedger {
       return row.record_sp_write_bounded_authorization;
     });
   }
+}
+
+/** Provider-free closure uses the opaque token bound to this exact live claim object. */
+export async function settleSpWriteDependencies(
+  database: { sql: Sql }, claim: SpWriteDispatchOutboxClaim,
+): Promise<SpWriteDependencySettlement> {
+  const operation = 'settle_dependencies' as const;
+  const prepared = parseInput(operation, () => ({
+    outboxId: assertUuid(claim.outboxId), claimEpoch: assertClaimEpoch(claim.claimEpoch),
+    token: claimToken(operation, claim, 'dispatch'),
+  }));
+  return runDatabaseOperation(operation, async () => {
+    const rows = await database.sql<{ artifact: unknown }[]>`
+      select app.settle_sp_write_dependencies_for_claim(
+        ${prepared.outboxId}::uuid, ${prepared.claimEpoch}::bigint, ${prepared.token}::uuid
+      ) as artifact
+    `;
+    const row = exactSingleRow(operation, rows);
+    if (!hasExactKeys(row, ['artifact'])) throw protocolFailure(operation);
+    const parsed = SpWriteDependencySettlement.safeParse(row.artifact);
+    if (!parsed.success) throw protocolFailure(operation);
+    return Object.freeze(parsed.data);
+  });
 }
 
 class DefaultSpWriteOutboxLedger implements SpWriteOutboxLedger {

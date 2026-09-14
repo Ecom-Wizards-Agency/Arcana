@@ -33,6 +33,8 @@ export async function POST(request: Request): Promise<Response> {
     const parsedSettings = settingsSchema.safeParse({
       name: requiredString(body['name'], 'name'),
       role: body['role'],
+      ...(body['method'] === undefined ? {} : { method: body['method'] }),
+      ...(body['methodSettings'] === undefined ? {} : { methodSettings: body['methodSettings'] }),
       targetAcos: fraction(body['targetAcosPercent'], 'targetAcosPercent'),
       bidFloor: optionalNonnegative(body['bidFloor'], 'bidFloor'),
       bidCeiling: optionalNonnegative(body['bidCeiling'], 'bidCeiling'),

@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RecommendationWorkerDatabase } from '@wizard-ads/db/recommendation-worker';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
-import { RECOMMENDATION_EXECUTION_VERSIONS, type OneTimeRpcConfiguration } from '@wizard-ads/shared';
+import { RECOMMENDATION_EXECUTION_VERSIONS, type OneTimeRpcConfiguration, type SpMarketplaceScope } from '@wizard-ads/shared';
+import { marketplaceIdForCountry } from './marketplaces.js';
 import { RecommendationClaimant } from './recommendation-lane/claimant.js';
 import {
   createRecommendationsRunner, FencedRecommendationRunStore, PostgresRecommendationRunStore,
@@ -104,7 +105,15 @@ describe.skipIf(!available)('one-time preview through the actual fenced runner',
       payload: { executionVersion: 2 } });
     expect(saved.payload).not.toHaveProperty('lookbackDays');
 
-    const run = createRecommendationsRunner(new FencedRecommendationRunStore(workerDatabase), {
+    const store = new FencedRecommendationRunStore(workerDatabase);
+    const readInputs = store.loadInputs.bind(store);
+    let marketplaceEvidence: SpMarketplaceScope | undefined;
+    store.loadInputs = async (...args) => {
+      const inputs = await readInputs(...args);
+      marketplaceEvidence = inputs.marketplace;
+      return inputs;
+    };
+    const run = createRecommendationsRunner(store, {
       now: () => new Date('2026-09-05T12:00:00Z'),
     });
     let executionError: unknown;
@@ -117,6 +126,10 @@ describe.skipIf(!available)('one-time preview through the actual fenced runner',
     });
     expect(await claimant.drainOnce()).toBe(1);
     if (executionError !== undefined) throw executionError;
+    const [profileMarket] = await database.sql<{ country_code: string; region: string; currency_code: string }[]>`
+      select country_code,region,currency_code from public.ad_profiles where org_id=${scope.orgId}::uuid and id=${scope.profileId}::uuid`;
+    expect(marketplaceEvidence).toEqual({ marketplaceId: marketplaceIdForCountry(profileMarket!.country_code),
+      region: profileMarket!.region, currencyCode: profileMarket!.currency_code });
 
     const results = await database.sql<{
       status: string; job_status: string; window_start: string; window_end: string;

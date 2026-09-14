@@ -151,6 +151,7 @@ function describe(
 }
 
 export interface ResolveStrategyOptions {
+  methodId?: string;
   campaignId: string | null;
   campaignName: string | null;
   /** `recommendation_runs.strategy_snapshot`, as stored. */
@@ -161,6 +162,14 @@ export interface ResolveStrategyOptions {
 
 /** Resolve the strategy dimension for one proposal. */
 export function resolveProposalStrategy(options: ResolveStrategyOptions): ProposalStrategy {
+  const methodId = options.methodId ?? options.executionSnapshot?.configuration.method;
+  if (methodId === 'sp.coordinated-efficiency') return {
+    optGroup: null, category: classifyCampaignCategory(options.campaignName),
+    objective: 'coordinated-efficiency', objectiveLabel: 'Coordinated efficiency (draft)',
+    source: options.executionSnapshot === undefined ? 'opt_group' : 'one_time',
+    targetAcos: options.executionSnapshot?.configuration.targetAcos ?? null, cutOnAcosAlone: null,
+    explanation: 'Coordinated efficiency uses attributed revenue and joint control bounds. This draft method produces reviewable previews.',
+  };
   if (options.executionSnapshot !== undefined) {
     return {
       optGroup: null,
@@ -170,7 +179,7 @@ export function resolveProposalStrategy(options: ResolveStrategyOptions): Propos
       source: 'one_time',
       targetAcos: options.executionSnapshot.configuration.targetAcos,
       cutOnAcosAlone: null,
-      explanation: 'Calculated with the settings confirmed for this one-time RPC preview and the applicable stock, rank, and observation safeguards.',
+      explanation: `Calculated with the confirmed ${options.executionSnapshot.configuration.method} settings and the applicable evidence and observation safeguards.`,
     };
   }
   const groups = optGroupsOf(options.strategySnapshot);
@@ -241,7 +250,7 @@ export function resolveExportCaps(snapshot: unknown, optGroup: string | null): E
 
 /** Short form for a table cell: `Rank · scale` / `Discovery · unassigned`. */
 export function strategyLabel(strategy: ProposalStrategy): string {
-  if (strategy.source === 'one_time') return 'One-time RPC';
+  if (strategy.source === 'one_time' || strategy.objective === 'coordinated-efficiency') return strategy.objectiveLabel;
   const objective = strategy.source === 'unassigned' ? 'unassigned' : strategy.objective;
   return `${strategy.category} · ${objective}`;
 }

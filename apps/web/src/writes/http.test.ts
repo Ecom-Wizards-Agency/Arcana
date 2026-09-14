@@ -265,6 +265,19 @@ describe.skipIf(!available)('SP write HTTP application', () => {
       .toEqual([{ count: 0 }]);
   });
 
+  it('refuses a frozen draft method with a stable code and records no receipt or outbox work', async () => {
+    const draft = { ...syntheticRecommendationMethodInputs(), methodId: 'sp.coordinated-efficiency', methodVersion: 'candidate.1' };
+    const frozen = SpWritePreview.parse(await (await preview(post(await source(draft)))).json());
+    const response = await approve(post(approval(frozen)));
+    expect(response.status).toBe(422);
+    await expect(database.sql`select app.assert_sp_write_method_evidence(${frozen.plan.id}::uuid, true)`).rejects.toThrow(/method_not_executable/);
+    expect(await response.json()).toEqual({ code: 'method_not_executable' });
+    expect(await database.sql`select
+      (select count(*)::int from public.sp_write_authorization_receipts where plan_id=${frozen.plan.id}) as receipts,
+      (select count(*)::int from public.sp_write_outbox where plan_id=${frozen.plan.id}) as wakes`)
+      .toEqual([{ receipts: 0, wakes: 0 }]);
+  });
+
   it('rolls back approval and outbox work when the exact confirmation audit is suppressed', async () => {
     const frozen = SpWritePreview.parse(await (await preview(post(await source()))).json());
     await database.sql.unsafe(`create function app.test_suppress_confirmation() returns trigger language plpgsql as $$

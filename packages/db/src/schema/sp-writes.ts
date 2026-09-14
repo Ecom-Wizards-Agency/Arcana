@@ -394,13 +394,6 @@ export const spWritePlanActions = pgTable(
       foreignColumns: [spWritePlans.orgId, spWritePlans.profileId, spWritePlans.planId],
     }).onDelete('cascade'),
     unique('sp_write_plan_actions_order_key').on(t.orgId, t.profileId, t.planId, t.actionIndex),
-    unique('sp_write_plan_actions_entity_key').on(
-      t.orgId,
-      t.profileId,
-      t.planId,
-      t.routeKey,
-      t.amazonEntityId,
-    ),
     unique('sp_write_plan_actions_complete_identity_key').on(
       t.orgId,
       t.profileId,

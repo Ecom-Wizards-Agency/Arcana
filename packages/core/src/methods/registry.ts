@@ -1,4 +1,5 @@
 import { MethodDescriptor, MethodEvaluatorInput, MethodEvaluatorOutput, type MethodId, type MethodVersion } from '@wizard-ads/shared';
+import { coordinatedDescriptor, evaluateCoordinatedMethod } from './coordinated.js';
 import { referenceDescriptor, evaluateReferenceMethod } from './reference.js';
 
 export type MethodEvaluator = (input: MethodEvaluatorInput) => MethodEvaluatorOutput;
@@ -43,5 +44,5 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-const registry = createMethodRegistry([registerMethod(referenceDescriptor, evaluateReferenceMethod)]);
+const registry = createMethodRegistry([registerMethod(referenceDescriptor, evaluateReferenceMethod), registerMethod(coordinatedDescriptor, evaluateCoordinatedMethod)]);
 export const resolveMethod = registry.resolveMethod;

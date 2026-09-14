@@ -51,14 +51,20 @@ export async function readSpWriteMirrorCounts(
     const receipt = SpWriteMirrorReceipt.parse(row.artifact);
     const observation = observations.get(receipt.observationId);
     const action = evidence.plan.actions.find((candidate) => candidate.actionId === receipt.actionId);
+    const changeKey = action?.routeKey === 'sp.v3.keywords.update' ? 'keyword.bid'
+      : action?.routeKey === 'sp.v3.targets.update' ? 'target.bid'
+        : action?.routeKey === 'sp.v3.campaigns.update' && action.changes.placement?.approvedPlacementKeys.length === 1
+          ? `campaign.placement.${action.changes.placement.approvedPlacementKeys[0]}` : null;
     if (observation === undefined || action === undefined || seen.has(receipt.observationId)
       || receipt.observationFingerprint !== observation.fingerprint || receipt.actionId !== observation.actionId
       || receipt.observationOutcome !== observation.outcome || canonicalInstant(receipt.observedAt) !== canonicalInstant(observation.observedAt)
       || (receipt.observedState === 'archived') !== (observation.observed?.values.state === 'archived')
+      || receipt.changeKey !== changeKey
       || receipt.orgId !== evidence.plan.orgId || receipt.profileId !== evidence.plan.profileId
       || receipt.executionId !== evidence.authorization.executionId || receipt.planId !== evidence.plan.id
-      || action.routeKey !== 'sp.v3.keywords.update'
-      || receipt.amazonEntityId !== action.entity.keywordId) throw new Error('SP write mirror status evidence mismatch');
+      || receipt.amazonEntityId !== (action.routeKey === 'sp.v3.keywords.update' ? action.entity.keywordId
+        : action.routeKey === 'sp.v3.targets.update' ? action.entity.targetId
+          : action.routeKey === 'sp.v3.campaigns.update' ? action.entity.campaignId : null)) throw new Error('SP write mirror status evidence mismatch');
     seen.add(receipt.observationId);
     counts.pending -= 1;
     if (receipt.outcome === 'already_current') counts.alreadyCurrent += 1;

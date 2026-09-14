@@ -193,3 +193,21 @@ it('renders saved group precedence and ordered calculation steps', () => {
   expect(view.strategyLabel).toContain('Synthetic group');
   expect(view.changeReason).toBe('RPC * target ACOS');
 });
+
+it('presents three dependent controls as one review group with preserved order', () => {
+  const entityRef = { profileId: 'profile-1', campaignId: 'c-1', entityType: 'campaign' as const, entityId: 'c-1', adProduct: 'SP' as const };
+  const dependencySet: NonNullable<RecommendationInputs['dependencySet']> = {
+    id: 'run-1:c-1', campaignId: 'c-1', changes: [
+      { control: 'target_bid', entityRef: { ...entityRef, entityType: 'keyword', entityId: 'kw-1' }, current: 0.6, proposed: 0.3, unit: 'currency_per_click' },
+      { control: 'placement_adjustment', entityRef, placementKey: 'top_of_search', current: 100, proposed: 300, unit: 'percentage' },
+      { control: 'placement_adjustment', entityRef, placementKey: 'rest_of_search', current: 0, proposed: 100, unit: 'percentage' },
+    ], precedenceReasons: ['Observe the base first.', 'Observe the first placement.'],
+  };
+  const view = toProposalView(record('high_acos', { entityType: 'campaign', field: 'control_set', currentValue: null, proposedValue: null,
+    inputs: { ...inputsFor('high_acos'), methodId: 'sp.coordinated-efficiency', methodVersion: 'candidate.1', dependencySet } }), { strategySnapshot: SNAPSHOT });
+  expect(view.dependencySet).toEqual(dependencySet);
+  expect(view.field).toBe('3 ordered controls');
+  expect(view.exportable).toBe(false);
+  expect(view.strategyLabel).toBe('Coordinated efficiency (draft)');
+  expect(groupByDecision([view])[0]?.proposals).toHaveLength(1);
+});

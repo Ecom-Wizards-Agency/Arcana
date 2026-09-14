@@ -7,7 +7,7 @@ import {
   Uuid,
 } from './primitives.js';
 
-export const SpWriteSchemaVersion = z.enum(['openspell.sp-write-plan.v1', 'openspell.sp-write-plan.v2']);
+export const SpWriteSchemaVersion = z.enum(['openspell.sp-write-plan.v1', 'openspell.sp-write-plan.v2', 'openspell.sp-write-plan.v3']);
 export type SpWriteSchemaVersion = z.infer<typeof SpWriteSchemaVersion>;
 
 export const SpWriteSha256 = z.string().regex(/^[a-f0-9]{64}$/);
@@ -485,6 +485,80 @@ function actionMoneyValues(action: SpWriteAction): SpMoney[] {
   }
 }
 
+/** A dependency is an immutable sequence of single-control provider actions. */
+export const SpWriteDependencySet = z.object({
+  dependencySetId: z.string().min(1),
+  recommendationId: SpWriteUuid,
+  dependencySetSha256: SpWriteSha256,
+  actionIds: z.array(SpWriteUuid).min(1).max(500),
+  precedenceReasons: z.array(z.string().trim().min(1)).max(499),
+}).strict().superRefine((value, context) => {
+  if (new Set(value.actionIds).size !== value.actionIds.length
+    || value.precedenceReasons.length !== value.actionIds.length - 1) {
+    context.addIssue({ code: 'custom', message: 'dependency steps and precedence reasons must reconcile' });
+  }
+});
+export type SpWriteDependencySet = z.infer<typeof SpWriteDependencySet>;
+
+const storedObjectText = z.string().min(1).refine((text) => {
+  try { const value: unknown = JSON.parse(text); return value !== null && typeof value === 'object' && !Array.isArray(value); }
+  catch { return false; }
+}, 'expected exact stored JSON object text');
+
+/** Text is hashed as read from PostgreSQL, including the complete campaign control snapshot. */
+export const SpWriteDependencySetEvidence = z.object({
+  dependencySetId: z.string().min(1), recommendationId: SpWriteUuid,
+  dependencySetText: storedObjectText, dependencySetSha256: SpWriteSha256,
+  calculationSnapshotText: storedObjectText, calculationSnapshotSha256: SpWriteSha256,
+}).strict();
+export type SpWriteDependencySetEvidence = z.infer<typeof SpWriteDependencySetEvidence>;
+
+export const SpWriteDependencySourceRow = z.object({
+  applyRowId: SpWriteUuid, recommendationId: SpWriteUuid, runId: SpWriteUuid,
+  dependencySetId: z.string().min(1), dependencyStepIndex: z.number().int().nonnegative().max(499),
+  method: z.object({ methodId: z.string().min(1), methodVersion: z.string().min(1),
+    traceSha256: SpWriteSha256, settingSourcesSha256: SpWriteSha256 }).strict(),
+}).strict();
+export type SpWriteDependencySourceRow = z.infer<typeof SpWriteDependencySourceRow>;
+
+function dependencyPlanProblems(actions: readonly SpWriteAction[], sets: readonly SpWriteDependencySet[]): string | null {
+  if (new Set(sets.map((set) => set.dependencySetId)).size !== sets.length
+    || new Set(sets.map((set) => set.recommendationId)).size !== sets.length
+    || JSON.stringify(sets.flatMap((set) => set.actionIds)) !== JSON.stringify(actions.map((action) => action.actionId))) {
+    return 'every dependency action must occur once in its stored group order';
+  }
+  const ownerByEntity = new Map<string, string>();
+  for (const set of sets) {
+    const priorPlacements = new Map<string, SpCompleteCampaignBiddingState>();
+    const controls = new Set<string>();
+    for (const actionId of set.actionIds) {
+      const action = actions.find((candidate) => candidate.actionId === actionId)!;
+      const entityKey = actionOrderKeyWithoutActionId(action);
+      const owner = ownerByEntity.get(entityKey);
+      if (owner !== undefined && owner !== set.dependencySetId) return 'one entity cannot belong to different dependency sets';
+      ownerByEntity.set(entityKey, set.dependencySetId);
+      if (action.sources.length !== 1 || action.sources[0]?.kind !== 'apply_row'
+        || Object.keys(action.changes).length !== 1 || changeKeysForAction(action).length !== 1) {
+        return 'dependency actions require one exact forward source and one control';
+      }
+      const controlKey = `${entityKey}:${changeKeysForAction(action)[0]}`;
+      if (controls.has(controlKey)) return 'a dependency set cannot repeat a control';
+      controls.add(controlKey);
+      if (action.routeKey === 'sp.v3.campaigns.update' && action.changes.placement !== undefined) {
+        const previous = priorPlacements.get(entityKey);
+        if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(action.changes.placement.expected)) {
+          return 'each placement step must start from the complete state left by its predecessor';
+        }
+        priorPlacements.set(entityKey, action.changes.placement.requested);
+      } else if ((action.routeKey !== 'sp.v3.keywords.update' && action.routeKey !== 'sp.v3.targets.update')
+        || action.changes.bid === undefined) {
+        return 'dependency actions support target bids and single placement adjustments';
+      }
+    }
+  }
+  return null;
+}
+
 export const SpWritePlan = z.object({
   schemaVersion: SpWriteSchemaVersion,
   id: SpWriteUuid,
@@ -498,6 +572,7 @@ export const SpWritePlan = z.object({
   expiresAt: SpWriteInstant,
   actions: z.array(SpWriteAction).min(1).max(500),
   counts: SpWritePlanCounts,
+  dependencySets: z.array(SpWriteDependencySet).min(1).max(500).optional(),
   fingerprint: SpWriteSha256,
 }).strict().superRefine((plan, context) => {
   if ((plan.direction === 'forward') !== (plan.source.kind === 'apply_batch')) {
@@ -517,7 +592,7 @@ export const SpWritePlan = z.object({
     if (JSON.stringify(ordered.map(actionOrderKey)) !== JSON.stringify(plan.actions.map(actionOrderKey))) {
       context.addIssue({ code: 'custom', path: ['actions'], message: 'plan actions must use canonical order' });
     }
-  } else if (plan.actions.some((action) => action.routeKey !== 'sp.v3.keywords.update'
+  } else if (plan.schemaVersion === 'openspell.sp-write-plan.v2' && plan.actions.some((action) => action.routeKey !== 'sp.v3.keywords.update'
     || action.changes.bid === undefined || action.changes.state !== undefined
     || !SpKeywordBidDecimal.safeParse(action.changes.bid.expected.amount).success
     || !SpKeywordBidDecimal.safeParse(action.changes.bid.requested.amount).success
@@ -528,8 +603,18 @@ export const SpWritePlan = z.object({
   if (new Set(plan.actions.map((action) => action.actionId)).size !== plan.actions.length) {
     context.addIssue({ code: 'custom', path: ['actions'], message: 'plan repeats an action ID' });
   }
-  if (new Set(plan.actions.map(actionOrderKeyWithoutActionId)).size !== plan.actions.length) {
+  if (plan.schemaVersion !== 'openspell.sp-write-plan.v3'
+    && new Set(plan.actions.map(actionOrderKeyWithoutActionId)).size !== plan.actions.length) {
     context.addIssue({ code: 'custom', path: ['actions'], message: 'plan repeats a route and entity' });
+  }
+
+  if (plan.schemaVersion === 'openspell.sp-write-plan.v3') {
+    const problem = plan.direction !== 'forward' || plan.dependencySets === undefined
+      ? 'v3 requires forward dependency sets; inverse execution requires a separately supported plan'
+      : dependencyPlanProblems(plan.actions, plan.dependencySets);
+    if (problem !== null) context.addIssue({ code: 'custom', path: ['dependencySets'], message: problem });
+  } else if (plan.dependencySets !== undefined) {
+    context.addIssue({ code: 'custom', path: ['dependencySets'], message: 'dependency sets require plan v3' });
   }
 
   const allSourceIdentities = new Set<string>();
@@ -1397,7 +1482,7 @@ const SpCampaignObservedAction = z.object({
   amazonEntityId: AmazonId,
   values: z.object({
     budget: SpMoney.optional(),
-    state: SpMutableState.optional(),
+    state: z.enum(['enabled', 'paused', 'archived']).optional(),
     placement: SpCompleteCampaignBiddingState.optional(),
   }).strict(),
 }).strict().superRefine((value, context) => requireObservedValues(value.values, context));
@@ -1431,7 +1516,7 @@ const SpTargetObservedAction = z.object({
   amazonEntityId: AmazonId,
   values: z.object({
     bid: SpMoney.optional(),
-    state: SpMutableState.optional(),
+    state: z.enum(['enabled', 'paused', 'archived']).optional(),
   }).strict(),
 }).strict().superRefine((value, context) => requireObservedValues(value.values, context));
 
@@ -1452,7 +1537,7 @@ export const SpWriteObservedAction = z.discriminatedUnion('routeKey', [
 ]);
 export type SpWriteObservedAction = z.infer<typeof SpWriteObservedAction>;
 
-function observedActionForSide(
+export function observedActionForSide(
   action: SpWriteAction,
   side: 'expected' | 'requested',
 ): SpWriteObservedAction {
@@ -1720,8 +1805,60 @@ export const SpWriteRefusalReason = z.enum([
   'unsupported_provider_state',
   'lease_unavailable',
   'duplicate_intent',
+  'dependency_failed',
+  'dependency_changed',
+  'source_changed',
 ]);
 export type SpWriteRefusalReason = z.infer<typeof SpWriteRefusalReason>;
+
+/** Field receipt for the additional coordinated controls; legacy keyword receipts stay v1. */
+export const SpWriteControlMirrorReceipt = z.object({
+  schemaVersion: z.literal('openspell.sp-write-mirror-receipt.v2'),
+  orgId: SpWriteUuid, profileId: SpWriteUuid, executionId: SpWriteUuid, planId: SpWriteUuid,
+  observationId: SpWriteUuid, observationFingerprint: SpWriteSha256, actionId: SpWriteUuid,
+  amazonEntityId: AmazonId,
+  changeKey: z.enum(['target.bid', 'campaign.placement.top_of_search', 'campaign.placement.product_pages', 'campaign.placement.rest_of_search']),
+  observationOutcome: SpWriteObservationOutcome,
+  outcome: z.enum(['promoted', 'already_current', 'superseded', 'missing']),
+  observedState: z.literal('archived').optional(),
+  before: z.union([SpMoney, SpCompleteCampaignBiddingState]).nullable(),
+  observed: z.union([SpMoney, SpCompleteCampaignBiddingState]).nullable(),
+  after: z.union([SpMoney, SpCompleteCampaignBiddingState]).nullable(),
+  entityChangeId: z.string().regex(/^[1-9]\d*$/).nullable(),
+  changeAttribution: z.enum(['write', 'observation']).nullable(),
+  observedAt: SpWriteInstant, reconciledAt: SpWriteInstant, controlObservedAt: SpWriteInstant.nullable(),
+}).strict().superRefine((value, context) => {
+  const money = value.changeKey === 'target.bid';
+  const values = [value.before, value.observed, value.after];
+  const currencies = values.flatMap((item) => item !== null && 'amount' in item ? [item.currencyCode] : []);
+  if (new Set(currencies).size > 1) context.addIssue({ code: 'custom', message: 'control mirror currency cannot change' });
+  const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
+  if (values.some((item) => item !== null && ('amount' in item) !== money)
+    || (value.observedState === 'archived' && (value.observationOutcome !== 'conflict' || !['superseded','missing'].includes(value.outcome)))
+    || (value.observedState !== 'archived' && (value.observationOutcome === 'missing') !== (value.observed === null))
+    || Date.parse(value.reconciledAt) < Date.parse(value.observedAt)
+    || (value.controlObservedAt !== null && Date.parse(value.controlObservedAt) > Date.parse(value.reconciledAt))
+    || (value.outcome === 'promoted') !== (value.entityChangeId !== null)
+    || (value.outcome === 'promoted') !== (value.changeAttribution !== null)
+    || (value.outcome === 'promoted' && (value.before === null || value.observed === null
+      || same(value.before, value.after) || !same(value.after, value.observed) || value.controlObservedAt !== value.observedAt))
+    || (value.outcome === 'already_current' && (value.observed === null || !same(value.before, value.observed)
+      || !same(value.after, value.observed) || value.controlObservedAt === null
+      || Date.parse(value.controlObservedAt) < Date.parse(value.observedAt)))
+    || (value.outcome === 'superseded' && (value.before === null || !same(value.before, value.after)))
+    || (value.outcome === 'missing' && (value.before !== null || value.after !== null || value.controlObservedAt !== null))
+    || (value.changeAttribution === 'write' && value.observationOutcome !== 'observed_requested')) {
+    context.addIssue({ code: 'custom', message: 'control mirror receipt does not match its exact field evidence' });
+  }
+});
+export type SpWriteControlMirrorReceipt = z.infer<typeof SpWriteControlMirrorReceipt>;
+
+export const SpWriteDependencySettlement = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('unchanged') }).strict(),
+  z.object({ kind: z.literal('refused'), refusedRows: z.number().int().positive() }).strict(),
+  z.object({ kind: z.literal('stale_claim') }).strict(),
+]);
+export type SpWriteDependencySettlement = z.infer<typeof SpWriteDependencySettlement>;
 
 /** Existing worker custody may close invalid delegated authority without a provider call. */
 export const SpWriteAuthoritySettlement = z.discriminatedUnion('kind', [

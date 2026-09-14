@@ -9,6 +9,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   ScheduledOptimizationGroup,
+  REFERENCE_METHOD,
   optimizationWeekdaysFromIso,
   optimizationWeekdaysToIso,
   type AdProduct,
@@ -74,6 +75,9 @@ export interface SaveOptimizationGroupResult {
 }
 
 interface GroupWireRow {
+  method_id: string | null;
+  method_version: string | null;
+  method_settings: unknown;
   id: string;
   org_id: string;
   profile_id: string;
@@ -127,7 +131,7 @@ export async function readOptimizationWorkspace(
 ): Promise<OptimizationWorkspace> {
   const [groups, campaigns, profiles] = await Promise.all([
     handle.sql<GroupWireRow[]>`
-      select g.id, g.org_id, g.profile_id, g.name, g.role::text as role,
+      select g.id, g.org_id, g.profile_id, g.name, g.role::text as role, g.method_id, g.method_version, g.method_settings,
              g.target_acos, g.bid_floor, g.bid_ceiling,
              g.bid_increase_cap, g.bid_decrease_cap,
              g.placement_increase_cap, g.placement_decrease_cap,
@@ -286,13 +290,14 @@ function prepareOptimizationGroupSave(
 
     const written = await sql<{ id: string }[]>`
       insert into public.optimization_groups (
-        id, org_id, profile_id, name, role, target_acos,
+        id, org_id, profile_id, name, role, target_acos, method_id, method_version, method_settings,
         bid_floor, bid_ceiling, bid_increase_cap, bid_decrease_cap,
         placement_increase_cap, placement_decrease_cap, exclusions,
         review_weekdays, cadence, prioritization, enabled, next_run_at
       ) values (
         ${group.id}, ${group.orgId}, ${group.profileId}, ${group.name},
         ${group.role}::public.optimization_group_role, ${group.targetAcos},
+        ${group.method?.id ?? null}, ${group.method?.version ?? null}, nullif(${JSON.stringify(group.methodSettings ?? null)}::text::jsonb, 'null'::jsonb),
         ${group.bidFloor}, ${group.bidCeiling}, ${group.bidIncreaseCap},
         ${group.bidDecreaseCap}, ${group.placementIncreaseCap},
         ${group.placementDecreaseCap}, ${group.exclusions},
@@ -303,6 +308,9 @@ function prepareOptimizationGroupSave(
       )
       on conflict (id) do update set
         name = excluded.name,
+        method_id = case when ${group.method !== undefined} then excluded.method_id else public.optimization_groups.method_id end,
+        method_version = case when ${group.method !== undefined} then excluded.method_version else public.optimization_groups.method_version end,
+        method_settings = case when ${group.methodSettings !== undefined} then excluded.method_settings else public.optimization_groups.method_settings end,
         role = excluded.role,
         target_acos = excluded.target_acos,
         bid_floor = excluded.bid_floor,
@@ -413,7 +421,7 @@ async function readGroupRecords(
   input: { orgId: string; profileId: string; id: string },
 ): Promise<OptimizationGroupRecord[]> {
   const rows = await sql<GroupWireRow[]>`
-    select g.id, g.org_id, g.profile_id, g.name, g.role::text as role,
+    select g.id, g.org_id, g.profile_id, g.name, g.role::text as role, g.method_id, g.method_version, g.method_settings,
            g.target_acos, g.bid_floor, g.bid_ceiling,
            g.bid_increase_cap, g.bid_decrease_cap,
            g.placement_increase_cap, g.placement_decrease_cap,
@@ -455,6 +463,8 @@ function groupRecordFromWire(row: GroupWireRow): OptimizationGroupRecord {
     orgId: row.org_id,
     profileId: row.profile_id,
     name: row.name,
+    ...(row.method_id == null ? {} : { method: { id: row.method_id ?? REFERENCE_METHOD.id, version: row.method_version ?? REFERENCE_METHOD.version } }),
+    ...(row.method_settings == null ? {} : { methodSettings: row.method_settings }),
     role: row.role,
     targetAcos: Number(row.target_acos),
     bidFloor: numberOrNull(row.bid_floor),

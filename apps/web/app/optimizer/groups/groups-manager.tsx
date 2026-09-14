@@ -8,10 +8,17 @@ import type {
 } from '@wizard-ads/db';
 import {
   OPTIMIZATION_WEEKDAYS,
+  methodSelectionFor,
+  type MethodId,
+  type PlacementEvidenceRequirements,
   type OptimizationWeekday,
 } from '@wizard-ads/shared';
 
 interface GroupDraft {
+  methodId: MethodId;
+  exposureCeiling: string;
+  minClicksPerPlacement: string;
+  placementEvidenceRequirements: PlacementEvidenceRequirements;
   id: string | null;
   name: string;
   role: '' | 'rank' | 'discovery' | 'profit' | 'shield';
@@ -30,6 +37,7 @@ interface GroupDraft {
 }
 
 const EMPTY: GroupDraft = {
+  methodId: 'sp.reference-efficiency', exposureCeiling: '', minClicksPerPlacement: '', placementEvidenceRequirements: 'single_target',
   id: null,
   name: '',
   role: '',
@@ -174,6 +182,12 @@ export function OptimizationGroupsManager({
           profileId,
           name: draft.name,
           role: draft.role,
+          method: methodSelectionFor(draft.methodId),
+          ...(draft.methodId === 'sp.coordinated-efficiency' ? { methodSettings: {
+            ...(draft.exposureCeiling === '' ? {} : { exposureCeiling: Number(draft.exposureCeiling) }),
+            ...(draft.minClicksPerPlacement === '' ? {} : { minClicksPerPlacement: Number(draft.minClicksPerPlacement) }),
+            placementEvidenceRequirements: draft.placementEvidenceRequirements,
+          } } : {}),
           targetAcosPercent: draft.targetAcosPercent,
           bidFloor: draft.bidFloor,
           bidCeiling: draft.bidCeiling,
@@ -196,6 +210,17 @@ export function OptimizationGroupsManager({
         removedCampaigns?: number;
       };
       if (!response.ok || !body.record) throw new Error(body.error ?? 'Could not save group');
+      if ((body.record.group.method?.id ?? 'sp.reference-efficiency') !== draft.methodId) {
+        throw new Error('The saved method does not match your selection. Reload the group before continuing.');
+      }
+      if (draft.methodId === 'sp.coordinated-efficiency') {
+        const saved = body.record.group.methodSettings;
+        if (saved?.exposureCeiling !== (draft.exposureCeiling === '' ? undefined : Number(draft.exposureCeiling))
+          || saved?.minClicksPerPlacement !== (draft.minClicksPerPlacement === '' ? undefined : Number(draft.minClicksPerPlacement))
+          || saved?.placementEvidenceRequirements !== draft.placementEvidenceRequirements) {
+          throw new Error('The saved method parameters do not match your entries. Reload the group before continuing.');
+        }
+      }
       await refresh(body.record.group.id);
       setMessage(
         `Saved ${body.assignedCampaigns ?? 0} campaign assignments` +
@@ -301,6 +326,19 @@ export function OptimizationGroupsManager({
             <Field label="Group name">
               <input value={draft.name} onChange={(event) => patch('name', event.target.value)} required disabled={!canManage} />
             </Field>
+            <Field label="Method">
+              <select value={draft.methodId} onChange={(event) => patch('methodId', event.target.value as MethodId)} disabled={!canManage}>
+                <option value="sp.reference-efficiency">SP reference efficiency</option>
+                <option value="sp.coordinated-efficiency">SP coordinated efficiency (draft)</option>
+              </select>
+            </Field>
+            {draft.methodId === 'sp.coordinated-efficiency' ? <>
+              <label>Exposure ceiling<input type="number" min="0" step="any" value={draft.exposureCeiling} onChange={(event) => patch('exposureCeiling', event.target.value)} disabled={!canManage} /></label>
+              <label>Minimum clicks per placement<input type="number" min="1" step="1" value={draft.minClicksPerPlacement} onChange={(event) => patch('minClicksPerPlacement', event.target.value)} disabled={!canManage} /></label>
+              <label>Placement evidence<select value={draft.placementEvidenceRequirements} onChange={(event) => patch('placementEvidenceRequirements', event.target.value as PlacementEvidenceRequirements)} disabled={!canManage}>
+                <option value="single_target">Single-target campaigns</option><option value="validated_homogeneous">Validated homogeneous campaigns</option>
+              </select></label>
+            </> : null}
             <Field label="Role">
               <select value={draft.role} onChange={(event) => patch('role', event.target.value as GroupDraft['role'])} required disabled={!canManage}>
                 <option value="">Choose role</option>
@@ -532,6 +570,10 @@ function draftFromRecord(record: OptimizationGroupRecord): GroupDraft {
     id: record.group.id,
     name: record.group.name,
     role: record.group.role,
+    methodId: record.group.method?.id ?? 'sp.reference-efficiency',
+    exposureCeiling: record.group.methodSettings?.exposureCeiling?.toString() ?? '',
+    minClicksPerPlacement: record.group.methodSettings?.minClicksPerPlacement?.toString() ?? '',
+    placementEvidenceRequirements: record.group.methodSettings?.placementEvidenceRequirements ?? 'single_target',
     targetAcosPercent: decimal(record.group.targetAcos * 100),
     bidFloor: nullableDecimal(record.group.bidFloor),
     bidCeiling: nullableDecimal(record.group.bidCeiling),

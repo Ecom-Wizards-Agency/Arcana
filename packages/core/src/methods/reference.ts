@@ -1,16 +1,17 @@
 import {
   REFERENCE_METHOD, type MethodDescriptor, type MethodEvaluatorInput, type MethodEvaluatorOutput,
-  type ReferenceBidRequest, type SettingSources,
+  type ReferenceMethodInput, type ReferenceBidRequest, type SettingSources,
 } from '@wizard-ads/shared';
 import { evaluateBidWithTrace, resolveReferenceBidSettings } from '../bidding/bid.js';
 
 export const referenceDescriptor: MethodDescriptor = {
   ...REFERENCE_METHOD, releaseState: 'stable', adProducts: ['SP'], controls: ['bid'],
+  placementEvaluator: 'reference', objectivePolicy: 'reference_goal_policy',
   requiredEvidence: ['target clicks, orders, sales and cost', 'current bid and campaign controls', 'confidence benchmarks', 'stock and rank signals'],
 };
 
 /** Adapt the old API once; all scalar parameter values remain visible in the snapshot. */
-export function referenceMethodInput(request: ReferenceBidRequest, admittedAt: string, sources: SettingSources = {}): MethodEvaluatorInput {
+export function referenceMethodInput(request: ReferenceBidRequest, admittedAt: string, sources: SettingSources = {}): ReferenceMethodInput {
   const { runId, profileId, window, targetAcos, caps, ceilings, floors, settings, ...evidence } = request;
   const resolvedSettings: SettingSources = {};
   for (const [name, value] of Object.entries(resolveReferenceBidSettings(request))) {
@@ -26,6 +27,7 @@ export function referenceMethodInput(request: ReferenceBidRequest, admittedAt: s
 }
 
 export function evaluateReferenceMethod(input: MethodEvaluatorInput): MethodEvaluatorOutput {
+  if (input.methodId !== 'sp.reference-efficiency') throw new Error('Reference method identity mismatch');
   const evidence = input.evidenceRows[0];
   if (evidence === undefined) throw new Error('Reference method requires one evidence row');
   const request: ReferenceBidRequest = { runId: input.runId, profileId: input.profileId, window: input.window, ...input.methodParameters, ...evidence };
@@ -39,7 +41,7 @@ export function evaluateReferenceMethod(input: MethodEvaluatorInput): MethodEval
     return { kind: 'proposal', changes: [outcome.recommendation], trace, dependencies: [], referenceOutcome: outcome };
   }
   return { kind: 'hold', referenceOutcome: outcome, hold: {
-    reason: outcome.kind === 'blocked' ? 'ENTITY_INACTIVE' : outcome.kind === 'suppressed' ? 'GUARDRAIL_BLOCKED'
+    reason: outcome.kind === 'blocked' || outcome.kind === 'suppressed' ? 'GUARDRAIL_BLOCKED'
       : outcome.reason === 'no_benchmark_data' || outcome.reason === 'no_clicks' ? 'INSUFFICIENT_EVIDENCE' : 'GUARDRAIL_BLOCKED',
     prose: outcome.kind === 'blocked' ? outcome.note : outcome.kind === 'suppressed' ? outcome.suppressedReason : `Reference method retained the current bid: ${outcome.reason}.`,
     affectedScope: [evidence.entityRef], reconsiderWhen: 'Re-evaluate after the relevant evidence, eligibility, or settings change.',

@@ -39,7 +39,7 @@ export async function previewSpWriteForActor(context: AuthenticatedEditorTransac
   });
   if (existing !== null) {
     if (existing.plan.source.kind !== 'apply_batch' || existing.plan.source.applyBatchId !== request.applyBatchId
-      || existing.evidence.schemaVersion !== 'openspell.sp-write-preview-evidence.v1') {
+      || existing.evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v2') {
       throw new SpWriteApplicationError('identity_conflict');
     }
     return SpWritePreview.parse({ ...existing, binding: spWritePlanBinding(existing.plan) });

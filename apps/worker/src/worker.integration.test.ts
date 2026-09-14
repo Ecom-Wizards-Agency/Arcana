@@ -1575,11 +1575,13 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       keywordText: 'blue widget', matchType: 'exact', bid: 1,
     });
     try {
+      const initialReadStartedAt = await store.beginEntityRead();
       expect(await store.syncEntities(profile, [liveCampaign,
         { ...liveCampaign, amazonId: 'wp246-sb-missing' },
         keyword('wp246-keyword-live'), keyword('wp246-keyword-missing'),
-      ], { adProduct: 'SB' })).toMatchObject({ listed: 4, upserted: 4 });
-      await store.syncEntities(profile, [keyword('wp246-sp-keyword', 'SP')], { adProduct: 'SP' });
+      ], { adProduct: 'SB', readStartedAt: initialReadStartedAt! })).toMatchObject({ listed: 4, upserted: 4 });
+      const spReadStartedAt = await store.beginEntityRead();
+      await store.syncEntities(profile, [keyword('wp246-sp-keyword', 'SP')], { adProduct: 'SP', readStartedAt: spReadStartedAt! });
       await database.sql`
         update public.keywords set synced_at = '2026-01-01'::timestamptz
          where profile_id = ${profileId} and amazon_id like 'wp246-%'
@@ -1629,6 +1631,17 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     }
   });
 
+  it('refuses an ordinary sync without a provider read-start on the guarded schema', async () => {
+    const store = new PostgresWorkerStore(database, quietLogger);
+    const profile = await store.profile(profileId);
+    const current = () => database.sql<{ row: unknown }[]>`select to_jsonb(c) as row from public.campaigns c
+      where profile_id=${profileId} order by amazon_id`;
+    const before = await current();
+    await expect(store.syncEntities(profile, [campaign(profileId, 'unfenced source')]))
+      .rejects.toThrow('control mirror requires the provider read-start time');
+    expect(await current()).toEqual(before);
+  });
+
   it('tombstones missing entities only on a full pass', async () => {
     const api = new FakeAdsApi();
     api.entities = [campaign(profileId, 'still here')];
@@ -1637,7 +1650,8 @@ describe.skipIf(!available)('worker + real Postgres', () => {
 
     // A delta pass lists campaigns and nothing else. Sweeping on it would
     // tombstone every keyword and ad group the pass never claimed to cover.
-    const delta = await store.syncEntities(profile, api.entities, { full: false });
+    const deltaReadStartedAt = await store.beginEntityRead();
+    const delta = await store.syncEntities(profile, api.entities, { full: false, readStartedAt: deltaReadStartedAt! });
     expect(delta.tombstoned).toBe(0);
     const [afterDelta] = await database.sql<{ live: string }[]>`
       select count(*) as live from public.keywords where profile_id = ${profileId} and deleted_at is null
@@ -1645,16 +1659,20 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     expect(Number(afterDelta?.live)).toBeGreaterThan(0);
 
     // A full pass re-listed everything, so an id it omits really is gone.
-    const full = await store.syncEntities(profile, api.entities, { full: true });
+    const fullReadStartedAt = await store.beginEntityRead();
+    const full = await store.syncEntities(profile, api.entities, { full: true, readStartedAt: fullReadStartedAt! });
     expect(full.tombstoned).toBeGreaterThan(0);
     const [afterFull] = await database.sql<{ live: string }[]>`
       select count(*) as live from public.keywords where profile_id = ${profileId} and deleted_at is null
     `;
     expect(Number(afterFull?.live)).toBe(0);
 
-    await database.sql`
-      update public.keywords set deleted_at = null where profile_id = ${profileId}
-    `;
+    const restoredAt = await store.beginEntityRead();
+    await database.sql.begin(async (sql) => {
+      await sql`select set_config('app.keyword_bid_read_started_at',${restoredAt!},true)`;
+      await sql`update public.keywords set deleted_at=null,bid_observed_at=${restoredAt!}::timestamptz
+        where profile_id=${profileId}`;
+    });
   });
 
   /**
@@ -1668,10 +1686,11 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     const store = new PostgresWorkerStore(database, quietLogger);
     const profile = await store.profile(profileId);
 
+    const readStartedAt = await store.beginEntityRead();
     const counts = await store.syncEntities(
       profile,
       [negative(profileId, 'neg-dup', 'ad_group'), negative(profileId, 'neg-dup', 'campaign')],
-      { adProduct: 'SP', full: false },
+      { adProduct: 'SP', full: false, readStartedAt: readStartedAt! },
     );
 
     // Listed rows are still listed rows: the collision is counted, not hidden.
@@ -2673,12 +2692,15 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       const profile = await new PostgresWorkerStore(database).profile(profileId);
       // An earlier `full` pass in this file tombstones the mirror; this case is
       // about state, not tombstones, so start from the fixture's live rows.
-      await database.sql`
-        update public.keywords set deleted_at = null, state = 'enabled' where profile_id = ${profileId}
-      `;
-      await database.sql`
-        update public.targets set deleted_at = null, state = 'enabled' where profile_id = ${profileId}
-      `;
+      const restoredAt = await new PostgresWorkerStore(database).beginEntityRead();
+      await database.sql.begin(async (sql) => {
+        await sql`select set_config('app.keyword_bid_read_started_at',${restoredAt!},true)`;
+        await sql`update public.keywords set deleted_at=null,state='enabled',bid_observed_at=${restoredAt!}::timestamptz
+          where profile_id=${profileId}`;
+        await sql`select set_config('app.target_bid_read_started_at',${restoredAt!},true)`;
+        await sql`update public.targets set deleted_at=null,state='enabled',bid_observed_at=${restoredAt!}::timestamptz
+          where profile_id=${profileId}`;
+      });
       const [yesterdayRow] = await database.sql<{ d: string }[]>`
         select (current_date - 1)::text as d
       `;

@@ -10,12 +10,14 @@
  * | `low_acos`                | `low_acos`               |
  * | `low_visibility`          | `low_visibility`         |
  *
- * Only numeric `proposal` outcomes become `recommendations` rows. Suppressed
- * and declined outcomes, plus buildRecommendations' qualitative output, live
+ * Bid proposals and coordinated control sets become `recommendations` rows.
+ * Suppressed and declined outcomes, plus buildRecommendations' qualitative output, live
  * in the run-level audit payload. This is intentional: inventing an entity ref
  * for an account-wide note would turn narrative into an exportable fake action.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { SpMarketplaceScope } from '@wizard-ads/shared';
+import { marketplaceIdForCountry } from './marketplaces.js';
 import { readMethodExperiments, normalizeScope } from '@wizard-ads/db/recommendation-worker';
 import type { ClaimRef, DbHandle, QueryHandle, QuerySql } from '@wizard-ads/db';
 import { lockPrivilegedOrgEditor } from '@wizard-ads/db/worker';
@@ -27,6 +29,7 @@ import {
   computePacing,
   adjustBidAwayFromMechanicalValue,
   resolveMethod,
+  spCoordinatedCapabilities,
   referenceMethodInput,
   resolveGoalLens,
   type LevelMetrics,
@@ -41,6 +44,10 @@ import {
 } from '@wizard-ads/core';
 import {
   ScheduledOptimizationGroup,
+  type CoordinatedCampaignEvidence,
+  CampaignPlacementFact,
+  methodSelectionFor,
+  COORDINATED_METHOD,
   REFERENCE_METHOD,
   MethodAdmissionSnapshot,
   RecommendationRunAdmissionContext,
@@ -73,6 +80,7 @@ import {
 import {
   changeCapsFor,
   resolveMethodBidSettings,
+  resolveCoordinatedMethodSettings,
   resolveCampaignMethod,
   optGroup,
   resolveStrategy,
@@ -83,7 +91,7 @@ import { profileToday } from './profile-calendar.js';
 import { previewResultDetails } from './preview-result.js';
 export type { RecommendationPreviewAccepted, RecommendationPreviewBatchStatus } from '@wizard-ads/shared';
 import { RECOMMENDATION_CADENCE } from './recommendation-cadence.js';
-import { freezeOneTimeRpcSnapshot, oneTimePreviewRequestFingerprint, oneTimeRpcSnapshotFingerprint, oneTimeRpcWindowDays } from './one-time-preview.js';
+import { freezeOneTimeRpcSnapshot as freezeReferenceSnapshot, oneTimePreviewRequestFingerprint, oneTimeRpcSnapshotFingerprint as referenceSnapshotFingerprint, oneTimeRpcWindowDays } from './one-time-preview.js';
 
 export const DEFAULT_RECOMMENDATION_LOOKBACK_DAYS = RECOMMENDATION_CADENCE.lookbackDays;
 export const RECOMMENDATIONS_ENGINE_VERSION = 'white-box-v1';
@@ -258,6 +266,10 @@ export interface RecommendationRunInputs {
   targets: TargetPerformance[];
   campaigns: CampaignPerformance[];
   profileFacts: ProfilePerformanceRow[];
+  placementFacts?: CampaignPlacementFact[];
+  marketplace?: SpMarketplaceScope;
+  /** Full controls are optional until the sync adapter can prove their completeness. */
+  campaignControlEvidence?: CoordinatedCampaignEvidence[];
 }
 
 export interface RecommendationGroupRun {
@@ -493,7 +505,7 @@ export async function runRecommendations(
     const oneTime = oneTimeJob === null ? null : OneTimeRpcSnapshot.parse(started.executionSnapshot);
     if (oneTime !== null) {
       if (started.strategySnapshot !== null || started.strategyGoal !== null ||
-          (started.executionSnapshotFingerprint ?? oneTimeRpcSnapshotFingerprint(oneTime)) !== oneTimeJob?.snapshotFingerprint) {
+          (started.executionSnapshotFingerprint ?? recommendationSnapshotFingerprint(oneTime)) !== oneTimeJob?.snapshotFingerprint) {
         throw new RecommendationScopeIntegrityError();
       }
     } else if (started.executionSnapshot != null || started.strategySnapshot === null || started.strategyGoal === null) {
@@ -662,7 +674,30 @@ function bidProposals(input: BidProposalInput): {
     blockedOutOfStock: 0, skippedInactive: 0, skippedMissingStrategy: 0, corridorsAvailable: 0,
     corridorsMissing: 0, preconditionNotes: 0, declinedReasons: {}, examples: [],
   };
+  const coordinatedCampaigns = new Set<string>();
+  let groupedExtraTargets = 0;
   for (const target of inputs.targets) {
+    if (coordinatedCampaigns.has(target.entityRef.campaignId ?? '')) continue;
+    const groupName = runGroup?.name ?? (strategy === null ? null : optGroupName(strategy, target.category));
+    const legacyGroup = strategy === null || groupName === null ? null : optGroup(strategy, groupName);
+    const admitted = input.methodAdmission;
+    const selection = resolveCampaignMethod(admitted?.campaignMethods?.[target.entityRef.campaignId ?? ''],
+      runGroup?.method ?? legacyGroup?.method,
+      oneTime !== null ? methodSelectionFor(oneTimeMethodId(oneTime.method))
+        : admitted === undefined ? REFERENCE_METHOD : { id: admitted.methodId, version: admitted.methodVersion });
+    const method = resolveMethod(selection.value.id, selection.value.version);
+    const campaignTargets = selection.value.id === COORDINATED_METHOD.id
+      ? inputs.targets.filter((t) => t.entityRef.campaignId === target.entityRef.campaignId) : [target];
+    if (selection.value.id === COORDINATED_METHOD.id) {
+      coordinatedCampaigns.add(target.entityRef.campaignId ?? '');
+      groupedExtraTargets += campaignTargets.length - 1;
+      if (campaignTargets.some((t) => t.entityState !== 'enabled' || t.campaignState !== 'enabled' || t.adGroupState !== 'enabled'
+        || input.methodAdmission === undefined || experimentLockFor(t, input.methodAdmission.experiments, input.admittedAt) !== null)) {
+        holds.push({ reason: 'GUARDRAIL_BLOCKED', prose: 'A shared campaign control would affect an inactive or experiment-protected target, or experiment evidence is missing.',
+          affectedScope: campaignTargets.map((t) => t.entityRef), reconsiderWhen: 'Resolve campaign-wide eligibility and capture current experiment evidence.' });
+        diagnostics.declined += 1; continue;
+      }
+    }
     if (hasCorridor(target.corridor)) diagnostics.corridorsAvailable += 1;
     else diagnostics.corridorsMissing += 1;
     if (target.entityState !== 'enabled' || target.campaignState !== 'enabled' || target.adGroupState !== 'enabled') {
@@ -683,8 +718,6 @@ function bidProposals(input: BidProposalInput): {
       example(diagnostics, target, 'held', lock.prose);
       continue;
     }
-    const groupName = runGroup?.name ?? (strategy === null ? null : optGroupName(strategy, target.category));
-    const legacyGroup = strategy === null || groupName === null ? null : optGroup(strategy, groupName);
     const cpc = safeDiv(target.metrics.cost ?? 0, target.metrics.clicks);
     const legacyCaps = strategy === null || groupName === null ? null : changeCapsFor(strategy, groupName);
     const legacyValues = {
@@ -711,16 +744,11 @@ function bidProposals(input: BidProposalInput): {
       group: runGroup === null ? null : { name: runGroup.name, values: runGroup }, run: runFields });
     if (resolution.kind === 'hold') {
       diagnostics.skippedMissingStrategy += 1;
-      holds.push(resolution.hold);
+      holds.push({ ...resolution.hold, affectedScope: campaignTargets.map((t) => t.entityRef) });
       example(diagnostics, target, 'held', resolution.hold.prose);
       continue;
     }
     const settings = resolution.settings;
-    const selection = resolveCampaignMethod(input.methodAdmission?.campaignMethods?.[target.entityRef.campaignId ?? ''],
-      runGroup?.method ?? legacyGroup?.method,
-      { id: oneTime === null ? input.methodAdmission?.methodId ?? REFERENCE_METHOD.id : oneTimeMethodId(oneTime.method),
-        version: input.methodAdmission?.methodVersion ?? REFERENCE_METHOD.version });
-    const method = resolveMethod(selection.value.id, selection.value.version);
     if (!method.descriptor.adProducts.includes(target.entityRef.adProduct ?? 'SP')) {
       diagnostics.declined += 1;
       holds.push({ reason: 'INSUFFICIENT_EVIDENCE', prose: 'The selected method does not support this ad product.', affectedScope: [target.entityRef], reconsiderWhen: 'Select a method compatible with the campaign ad product.' });
@@ -729,7 +757,7 @@ function bidProposals(input: BidProposalInput): {
     diagnostics.targetsConsidered += 1;
     const currentBid = target.currentBid ?? target.corridor?.bid ?? null;
     const pacingCondition = oneTime === null ? toPacingCondition(pacing, resolvedGoal ?? '') : null;
-    const snapshot = referenceMethodInput({
+    const referenceSnapshot = referenceMethodInput({
       runId: scope.runId, profileId: scope.profileId, entityRef: target.entityRef,
       adProduct: target.entityRef.adProduct ?? 'SP', window, currentBid, metrics: target.metrics,
       levels: { keyword: target.metrics, adGroup: byAdGroup.get(target.entityRef.adGroupId ?? ''),
@@ -742,19 +770,44 @@ function bidProposals(input: BidProposalInput): {
       goal: oneTime !== null ? null : runGroup === null ? legacyGroup?.goal_lens ?? resolvedGoal : goalForGroupRole(runGroup.role),
       stock: target.stock, organicRank: target.organicRank, ...(pacingCondition === null ? {} : { pacingCondition }),
     }, input.admittedAt, { ...settings, method: { value: `${selection.value.id}@${selection.value.version}`, source: selection.source, sourceLabel: selection.sourceLabel } });
-    snapshot.methodId = selection.value.id;
-    snapshot.methodVersion = selection.value.version;
+    let snapshot: MethodEvaluatorInput = referenceSnapshot;
+    if (selection.value.id === COORDINATED_METHOD.id) {
+      const campaignId = target.entityRef.campaignId!;
+      const extras = resolveCoordinatedMethodSettings({ entity: target.entityRef,
+        group: runGroup === null ? null : { name: runGroup.name, values: runGroup.methodSettings ?? {} },
+        run: oneTime?.version === 2 ? oneTime : {},
+      });
+      if (extras.kind === 'hold') {
+        holds.push({ ...extras.hold, affectedScope: campaignTargets.map((t) => t.entityRef) });
+        diagnostics.skippedMissingStrategy += 1; continue;
+      }
+      const sourced = { ...referenceSnapshot.resolvedSettings, ...extras.settings };
+      snapshot = { ...referenceSnapshot, methodId: COORDINATED_METHOD.id, methodVersion: COORDINATED_METHOD.version,
+        methodParameters: { ...referenceSnapshot.methodParameters,
+          floors: { manualMinBid: settings.bidFloor.value }, ceilings: { manualMaxBid: settings.bidCeiling.value },
+          exposureCeiling: extras.settings.exposureCeiling.value, placementEvidenceRequirements: extras.settings.placementEvidenceRequirements.value,
+          minClicksPerPlacement: extras.settings.minClicksPerPlacement.value,
+        }, resolvedSettings: sourced,
+        evidenceRows: campaignTargets.map((t) => ({ ...referenceSnapshot.evidenceRows[0]!, entityRef: t.entityRef,
+          currentBid: t.currentBid, metrics: t.metrics, stock: t.stock, organicRank: t.organicRank })),
+        campaignEvidence: { ...(inputs.campaignControlEvidence?.find((e) => e.campaignId === campaignId) ?? {
+          campaignId, costType: 'cpc', currentControls: null, targetCount: campaignTargets.length, complete: false,
+          attributionMature: Date.parse(input.admittedAt) - Date.parse(window.end) >= 8 * 86_400_000,
+          homogeneousProxyValidation: null, placementFacts: (inputs.placementFacts ?? []).filter((f) => f.campaignId === campaignId),
+        }), capabilities: spCoordinatedCapabilities(inputs.marketplace) },
+      };
+    }
     calculationSnapshots.push(snapshot);
     const result = method.evaluate(snapshot);
     const reference = result.referenceOutcome;
     if (result.kind === 'proposal') {
-      if (result.changes.length !== 1) throw new RecommendationScopeIntegrityError('The target-bid method must return exactly one change.');
+      if (result.changes.length !== 1) throw new RecommendationScopeIntegrityError('Each method evaluation must return one recommendation group.');
       const change = result.changes[0]!;
       const traced = { ...change, inputs: { ...change.inputs, methodId: selection.value.id, methodVersion: selection.value.version,
         settingSources: snapshot.resolvedSettings, trace: result.trace } };
-      const recommendation = oneTime !== null ? traced : applyNonMechanicalBidAdjustment(traced, runGroup,
+      const recommendation = oneTime !== null || result.dependencySet !== undefined ? traced : applyNonMechanicalBidAdjustment(traced, runGroup,
         strategy?.bids.mechanical_bid_step, settings.bidFloor.value, settings.bidCeiling.value);
-      if (oneTime !== null && !withinResolvedBidLimits(recommendation.proposedValue, currentBid, settings)) {
+      if (result.dependencySet === undefined && oneTime !== null && !withinResolvedBidLimits(recommendation.proposedValue, currentBid, settings)) {
         diagnostics.declined += 1;
         diagnostics.declinedReasons['explicit_limits_conflict'] = (diagnostics.declinedReasons['explicit_limits_conflict'] ?? 0) + 1;
         const hold: Hold = { reason: 'NO_FEASIBLE_CONTROL_SET', prose: 'The calculated bid cannot satisfy all resolved bid limits.', affectedScope: [target.entityRef], reconsiderWhen: 'Resolve the conflicting floor, ceiling, or change cap.' };
@@ -781,7 +834,7 @@ function bidProposals(input: BidProposalInput): {
       example(diagnostics, target, reference?.kind === 'suppressed' ? 'suppressed' : reference?.kind === 'blocked' ? 'blocked' : 'held', result.hold.prose);
     }
   }
-  if (diagnostics.proposed !== proposals.length || proposals.length + holds.length !== inputs.targets.length) {
+  if (diagnostics.proposed !== proposals.length || proposals.length + holds.length + groupedExtraTargets !== inputs.targets.length) {
     throw new Error('Method outputs do not reconcile with the target roster');
   }
   return { proposals, diagnostics, holds, calculationSnapshots };
@@ -1036,6 +1089,8 @@ function optimizationGroupFromWire(row: OptimizationGroupWireRow): ScheduledOpti
     orgId: row.org_id,
     profileId: row.profile_id,
     name: row.name,
+    ...(row.method_id == null ? {} : { method: { id: row.method_id, version: row.method_version } }),
+    ...(row.method_settings == null ? {} : { methodSettings: row.method_settings }),
     role: row.role,
     targetAcos: Number(row.target_acos),
     bidFloor: numberOrNull(row.bid_floor),
@@ -1341,6 +1396,9 @@ function recommendationInputsFromWire(
 }
 
 interface OptimizationGroupWireRow {
+  method_id: string | null;
+  method_version: string | null;
+  method_settings: unknown;
   id: string;
   org_id: string;
   profile_id: string;
@@ -1396,7 +1454,7 @@ async function readProfileOptimizationGroups(
   scope: ProfileScope,
 ): Promise<Map<string, { group: ScheduledOptimizationGroup; wire: OptimizationGroupWireRow }>> {
   const rows = await sql<OptimizationGroupWireRow[]>`
-    select g.id, g.org_id, g.profile_id, g.name, g.role::text as role, g.target_acos,
+    select g.id, g.org_id, g.profile_id, g.name, g.role::text as role, g.method_id, g.method_version, g.method_settings, g.target_acos,
            g.bid_floor, g.bid_ceiling, g.bid_increase_cap, g.bid_decrease_cap,
            g.placement_increase_cap, g.placement_decrease_cap, g.exclusions,
            g.review_weekdays, g.prioritization::text as prioritization,
@@ -1468,7 +1526,8 @@ async function insertScopedRecommendationRun(
   const executionSnapshot = input.executionSnapshot ?? null;
   const admittedAt = executionSnapshot?.admittedAt ?? input.scheduleContext?.evaluatedAt ?? input.runAfter;
   const methodAdmission = MethodAdmissionSnapshot.parse({
-    version: 1, admittedAt, methodId: REFERENCE_METHOD.id, methodVersion: REFERENCE_METHOD.version,
+    version: 1, admittedAt, methodId: executionSnapshot === null ? REFERENCE_METHOD.id : executionSnapshot.configuration.method,
+    methodVersion: executionSnapshot === null ? REFERENCE_METHOD.version : methodSelectionFor(executionSnapshot.configuration.method).version,
     strategyProvenance: input.strategy?.provenance ?? {},
     experiments: await readMethodExperiments({ sql }, input.orgId, input.profileId, admittedAt),
   });
@@ -1480,7 +1539,7 @@ async function insertScopedRecommendationRun(
     runId,
     ...(executionSnapshot === null
       ? { lookbackDays: input.lookbackDays }
-      : { executionVersion: 2 as const, snapshotFingerprint: oneTimeRpcSnapshotFingerprint(executionSnapshot) }),
+      : { executionVersion: 2 as const, snapshotFingerprint: recommendationSnapshotFingerprint(executionSnapshot) }),
     ...(input.group === null ? {} : { groupId: input.group.id }),
   };
   RecommendationsExecutionJob.parse(payload);
@@ -1625,7 +1684,7 @@ function preparePreviewBatch(
     }
     let executionSnapshot: OneTimeRpcSnapshot | null;
     try {
-      executionSnapshot = configuration === null ? null : freezeOneTimeRpcSnapshot(configuration, profile.timezone, runAt);
+      executionSnapshot = configuration === null ? null : freezeRecommendationSnapshot(configuration, profile.timezone, runAt);
     } catch {
       throw new RecommendationPreviewError('invalid_request', 400, 'Use completed reporting days in the advertising profile timezone.');
     }
@@ -2060,7 +2119,7 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       }
       if (parsedJob.data.executionVersion === 2) {
         if (run.scope_version !== 2 || executionSnapshot === null ||
-            parsedJob.data.snapshotFingerprint !== oneTimeRpcSnapshotFingerprint(run.execution_snapshot) ||
+            parsedJob.data.snapshotFingerprint !== recommendationSnapshotFingerprint(run.execution_snapshot) ||
             run.lookback_days !== oneTimeRpcWindowDays(executionSnapshot)) throw new RecommendationScopeIntegrityError();
       } else if (run.scope_version !== 1 || parsedJob.data.lookbackDays !== run.lookback_days) {
         throw new RecommendationScopeIntegrityError();
@@ -2083,7 +2142,7 @@ implements RecommendationRunStore, RecommendationScheduleStore {
           strategySnapshot,
           strategyGoal: run.strategy_goal,
           methodAdmission: methodAdmissionFromContext(run.schedule_context),
-          ...(executionSnapshot === null ? {} : { executionSnapshot, executionSnapshotFingerprint: oneTimeRpcSnapshotFingerprint(run.execution_snapshot) }),
+          ...(executionSnapshot === null ? {} : { executionSnapshot, executionSnapshotFingerprint: recommendationSnapshotFingerprint(run.execution_snapshot) }),
         };
       }
       const updated = await sql<{ id: string }[]>`
@@ -2103,7 +2162,7 @@ implements RecommendationRunStore, RecommendationScheduleStore {
         strategySnapshot,
         strategyGoal: run.strategy_goal,
         methodAdmission: methodAdmissionFromContext(run.schedule_context),
-        ...(executionSnapshot === null ? {} : { executionSnapshot, executionSnapshotFingerprint: oneTimeRpcSnapshotFingerprint(run.execution_snapshot) }),
+        ...(executionSnapshot === null ? {} : { executionSnapshot, executionSnapshotFingerprint: recommendationSnapshotFingerprint(run.execution_snapshot) }),
       };
     });
   }
@@ -2358,7 +2417,16 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       `,
     ]);
 
-    return recommendationInputsFromWire(scope, targetRows, campaignRows, profileRows);
+    const placementRows = await this.handle.sql<{ facts: unknown; marketplace: unknown }[]>`
+      select app.recommendation_placement_evidence(${scope.orgId}::uuid, ${scope.profileId}::uuid,
+        ${scope.runId}::uuid, ${window.start}::date, ${window.end}::date) as facts,
+        (select jsonb_build_object('countryCode',p.country_code,'region',p.region,'currencyCode',p.currency_code)
+          from public.ad_profiles p where p.org_id=${scope.orgId}::uuid and p.id=${scope.profileId}::uuid) as marketplace
+    `;
+    if (placementRows.length !== 1) throw new RecommendationScopeIntegrityError('Placement evidence result count does not reconcile');
+    const placementFacts = CampaignPlacementFact.array().max(30_000).parse(placementRows[0]!.facts);
+    const marketplace = marketplaceScopeFromProfileWire(placementRows[0]!.marketplace);
+    return { ...(marketplace === undefined ? {} : { marketplace }), ...recommendationInputsFromWire(scope, targetRows, campaignRows, profileRows), ...(placementFacts.length === 0 ? {} : { placementFacts }) };
   }
 
   async loadGroupRecommendationSafety(
@@ -2624,7 +2692,7 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       const dueGroups = claimedProfileIds.length === 0
         ? []
         : await sql<OptimizationGroupWireRow[]>`
-        select g.id, g.org_id, g.profile_id, g.name, g.role::text as role,
+        select g.id, g.org_id, g.profile_id, g.name, g.role::text as role, g.method_id, g.method_version, g.method_settings,
                g.target_acos, g.bid_floor, g.bid_ceiling,
                g.bid_increase_cap, g.bid_decrease_cap,
                g.placement_increase_cap, g.placement_decrease_cap,
@@ -3008,7 +3076,7 @@ function parseFencedStart(
       strategySnapshot,
       strategyGoal,
       methodAdmission: methodAdmissionFromContext(run['scheduleContext']),
-      ...(executionSnapshot === null ? {} : { executionSnapshot, executionSnapshotFingerprint: oneTimeRpcSnapshotFingerprint(run['executionSnapshot']) }),
+      ...(executionSnapshot === null ? {} : { executionSnapshot, executionSnapshotFingerprint: recommendationSnapshotFingerprint(run['executionSnapshot']) }),
     },
     profile: {
       orgId: scope.orgId,
@@ -3028,7 +3096,19 @@ function parseFencedInputs(scope: RunScope, value: unknown): RecommendationRunIn
   if (targets.length > 100_000 || campaigns.length > 10_000 || profileFacts.length > 400) {
     throw new RecommendationScopeIntegrityError();
   }
-  return recommendationInputsFromWire(scope, targets, campaigns, profileFacts);
+  const placementFacts = CampaignPlacementFact.array().max(30_000).parse(input['placementFacts'] ?? []);
+  const marketplace = marketplaceScopeFromProfileWire(input['marketplaceProfile']);
+  return { ...(marketplace === undefined ? {} : { marketplace }), ...recommendationInputsFromWire(scope, targets, campaigns, profileFacts), ...(placementFacts.length === 0 ? {} : { placementFacts }) };
+}
+
+/** Resolve an exact country/region/currency identity; never substitute a currency default. */
+function marketplaceScopeFromProfileWire(value: unknown): SpMarketplaceScope | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  if (typeof row['countryCode'] !== 'string') return undefined;
+  const parsed = SpMarketplaceScope.safeParse({ marketplaceId: marketplaceIdForCountry(row['countryCode']),
+    region: row['region'], currencyCode: row['currencyCode'] });
+  return parsed.success ? parsed.data : undefined;
 }
 
 function parseTargetWire(value: unknown): TargetWireRow {
@@ -3418,7 +3498,7 @@ export async function readRecommendationPreviewBatchStatus(
     campaignCount: Number(batch.scope_count),
     proposalsCount: children.reduce((sum, child) => sum + child.proposalsCount, 0),
     children,
-    ...(batch.execution_snapshot == null ? {} : { executionSnapshot: { ...OneTimeRpcSnapshot.parse(batch.execution_snapshot), methodId: REFERENCE_METHOD.id, methodVersion: REFERENCE_METHOD.version } }),
+    ...(batch.execution_snapshot == null ? {} : { executionSnapshot: { ...OneTimeRpcSnapshot.parse(batch.execution_snapshot), methodId: OneTimeRpcSnapshot.parse(batch.execution_snapshot).configuration.method, methodVersion: methodSelectionFor(OneTimeRpcSnapshot.parse(batch.execution_snapshot).configuration.method).version } }),
   });
 }
 
@@ -3426,4 +3506,25 @@ export async function readRecommendationPreviewBatchStatus(
 function methodAdmissionFromContext(context: unknown): MethodAdmissionSnapshot | undefined {
   if (context == null) return undefined;
   return RecommendationRunAdmissionContext.parse(context).methodAdmission;
+}
+
+/** V2 is dispatched here; the historical reference snapshot implementation stays byte-identical. */
+export function freezeRecommendationSnapshot(configuration: OneTimeRpcConfiguration, timezone: string, admittedAt: Date): OneTimeRpcSnapshot {
+  if (configuration.version === 1) return freezeReferenceSnapshot(configuration, timezone, admittedAt);
+  new Intl.DateTimeFormat('en', { timeZone: timezone }).format(admittedAt);
+  return OneTimeRpcSnapshot.parse({ version: 2, methodId: COORDINATED_METHOD.id, methodVersion: COORDINATED_METHOD.version,
+    configuration, profileTimezone: timezone, admittedAt: admittedAt.toISOString(), profileToday: profileToday(timezone, admittedAt) });
+}
+export function recommendationSnapshotFingerprint(value: unknown): string {
+  const parsed = OneTimeRpcSnapshot.parse(value);
+  if (parsed.configuration.version === 1) return referenceSnapshotFingerprint(value);
+  const config = parsed.configuration;
+  const bits = (number: number) => { const bytes = Buffer.alloc(8); bytes.writeDoubleBE(number === 0 ? 0 : number); return bytes.toString('hex'); };
+  const values = ['2', '2', config.method, parsed.methodVersion!,
+    ...[config.targetAcos, config.bidFloor, config.bidCeiling, config.bidIncreaseCap, config.bidDecreaseCap,
+      config.exposureCeiling, config.minClicksPerPlacement].map(bits), config.placementEvidenceRequirements,
+    config.window.start, config.window.end, parsed.profileTimezone, parsed.admittedAt, parsed.profileToday];
+  const hash = createHash('sha256').update('openspell.coordinated.snapshot.v2\n');
+  for (const entry of values) hash.update(`${Buffer.byteLength(entry, 'utf8')}:${entry}\n`);
+  return hash.digest('hex');
 }

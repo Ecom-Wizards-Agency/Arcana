@@ -9,7 +9,7 @@
  * audit is a black box with better manners.
  */
 import { z } from 'zod';
-import { CalculationTrace, Hold, MethodId, MethodVersion, MethodMetrics, SettingSources } from './methods.js';
+import { CalculationTrace, DependencySet, Hold, MethodId, MethodVersion, MethodMetrics, SettingSources } from './methods.js';
 import { EntityRef, IsoDate, Uuid } from './primitives.js';
 import { DirectionalAdjustmentProvenance } from './optimization.js';
 
@@ -44,6 +44,7 @@ export type RecommendationStatus = z.infer<typeof RecommendationStatus>;
 
 /** Provenance. Every field here answers "why is this number what it is". */
 export const RecommendationInputs = z.object({
+  dependencySet: DependencySet.optional(),
   methodId: MethodId.optional(),
   methodVersion: MethodVersion.optional(),
   settingSources: SettingSources.optional(),
@@ -117,9 +118,10 @@ export type ReferenceBidOutcome = z.infer<typeof ReferenceBidOutcome>;
 export const MethodEvaluatorOutput = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('proposal'), changes: z.array(Recommendation).min(1), trace: CalculationTrace,
+    dependencySet: DependencySet.optional(),
     dependencies: z.array(EntityRef), referenceOutcome: ReferenceBidOutcome.optional(),
   }),
-  z.object({ kind: z.literal('hold'), hold: Hold, referenceOutcome: ReferenceBidOutcome.optional() }),
+  z.object({ kind: z.literal('hold'), hold: Hold, trace: CalculationTrace.optional(), referenceOutcome: ReferenceBidOutcome.optional() }),
 ]);
 export type MethodEvaluatorOutput = z.infer<typeof MethodEvaluatorOutput>;
 

@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
+import { CoordinatedMethodInput } from '@wizard-ads/shared';
 import {
   SpWriteActor, SpWriteAdmission, SpWritePreview, SpWriteRecordedPreview, SpWriteRecordedPreviewRequest,
   type SpWritePreviewFreshnessReason,
 } from '@wizard-ads/shared/sp-write-application';
 import {
-  SpCanonicalDecimal, SpWriteAuthorizationReceipt, spWritePlanBinding,
+  SpCanonicalDecimal, SpCompleteCampaignBiddingState, SpWriteAuthorizationReceipt, spWritePlanBinding,
   verifySpWriteInversePair, verifySpWritePlanFingerprints,
 } from '@wizard-ads/shared/sp-writes';
 import type { DbHandle, QuerySql } from '../client.js';
@@ -129,7 +130,8 @@ export async function loadRecordedSpWritePreview(
       preview = SpWritePreview.parse({ plan, binding: spWritePlanBinding(plan), evidence: null });
     } else {
       preview = SpWritePreview.parse({ ...source, binding: spWritePlanBinding(plan) });
-      if (source.evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v1') {
+      if (source.evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v1'
+        || source.evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v3') {
         if (source.evidence.provenance.rows.some((row) => row.method === undefined)) reasons.add('source_changed');
         // Reuse the query-only source builder; its transient timestamps are discarded.
         // The immutable saved evidence remains the only preview returned to callers.
@@ -161,37 +163,108 @@ export async function loadRecordedSpWritePreview(
     if (plan.direction === 'forward' && (row.grant_id !== source.evidence.guardrails.profileGrantId
       || row.grant_version !== source.evidence.guardrails.profileGrantVersion)) reasons.add('grant_changed');
 
+    const placementBaselines = new Map<string, SpCompleteCampaignBiddingState>();
+    if (plan.direction === 'forward' && source.evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v3') {
+      for (const set of source.evidence.provenance.dependencySets) {
+        let snapshot: unknown;
+        try { snapshot = JSON.parse(set.calculationSnapshotText); }
+        catch { reasons.add('source_changed'); continue; }
+        const parsed = CoordinatedMethodInput.safeParse(snapshot);
+        const group = plan.dependencySets?.find((candidate) => candidate.dependencySetId === set.dependencySetId);
+        if (!parsed.success || parsed.data.profileId !== plan.profileId
+          || parsed.data.campaignEvidence.currentControls === null || group === undefined) {
+          reasons.add('source_changed'); continue;
+        }
+        for (const actionId of group.actionIds) {
+          const action = plan.actions.find((candidate) => candidate.actionId === actionId);
+          if (action?.routeKey !== 'sp.v3.campaigns.update') continue;
+          if (action.entity.campaignId !== parsed.data.campaignEvidence.campaignId) {
+            reasons.add('source_changed'); continue;
+          }
+          // Every step is compared with the campaign's initial evidence for freshness.
+          // Its immutable action still expects the state left by the preceding step.
+          placementBaselines.set(actionId, parsed.data.campaignEvidence.currentControls);
+        }
+      }
+    }
+
     const keywordIds = plan.actions.flatMap((action) => action.routeKey === 'sp.v3.keywords.update'
       && action.changes.bid !== undefined && Object.keys(action.changes).length === 1 ? [action.entity.keywordId] : []);
-    const keywords = await sql<{ amazon_id: string; name: string | null; bid: string | null;
+    const targetIds = plan.actions.flatMap((action) => action.routeKey === 'sp.v3.targets.update'
+      && action.changes.bid !== undefined && Object.keys(action.changes).length === 1 ? [action.entity.targetId] : []);
+    const bidEntities = await sql<{ entity_type: 'keyword' | 'target'; amazon_id: string; name: string | null; bid: string | null;
       state: string; synced_at: string | null; available: boolean }[]>`
-      select amazon_id, name, bid::text, state::text,
+      select 'keyword' as entity_type, amazon_id, name, bid::text, state::text,
         case when synced_at is null then null else to_char(synced_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') end as synced_at,
         (ad_product = 'SP' and deleted_at is null and state in ('enabled', 'paused')) as available
       from public.keywords where org_id = ${plan.orgId}::uuid and profile_id = ${plan.profileId}::uuid
         and amazon_id = any(${keywordIds}::text[])
+      union all
+      select 'target' as entity_type, amazon_id, name, bid::text, state::text,
+        case when synced_at is null then null else to_char(synced_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') end as synced_at,
+        (ad_product = 'SP' and deleted_at is null and state in ('enabled', 'paused')) as available
+      from public.targets where org_id = ${plan.orgId}::uuid and profile_id = ${plan.profileId}::uuid
+        and amazon_id = any(${targetIds}::text[])
     `;
-    const byKeyword = new Map(keywords.map((keyword) => [keyword.amazon_id, keyword]));
+    const byBidEntity = new Map(bidEntities.map((entity) => [`${entity.entity_type}:${entity.amazon_id}`, entity]));
+    const campaignIds = plan.actions.flatMap((action) => action.routeKey === 'sp.v3.campaigns.update'
+      && action.changes.placement !== undefined && Object.keys(action.changes).length === 1 ? [action.entity.campaignId] : []);
+    const campaigns = campaignIds.length === 0 ? [] : await sql<{
+      amazon_id: string; name: string | null; state: 'enabled' | 'paused' | 'archived'; available: boolean;
+      bidding_control_state: unknown; bidding_observed_at: string | null; projection_matches: boolean;
+    }[]>`
+      select amazon_id, name, state::text,
+        (ad_product = 'SP' and deleted_at is null and state in ('enabled', 'paused')) as available,
+        bidding_control_state,
+        case when bidding_observed_at is null then null else to_char(bidding_observed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') end as bidding_observed_at,
+        coalesce(bidding_strategy::text = bidding_control_state ->> 'strategy'
+          and placement_bidding -> 'topOfSearch' = bidding_control_state #> '{placements,topOfSearch}'
+          and placement_bidding -> 'productPages' = bidding_control_state #> '{placements,productPages}'
+          and placement_bidding -> 'restOfSearch' = bidding_control_state #> '{placements,restOfSearch}', false) as projection_matches
+      from public.campaigns where org_id = ${plan.orgId}::uuid and profile_id = ${plan.profileId}::uuid
+        and amazon_id = any(${campaignIds}::text[])
+    `;
+    const byCampaign = new Map(campaigns.map((campaign) => [campaign.amazon_id, campaign]));
     const currentRows: SpWriteRecordedPreview['currentRows'] = plan.actions.map((action) => {
-      if (action.routeKey !== 'sp.v3.keywords.update' || action.changes.bid === undefined
+      if (action.routeKey === 'sp.v3.campaigns.update' && action.changes.placement !== undefined
+        && Object.keys(action.changes).length === 1) {
+        const campaign = byCampaign.get(action.entity.campaignId);
+        const current = SpCompleteCampaignBiddingState.safeParse(campaign?.bidding_control_state);
+        if (!campaign?.available || campaign.bidding_observed_at === null || !current.success) {
+          reasons.add('entity_unavailable');
+          return { actionId: action.actionId, entityName: campaign?.name ?? null,
+            syncedAt: campaign?.bidding_observed_at ?? null, observation: null };
+        }
+        const expected = plan.schemaVersion === 'openspell.sp-write-plan.v3' && plan.direction === 'forward'
+          ? placementBaselines.get(action.actionId) : action.changes.placement.expected;
+        if (expected === undefined) reasons.add('source_changed');
+        else if (JSON.stringify(current.data) !== JSON.stringify(expected)) reasons.add('current_value_changed');
+        if (!campaign.projection_matches) reasons.add('current_value_changed');
+        return { actionId: action.actionId, entityName: campaign.name, syncedAt: campaign.bidding_observed_at,
+          observation: { routeKey: action.routeKey, actionId: action.actionId, actionFingerprint: action.fingerprint,
+            amazonEntityId: action.entity.campaignId,
+            values: { placement: current.data, state: campaign.state === 'enabled' ? 'enabled' : 'paused' } } };
+      }
+      if ((action.routeKey !== 'sp.v3.keywords.update' && action.routeKey !== 'sp.v3.targets.update') || action.changes.bid === undefined
         || Object.keys(action.changes).length !== 1) {
         reasons.add('unsupported_action');
         return { actionId: action.actionId, entityName: null, syncedAt: null, observation: null };
       }
-      const keyword = byKeyword.get(action.entity.keywordId);
-      const amount = canonicalAmount(keyword?.bid ?? null);
-      if (!keyword?.available || keyword.synced_at === null || amount === null
-        || !['enabled', 'paused'].includes(keyword.state)) {
+      const entityId = action.routeKey === 'sp.v3.keywords.update' ? action.entity.keywordId : action.entity.targetId;
+      const entity = byBidEntity.get(`${action.routeKey === 'sp.v3.keywords.update' ? 'keyword' : 'target'}:${entityId}`);
+      const amount = canonicalAmount(entity?.bid ?? null);
+      if (!entity?.available || entity.synced_at === null || amount === null
+        || !['enabled', 'paused'].includes(entity.state)) {
         reasons.add('entity_unavailable');
-        return { actionId: action.actionId, entityName: keyword?.name ?? null,
-          syncedAt: keyword?.synced_at ?? null, observation: null };
+        return { actionId: action.actionId, entityName: entity?.name ?? null,
+          syncedAt: entity?.synced_at ?? null, observation: null };
       }
       if (amount !== action.changes.bid.expected.amount) reasons.add('current_value_changed');
-      return { actionId: action.actionId, entityName: keyword.name, syncedAt: keyword.synced_at,
+      return { actionId: action.actionId, entityName: entity.name, syncedAt: entity.synced_at,
         observation: { routeKey: action.routeKey, actionId: action.actionId, actionFingerprint: action.fingerprint,
-          amazonEntityId: action.entity.keywordId,
+          amazonEntityId: entityId,
           values: { bid: { amount, currencyCode: plan.providerScope.currencyCode },
-            state: keyword.state === 'enabled' ? 'enabled' : 'paused' } } };
+            state: entity.state === 'enabled' ? 'enabled' : 'paused' } } };
     });
     return SpWriteRecordedPreview.parse({ preview,
       profile: { id: plan.profileId, label: row.label, currencyCode: plan.providerScope.currencyCode },

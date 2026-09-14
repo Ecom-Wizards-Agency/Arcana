@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
-  type SpWritePreviewEvidence,
+  type SpWritePreviewEvidence, type SpWriteDependencyPreviewEvidence,
+  verifySpWriteDependencyPreviewEvidenceArtifacts,
   SpWriteSourceEvidence,
   verifyMcpWritePreviewEvidenceArtifacts,
   serializeSpWritePreviewGuardrails,
@@ -24,6 +25,7 @@ function verify(rawPlan: unknown, rawEvidence: unknown) {
   if (evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v2') {
     return verifyMcpWritePreviewEvidenceArtifacts(plan, evidence, hasher);
   }
+  if (evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v3') return verifySpWriteDependencyPreviewEvidenceArtifacts(plan, evidence, hasher);
   if (plan.direction !== 'forward' || plan.source.kind !== 'apply_batch'
     || evidence.planId !== plan.id || evidence.provenance.applyBatchId !== plan.source.applyBatchId
     || evidence.provenance.rows.length !== plan.counts.providerRows
@@ -56,7 +58,7 @@ export async function loadSpWritePreviewEvidence(
 
 /** One SQL transaction records both artifacts or neither. This does not grant execution. */
 export async function recordSpWritePreviewEvidence(
-  handle: Pick<DbHandle, 'sql'>, rawPlan: SpWritePlan, rawEvidence: SpWritePreviewEvidence,
+  handle: Pick<DbHandle, 'sql'>, rawPlan: SpWritePlan, rawEvidence: SpWritePreviewEvidence | SpWriteDependencyPreviewEvidence,
 ): Promise<void> {
   const { plan, evidence } = verify(rawPlan, rawEvidence);
   try {

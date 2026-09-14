@@ -15,8 +15,8 @@
 import { and, eq, getTableColumns, getTableName, gte, lte, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import type { PgTable, PgUpdateSetSource } from 'drizzle-orm/pg-core';
-import type { DailyFact, PlacementFact, ProfileFact, SearchTermFact } from '@wizard-ads/shared';
-import type { DbHandle } from '../client.js';
+import { CampaignPlacementFact, type DailyFact, type PlacementFact, type ProfileFact, type SearchTermFact } from '@wizard-ads/shared';
+import type { DbHandle, QueryHandle } from '../client.js';
 import { chunkForInsert } from './chunk.js';
 import {
   factPlacementDaily,
@@ -429,3 +429,15 @@ export const toProfileFact = (row: ProfileFactRow): ProfileFact => ({
   unitsSold7d: row.unitsSold7d,
   provisional: row.provisional,
 });
+
+/** Read only the admitted campaign population and method's exact placement window. */
+export async function readRecommendationPlacementFacts(handle: QueryHandle, scope: {
+  orgId: string; profileId: string; runId: string; start: string; end: string;
+}): Promise<CampaignPlacementFact[]> {
+  const rows = await handle.sql<{ facts: unknown }[]>`
+    select app.recommendation_placement_evidence(${scope.orgId}::uuid, ${scope.profileId}::uuid,
+      ${scope.runId}::uuid, ${scope.start}::date, ${scope.end}::date) as facts
+  `;
+  if (rows.length !== 1) throw new Error('Placement evidence result count does not reconcile');
+  return CampaignPlacementFact.array().max(30_000).parse(rows[0]!.facts);
+}

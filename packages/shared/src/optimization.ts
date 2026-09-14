@@ -1,6 +1,6 @@
 /** Persistent optimization group and observation-loop contracts. */
 import { z } from 'zod';
-import { MethodAdmissionSnapshot, MethodSelection } from './methods.js';
+import { MethodAdmissionSnapshot, MethodSelection, CoordinatedMethodSettings } from './methods.js';
 import { ApplyEntityType, ApplyValue } from './apply.js';
 import { AmazonId, IsoDate, Uuid } from './primitives.js';
 
@@ -59,6 +59,7 @@ export type OptimizationReviewSchedule = z.infer<typeof OptimizationReviewSchedu
 /** Values are tenant data. This contract intentionally supplies no numeric defaults. */
 export const OptimizationGroupPolicy = z.object({
   method: MethodSelection.optional(),
+  methodSettings: CoordinatedMethodSettings.partial().optional(),
   id: Uuid,
   orgId: Uuid,
   profileId: Uuid,

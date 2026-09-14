@@ -78,7 +78,8 @@ export const SpWritePreview = z.object({
   }
   if ((value.plan.direction === 'forward') !== (value.evidence !== null)
     || (value.evidence !== null && (
-      value.evidence.planId !== value.plan.id
+      value.evidence.schemaVersion.replace('preview-evidence', 'plan') !== value.plan.schemaVersion
+      || value.evidence.planId !== value.plan.id
       || value.plan.source.kind !== 'apply_batch'
       || value.evidence.provenance.applyBatchId !== value.plan.source.applyBatchId
       || value.evidence.provenance.rows.length !== value.plan.counts.providerRows

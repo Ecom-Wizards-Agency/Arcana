@@ -1,6 +1,6 @@
 import { IngestionRegistry, ReportCoverageCompletion } from './ingestion-registry.js';
 import { ingestionSource } from './ingestion-sources.js';
-import { KeywordMirrorMergeCounts } from '@wizard-ads/shared/sp-write-mirror';
+import { ControlMirrorMergeCounts, KeywordMirrorMergeCounts } from '@wizard-ads/shared/sp-write-mirror';
 import { Buffer } from 'node:buffer';
 import {
   parseSbAdsReportProbe,
@@ -698,6 +698,7 @@ export class SyncWorker {
 
     const totals = { listed: 0, upserted: 0, duplicates: 0, changes: 0, tombstoned: 0 };
     let keywordMirror: KeywordMirrorMergeCounts | undefined;
+    const controlMirrors: Partial<Record<'campaign' | 'target', ControlMirrorMergeCounts>> = {};
     for (const product of succeeded) {
       const productRows = listing.rows.filter((row) => row.adProduct === product);
       // Scope the mirror to this product so tombstoning stays within it and a
@@ -724,6 +725,17 @@ export class SyncWorker {
       totals.duplicates += counts.duplicates;
       totals.changes += counts.changes;
       totals.tombstoned += counts.tombstoned;
+      for (const kind of ['campaign', 'target'] as const) {
+        const controlCounts = counts.controlMirrors?.[kind];
+        if (controlCounts === undefined) continue;
+        const incoming = ControlMirrorMergeCounts.parse(controlCounts);
+        const prior = controlMirrors[kind];
+        if (prior === undefined) controlMirrors[kind] = incoming;
+        else {
+          for (const key of Object.keys(incoming) as Array<keyof ControlMirrorMergeCounts>) prior[key] += incoming[key];
+          ControlMirrorMergeCounts.parse(prior);
+        }
+      }
       if (counts.keywordMirror !== undefined) {
         const incoming = KeywordMirrorMergeCounts.parse(counts.keywordMirror);
         if (keywordMirror === undefined) keywordMirror = incoming;
@@ -747,7 +759,8 @@ export class SyncWorker {
       throw partialSyncError(succeeded, failures);
     }
     this.logger.info('entity sync', { profileId: profile.id, succeeded, ...totals });
-    return { ...totals, succeeded, failures: failureSummary, ...(keywordMirror === undefined ? {} : { keywordMirror }) };
+    return { ...totals, succeeded, failures: failureSummary, ...(keywordMirror === undefined ? {} : { keywordMirror }),
+      ...(Object.keys(controlMirrors).length === 0 ? {} : { controlMirrors }) };
   }
 
   /**

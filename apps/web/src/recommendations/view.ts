@@ -10,13 +10,14 @@
  * that is assembled inside a component is a view model nothing can test.
  */
 import type { RecommendationRecord } from '@wizard-ads/db';
-import type { OneTimeRpcSnapshot } from '@wizard-ads/shared';
+import type { DependencySet, OneTimeRpcSnapshot } from '@wizard-ads/shared';
 import { limitReason, provenanceLines, reasonFormula, reasonLabel } from './provenance';
 import type { ProvenanceLine } from './provenance';
 import { resolveProposalStrategy, strategyLabel } from './strategy';
 import type { ProposalStrategy, StrategyAssignments } from './strategy';
 
 export interface ProposalView {
+  dependencySet?: DependencySet;
   id: string;
   runId: string;
   reason: string;
@@ -70,6 +71,7 @@ export function toProposalView(
   options: { strategySnapshot: unknown; executionSnapshot?: OneTimeRpcSnapshot; assignments?: StrategyAssignments },
 ): ProposalView {
   const strategy = resolveProposalStrategy({
+    ...(record.inputs.methodId === undefined ? {} : { methodId: record.inputs.methodId }),
     campaignId: record.campaignId,
     campaignName: record.campaignName,
     strategySnapshot: options.strategySnapshot,
@@ -93,18 +95,19 @@ export function toProposalView(
   );
 
   return {
+    ...(record.inputs.dependencySet === undefined ? {} : { dependencySet: record.inputs.dependencySet }),
     id: record.id,
     runId: record.runId,
     reason: record.reason,
     reasonLabel: reasonLabel(record.reason),
-    changeReason: record.inputs.trace?.steps.find((step) => step.label === 'Raw bid')?.formula ?? reasonFormula(record.reason),
+    changeReason: record.inputs.dependencySet !== undefined ? 'Coordinate base bids and campaign placements within the exposure ceiling.' : record.inputs.trace?.steps.find((step) => step.label === 'Raw bid')?.formula ?? reasonFormula(record.reason),
     limitReason: limitReason(record.inputs),
     entityType: record.entityType,
     entityId: record.entityId,
     campaignId: record.campaignId,
     entityLabel: record.entityName ?? record.entityId,
     scope: scopeParts.length > 0 ? scopeParts.join(' › ') : 'account',
-    field: record.field,
+    field: record.inputs.dependencySet === undefined ? record.field : `${record.inputs.dependencySet.changes.length} ordered controls`,
     currentValue: scalar(record.currentValue),
     proposedValue: scalar(record.proposedValue),
     delta,
@@ -114,7 +117,7 @@ export function toProposalView(
     strategy,
     strategyLabel: resolvedAcos?.source === 'group' ? `${resolvedAcos.sourceLabel} · ${strategy.objective}` : strategyLabel(strategy),
     provenance: provenanceLines(record.inputs),
-    exportable: options.executionSnapshot === undefined && EXPORTABLE_ENTITY_TYPES.has(record.entityType),
+    exportable: record.inputs.dependencySet === undefined && options.executionSnapshot === undefined && EXPORTABLE_ENTITY_TYPES.has(record.entityType),
   };
 }
 

@@ -35,6 +35,7 @@ import {
   RecommendationPopulation,
   normalizeOptimizationGroupSnapshot,
   serializeApplyRows,
+  DependencySet,
 } from '@wizard-ads/shared';
 import type {
   ApplyRow,
@@ -679,12 +680,48 @@ export async function exportAcceptedRecommendations(
     const accepted = acceptedRow?.count ?? 0;
 
     const revisionById = new Map(candidates.map((row) => [row.id, row.proposal_revision_id]));
+    const dependencyRows = new Map<string, { setId: string; rows: ApplyRow[] }>();
+    for (const candidate of candidates) {
+      if (candidate.inputs.dependencySet === undefined) continue;
+      const set = DependencySet.parse(candidate.inputs.dependencySet);
+      if (candidate.field !== 'control_set' || candidate.entity_type !== 'campaign'
+        || candidate.entity_id !== set.campaignId || candidate.proposal_revision_id !== null
+        || set.id !== `${options.runId}:${set.campaignId}`
+        || set.changes.some((step) => step.entityRef.profileId !== options.profileId)) {
+        throw new RecommendationReviewError('The dependency set differs from its accepted recommendation.');
+      }
+      dependencyRows.set(candidate.id, { setId: set.id, rows: set.changes.map((step): ApplyRow => {
+        if (step.control === 'target_bid'
+          && (step.entityRef.entityType === 'keyword' || step.entityRef.entityType === 'target')) {
+          return { entityType: step.entityRef.entityType, entityId: step.entityRef.entityId,
+            field: 'bid', old: step.current, new: step.proposed };
+        }
+        if (step.control === 'placement_adjustment' && step.placementKey !== 'amazon_business') {
+          return { entityType: 'campaign', entityId: set.campaignId,
+            field: { top_of_search: 'tos_modifier', rest_of_search: 'ros_modifier', product_pages: 'pp_modifier' }[step.placementKey],
+            old: step.current, new: step.proposed };
+        }
+        throw new RecommendationReviewError('The dependency set contains an unsupported control.');
+      }) });
+    }
+    if (dependencyRows.size > 0 && dependencyRows.size !== candidates.length) {
+      throw new RecommendationReviewError('Export dependency sets separately from individual recommendations.');
+    }
+    if ([...dependencyRows.values()].reduce((count, set) => count + set.rows.length, 0) > 500) {
+      throw new RecommendationReviewError('Select dependency sets with at most 500 control changes per preview.');
+    }
     const rows: ApplyRow[] = [];
     const rowRecommendationIds: string[] = [];
+    const rowDependencyIds: (string | null)[] = [];
+    const rowDependencySteps: (number | null)[] = [];
     const exportedIds: string[] = [];
     const skipped: ExportSkip[] = [];
 
     const applyStateTargets = candidates.flatMap((candidate) => {
+      const dependent = dependencyRows.get(candidate.id);
+      if (dependent !== undefined) return dependent.rows.map((row, index) => ({
+        key: `${candidate.id}:${index}`, entityType: row.entityType, entityId: row.entityId, field: row.field,
+      }));
       const entityType = applyEntityTypeFor(candidate.entity_type);
       return entityType === null
         ? []
@@ -707,6 +744,21 @@ export async function exportAcceptedRecommendations(
     );
 
     for (const candidate of candidates) {
+      const dependent = dependencyRows.get(candidate.id);
+      if (dependent !== undefined) {
+        for (const [index, row] of dependent.rows.entries()) {
+          const current = currentStateByRecommendation.get(`${candidate.id}:${index}`);
+          if (current?.supported !== true || !current.present || !sameApplyValue(current.currentValue, row.old)) {
+            throw new RecommendationReviewError('A dependency step no longer matches the synchronized value. Refresh recommendations first.');
+          }
+          rows.push(row);
+          rowRecommendationIds.push(candidate.id);
+          rowDependencyIds.push(dependent.setId);
+          rowDependencySteps.push(index);
+        }
+        exportedIds.push(candidate.id);
+        continue;
+      }
       const entityType = applyEntityTypeFor(candidate.entity_type);
       if (entityType === null) {
         // Still exported — it leaves the tool in this batch and ships as a
@@ -765,6 +817,8 @@ export async function exportAcceptedRecommendations(
       if (rpc !== undefined && clicks !== undefined) row.revenue = Number((rpc * clicks).toFixed(4));
       rows.push(row);
       rowRecommendationIds.push(candidate.id);
+      rowDependencyIds.push(null);
+      rowDependencySteps.push(null);
       exportedIds.push(candidate.id);
     }
 
@@ -776,10 +830,12 @@ export async function exportAcceptedRecommendations(
     const [batch] = await sql<{ id: string }[]>`
       insert into public.apply_batches
         (org_id, profile_id, tag, opt_group, lever, note, status, created_by,
-         exported_at, artifact_sha256, exported_proposals, reversible_rows, unsupported_rows)
+         exported_at, artifact_sha256, exported_proposals, reversible_rows, unsupported_rows
+         ${dependencyRows.size === 0 ? sql`` : sql`, dependency_sets_count`})
       values (${options.orgId}, ${options.profileId}, ${tag}, ${options.optGroup},
               ${options.lever}, ${note}, 'staged', ${options.actorId ?? null}::uuid,
-              now(), ${artifactSha256}, ${exportedIds.length}, ${rows.length}, ${skipped.length})
+              now(), ${artifactSha256}, ${exportedIds.length}, ${rows.length}, ${skipped.length}
+              ${dependencyRows.size === 0 ? sql`` : sql`, ${dependencyRows.size}`})
       returning id
     `;
     const batchId = batch?.id;
@@ -793,11 +849,13 @@ export async function exportAcceptedRecommendations(
         : await sql<{ id: string }[]>`
             insert into public.apply_rows
               (batch_id, org_id, profile_id, recommendation_id, proposal_revision_id, entity_type, entity_id,
-               entity_name, field, old_value, new_value, lever, clicks, revenue)
+               entity_name, field, old_value, new_value, lever, clicks, revenue
+               ${dependencyRows.size === 0 ? sql`` : sql`, dependency_set_id, dependency_step_index`})
             select ${batchId}, ${options.orgId}, ${options.profileId}, r.recommendation_id::uuid,
                    r.proposal_revision_id::uuid, r.entity_type::public.apply_entity_type, r.entity_id, r.entity_name,
                    r.field, r.old_value::jsonb, r.new_value::jsonb,
                    ${options.lever}, r.clicks::bigint, r.revenue::numeric
+                   ${dependencyRows.size === 0 ? sql`` : sql`, r.dependency_set_id, r.dependency_step_index::integer`}
               from unnest(
                      ${rowRecommendationIds}::text[],
                      ${rowRecommendationIds.map((id) => revisionById.get(id) ?? null)}::text[],
@@ -809,8 +867,10 @@ export async function exportAcceptedRecommendations(
                      ${rows.map((row) => serializeJson(row.new))}::text[],
                      ${rows.map((row) => (row.clicks === undefined ? null : String(row.clicks)))}::text[],
                      ${rows.map((row) => (row.revenue === undefined ? null : String(row.revenue)))}::text[]
+                     ${dependencyRows.size === 0 ? sql`` : sql`, ${rowDependencyIds}::text[], ${rowDependencySteps}::integer[]`}
                    ) as r(recommendation_id, proposal_revision_id, entity_type, entity_id, entity_name, field,
-                          old_value, new_value, clicks, revenue)
+                          old_value, new_value, clicks, revenue
+                          ${dependencyRows.size === 0 ? sql`` : sql`, dependency_set_id, dependency_step_index`})
             returning id
           `;
     // Program rule 4: count outputs against inputs rather than trusting the
@@ -914,12 +974,16 @@ export async function getExportBatch(
       revenue: string | number | null;
     }[]
   >`
-    select entity_type::text as entity_type, entity_id, entity_name, field,
-           old_value, new_value, clicks, revenue
-      from public.apply_rows
-     where org_id = ${options.orgId} and batch_id = ${options.batchId}
-       and profile_id = ${batch.profile_id}
-     order by created_at, id
+    select a.entity_type::text as entity_type, a.entity_id, a.entity_name, a.field,
+           a.old_value, a.new_value, a.clicks, a.revenue
+      from public.apply_rows a
+      left join public.recommendations r on r.org_id=a.org_id and r.profile_id=a.profile_id and r.id=a.recommendation_id
+     where a.org_id = ${options.orgId} and a.batch_id = ${options.batchId}
+       and a.profile_id = ${batch.profile_id}
+     order by a.created_at,
+       case when to_jsonb(a)->>'dependency_set_id' is not null then r.created_at end,
+       case when to_jsonb(a)->>'dependency_set_id' is not null then r.id end,
+       (to_jsonb(a)->>'dependency_step_index')::integer, a.id
   `;
 
   const rows: ApplyRow[] = rowRecords.map((row) => {

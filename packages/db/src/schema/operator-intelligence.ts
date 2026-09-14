@@ -514,6 +514,9 @@ export type NewContextualNegativeExportRow = typeof contextualNegativeExports.$i
 export const optimizationGroups = pgTable(
   'optimization_groups',
   {
+    methodId: text('method_id'),
+    methodVersion: text('method_version'),
+    methodSettings: jsonb('method_settings'),
     id: uuid('id').primaryKey().defaultRandom(),
     orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
     profileId: uuid('profile_id').notNull(),

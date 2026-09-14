@@ -839,16 +839,24 @@ describe.skipIf(!available)('migrations', () => {
     expect(definitions).toContain('(org_id, asin, event_kind, detected_at)');
   });
 
-  it('enables row level security on every tenant table', async () => {
-    const rows = await database.sql<{ relname: string; relrowsecurity: boolean }[]>`
-      select c.relname, c.relrowsecurity
+  it('enables row level security on every tenant table and the private method authority', async () => {
+    const rows = await database.sql<{ relation: string; relrowsecurity: boolean }[]>`
+      select n.nspname || '.' || c.relname as relation, c.relrowsecurity
       from pg_catalog.pg_class c
       join pg_catalog.pg_namespace n on n.oid = c.relnamespace
-      join pg_catalog.pg_attribute a on a.attrelid = c.oid and a.attname = 'org_id' and a.attnum > 0
-      where n.nspname = 'public' and c.relkind in ('r', 'p') and c.relispartition = false
+      where c.relkind in ('r', 'p') and c.relispartition = false
+        and ((n.nspname = 'public' and exists(select 1 from pg_catalog.pg_attribute a
+          where a.attrelid = c.oid and a.attname = 'org_id' and a.attnum > 0))
+          or (n.nspname = 'app' and c.relname = 'sp_write_method_releases'))
     `;
-    const unprotected = rows.filter((row) => !row.relrowsecurity).map((row) => row.relname);
-    expect(unprotected).toEqual([]);
+    expect(rows).toContainEqual({ relation: 'app.sp_write_method_releases', relrowsecurity: true });
+    expect(rows.filter((row) => !row.relrowsecurity).map((row) => row.relation)).toEqual([]);
+    const authority = await database.sql<{ role: string; readable: boolean; writable: boolean }[]>`
+      select role, has_table_privilege(role,'app.sp_write_method_releases','SELECT') as readable,
+        has_table_privilege(role,'app.sp_write_method_releases','INSERT,UPDATE,DELETE,TRUNCATE') as writable
+      from unnest(array['anon','authenticated','service_role']) role
+    `;
+    expect(authority).toEqual(['anon', 'authenticated', 'service_role'].map((role) => ({ role, readable: false, writable: false })));
   });
 
   it('matches every authenticated relation privilege to an applicable RLS policy', async () => {

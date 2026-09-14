@@ -1846,7 +1846,12 @@ describe.skipIf(!available)('SP write persistence installation', () => {
       table_name: table.name,
       name: constraint.getName(),
       columns: constraint.columns.map((column) => column.name),
-    }))).sort((left, right) =>
+    }))).concat([
+      // This executable schema proof is pinned to WP-187, before v3 permits
+      // different placement controls on the same campaign in an ordered set.
+      { table_name: 'sp_write_plan_actions', name: 'sp_write_plan_actions_entity_key',
+        columns: ['org_id', 'profile_id', 'plan_id', 'route_key', 'amazon_entity_id'] },
+    ]).sort((left, right) =>
       `${left.table_name}:${left.name}`.localeCompare(`${right.table_name}:${right.name}`));
     expect(drizzleUniques).toEqual(sqlUniques);
 
@@ -8042,6 +8047,7 @@ describe('SP write runtime blast radius', () => {
       'apps/web/src/writes/approval-fixtures.ts': ['@wizard-ads/shared/sp-writes'],
       'apps/web/src/writes/approval-fixtures.test.ts': ['@wizard-ads/shared/sp-writes'],
       'apps/worker/src/sp-write-outbox/artifacts.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter'],
+      'apps/worker/src/sp-write-outbox/guarded-provider-fetch.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter'],
       'apps/worker/src/sp-write-outbox/loop.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteOutboxLoop', '@wizard-ads/db/sp-write-worker'],
       'apps/worker/src/sp-write-outbox/providers.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter', '@wizard-ads/db/sp-write-worker'],
       'apps/worker/src/sp-write-outbox/loop.test.ts': ['@wizard-ads/shared/sp-writes', '@wizard-ads/ads-api/sp-write-adapter', 'createSpWriteAdapter', 'createSpWriteOutboxLoop', 'createSpWriteWorker', '@wizard-ads/db/sp-write-worker'],

@@ -30,6 +30,15 @@ describe.skipIf(!available)('one-time preview persisted admission and execution'
     database = await createTestDatabase('one_time_admission', { throughMigration: '20260907000000_one_time_rpc_previews.sql' });
     // Add method storage while retaining this suite's pre-runtime-gate authority fixture.
     await database.sql.unsafe(await readFile(new URL('../../../supabase/migrations/20260913120000_recommendation_methods.sql', import.meta.url), 'utf8'));
+    // Project the current group storage into this historical authority fixture.
+    // Execute the migration's exact DDL so field names and constraints cannot drift.
+    const coordinatedMigration = await readFile(new URL('../../../supabase/migrations/20260915130000_coordinated_methods.sql', import.meta.url), 'utf8');
+    const groupStorage = coordinatedMigration.match(/^alter table public\.optimization_groups\n[\s\S]*?;/gm);
+    expect(groupStorage).toHaveLength(1);
+    await database.sql.unsafe(groupStorage![0]!);
+    const placementReader = coordinatedMigration.match(/^create function app\.recommendation_placement_evidence\([\s\S]*?^\$\$;/gm);
+    expect(placementReader).toHaveLength(1);
+    await database.sql.unsafe(placementReader![0]!);
     store = new PostgresRecommendationRunStore(database);
     const [row] = await database.sql<{ org_id: string }[]>`
       select app.seed_tenant_fixture('one-time-synthetic', ${actorId}::uuid, 'owner', date '2026-08-26') as org_id

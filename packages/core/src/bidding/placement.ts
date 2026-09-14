@@ -134,6 +134,9 @@ export interface MaxPotentialCpcRequest {
   placementModifiers?: ModifierComponent[];
   /** Modifiers that stack on top of the placement: dayparting, audience, ... */
   otherModifiers?: ModifierComponent[];
+  audienceModifiers?: ModifierComponent[];
+  audienceOverlapRule?: 'exclusive' | 'multiplicative' | 'unknown';
+  biddingMode?: 'manual' | 'legacy_for_sales' | 'auto_for_sales' | 'rule_based';
 }
 
 export interface MaxPotentialCpc {
@@ -160,7 +163,17 @@ export interface MaxPotentialCpc {
  */
 export function maxPotentialCpc(request: MaxPotentialCpcRequest): MaxPotentialCpc {
   const placements = request.placementModifiers ?? [];
-  const others = request.otherModifiers ?? [];
+  const audiences = request.audienceModifiers ?? [];
+  if (audiences.length > 1 && (request.audienceOverlapRule === undefined || request.audienceOverlapRule === 'unknown')) {
+    throw new Error('Audience overlap mechanics are unknown');
+  }
+  if (request.biddingMode === 'rule_based') throw new Error('Rule-based maximum exposure is unmodeled');
+  const activeAudiences = request.audienceOverlapRule === 'exclusive'
+    ? [...audiences].sort((a, b) => b.pct - a.pct).slice(0, 1) : audiences;
+  const others = [...(request.otherModifiers ?? []), ...activeAudiences];
+  if (!Number.isFinite(request.baseBid) || request.baseBid < 0 || [...placements, ...others].some((c) => !Number.isFinite(c.pct) || c.pct < 0 || c.pct > 900)) {
+    throw new Error('Invalid exposure input');
+  }
 
   let topPlacement: ModifierComponent | null = null;
   for (const p of placements) {
@@ -174,5 +187,9 @@ export function maxPotentialCpc(request: MaxPotentialCpcRequest): MaxPotentialCp
   let multiplier = 1;
   for (const c of components) multiplier *= 1 + c.pct / 100;
 
+  if (request.biddingMode === 'auto_for_sales') {
+    multiplier *= 2;
+    components.push({ name: 'dynamic_bidding_maximum', pct: 100 });
+  }
   return { value: request.baseBid * multiplier, multiplier, components };
 }

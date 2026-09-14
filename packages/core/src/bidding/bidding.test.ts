@@ -860,6 +860,9 @@ function proposeBid(input: BidRequest): BidOutcome {
   );
   expect(registered.referenceOutcome).toStrictEqual(direct);
   expect(JSON.stringify(registered.referenceOutcome)).toBe(JSON.stringify(direct));
+  if (direct.kind === 'blocked') {
+    expect(registered).toMatchObject({ kind: 'hold', hold: { reason: 'GUARDRAIL_BLOCKED', prose: direct.note } });
+  }
   parityFixtureCount += 1;
   return direct;
 }
