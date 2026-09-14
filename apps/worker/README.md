@@ -535,3 +535,51 @@ policy. The alternative of giving each source its own worker loop was rejected
 because it would duplicate custody and completion rules. The report completion
 capability preserves the current transaction boundary instead of writing coverage
 after a separately committed ledger update.
+
+### Guarded Amazon writes (WP-280)
+
+The general worker hosts a separate, serial `sp_write_outbox` poller for the
+approved-write ledger and its observation/recovery work. Ingestion continues through
+the source registry and its shared claim loop; the outbox adds no `sync_jobs` types
+and preserves report-lane ownership. The poller starts only when
+`OPENSPELL_SP_WRITE_DISPATCH_ENABLED=1` or
+`OPENSPELL_SP_WRITE_RECONCILE_ENABLED=1`; both default off. Either flag requires an
+explicit comma-separated UUID list in `OPENSPELL_SP_WRITE_PROFILE_IDS`. The report
+lane refuses these flags. Shutdown stops the poller and awaits its active pass
+before closing SQL. Enabling this consumer creates no schedule or cadence.
+
+Dispatch also requires the current database environment gate, exact profile grant,
+immutable approval receipt and synchronized old value. The flags alone grant no
+Amazon authority. The worker rechecks runtime flags before each attempt; SQL checks
+current authority when reserving provider intent. Closing dispatch still allows a
+separately enabled reconciliation pass to observe an already reserved request.
+
+Each row has a disposition, provider intent/result and observation ledger. Requested
+and admitted counts come from the immutable plan and receipt. `attemptedCalls`
+counts calls actually handed to the adapter in that pass. A committed intent is
+not proof that HTTP started: a crash between reservation and the call remains
+unresolved until recovery. Accepted, rejected, ambiguous, refused and observed rows
+are separately counted; only observation plus a mirror receipt proves the current
+synchronized value. Ordinary entity sync records its read-start time and uses the
+same keyword merge fence, including the default cron store after migration.
+
+The approval backend is limited to source-backed SP keyword bid changes. Web
+preview, exact-count confirmation and status use the current authenticated
+transaction/snapshot boundary. Approval requires the recommendation method ID,
+version and hashes of its recorded trace and setting sources. Historical plan bytes
+remain readable; a methodless pending plan cannot begin a new execution. UI direct
+restore, delegation issuance and cadence management are separate workstreams.
+
+`src/sp-write-outbox/live-smoke.ts` is an explicit operator entry, never a startup
+hook or test-suite action. It first requires the gitignored
+`_local/amazon-write-authorization.json` in the shared bounded-authorization format,
+including its verified fingerprint, exact provider/entity scope, expiry, one-cycle
+limit and mandatory observed inverse. It accepts six CLI IDs: organization,
+profile, execution, forward plan, approval and generation. The immutable forward,
+inverse and bounded receipt must already be recorded. It creates no approval.
+Before invoking it, stop the general write poller and set
+`OPENSPELL_SP_WRITE_SMOKE_EXCLUSIVE=1`, both write flags and the exact profile
+allowlist. Inject credentials through the approved runtime. The smoke limits its
+consumer to those two plan IDs, refuses stale/conflicting evidence, observes both
+legs and verifies that the bounded authorization closes. Its unit tests exercise
+only local-file refusal and validation; they never invoke the live entry.

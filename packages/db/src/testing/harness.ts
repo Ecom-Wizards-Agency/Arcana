@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
+import { extendSpWriteTenantFixture } from './sp-write-tenant-fixture.js';
 import { createDb } from '../client.js';
 import type { DbHandle } from '../client.js';
 
@@ -117,7 +118,10 @@ export async function createTestDatabase(
     if (!reachedRequestedMigration) {
       throw new Error(`migration not found: ${options.throughMigration}`);
     }
-    if (options.applyFixture !== false) await applySqlFile(handle, FIXTURE);
+    if (options.applyFixture !== false) {
+      const fixture = extendSpWriteTenantFixture(await readFile(FIXTURE, 'utf8'));
+      await handle.sql.unsafe(fixture);
+    }
   } catch (error) {
     await handle.close();
     await dropDatabase(admin, name);

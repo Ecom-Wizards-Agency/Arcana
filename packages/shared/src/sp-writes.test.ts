@@ -9,12 +9,14 @@ import {
   ApproveSpWritePlan,
   SpCanonicalDecimal,
   SpCompleteCampaignBiddingState,
+  SpMutableState,
   SpWriteAction,
   SpWriteAuthorizationReceipt,
   SpWriteBoundedAuthorization,
   SpWriteExecutionEvidence,
   SpWriteFutureJobPayload,
   SpWriteObservation,
+  SpWriteObservedAction,
   SpWritePlan,
   SpWritePreDispatchDisposition,
   SpWritePredispatchObservation,
@@ -587,9 +589,63 @@ function executionEvidence(
 }
 
 describe('guarded Sponsored Products write contracts', () => {
+  it('preserves historical v1 forward, inverse and mixed-route fingerprint bytes', () => {
+    const forward = keywordPlan();
+    expect([forward.fingerprint, inverseKeywordPlan(forward).fingerprint, fullForwardPlan().fingerprint])
+      .toMatchInlineSnapshot(`
+        [
+          "2609bfe841c35accf4c7410b257a777ebb2589e7c0745f1dc5781a1c86bc56bb",
+          "acbf9b122b56e42daef3c1bbf81aef255bb92c0ce22c1536ee616a92dfbab0ba",
+          "a027131af3f0bd8baa52b2dbb7fc891afb0ac0c6ff9ce1c206a68dc22b942e8c",
+        ]
+      `);
+  });
   it('exposes write contracts only through the explicit package subpath', () => {
     expect(ExportedSpWritePlan).toBe(SpWritePlan);
     expect('SpWritePlan' in sharedRoot).toBe(false);
+  });
+
+  it('binds v2 keyword sequences and inverses while retaining the v1 ordering rule', () => {
+    const base = keywordPlan();
+    const second = withActionFingerprint({ ...base.actions[0], actionId: uuid(305),
+      entity: { keywordId: 'keyword-two' },
+      sources: [{ kind: 'apply_row', applyRowId: uuid(306), changeKey: 'keyword.bid' }] });
+    const actions = [second, base.actions[0]!];
+    const forward = fingerprintedPlan(actions, { schemaVersion: 'openspell.sp-write-plan.v2', actions });
+    expect(verifySpWritePlanFingerprints(forward, sha256).actions).toEqual(actions);
+    expect(SpWritePlan.safeParse({ ...forward, schemaVersion: 'openspell.sp-write-plan.v1' }).success).toBe(false);
+    expect(SpWritePlan.safeParse({ ...fullForwardPlan(), schemaVersion: 'openspell.sp-write-plan.v2' }).success).toBe(false);
+
+    const inverseActions = actions.map((action, index) => {
+      if (action.routeKey !== 'sp.v3.keywords.update' || !action.changes.bid) throw new Error('keyword fixture required');
+      return withActionFingerprint({ ...action, actionId: uuid(310 + index),
+        sources: [{ kind: 'inverse_action', sourceActionId: action.actionId, changeKey: 'keyword.bid' }],
+        changes: { bid: { expected: action.changes.bid.requested, requested: action.changes.bid.expected } } });
+    });
+    const inverse = fingerprintedPlan(inverseActions, { ...inverseKeywordPlan(base),
+      schemaVersion: forward.schemaVersion, actions: inverseActions, counts: forward.counts,
+      source: { kind: 'inverse_execution', sourceExecutionId: EXECUTION_ID,
+        sourcePlanId: forward.id, sourcePlanFingerprint: forward.fingerprint } });
+    expect(verifySpWriteInversePair(forward, inverse, sha256)).toEqual({ forward, inverse });
+    const reordered = fingerprintedPlan(inverseActions, { ...inverse, actions: [...inverseActions].reverse() });
+    expect(() => verifySpWriteInversePair(forward, reordered, sha256)).toThrow('source sequence');
+    const downgraded = fingerprintedPlan(inverseActions, { ...inverse,
+      schemaVersion: 'openspell.sp-write-plan.v1', actions: orderSpWriteActions(inverseActions) });
+    expect(() => verifySpWriteInversePair(forward, downgraded, sha256)).toThrow('scope or counts');
+  });
+
+  it('retains database microseconds but compares v2 validity at millisecond resolution', () => {
+    const old = keywordPlan();
+    const precise = { ...old, generatedAt: old.generatedAt.replace('.000Z', '.000001Z') };
+    expect(SpWritePlan.safeParse(precise).success).toBe(true);
+    expect(SpWritePlan.safeParse({ ...precise, schemaVersion: 'openspell.sp-write-plan.v2' }).success).toBe(true);
+    const excessive = { ...old, generatedAt: old.generatedAt.replace('.000Z', '.0000001Z') };
+    expect(SpWritePlan.safeParse(excessive).success).toBe(true);
+    expect(SpWritePlan.safeParse({ ...excessive, schemaVersion: 'openspell.sp-write-plan.v2' }).success).toBe(false);
+    expect(SpWritePlan.safeParse({ ...old, schemaVersion: 'openspell.sp-write-plan.v2' }).success).toBe(true);
+    expect(SpWritePlan.safeParse({ ...old, schemaVersion: 'openspell.sp-write-plan.v2',
+      generatedAt: old.frozenAt.replace('.000Z', '.000000Z'), frozenAt: old.frozenAt.replace('.000Z', '.000000Z'),
+      expiresAt: old.frozenAt.replace('.000Z', '.000001Z') }).success).toBe(false);
   });
 
   it('uses canonical exact decimals instead of JavaScript numbers or fixed minor units', () => {
@@ -1324,6 +1380,36 @@ describe('guarded Sponsored Products write contracts', () => {
       '2026-08-31T08:10:00.000Z',
       sha256,
     )).toThrow(/do not match/i);
+  });
+
+  it.each([true, false])('records an archived keyword as a terminal conflict with explicit bid present %s', (withBid) => {
+    const plan = keywordPlan();
+    const receipt = manualReceipt(plan);
+    const providerObservation = predispatchObservation(plan);
+    const intent = providerIntent(plan, providerObservation);
+    const result = providerResult(intent, 'accepted');
+    const evidence = executionEvidence(plan, receipt, {
+      predispatchObservations: [providerObservation], providerCallIntents: [intent], providerResults: [result],
+    });
+    const base = postWriteObservation(plan, intent, 'conflict');
+    const current = base.observed!;
+    const observed = SpWriteObservedAction.parse({ ...current,
+      values: { ...(withBid ? current.values : {}), state: 'archived' } });
+    const observation = SpWriteObservation.parse({ ...base, observed,
+      fingerprint: sha256.digest(serializeSpWriteObservationFingerprint({ ...base, observed })),
+    });
+    expect(verifySpWriteObservationArtifacts(plan, receipt, observeJob(plan), evidence,
+      observation, '2026-08-31T08:16:00.000Z', sha256).observation).toEqual(observation);
+    const terminal = executionEvidence(plan, receipt, { ...evidence, observations: [observation] });
+    expect(verifySpWriteExecutionEvidence(terminal, sha256).snapshot).toMatchObject({
+      status: 'conflict', accounting: { observationConflict: 1, observationMissing: 0, observedRequested: 0 },
+    });
+    expect(SpMutableState.safeParse('archived').success).toBe(false);
+    expect(SpWriteAction.safeParse({ ...plan.actions[0], changes: { state: { expected: 'enabled', requested: 'archived' } } }).success).toBe(false);
+    const claimedSuccess = { ...observation, outcome: 'observed_requested' as const };
+    claimedSuccess.fingerprint = sha256.digest(serializeSpWriteObservationFingerprint(claimedSuccess));
+    expect(() => verifySpWriteObservationArtifacts(plan, receipt, observeJob(plan), evidence,
+      claimedSuccess, '2026-08-31T08:16:00.000Z', sha256)).toThrow(/open observation/);
   });
 
   it('rejects observations attached to rejected, wrong-call, or conflicting action evidence', () => {

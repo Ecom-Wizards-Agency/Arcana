@@ -23,6 +23,8 @@ import { startHttpServer } from './http.js';
 import { jsonText } from './json.js';
 import type { RunningServer } from './http.js';
 import {
+  generateToken,
+  hashToken,
   issueApiKey,
   listApiKeys,
   MAX_API_KEY_LIFETIME_DAYS,
@@ -841,8 +843,23 @@ describe.skipIf(!available)('the MCP server', () => {
       profileIds: [profileA],
       expiresAt: futureExpiry(),
     });
-    await database.sql`update mcp.api_keys set scope = 'write' where id = ${wrongScope.record.id}`;
-    expect(await status(server, wrongScope.token)).toBe(401);
+    await expect(database.sql`update mcp.api_keys set scope = 'write' where id = ${wrongScope.record.id}`)
+      .rejects.toMatchObject({ code: '55000', message: 'MCP key scope is immutable' });
+    expect(await status(server, wrongScope.token)).toBe(200);
+
+    // Seed a separate legacy credential as the disposable database owner.
+    // The read-key issuer cannot create or upgrade to this scope.
+    const legacyToken = generateToken();
+    const legacyKeys = await database.sql`
+      insert into mcp.api_keys
+        (org_id, label, key_prefix, token_hash, scope, profile_ids, expires_at, created_by)
+      select org_id, label, ${legacyToken.slice(0, 12)}, ${hashToken(legacyToken)},
+             'write', profile_ids, expires_at, created_by
+        from mcp.api_keys where id = ${wrongScope.record.id}
+      returning scope
+    `;
+    expect(legacyKeys).toEqual([{ scope: 'write' }]);
+    expect(await status(server, legacyToken)).toBe(401);
     expect(await status(server, undefined)).toBe(401);
     expect(await status(server, 'not-a-key')).toBe(401);
     expect(await status(server, 'wza_totally-made-up-token-value-here-padded')).toBe(401);
