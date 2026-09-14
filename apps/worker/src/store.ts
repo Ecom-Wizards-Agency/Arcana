@@ -1,3 +1,4 @@
+import type { ReportCoverageObservation } from '@wizard-ads/shared';
 import { PermanentJobError } from './permanent-job-error.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -19,6 +20,7 @@ import {
   reconcileEntityChangeLinks,
   reportRequests,
   recordReportCoverage,
+  upsertReportCoverage,
   quarantineReportCreate,
   type ReportCreateEvidence,
   promoteReportDate as promoteDbReportDate,
@@ -125,6 +127,8 @@ export interface StoreLogger {
 const MAX_LOGGED_DUPLICATE_IDS = 20;
 
 export interface WorkerStore {
+  /** WP-256 source-neutral producer. Required when installing additional ingestion sources. */
+  recordCoverage?(observation: ReportCoverageObservation, verifiedLoadedRows: number): Promise<{ offered: number; written: number; unchanged: number }>;
   claim(workerId: string, limit: number, jobTypes?: readonly JobType[]): Promise<ClaimedJob[]>;
   finish(
     jobId: string,
@@ -916,6 +920,10 @@ export class PostgresWorkerStore implements WorkerStore {
       case 'sb': return this.upsertCampaignFacts('sb', batch.rows);
       case 'sd': return this.upsertCampaignFacts('sd', batch.rows);
     }
+  }
+
+  async recordCoverage(observation: ReportCoverageObservation, verifiedLoadedRows: number) {
+    return upsertReportCoverage(this.handle, observation, verifiedLoadedRows);
   }
 
   async completeReport(

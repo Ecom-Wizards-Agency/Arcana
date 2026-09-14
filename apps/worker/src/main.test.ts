@@ -3,6 +3,7 @@ import { JobType } from '@wizard-ads/shared';
 import { describe, expect, it } from 'vitest';
 import { configFromEnv } from './config.js';
 import { defaultSchedules } from './schedules.js';
+import { INGESTION_SOURCES } from './ingestion-sources.js';
 
 const source = (name: string): string => readFileSync(new URL(name, import.meta.url), 'utf8');
 
@@ -29,13 +30,15 @@ describe('runtime job coverage', () => {
     } satisfies Record<JobType, string | null>;
     expect(Object.keys(bindings).sort()).toEqual([...JobType.options].sort());
     const main = source('./main.ts');
-    const worker = source('./worker.ts');
+    const sources = new Map(INGESTION_SOURCES.map((entry) => [entry.jobType, entry]));
+    expect(sources.size).toBe(JobType.options.length);
     for (const type of JobType.options) {
-      expect(worker).toContain(`case '${type}':`);
+      expect(sources.has(type)).toBe(true);
       const binding = bindings[type];
       if (binding !== null) expect(main).toContain(binding);
     }
-    expect(worker).toMatch(/case 'sqp.categorize':\s*case 'history.bootstrap':\s*case 'report.promote':\s*throw new PermanentJobError\(`\$\{payload.type\} is declared but unimplemented`\)/);
+    expect(INGESTION_SOURCES.filter((entry) => entry.source === 'unimplemented').map((entry) => entry.jobType).sort())
+      .toEqual(['history.bootstrap', 'report.promote', 'sqp.categorize']);
     expect(defaultSchedules().filter(({ jobType }) => bindings[jobType] === null)).toEqual([]);
   });
 

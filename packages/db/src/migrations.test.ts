@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import { createAdsConnectionLifecycle } from './queries/connections.js';
+import { createSpApiConnectionLifecycle, getSpApiRefreshToken, settleSpApiConnection, SpApiConnectionCommandError } from './queries/spapi.js';
 /**
  * Migrations apply cleanly, and the schema they produce is the schema the rest
  * of the system assumes.
@@ -31,7 +34,7 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260914000000_report_coverage_freshness.sql');
+    expect(files.at(-1)).toBe('20260914120000_spapi_connection_lifecycle.sql');
 
   });
 
@@ -1227,4 +1230,155 @@ describe.skipIf(!available)('migrations', () => {
     expect(byName.get('wizard-ads-fact-retention')).toBe('40 3 * * 0');
     expect(byName.get('wizard-ads-requeue-stale-jobs')).toBe('*/15 * * * *');
   });
+  async function connectionActor() {
+    const userId = randomUUID();
+    await database.sql`insert into auth.users(id) values (${userId})`;
+    const [org] = await database.sql<{ id: string }[]>`insert into public.orgs(slug,name)
+      values (${randomUUID()},'Synthetic provider agency') returning id`;
+    await database.sql`insert into public.org_members(org_id,user_id,role) values (${org!.id},${userId},'owner')`;
+    return { orgId: org!.id, userId };
+  }
+  function spInstallation() {
+    return { requestId: randomUUID(), nonceHash: 'a'.repeat(64), clientId: 'synthetic-client',
+      redirectUri: 'https://example.test/callback', label: 'Synthetic connection',
+      sellingPartnerId: 'synthetic-seller', marketplaceIds: ['synthetic-marketplace'] };
+  }
+  async function spConsent() {
+    const actor = await connectionActor(); const input = spInstallation();
+    const lifecycle = createSpApiConnectionLifecycle(database, () => true);
+    const operation = await lifecycle.begin(actor, input);
+    const submission = { operationId: operation.operationId, nonceHash: input.nonceHash,
+      code: ['synthetic',randomUUID(),'consent'].join('-') };
+    await lifecycle.submit(actor, submission);
+    return { actor, input, lifecycle, operation, submission };
+  }
+
+  it('runs SP-API lifecycle admission, one-use custody, attachment, health and revocation', async () => {
+    const c = await spConsent();
+    expect(await c.lifecycle.begin(c.actor,c.input)).toMatchObject({ operationId: c.operation.operationId, state: 'queued' });
+    expect(await c.lifecycle.submit(c.actor,c.submission)).toMatchObject({ state: 'queued' });
+    const claims = await Promise.all([randomUUID(),randomUUID()].map((lease) => c.lifecycle.custody.claim(lease)));
+    const claimed = claims.filter((claim) => claim !== null);
+    expect(claimed).toHaveLength(1);
+    const claim = claimed[0]!;
+    expect(claim.code).toBe(c.submission.code);
+    expect(await c.lifecycle.custody.claim(claim.leaseId)).toBeNull();
+    const refresh = ['synthetic',randomUUID(),'grant'].join('-');
+    const completed = await c.lifecycle.custody.attach(c.operation.operationId,claim.leaseId,refresh);
+    expect(completed).toMatchObject({ state: 'completed', orgId: c.actor.orgId });
+    expect(await c.lifecycle.custody.attach(c.operation.operationId,claim.leaseId,'must-not-replace')).toEqual(completed);
+    expect(await c.lifecycle.operation(c.actor,c.operation.operationId)).toEqual(completed);
+    expect(await c.lifecycle.health(c.actor,completed.connectionId!)).toEqual({ connectionId: completed.connectionId, state: 'active', hasCredential: true });
+    expect(await getSpApiRefreshToken(database,{ orgId: c.actor.orgId,connectionId: completed.connectionId! })).toBe(refresh);
+    const serialized = JSON.stringify(completed);
+    expect(serialized).not.toContain(refresh); expect(serialized).not.toContain(c.submission.code);
+    expect(await database.sql`select id from vault.secrets where name=${'openspell:spapi-consent:' + c.operation.operationId}`).toHaveLength(0);
+    expect(await c.lifecycle.revoke(c.actor,completed.connectionId!)).toMatchObject({ state: 'revoked', hasCredential: false });
+    expect(await getSpApiRefreshToken(database,{ orgId: c.actor.orgId,connectionId: completed.connectionId! })).toBeNull();
+  });
+
+  it('refuses SP-API admission with a closed gate, mismatched identity or insufficient authority', async () => {
+    const c = await spConsent();
+    await expect(createSpApiConnectionLifecycle(database).begin(c.actor,spInstallation())).rejects.toThrow('disabled');
+    await expect(c.lifecycle.begin(c.actor,{ ...c.input, label: 'changed' })).rejects.toThrow();
+    await expect(c.lifecycle.submit(c.actor,{ ...c.submission, code: 'changed' })).rejects.toThrow(SpApiConnectionCommandError);
+    const stranger = await connectionActor();
+    expect(await c.lifecycle.operation(stranger,c.operation.operationId)).toBeNull();
+    await asUser(database,c.actor.userId,async (sql) => {
+      await expect(sql`select app.claim_spapi_connection(${randomUUID()})`).rejects.toMatchObject({ code: '42501' });
+    });
+    await database.sql`update public.org_members set role='viewer' where org_id=${c.actor.orgId} and user_id=${c.actor.userId}`;
+    expect(await c.lifecycle.custody.claim(randomUUID())).toBeNull();
+    expect(await c.lifecycle.custody.read(c.operation.operationId)).toMatchObject({ state: 'reconnect_required', reason: 'authority_changed' });
+    await expect(c.lifecycle.begin(c.actor,spInstallation())).rejects.toThrow();
+  });
+
+  it('inserts only placeholders for SP consent and refresh custody', async () => {
+    await database.sql`create table app.spapi_custody_insert_probe(value text not null)`;
+    await database.sql`create function app.spapi_custody_insert_probe() returns trigger language plpgsql as $$
+      begin insert into app.spapi_custody_insert_probe values (new.secret); return new; end;
+    $$`;
+    await database.sql`create trigger spapi_custody_insert_probe before insert on vault.secrets
+      for each row execute function app.spapi_custody_insert_probe()`;
+    try {
+      const c = await spConsent(); const claim = (await c.lifecycle.custody.claim(randomUUID()))!;
+      const refresh = ['synthetic',randomUUID(),'grant'].join('-');
+      const completed = await c.lifecycle.custody.attach(c.operation.operationId,claim.leaseId,refresh);
+      expect(await database.sql`select value from app.spapi_custody_insert_probe`).toEqual([{ value: 'pending' },{ value: 'pending' }]);
+      expect(await getSpApiRefreshToken(database,{ orgId: c.actor.orgId,connectionId: completed.connectionId! })).toBe(refresh);
+    } finally {
+      await database.sql`drop trigger spapi_custody_insert_probe on vault.secrets`;
+      await database.sql`drop function app.spapi_custody_insert_probe()`;
+      await database.sql`drop table app.spapi_custody_insert_probe`;
+    }
+  });
+
+  it('revokes only the selected SP connection and its pending reconnect', async () => {
+    const c = await spConsent(); const claim = (await c.lifecycle.custody.claim(randomUUID()))!;
+    const completed = await c.lifecycle.custody.attach(c.operation.operationId,claim.leaseId,'synthetic-grant');
+    const other = { ...spInstallation(), label: 'Other synthetic connection' };
+    const otherOperation = await c.lifecycle.begin(c.actor,other);
+    await c.lifecycle.submit(c.actor,{ operationId: otherOperation.operationId,nonceHash: other.nonceHash,code: 'other-consent' });
+    await c.lifecycle.revoke(c.actor,completed.connectionId!);
+    expect(await c.lifecycle.operation(c.actor,otherOperation.operationId)).toMatchObject({ state: 'queued' });
+    await c.lifecycle.cancel(c.actor,otherOperation.operationId);
+    const reconnect = await c.lifecycle.begin(c.actor,spInstallation());
+    await c.lifecycle.submit(c.actor,{ operationId: reconnect.operationId,nonceHash: 'a'.repeat(64),code: 'reconnect-consent' });
+    const reconnectClaim = (await c.lifecycle.custody.claim(randomUUID()))!;
+    await c.lifecycle.revoke(c.actor,completed.connectionId!);
+    expect(await c.lifecycle.custody.attach(reconnect.operationId,reconnectClaim.leaseId,'must-not-attach')).toMatchObject({ state: 'cancelled' });
+    expect(await getSpApiRefreshToken(database,{ orgId: c.actor.orgId,connectionId: completed.connectionId! })).toBeNull();
+  });
+
+  it('bounds SP custody lock waits and leaves queued consent recoverable', async () => {
+    const c = await spConsent(); const locked = await database.sql.reserve();
+    try {
+      await locked`begin`;
+      await locked`select id from app.spapi_connection_operations where id=${c.operation.operationId} for update`;
+      await expect(c.lifecycle.custody.read(c.operation.operationId)).rejects.toThrow(SpApiConnectionCommandError);
+    } finally {
+      await locked`rollback`;
+      locked.release();
+    }
+    expect(await c.lifecycle.custody.read(c.operation.operationId)).toMatchObject({ state: 'queued' });
+    await c.lifecycle.cancel(c.actor,c.operation.operationId);
+  }, 15_000);
+
+  it('rechecks membership and expiry before SP attachment and never reissues consumed consent', async () => {
+    const c = await spConsent(); const claim = (await c.lifecycle.custody.claim(randomUUID()))!;
+    await database.sql`delete from public.org_members where org_id=${c.actor.orgId} and user_id=${c.actor.userId}`;
+    expect(await c.lifecycle.custody.attach(c.operation.operationId,claim.leaseId,'synthetic')).toMatchObject({ state: 'reconnect_required', reason: 'authority_changed' });
+    const expired = await spConsent(); const second = (await expired.lifecycle.custody.claim(randomUUID()))!;
+    await database.sql`update app.spapi_connection_operations set expires_at=clock_timestamp()-interval '1 second' where id=${second.operation.operationId}`;
+    expect(await expired.lifecycle.custody.claim(randomUUID())).toBeNull();
+    expect(await expired.lifecycle.custody.read(second.operation.operationId)).toMatchObject({ state: 'reconnect_required', reason: 'exchange_uncertain' });
+    expect(await expired.lifecycle.custody.attach(second.operation.operationId,second.leaseId,'synthetic')).toMatchObject({ state: 'reconnect_required' });
+  });
+
+  it('settles the unconfigured exchange and preserves cancellation without storing a credential', async () => {
+    const c = await spConsent(); const claim = (await c.lifecycle.custody.claim(randomUUID()))!;
+    const failed = await settleSpApiConnection(database,c.operation.operationId,claim.leaseId,{ reason: 'not_configured' });
+    expect(failed).toMatchObject({ state: 'reconnect_required', reason: 'not_configured', connectionId: null });
+    expect(await c.lifecycle.custody.claim(randomUUID())).toBeNull();
+    const cancelled = await spConsent();
+    expect(await cancelled.lifecycle.cancel(cancelled.actor,cancelled.operation.operationId)).toMatchObject({ state: 'cancelled' });
+    expect(await cancelled.lifecycle.custody.claim(randomUUID())).toBeNull();
+    const rows = await database.sql`select id from public.spapi_connections where org_id in (${c.actor.orgId},${cancelled.actor.orgId})`;
+    expect(rows).toHaveLength(0);
+  });
+
+  it('reuses Ads admission and custody through the provider lifecycle', async () => {
+    const actor = await connectionActor(); const lifecycle = createAdsConnectionLifecycle(database,() => true);
+    const begin = { requestId: randomUUID(), nonceHash: 'b'.repeat(64), clientId: 'synthetic-client',
+      scope: 'synthetic-scope', redirectUri: 'https://example.test/callback' };
+    const operation = await lifecycle.begin(actor,begin);
+    await lifecycle.submit(actor,{ operationId: operation.operationId,nonceHash: begin.nonceHash,code: 'synthetic-consent' });
+    const claim = (await lifecycle.custody.claim(randomUUID()))!;
+    const attached = await lifecycle.custody.attach(operation.operationId,claim.leaseId,'synthetic-grant');
+    expect(attached.state).toBe('discovering');
+    expect(await lifecycle.operation(actor,operation.operationId)).toEqual(attached);
+    expect(await lifecycle.health(actor,attached.connectionId!)).toMatchObject({ state: 'active',hasCredential: true });
+    expect(await lifecycle.revoke(actor,attached.connectionId!)).toMatchObject({ state: 'revoked',hasCredential: false });
+  });
+
 });

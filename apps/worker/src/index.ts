@@ -29,3 +29,9 @@ export * from './unified-reporting-store.js';
 export * from './worker.js';
 
 export const PACKAGE_NAME = '@wizard-ads/worker' as const;
+
+export * from './ingestion-registry.js';
+export * from './ingestion-sources.js';
+export * from './spapi-connections.js';
+export * from './integration-sources.js';
+export * from './provider-connection-loop.js';

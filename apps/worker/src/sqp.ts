@@ -1,3 +1,4 @@
+import { PermanentJobError } from './permanent-job-error.js';
 /**
  * Weekly SP-API Search Query Performance workflow.
  *
@@ -39,6 +40,9 @@ import {
   type SqpWeeklyFact,
 } from '@wizard-ads/shared';
 import {
+  SpApiAmbiguousOutcome,
+  SpApiAuthError,
+  SpApiError,
   parseSqpReport,
   planSqpReportRequests,
   SQP_REPORT_TYPE,
@@ -66,7 +70,7 @@ export interface SqpReportApi {
   downloadReportDocument(document: SpApiReportDocument): Promise<unknown>;
 }
 
-type SqpBatchStatus = 'planned' | 'requested' | 'ready' | 'empty';
+type SqpBatchStatus = 'creating' | 'planned' | 'requested' | 'ready' | 'empty';
 
 export interface SqpBatchCheckpoint {
   requestKey: string;
@@ -163,6 +167,8 @@ export interface PendingSqpWorkflowResult {
 }
 
 export interface CompletedSqpWorkflowResult {
+  /** Stable provider-completion observation; older checkpoints may omit it. */
+  observedAt?: string;
   status: 'completed';
   runKey: string;
   reused: boolean;
@@ -189,7 +195,7 @@ export interface CompletedSqpWorkflowResult {
 
 export type SqpWorkflowResult = PendingSqpWorkflowResult | CompletedSqpWorkflowResult;
 
-export class SqpWorkflowPermanentError extends Error {
+export class SqpWorkflowPermanentError extends PermanentJobError {
   constructor(message: string) {
     super(message);
     this.name = 'SqpWorkflowPermanentError';
@@ -219,19 +225,46 @@ export async function runSqpRequestWorkflow(
     return { ...checkpoint.completed, reused: true };
   }
 
+  if (checkpoint.batches.some((batch) => batch.status === 'creating')) {
+    throw new SpApiAmbiguousOutcome('checkpoint');
+  }
   for (const batch of checkpoint.batches) {
     if (batch.status !== 'planned') continue;
     await dependencies.providerGate.beforeCall('create_report', batch.requestKey);
-    const requestedAt = workflowNow(dependencies).toISOString();
-    const createdReport = await dependencies.api.createReport(batch.plan.request);
-    if (!createdReport.reportId) {
-      throw new SqpWorkflowPermanentError('SP-API created an SQP report without an id');
+    batch.requestedAt = workflowNow(dependencies).toISOString();
+    batch.status = 'creating';
+    // Durable intent precedes the non-idempotent POST. A resumed intent is quarantined.
+    await dependencies.checkpoints.save(checkpoint);
+    let createdReport: { reportId: string };
+    try {
+      createdReport = await dependencies.api.createReport(batch.plan.request);
+    } catch (error) {
+      if (error instanceof SpApiAuthError ||
+        (error instanceof SpApiError && error.status >= 400 && error.status < 500 && error.status !== 408)) {
+        // A definite rejection permits another queue attempt, after durable reset.
+        batch.status = 'planned';
+        batch.requestedAt = null;
+        await dependencies.checkpoints.save(checkpoint);
+        throw error;
+      }
+      throw error instanceof SpApiAmbiguousOutcome ? error : new SpApiAmbiguousOutcome('transport');
     }
+    if (!createdReport.reportId) throw new SpApiAmbiguousOutcome('response-decoding');
     batch.reportId = createdReport.reportId;
     batch.status = 'requested';
     batch.createdByWorkflow = true;
-    batch.requestedAt = requestedAt;
-    await dependencies.checkpoints.save(checkpoint);
+    try { await dependencies.checkpoints.save(checkpoint); }
+    catch {
+      let confirmed: SqpWorkflowCheckpoint | null;
+      try {
+        confirmed = await dependencies.checkpoints.load(runKey);
+        if (confirmed !== null) validateCheckpoint(confirmed, payload, plans);
+      } catch { confirmed = null; }
+      const saved = confirmed?.batches.find((row) => row.requestKey === batch.requestKey);
+      if (saved?.status !== 'requested' || saved.reportId !== batch.reportId || saved.requestedAt !== batch.requestedAt) {
+        throw new SpApiAmbiguousOutcome('provider-id-persistence');
+      }
+    }
   }
 
   for (const batch of checkpoint.batches) {
@@ -410,6 +443,8 @@ export async function runSqpRequestWorkflow(
     value: row.searchQueryVolume,
   })));
   const result: CompletedSqpWorkflowResult = {
+    observedAt: sourceReports.reduce((latest, report) => report.completedAt > latest ? report.completedAt : latest,
+      sourceReports[0]!.completedAt).toISOString(),
     status: 'completed',
     runKey,
     reused: false,
@@ -765,11 +800,13 @@ function validateCheckpoint(
   }
   for (const batch of checkpoint.batches) {
     if (
-      !['planned', 'requested', 'ready', 'empty'].includes(batch.status) ||
+      !['planned', 'creating', 'requested', 'ready', 'empty'].includes(batch.status) ||
       typeof batch.createdByWorkflow !== 'boolean' ||
       (batch.status === 'planned' && (batch.reportId !== null || batch.reportDocumentId !== null)) ||
       (batch.status === 'planned' &&
         (batch.requestedAt !== null || batch.providerCreatedAt !== null || batch.completedAt !== null)) ||
+      (batch.status === 'creating' && (batch.reportId !== null || batch.reportDocumentId !== null ||
+        batch.requestedAt === null || batch.completedAt !== null || batch.createdByWorkflow)) ||
       (batch.status === 'requested' && (batch.reportId === null || batch.requestedAt === null)) ||
       (batch.status === 'requested' && batch.completedAt !== null) ||
       (batch.status === 'ready' &&

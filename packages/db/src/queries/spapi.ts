@@ -1,3 +1,9 @@
+import {
+  SpApiConnectionBegin, SpApiConnectionSubmit, SpApiConnectionOperation, SpApiConnectionClaim, Uuid,
+  type ProviderConnectionLifecycle,
+} from '@wizard-ads/shared';
+import { withAuthenticatedActor } from './authenticated-actor.js';
+import { providerConnectionHealth } from './connections.js';
 /**
  * SP-API authorization metadata and weekly SQP scheduling inputs.
  *
@@ -6,7 +12,7 @@
  * the service role and therefore bypasses RLS.
  */
 import type { Region } from '@wizard-ads/shared';
-import type { DbHandle } from '../client.js';
+import type { DbHandle, QuerySql } from '../client.js';
 
 export interface SpApiConnectionRecord {
   id: string;
@@ -328,4 +334,104 @@ export async function listSqpScheduleScopes(
       refusedRows,
     };
   });
+}
+
+/** No bound code, refresh value, query parameters or raw cause escapes this boundary. */
+export class SpApiConnectionCommandError extends Error {
+  override readonly name = 'SpApiConnectionCommandError';
+  constructor() { super('SP-API connection command could not be completed'); }
+}
+
+function spApiOperation(rows: { result: unknown }[]): SpApiConnectionOperation {
+  if (rows.length !== 1) throw new SpApiConnectionCommandError();
+  return SpApiConnectionOperation.parse(rows[0]!.result);
+}
+
+/** Bound custody commands; uncertain claims and attachments are never retried. */
+async function spApiConnectionCommand<T>(handle: Pick<DbHandle, 'sql'>, run: (sql: QuerySql) => Promise<T>): Promise<T> {
+  try {
+    const result = await handle.sql.begin(async (sql) => {
+      await sql`set local statement_timeout = '10s'`;
+      await sql`set local lock_timeout = '3s'`;
+      return { value: await run(sql) };
+    });
+    return result.value;
+  } catch { throw new SpApiConnectionCommandError(); }
+}
+
+export function createSpApiConnectionLifecycle(
+  handle: Pick<DbHandle, 'sql'>,
+  enabled: () => boolean = () => false,
+): ProviderConnectionLifecycle<SpApiConnectionBegin, SpApiConnectionSubmit, SpApiConnectionOperation, SpApiConnectionClaim> {
+  const gate = (): void => { if (!enabled()) throw new Error('Provider connections are disabled'); };
+  return {
+    provider: 'amazon_spapi',
+    begin: async (actor, raw) => {
+      gate();
+      const { requestId, nonceHash, ...installation } = SpApiConnectionBegin.parse(raw);
+      return withAuthenticatedActor(handle, actor, async (sql) => spApiOperation(await sql<{ result: unknown }[]>`
+        select app.begin_spapi_connection(${actor.orgId},${requestId},${nonceHash},${JSON.stringify(installation)}::jsonb) as result
+      `));
+    },
+    submit: async (actor, raw) => {
+      gate();
+      try {
+        const input = SpApiConnectionSubmit.parse(raw);
+        return await withAuthenticatedActor(handle, actor, async (sql) => spApiOperation(await sql<{ result: unknown }[]>`
+          select app.submit_spapi_connection(${actor.orgId},${input.operationId},${input.nonceHash},${input.code}) as result
+        `));
+      } catch { throw new SpApiConnectionCommandError(); }
+    },
+    cancel: (actor, operationId) => {
+      const id = Uuid.parse(operationId);
+      return withAuthenticatedActor(handle, actor, async (sql) => spApiOperation(await sql<{ result: unknown }[]>`
+        select app.cancel_spapi_connection(${actor.orgId},${id}) as result
+      `));
+    },
+    operation: (actor, operationId) => {
+      const id = Uuid.parse(operationId);
+      return withAuthenticatedActor(handle, actor, async (sql) => {
+        const rows = await sql<{ result: unknown }[]>`select app.read_spapi_connection(${actor.orgId},${id}) as result`;
+        if (rows.length !== 1) throw new SpApiConnectionCommandError();
+        return rows[0]!.result === null ? null : SpApiConnectionOperation.parse(rows[0]!.result);
+      });
+    },
+    health: (actor, id) => providerConnectionHealth(handle, actor, 'amazon_spapi', id),
+    revoke: (actor, id) => providerConnectionHealth(handle, actor, 'amazon_spapi', id, true),
+    custody: {
+      claim: async (leaseId) => {
+        try {
+          const lease = Uuid.parse(leaseId);
+          return await spApiConnectionCommand(handle, async (sql) => {
+            const rows = await sql<{ result: unknown }[]>`select app.claim_spapi_connection(${lease}) as result`;
+            if (rows.length !== 1) throw new SpApiConnectionCommandError();
+            return rows[0]!.result === null ? null : SpApiConnectionClaim.parse(rows[0]!.result);
+          });
+        } catch { throw new SpApiConnectionCommandError(); }
+      },
+      read: async (operationId) => {
+        try {
+          const id = Uuid.parse(operationId);
+          return await spApiConnectionCommand(handle, async (sql) =>
+            spApiOperation(await sql<{ result: unknown }[]>`select app.read_spapi_connection_worker(${id}) as result`));
+        } catch { throw new SpApiConnectionCommandError(); }
+      },
+      attach: (id, lease, refresh) => settleSpApiConnection(handle, id, lease, { refresh }),
+    },
+  };
+}
+
+export async function settleSpApiConnection(
+  handle: Pick<DbHandle, 'sql'>, operationId: string, leaseId: string,
+  outcome: { refresh: string } | { reason: 'not_configured' | 'exchange_uncertain' | 'exchange_refused' },
+): Promise<SpApiConnectionOperation> {
+  try {
+    const id = Uuid.parse(operationId); const lease = Uuid.parse(leaseId);
+    const refresh = 'refresh' in outcome ? outcome.refresh : null;
+    const reason = 'reason' in outcome ? outcome.reason : null;
+    if (refresh !== null && (refresh.length === 0 || refresh.length > 65_536)) throw new SpApiConnectionCommandError();
+    return await spApiConnectionCommand(handle, async (sql) => spApiOperation(await sql<{ result: unknown }[]>`
+      select app.settle_spapi_connection(${id},${lease},${refresh},${reason}) as result
+    `));
+  } catch { throw new SpApiConnectionCommandError(); }
 }

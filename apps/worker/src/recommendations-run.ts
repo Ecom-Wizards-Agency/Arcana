@@ -118,6 +118,10 @@ export class RecommendationPreviewError extends Error {
 
 /** A retry cannot repair persisted run evidence that no longer closes exactly. */
 export class RecommendationScopeIntegrityError extends RecommendationPreviewError {
+  readonly provider = 'worker';
+  readonly kind = 'scope_integrity';
+  readonly retryable = false;
+  readonly retryAfterSeconds = undefined;
   override readonly name: string = 'RecommendationScopeIntegrityError';
 
   constructor(message = 'Recommendation preview evidence failed its integrity check.') {
@@ -127,6 +131,10 @@ export class RecommendationScopeIntegrityError extends RecommendationPreviewErro
 
 /** The executing queue claim is not the immutable job linked to this run. */
 export class RecommendationExecutionCustodyError extends RecommendationPreviewError {
+  readonly provider = 'worker';
+  readonly kind = 'execution_custody';
+  readonly retryable = false;
+  readonly retryAfterSeconds = undefined;
   override readonly name: string = 'RecommendationExecutionCustodyError';
 
   constructor(message = 'Recommendation execution does not own the linked queue job.') {

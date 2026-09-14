@@ -1,3 +1,5 @@
+// Serialized immutable deployment boundary for ingestion lane 'evo-recommendation'.
+// apps/worker/src/ingestion-registry.test.ts checks parity with source descriptors.
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 

@@ -1,3 +1,4 @@
+import { ingestionLaneJobTypes } from './ingestion-sources.js';
 import { Uuid, type JobType } from '@wizard-ads/shared';
 
 /**
@@ -5,33 +6,16 @@ import { Uuid, type JobType } from '@wizard-ads/shared';
  * activated. Keep this list stable so a source deploy alone cannot strand
  * reporting work.
  */
-export const DEFAULT_VERCEL_CRON_JOB_TYPES = [
-  'entity.sync',
-  'report.request',
-  'report.poll',
-  'report.fetch',
-  'recommendations.run',
-] as const satisfies readonly JobType[];
+export const DEFAULT_VERCEL_CRON_JOB_TYPES = ingestionLaneJobTypes('vercel-default');
 
 /** Queue types Vercel retains after the report lane is active on Evo. */
-export const REDUCED_VERCEL_CRON_JOB_TYPES = [
-  'entity.sync',
-  'recommendations.run',
-] as const satisfies readonly JobType[];
+export const REDUCED_VERCEL_CRON_JOB_TYPES = ingestionLaneJobTypes('vercel-reduced');
 
 /** The complete and exclusive queue surface of the Evo report runtime. */
-export const EVO_REPORT_LANE_JOB_TYPES = [
-  'creative.sync',
-  'report.request',
-  'report.poll',
-  'report.fetch',
-] as const satisfies readonly JobType[];
+export const EVO_REPORT_LANE_JOB_TYPES = ingestionLaneJobTypes('evo-report');
 
 /** The report lane may claim this expanded set only while WP-181 is explicitly enabled. */
-export const UNIFIED_EVO_REPORT_LANE_JOB_TYPES = [
-  ...EVO_REPORT_LANE_JOB_TYPES,
-  'report.unified.advance',
-] as const satisfies readonly JobType[];
+export const UNIFIED_EVO_REPORT_LANE_JOB_TYPES = ingestionLaneJobTypes('evo-report-unified');
 
 export const CREATIVE_SYNC_PROFILE_ALLOWLIST_ENV =
   'OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST' as const;

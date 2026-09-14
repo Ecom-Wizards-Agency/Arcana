@@ -1,3 +1,4 @@
+import type { ProviderFailure } from '@wizard-ads/shared';
 /**
  * The one place an HTTP request leaves this package.
  *
@@ -69,7 +70,11 @@ export interface HttpResult {
 export type HttpAttemptPhase = 'headers' | 'fetch' | 'body';
 
 /** Identifies the failed stage without classifying an HTTP status. */
-export class HttpAttemptError extends Error {
+export class HttpAttemptError extends Error implements ProviderFailure {
+  readonly provider = 'amazon_ads';
+  readonly kind = 'HttpAttemptError';
+  readonly retryable = true;
+  readonly retryAfterSeconds = undefined;
   override readonly name = 'HttpAttemptError';
 
   constructor(
@@ -81,7 +86,11 @@ export class HttpAttemptError extends Error {
 }
 
 /** Raised before a response can exceed the caller's in-memory bound. */
-export class HttpResponseTooLargeError extends Error {
+export class HttpResponseTooLargeError extends Error implements ProviderFailure {
+  readonly provider = 'amazon_ads';
+  readonly kind = 'HttpResponseTooLargeError';
+  readonly retryable = false;
+  readonly retryAfterSeconds = undefined;
   override readonly name = 'HttpResponseTooLargeError';
 
   constructor(

@@ -159,6 +159,9 @@ export interface SbVideoContractProbeClient {
 }
 
 export class AdsApiRetryableError extends Error {
+  readonly provider = 'amazon_ads';
+  readonly kind = 'retryable_job';
+  readonly retryable = true;
   constructor(message: string, readonly retryAfterSeconds?: number) {
     super(message);
     this.name = 'AdsApiRetryableError';
@@ -179,6 +182,10 @@ export class DownloadUrlExpiredError extends AdsApiRetryableError {
  * provider response can echo account-scoped request data.
  */
 export class ReportCreateOutcomeUnknownError extends Error {
+  readonly provider = 'amazon_ads';
+  readonly kind = 'ambiguous_outcome';
+  readonly retryable = false;
+  readonly retryAfterSeconds = undefined;
   override readonly name = 'ReportCreateOutcomeUnknownError';
 
   constructor(

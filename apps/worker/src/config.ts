@@ -30,6 +30,8 @@ export interface WorkerConfig {
   startsBackgroundPasses: boolean;
   /** Default off until the connection schema and this worker are installed. */
   amazonConnectionsEnabled: boolean;
+  spApiConnectionsEnabled: boolean;
+  spApiConnectionRedirects: readonly string[];
   sbKeywordSyncEnabled: boolean;
   /** Default-off WP-181 cohort. Account bindings remain database-owned. */
   unifiedReporting: UnifiedReportingDualRunPolicy;
@@ -112,6 +114,11 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
   );
   const unifiedReporting = resolveUnifiedReportingDualRunPolicy(env, deployment);
   const amazonConnectionsEnabled = env['OPENSPELL_AMAZON_CONNECTIONS_ENABLED'] === '1';
+  const spApiConnectionsEnabled = env['OPENSPELL_SPAPI_CONNECTIONS_ENABLED'] === '1';
+  const spApiConnectionRedirects = (env['SP_API_OAUTH_ALLOWED_REDIRECT_URIS'] ?? '').split(',').map((value) => value.trim()).filter(Boolean);
+  if (spApiConnectionsEnabled && (deployment.role !== 'general' || !spApiClientId || !spApiClientSecret || spApiConnectionRedirects.length === 0)) {
+    throw new Error('SP-API connections require a general worker, application credentials and allowed callbacks');
+  }
   if (amazonConnectionsEnabled && (deployment.role !== 'general'
     || (deployment.jobTypes !== undefined && !deployment.jobTypes.includes('entity.sync')))) {
     throw new Error('Amazon connections require a general worker with entity synchronization');
@@ -130,6 +137,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     revision: workerRevisionFromEnv(env),
     startsBackgroundPasses: deployment.startsBackgroundPasses,
     amazonConnectionsEnabled,
+    spApiConnectionsEnabled,
+    spApiConnectionRedirects,
     sbKeywordSyncEnabled: sbKeywordSyncEnabledFromEnv(env),
     unifiedReporting,
     crosscheckInboxDir: env['CROSSCHECK_INBOX_DIR'] || undefined,

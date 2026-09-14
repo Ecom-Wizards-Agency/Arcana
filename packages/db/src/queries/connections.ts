@@ -1,3 +1,11 @@
+import {
+  ConnectionProvider, ProviderConnectionHealth, Uuid,
+  type AmazonConnectionBegin, type AmazonConnectionSubmit, type AmazonConnectionOperation,
+  type AmazonConnectionClaim, type ProviderConnectionLifecycle, type OrgActor,
+} from '@wizard-ads/shared';
+import { withAuthenticatedActor } from './authenticated-actor.js';
+import { beginAmazonConnection, submitAmazonConnection, cancelAmazonConnection, readAmazonConnection } from './amazon-connection-operations.js';
+import { claimAmazonConnection, readAmazonConnectionWorker, attachAmazonConnectionGrant } from './amazon-connection-worker.js';
 /**
  * Connection lookups the worker needs to build an Amazon client.
  *
@@ -81,4 +89,51 @@ export async function getConnectionCredentialBinding(
   `;
   if (rows.length > 1) throw new Error('Connection credential binding count mismatch');
   return rows[0] ? AdsConnectionCredentialBinding.parse(rows[0].binding) : null;
+}
+
+/** Provider-neutral application seam; worker custody remains service-role protected. */
+export function createAdsConnectionLifecycle(
+  handle: Pick<DbHandle, 'sql'>,
+  enabled: () => boolean = () => false,
+): ProviderConnectionLifecycle<AmazonConnectionBegin, AmazonConnectionSubmit, AmazonConnectionOperation, AmazonConnectionClaim> {
+  const gate = (): void => { if (!enabled()) throw new Error('Provider connections are disabled'); };
+  return {
+    provider: 'amazon_ads',
+    begin: (actor, input) => { gate(); return beginAmazonConnection(handle, actor, input); },
+    submit: (actor, input) => { gate(); return submitAmazonConnection(handle, actor, input); },
+    cancel: (actor, id) => cancelAmazonConnection(handle, actor, id),
+    operation: (actor, id) => readAmazonConnection(handle, actor, id),
+    health: (actor, id) => providerConnectionHealth(handle, actor, 'amazon_ads', id, false),
+    revoke: (actor, id) => providerConnectionHealth(handle, actor, 'amazon_ads', id, true),
+    custody: {
+      claim: (lease) => claimAmazonConnection(handle, lease),
+      read: (id) => readAmazonConnectionWorker(handle, id),
+      attach: (id, lease, refresh) => attachAmazonConnectionGrant(handle, id, lease, refresh),
+    },
+  };
+}
+
+/** Fixed metadata only, under current-user RLS and the command's manager lock. */
+export async function providerConnectionHealth(
+  handle: Pick<DbHandle, 'sql'>, actor: OrgActor, provider: ConnectionProvider,
+  connectionId: string, revoke = false,
+): Promise<ProviderConnectionHealth | null> {
+  const id = Uuid.parse(connectionId);
+  const parsedProvider = ConnectionProvider.parse(provider);
+  const result = await withAuthenticatedActor(handle, actor, async (sql) => {
+    const rows = await sql<{ result: unknown }[]>`
+      select app.provider_connection_health(${actor.orgId},${parsedProvider},${id},${revoke}) as result
+    `;
+    if (rows.length !== 1) throw new Error('Provider connection health count mismatch');
+    return rows[0]!.result === null ? null : ProviderConnectionHealth.parse(rows[0]!.result);
+  });
+  if (revoke && result !== null && parsedProvider === 'amazon_spapi') {
+    // The operator command has already closed credential reads. Cleanup can only
+    // touch that exact revoked connection; it cannot revoke a replacement grant.
+    const rows = await handle.sql<{ cleaned: boolean }[]>`
+      select app.clean_revoked_spapi_credential(${actor.orgId},${id}) as cleaned
+    `;
+    if (rows.length !== 1 || rows[0]?.cleaned !== true) throw new Error('Provider revocation cleanup could not be verified');
+  }
+  return result;
 }
