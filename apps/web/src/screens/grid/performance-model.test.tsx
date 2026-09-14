@@ -11,6 +11,15 @@ const rows: GridRow[] = ([
 ] as const).map(([id, asin, verdict, spend]) => ({ id: String(id), currencyCode: 'USD', dimensions: { targeting: String(id), asin, verdict }, totals: { spend: Number(spend), sales: 100, clicks: 10, impressions: 100, orders: 1, units: 1 }, comparison: null }));
 const filter: FilterSet = { groups: [{ filters: [{ key: 'TARGETING', conditions: [{ operator: '=', values: ['a'] }] }] }] };
 describe('performance population', () => {
+  it.each(['50%', '50 %', '50,0 %'])('retains both equal spend contributors at the displayed boundary: %s', (value) => {
+    const population = rows.slice(0, 2).map((item) => ({ ...item, totals: { ...item.totals, spend: 50 } }));
+    for (const operator of ['>=', '='] as const) {
+      const model = buildPerformanceModel(population, { filter: { groups: [{ filters: [{ key: 'SPEND_SHARE', conditions: [{ operator, values: [value] }] }] }] } }).model;
+      expect(model.matchedRows.map((item) => item.id)).toEqual(['a', 'b']);
+      expect(model.rows.map((item) => item.dimensions['spend_share'])).toEqual([0.5, 0.5]);
+      expect(resolveField(model.totalsRow!, 'spend')).toBe(100);
+    }
+  });
   it('counts chips without shaping rows while retaining OR, lowercase verdict and percentage semantics', () => {
     const filters: FilterSet[] = [filter,
       { groups: [{ filters: [{ key: 'verdict', conditions: [{ values: ['efficient'] }] }] }, ...filter.groups] },

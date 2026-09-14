@@ -122,9 +122,20 @@ function scaleInputValue(columnId: string, raw: number): number {
 
 function toNumber(value: string | undefined): number | null {
   if (value === undefined) return null;
-  const trimmed = value.trim().replace(/[%,]/g, '');
-  if (trimmed === '') return null;
-  const parsed = Number(trimmed);
+  let normalized = value.trim().replace(/%$/, '').trim();
+  // Without a locale, a trailing three-digit comma group means thousands.
+  // Mixed separators must form valid groups; the last separator is decimal.
+  if (normalized.includes(',')) {
+    if (normalized.includes('.')) {
+      if (/^[+-]?\d+(?:\.\d{3})+,\d+$/.test(normalized)) normalized = normalized.replaceAll('.', '').replace(',', '.');
+      else if (/^[+-]?\d+(?:,\d{3})+\.\d+$/.test(normalized)) normalized = normalized.replaceAll(',', '');
+      else return null;
+    } else if (/^[+-]?\d+(?:,\d{3})+$/.test(normalized)) normalized = normalized.replaceAll(',', '');
+    else if (/^[+-]?\d*,\d+$/.test(normalized)) normalized = normalized.replace(',', '.');
+    else return null;
+  }
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(normalized)) return null;
+  const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
