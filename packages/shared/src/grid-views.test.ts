@@ -72,6 +72,9 @@ describe('lossless grid row columns', () => {
     expect(() => decodeGridRowColumns({ ...encoded, comparison: { ...encoded.comparison, spend: [null, null] } })).toThrow();
     expect(() => decodeGridRowColumns({ ...encoded, tags: { 2: [] } })).toThrow();
     expect(decodeGridRowColumns(encodeGridRowColumns([]))).toEqual([]);
+  });
+});
+
 const target = {
   series: { bid: true, realisedCpc: true, suggestedBand: true, maxCpc: false, dailySpend: true, acos: true },
   maxCpcExpanded: true,
