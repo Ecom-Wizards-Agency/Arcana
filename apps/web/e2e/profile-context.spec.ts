@@ -11,7 +11,7 @@ import { signIn } from './support/auth';
 import { readState } from './support/fixture';
 
 const ACCOUNT_SURFACES = [
-  { route: '/', heading: 'Dashboard' },
+  { route: '/', heading: 'Home' },
   { route: '/grid?entity=campaigns', heading: 'Campaigns' },
   { route: '/optimizer', heading: 'Campaign Optimizer' },
   { route: '/creative', heading: 'Creative Performance' },
@@ -32,7 +32,7 @@ test(
 
     for (const surface of ACCOUNT_SURFACES) {
       await page.goto(surface.route);
-      await expect(page.getByRole('heading', { name: surface.heading, exact: true })).toBeVisible();
+      await expect(surface.route === '/' ? page.getByTestId('shell-title') : page.getByRole('heading', { name: surface.heading, exact: true })).toBeVisible();
 
       const url = new URL(page.url());
       expect(url.searchParams.get('profile')).toBe(fixtureProfileId);
@@ -43,7 +43,8 @@ test(
       await expect(switcher).not.toContainText('All profiles');
       const activeAccount = (await switcher.locator('strong').innerText()).trim();
       expect(activeAccount).not.toBe('');
-      await expect(page.locator('#wa-main')).toContainText(activeAccount);
+      if (surface.route === '/') await expect(page.locator('main.wa-home')).toHaveAttribute('data-profile-id', fixtureProfileId);
+      else await expect(page.locator('#wa-main')).toContainText(activeAccount);
       verified.push(url.pathname);
     }
 
@@ -73,7 +74,7 @@ test('sidebar, date, entity, back and forward stay in one document and retain th
   await signIn(page, 'admin');
   const { fixtureProfileId } = await readState();
   await page.goto(`/?profile=${fixtureProfileId}`);
-  await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+  await expect(page.getByTestId('shell-title')).toBeVisible();
 
   await page.evaluate(() => {
     (window as Window & { __openspellDocumentMarker?: string }).__openspellDocumentMarker = 'same-document';
@@ -104,7 +105,7 @@ test('sidebar, date, entity, back and forward stay in one document and retain th
   await expect(page.getByRole('heading', { name: 'Search terms', exact: true })).toBeVisible();
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
   await page.goBack();
-  await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+  await expect(page.getByTestId('shell-title')).toBeVisible();
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
   await page.goForward();
   await expect(page.getByRole('heading', { name: 'Search terms', exact: true })).toBeVisible();

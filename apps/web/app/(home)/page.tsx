@@ -1,4 +1,4 @@
-import { descriptor } from '../../src/screens/cockpit/descriptor';
+import { descriptor } from '../../src/screens/home';
 import { pageRead } from '../../src/server/page-read';
 import type { ScreenSearchParams } from '../../src/screens/types';
 

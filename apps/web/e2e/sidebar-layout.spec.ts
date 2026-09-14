@@ -49,7 +49,7 @@ async function openDashboard(page: Page): Promise<void> {
   await signIn(page, 'admin');
   const { fixtureProfileId } = await readState();
   await page.goto(`/?profile=${fixtureProfileId}`);
-  await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+  await expect(page.getByTestId('shell-title')).toBeVisible();
 }
 
 /**

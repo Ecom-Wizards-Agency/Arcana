@@ -163,3 +163,33 @@ export async function loadCampaignDailyRows(
     orders: Number(row.orders),
   }));
 }
+
+/** Latest reading in each of two completed seven-day windows, per keyword/product. */
+export async function loadHomeRankWatch(
+  handle: QueryHandle, orgId: string, profileId: string, asOf: string,
+) {
+  const rows = await handle.sql<{
+    asin: string; keyword: string; currentRank: number | null; previousRank: number | null;
+    currentDate: string; previousDate: string | null; movement: number | null;
+  }[]>`
+    with current_week as (
+      select distinct on (asin, keyword) asin, keyword, organic_rank, observed_on
+      from public.rank_observations
+      where org_id = ${orgId} and profile_id = ${profileId}
+        and observed_on between ${asOf}::date - 6 and ${asOf}::date
+      order by asin, keyword, observed_on desc, id desc
+    ), previous_week as (
+      select distinct on (asin, keyword) asin, keyword, organic_rank, observed_on
+      from public.rank_observations
+      where org_id = ${orgId} and profile_id = ${profileId}
+        and observed_on between ${asOf}::date - 13 and ${asOf}::date - 7
+      order by asin, keyword, observed_on desc, id desc
+    )
+    select c.asin, c.keyword, c.organic_rank as "currentRank", p.organic_rank as "previousRank",
+      c.observed_on::text as "currentDate", p.observed_on::text as "previousDate",
+      p.organic_rank - c.organic_rank as movement
+    from current_week c left join previous_week p using (asin, keyword)
+    order by abs(p.organic_rank - c.organic_rank) desc nulls last, c.asin, c.keyword
+  `;
+  return [...rows];
+}

@@ -130,17 +130,18 @@ test('creative exposes all date presets and preserves canonical account scope', 
   });
 });
 
-test('legacy strategy links land on the dashboard operating status', async ({ page }) => {
+test('legacy strategy links land on Home without the retired operating status block', async ({ page }) => {
   const { fixtureProfileId } = await readState();
   await page.goto(`/strategy?profile=${fixtureProfileId}`);
 
-  await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+  await expect(page.getByTestId('shell-title')).toBeVisible();
   await page.waitForURL((url) => (
     url.pathname === '/'
       && url.searchParams.get('profile') === fixtureProfileId
       && url.hash === '#operating-status'
   ));
-  const destination = page.locator('#operating-status');
+  await expect(page.locator('#operating-status')).toHaveCount(0);
+  const destination = page.getByLabel('Performance summary');
   await expect(destination).toBeVisible();
   await expect(destination).toBeInViewport();
 });
