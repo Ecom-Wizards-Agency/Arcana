@@ -43,6 +43,7 @@ import { descriptor as strategy } from './strategy/descriptor';
 import { descriptor as sync_status } from './sync-status/descriptor';
 import { descriptor as tags } from './tags/descriptor';
 import { descriptor as targets } from './targets/descriptor';
+import { descriptor as targets_queue } from './targets/queue/descriptor';
 import { descriptor as time_machine } from './time-machine/descriptor';
 import { descriptor as timeline } from './timeline/descriptor';
 import { descriptor as translation_status } from './translation-status/descriptor';
@@ -92,6 +93,7 @@ export const SCREEN_REGISTRY: readonly ScreenMetadata[] = [
   sync_status,
   tags,
   targets,
+  targets_queue,
   time_machine,
   timeline,
   translation_status,

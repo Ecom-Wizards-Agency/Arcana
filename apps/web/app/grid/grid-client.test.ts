@@ -661,8 +661,12 @@ it('restores URL before an asynchronous local layout and replaces history on cha
   expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('true');
   const density = host.querySelector<HTMLSelectElement>('[aria-label="Row density"]')!;
   expect(density.value).toBe('compact');
+  const target = { series: { bid:true,realisedCpc:false,suggestedBand:true,maxCpc:true,dailySpend:true,acos:true },maxCpcExpanded:true };
+  act(() => window.dispatchEvent(new CustomEvent('arcana:target-view', { detail: serializeGridView({ ...shared,target }) })));
+
   act(() => { density.value = 'comfortable'; density.dispatchEvent(new Event('change', { bubbles: true })); });
   expect(parseGridView(new URL(window.location.href).searchParams.get('view'))?.density).toBe('comfortable');
+  expect(parseGridView(new URL(window.location.href).searchParams.get('view'))?.target).toEqual(target);
   expect(pushes).not.toHaveBeenCalled();
   expect(replacements).toHaveBeenCalled();
   const link = host.querySelector<HTMLAnchorElement>('a[href^="/targets/"]')!;

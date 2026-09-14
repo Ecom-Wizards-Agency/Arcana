@@ -17,6 +17,8 @@ export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
   {"domain": "queries/translation", "contract": null, "schema": null, "queries": "queries/translation.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 101, "clause": "*", "after": ""}]},
   {"domain": "schema/market-position", "contract": null, "schema": "schema/market-position.ts", "queries": null, "migrationPrefix": null, "exports": [{"barrel": "schema/index.ts", "order": 100, "clause": "*", "after": ""}]},
   {"domain": "queries/market-position", "contract": null, "schema": null, "queries": "queries/market-position.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 100, "clause": "*", "after": ""}]},
+  {domain: "queries/queued-changes", contract: null, schema: null, queries: "queries/queued-changes.ts", migrationPrefix: null, exports: [{barrel: "index.ts", order: 90, clause: "*", after: ""}]},
+  {domain: "schema/queued-changes", contract: null, schema: "schema/queued-changes.ts", queries: null, migrationPrefix: "20260915160000", exports: [{barrel: "schema/index.ts", order: 90, clause: "*", after: ""}]},
   {"domain": "campaign-creation-previews", "contract": null, "schema": null, "queries": "campaign-creation-previews.ts", "migrationPrefix": null, "exports": []},
   {"domain": "client", "contract": null, "schema": null, "queries": "client.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 0, "clause": "*", "after": ""}]},
   {"domain": "mcp-writes", "contract": null, "schema": null, "queries": "mcp-writes.ts", "migrationPrefix": null, "exports": []},

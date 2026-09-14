@@ -26,6 +26,9 @@ function routePath(file: string): string {
 }
 const filesByPath = new Map(pageFiles(app).map((file) => [routePath(file), file]));
 const physical = SCREEN_REGISTRY.filter((screen) => screen.route === 'page' || screen.route === 'redirect');
+function descriptorId(file: string): string | undefined {
+  return existsSync(file) ? /(?:\bid|['"]id['"])\s*:\s*(['"])([^'"]+)\1/.exec(readFileSync(file, 'utf8'))?.[2] : undefined;
+}
 
 describe('screen registry conservation', () => {
   it('keeps the generated runtime metadata equal to every descriptor without importing screen implementations', () => {
@@ -50,9 +53,15 @@ describe('screen registry conservation', () => {
     expect(physical.map((screen) => screen.path).sort()).toEqual(paths);
     expect(new Set(physical.map((screen) => screen.path)).size).toBe(paths.length);
     expect(new Set(SCREEN_REGISTRY.map((screen) => screen.id)).size).toBe(SCREEN_REGISTRY.length);
-    const modules = readdirSync(fileURLToPath(new URL('.', import.meta.url)), { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && existsSync(new URL(`./${entry.name}/descriptor.ts`, import.meta.url)))
-      .map((entry) => entry.name).sort();
+    function descriptorIds(directory: string): string[] {
+      return readdirSync(directory, { withFileTypes: true }).filter((entry) => entry.isDirectory()).flatMap((entry) => {
+        const child = join(directory, entry.name);
+        const file = join(child, 'descriptor.ts');
+        const id = descriptorId(file);
+        return [...(id ? [id] : []), ...descriptorIds(child)];
+      });
+    }
+    const modules = descriptorIds(fileURLToPath(new URL('.', import.meta.url))).sort();
     expect(SCREEN_REGISTRY.map((screen) => screen.id).sort()).toEqual(modules);
     expect(new Set(SCREEN_REGISTRY.map((screen) => screen.path)).size).toBe(SCREEN_REGISTRY.length);
     expect(SCREEN_REGISTRY.some((screen) => frozen(screen.path))).toBe(false);
@@ -90,7 +99,14 @@ describe('screen registry conservation', () => {
       const adapter = readFileSync(join(folder, 'page.tsx'), 'utf8');
       expect(adapter).toContain('pageRead(descriptor, searchParams, params)');
       expect(adapter).not.toMatch(/\bgate\(|\bopenWebDatabase\(|\brequestActor\(|\bauthenticatedPageRead\(/);
-      expect(existsSync(new URL(`./${screen.id}/${screen.id}.render.test.tsx`, import.meta.url)), screen.id).toBe(true);
+      const testFiles = readdirSync(fileURLToPath(new URL('.', import.meta.url)), { recursive: true })
+        .filter((file) => typeof file === 'string' && file.endsWith('.render.test.tsx'));
+      const owned = testFiles.filter((file) => {
+        const directory = join(fileURLToPath(new URL('.', import.meta.url)), String(file), '..');
+        const descriptor = join(directory, 'descriptor.ts');
+        return descriptorId(descriptor) === screen.id;
+      });
+      expect(owned, screen.id).toHaveLength(1);
     }
     const tests = readdirSync(fileURLToPath(new URL('.', import.meta.url)), { recursive: true })
       .filter((file) => typeof file === 'string' && file.endsWith('.render.test.tsx'));

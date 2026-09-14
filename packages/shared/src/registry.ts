@@ -14,6 +14,7 @@ export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
   {"domain": "timeline-events", "contract": "timeline-events.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 101, "clause": "*", "after": ""}]},
   {"domain": "market-position", "contract": "market-position.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 100, "clause": "*", "after": ""}]},
   {"domain": "sp-marketplace-capabilities", "contract": "sp-marketplace-capabilities.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 28, "clause": "*", "after": ""}]},
+  {"domain": "queued-changes", "contract": "queued-changes.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 30, "clause": "*", "after": ""}]},
   {"domain": "agency", "contract": "agency.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 1, "clause": "*", "after": ""}]},
   {"domain": "amazon-connections", "contract": "amazon-connections.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 3, "clause": "*", "after": ""}]},
   {"domain": "apply", "contract": "apply.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 10, "clause": "*", "after": ""}]},

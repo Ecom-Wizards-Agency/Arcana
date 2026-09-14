@@ -217,6 +217,25 @@ export const GridSavedView = z.object({
   timeline: TimelineViewState.optional(),
   chart: z.strictObject({ series: z.array(z.enum(['impressions', 'clicks', 'spend', 'sales', 'orders', 'acos', 'cvr', 'cpc'])).max(4).refine((series) => new Set(series).size === series.length) }).optional(),
   translation: TranslationView.optional(),
+  /** Target detail state travels with the originating grid analysis. */
+  target: z.object({
+    series: z.object({
+      bid: z.boolean(),
+      realisedCpc: z.boolean(),
+      suggestedBand: z.boolean(),
+      maxCpc: z.boolean(),
+      dailySpend: z.boolean(),
+      acos: z.boolean(),
+    }).strict(),
+    maxCpcExpanded: z.boolean(),
+    placementLines: z.record(z.string(), z.boolean()).optional(),
+  }).strict().optional(),
+  compare: z.array(z.object({
+      profileId: z.uuid(),
+      targetId: z.string().min(1).max(200),
+    }).strict()).max(4).refine((targets) =>
+      new Set(targets.map((target) => JSON.stringify([target.profileId, target.targetId]))).size === targets.length,
+    'comparison targets must be unique').optional(),
   updatedAt: z.string(),
 }).strict();
 export type GridSavedView = z.infer<typeof GridSavedView>;

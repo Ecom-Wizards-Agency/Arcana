@@ -754,6 +754,27 @@ begin
     insert into public.timeline_events(org_id,profile_id,name,kind,start_on,scope_text,note,created_by) values(v_org,v_profile,'Synthetic listing note','listing',p_date,'Recorded only','Fixture observation',p_user_id);
   insert into public.timeline_evidence_settings(org_id,profile_id) values(v_org,v_profile);
   end if;
+  if to_regclass('public.queued_changes') is not null then
+    insert into public.queued_changes(id,org_id,profile_id,target_id,created_by,context,request,checks)
+    values(v_batch,v_org,v_profile,'synthetic-queue-target',p_user_id,
+      jsonb_build_object('profileId',v_profile,'profileLabel','Synthetic queue profile','targetId','synthetic-queue-target',
+        'targetLabel','Synthetic queue target','campaignId','c-1','campaignLabel','Synthetic queue campaign',
+        'oldBid',jsonb_build_object('amount','5','currencyCode','USD'),'readAt','2026-08-01T00:00:00.000000Z',
+        'organicRank',null,'protectionRank',null,'suggestedLow',4,'suggestedMedian',8,'suggestedHigh',11,
+        'maxIncrease',1,'maxDecrease',0.5,'bidFloor',1,'bidCeiling',12,'campaignBudget',100,'targetAcos',0.3,
+        'placementModifiers',jsonb_build_object('topOfSearch',100,'restOfSearch',0,'productPages',0),'settingSource','Synthetic fixture'),
+      jsonb_build_object('requestId',v_batch,'profileId',v_profile,'targetId','synthetic-queue-target',
+        'expectedBid',jsonb_build_object('amount','5','currencyCode','USD'),'expectedReadAt','2026-08-01T00:00:00.000000Z',
+        'newBid',jsonb_build_object('amount','6','currencyCode','USD'),'overrideReason',null),
+      '[{"key":"rank_gate","passed":true,"reason":"No bid decrease.","source":"Synthetic fixture"},
+        {"key":"band_position","passed":true,"reason":"Within band.","source":"Synthetic fixture"},
+        {"key":"max_increase","passed":true,"reason":"Within increase cap.","source":"Synthetic fixture"},
+        {"key":"max_decrease","passed":true,"reason":"No decrease.","source":"Synthetic fixture"},
+        {"key":"campaign_limits","passed":true,"reason":"Within campaign bounds.","source":"Synthetic fixture"}]');
+    insert into public.queued_change_approvals(change_id,org_id,profile_id,approved_by)
+    values(v_batch,v_org,v_profile,p_user_id);
+  end if;
+
   return v_org;
 end;
 $$;
