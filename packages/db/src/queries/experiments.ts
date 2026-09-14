@@ -319,10 +319,6 @@ export async function createExperiment(
   `;
   const id = rows[0]?.id;
   if (!id) throw new Error('Creating an experiment returned no row');
-  await handle.sql`
-    insert into public.experiment_events (experiment_id, org_id, from_status, to_status, note, actor_id)
-    values (${id}, ${input.orgId}, null, ${status}::public.experiment_status, 'Created', ${input.createdBy ?? null})
-  `;
   const created = await getExperiment(handle, { orgId: input.orgId, experimentId: id });
   if (!created) throw new Error('An experiment was created but could not be read back');
   return created;
@@ -461,8 +457,8 @@ export async function updateExperiment(
 
 /**
  * Move the status, recording the transition and honouring the window rules:
- * moving to `ended` stamps `end_at` if it is not already set; moving back to
- * `running` clears it so the band re-opens.
+ * closing stamps `end_at` if it is not already set. The database trigger owns
+ * the transition, date invariants and atomic trail; closed tests never reopen.
  *
  * The stamp is `greatest(now(), start_at)`, not `now()`. A test scheduled to
  * start tomorrow and abandoned today would otherwise end before it began, which
@@ -491,29 +487,16 @@ export async function transitionExperiment(
   const noteProvided = input.resultNote !== undefined;
   const resultNote = noteProvided ? (input.resultNote?.trim() || null) : null;
 
-  const rows = await handle.sql<{ id: string }[]>`
-    update public.experiments
-       set status = ${input.to}::public.experiment_status,
-           end_at = case
-                      when ${input.to} = 'ended' then coalesce(end_at, greatest(now(), start_at))
-                      when ${input.to} = 'running' then null
-                      else end_at
-                    end,
-           result_note = case when ${noteProvided} then ${resultNote}::text else result_note end
-     where org_id = ${input.orgId} and id = ${input.experimentId}
-    returning id
-  `;
-  if (!rows[0]) throw new ExperimentNotFound();
-
-  // Only log an event when the status actually moved: a result-note edit that
-  // leaves the status alone is not a transition.
-  if (current.status !== input.to) {
-    await handle.sql`
-      insert into public.experiment_events (experiment_id, org_id, from_status, to_status, note, actor_id)
-      values (${input.experimentId}, ${input.orgId}, ${current.status}::public.experiment_status,
-              ${input.to}::public.experiment_status, ${input.note ?? null}, ${input.actorId ?? null})
-    `;
+  if (input.to === 'analyzed' && !(noteProvided ? resultNote : current.resultNote)) {
+    throw new ExperimentCommandError('conflict');
   }
+  const rows = await handle.sql<{ id: string | null }[]>`
+    select app.transition_timeline_experiment(
+      ${input.orgId}::uuid, ${input.experimentId}::uuid, ${input.to}::public.experiment_status,
+      ${input.note ?? null}::text, ${resultNote}::text, ${noteProvided}, ${input.actorId ?? null}::uuid
+    ) as id
+  `;
+  if (!rows[0]?.id) throw new ExperimentNotFound();
 
   const updated = await getExperiment(handle, input);
   if (!updated) throw new ExperimentNotFound();

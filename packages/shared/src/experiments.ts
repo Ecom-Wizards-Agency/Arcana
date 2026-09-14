@@ -14,7 +14,7 @@ export const EXPERIMENT_STATUSES = ExperimentStatus.options;
 
 export const EXPERIMENT_TRANSITIONS: Readonly<Record<ExperimentStatus, readonly ExperimentStatus[]>> = {
   planned: ['running', 'aborted'], running: ['ended', 'aborted'],
-  ended: ['analyzed', 'running', 'aborted'], analyzed: ['running', 'aborted'], aborted: [],
+  ended: ['analyzed', 'aborted'], analyzed: ['aborted'], aborted: [],
 };
 export function canTransitionExperiment(from: ExperimentStatus, to: ExperimentStatus): boolean {
   return from === to || EXPERIMENT_TRANSITIONS[from].includes(to);

@@ -54,3 +54,18 @@ it('renders untracked rank selection without a rank zero', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Organic rank' }));
     expect(screen.getByText(/Missing rank is not rank zero/)).toBeTruthy();
 });
+
+it('shows independent calibration coverage and baseline contamination in READ details', () => {
+    const experiment = { ...ready.snapshot.events[0]!, focus: 'spend' as const, start: '2026-08-01', end: '2026-08-07' };
+    const profile = ready.snapshot.profile.filter((row) => row.date >= '2026-07-04' && row.date <= '2026-08-07');
+    const snapshot = { ...ready.snapshot, profile, events: [experiment], scoped: { [experiment.id]: profile }, settings: { minDays: 2, minClicks: 1 } };
+    const view = render(<Screen data={{ ...ready, snapshot }}/>);
+    expect(screen.getByText('Insufficient evidence')).toBeTruthy();
+    expect(screen.getByText(/Account calibration: 2 of 3 fortnights/)).toBeTruthy();
+    const coupon = { ...experiment, id: 'baseline-promotion', name: 'Synthetic baseline promotion', kind: 'promotion' as const,
+        start: '2026-07-25', end: '2026-07-31' };
+    view.rerender(<Screen data={{ ...ready, snapshot: { ...snapshot, profile: ready.snapshot.profile,
+        events: [experiment, coupon], scoped: { [experiment.id]: ready.snapshot.profile } } }}/>);
+    expect(screen.getByText('Confounded by Synthetic baseline promotion (baseline)')).toBeTruthy();
+    expect(screen.getByText(/Baseline contaminated by Synthetic baseline promotion/)).toBeTruthy();
+});

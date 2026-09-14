@@ -357,8 +357,11 @@ begin
           jsonb_build_object('campaignIds', jsonb_build_array('c-1'), 'targetIds', jsonb_build_array('kw-1')),
           'sales', now() - interval '7 days', 'running', p_user_id)
   returning id into v_experiment;
-  insert into public.experiment_events (experiment_id, org_id, from_status, to_status, note, actor_id)
-  values (v_experiment, v_org, null, 'running', 'Seeded by the tenant fixture.', p_user_id);
+  -- Older migration-window tests predate the automatic creation trail.
+  if not exists(select 1 from public.experiment_events where experiment_id=v_experiment) then
+    insert into public.experiment_events (experiment_id, org_id, from_status, to_status, note, actor_id)
+    values (v_experiment, v_org, null, 'running', 'Seeded by the tenant fixture.', p_user_id);
+  end if;
 
   -- Reserved seams
   insert into public.spapi_connections

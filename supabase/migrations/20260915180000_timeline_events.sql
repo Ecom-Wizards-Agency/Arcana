@@ -45,6 +45,8 @@ $$;
 create trigger timeline_events_immutable before update or delete on public.timeline_events for each row execute function app.timeline_refuse_rewrite();
 create trigger experiment_events_immutable before update or delete on public.experiment_events for each row execute function app.timeline_refuse_rewrite();
 
+-- The database owns the lifecycle, including writes made outside the application.
+-- Match EXPERIMENT_TRANSITIONS: forward analysis plus cancellation; never reopen.
 create function app.timeline_experiment_evidence_guard() returns trigger language plpgsql set search_path=pg_catalog as $$
 begin
   if tg_op='DELETE' and pg_trigger_depth()>1 and not exists(select 1 from public.orgs where id=old.org_id) then return old; end if;
@@ -53,16 +55,100 @@ begin
     if new.status not in ('planned','running') or new.result_note is not null then
       raise exception 'An experiment is born planned or running without a result' using errcode='23514';
     end if;
+    if auth.uid() is not null then
+      if new.created_by is distinct from auth.uid() then
+        raise exception 'The experiment creator must match the authenticated actor' using errcode='42501';
+      end if;
+      new.created_at := now();
+    end if;
+    new.status_changed_at := new.created_at;
     return new;
   end if;
-  if new.hypothesis is distinct from old.hypothesis then
-    raise exception 'The hypothesis is immutable after creation' using errcode='23514';
+  if new.hypothesis is distinct from old.hypothesis then raise exception 'The hypothesis is immutable after creation' using errcode='23514'; end if;
+  if new.status is distinct from old.status and not (
+    (old.status='planned' and new.status in ('running','aborted')) or
+    (old.status='running' and new.status in ('ended','aborted')) or
+    (old.status='ended' and new.status in ('analyzed','aborted')) or
+    (old.status='analyzed' and new.status='aborted')
+  ) then
+    raise exception 'Invalid experiment status transition: % -> %', old.status, new.status using errcode='23514';
+  end if;
+  -- A scheduled end may be supplied at creation. Thereafter it can only be
+  -- recorded when closing the experiment; changing a closed window is refused.
+  if new.end_at is distinct from old.end_at and not (
+    old.status in ('planned','running') and new.status in ('ended','aborted')
+  ) then raise exception 'The experiment end is recorded only when closing' using errcode='23514'; end if;
+  if new.status is distinct from old.status and new.status in ('ended','aborted') then
+    new.end_at := coalesce(new.end_at, greatest(now(),new.start_at));
+  end if;
+  if new.status in ('ended','analyzed','aborted') and new.end_at is null then
+    raise exception 'A closed experiment requires an end date' using errcode='23514';
   end if;
   if new.result_note is distinct from old.result_note and
-    (old.result_note is not null or new.status<>'analyzed' or old.status<>'ended' or nullif(trim(new.result_note),'') is null) then
+    (old.result_note is not null or new.status<>'analyzed' or old.status<>'ended' or nullif(btrim(new.result_note),'') is null) then
     raise exception 'The result is written once at analysis' using errcode='23514';
   end if;
+  if new.status='analyzed' and nullif(btrim(new.result_note),'') is null then
+    raise exception 'Analysis requires a result written with the status change' using errcode='23514';
+  end if;
+  new.status_changed_at := case when new.status is distinct from old.status then now() else old.status_changed_at end;
   return new;
 end;
 $$;
 create trigger experiments_evidence_immutable before insert or update or delete on public.experiments for each row execute function app.timeline_experiment_evidence_guard();
+
+-- Authenticated callers cannot append invented transitions. The AFTER trigger
+-- alone appends the real OLD/NEW pair, under the same statement/transaction.
+revoke insert on public.experiment_events from authenticated;
+drop policy experiment_events_insert on public.experiment_events;
+create function app.timeline_experiment_append_status() returns trigger language plpgsql security definer set search_path=pg_catalog as $$
+declare
+  v_actor uuid := auth.uid();
+  v_note text;
+begin
+  if tg_op='UPDATE' and new.status is not distinct from old.status then return new; end if;
+  -- Only trusted database callers may supply an actor when no JWT exists.
+  -- A custom note/actor setting can never override an authenticated identity.
+  if v_actor is null and current_setting('role',true)='authenticated' then
+    raise exception 'An experiment status change requires an authenticated actor' using errcode='42501';
+  end if;
+  if tg_op='INSERT' then
+    v_actor := coalesce(v_actor,new.created_by);
+    v_note := 'Created';
+  else
+    v_actor := coalesce(v_actor,nullif(current_setting('app.experiment_actor',true),'')::uuid);
+    v_note := nullif(current_setting('app.experiment_note',true),'');
+  end if;
+  if v_actor is null then raise exception 'An experiment status change requires an actor' using errcode='23514'; end if;
+  insert into public.experiment_events(experiment_id,org_id,from_status,to_status,note,actor_id,created_at)
+    values(new.id,new.org_id,case when tg_op='UPDATE' then old.status else null end,new.status,v_note,v_actor,new.status_changed_at);
+  return new;
+end;
+$$;
+revoke all on function app.timeline_experiment_append_status() from public,anon,authenticated;
+create trigger experiments_append_status after insert or update on public.experiments for each row execute function app.timeline_experiment_append_status();
+
+-- Invoker privileges preserve experiment RLS. Settings are scoped to this call
+-- and restored, even when several commands share the application's transaction.
+-- No status, date or result invariants live here: direct SQL uses the same guard.
+create function app.transition_timeline_experiment(
+  p_org uuid, p_id uuid, p_status public.experiment_status, p_note text,
+  p_result text, p_result_provided boolean, p_actor uuid
+) returns uuid language plpgsql set search_path=pg_catalog as $$
+declare
+  v_id uuid;
+  v_note text := current_setting('app.experiment_note',true);
+  v_actor text := current_setting('app.experiment_actor',true);
+begin
+  perform set_config('app.experiment_note',coalesce(p_note,''),true);
+  perform set_config('app.experiment_actor',coalesce(p_actor::text,''),true);
+  update public.experiments set status=p_status,
+    result_note=case when p_result_provided then p_result else result_note end
+    where org_id=p_org and id=p_id returning id into v_id;
+  perform set_config('app.experiment_note',coalesce(v_note,''),true);
+  perform set_config('app.experiment_actor',coalesce(v_actor,''),true);
+  return v_id;
+end;
+$$;
+revoke all on function app.transition_timeline_experiment(uuid,uuid,public.experiment_status,text,text,boolean,uuid) from public,anon;
+grant execute on function app.transition_timeline_experiment(uuid,uuid,public.experiment_status,text,text,boolean,uuid) to authenticated,service_role;

@@ -38,9 +38,27 @@ export function timelineSummary(days: readonly TimelineDaily[], start: string, e
         second: { dates: second.map((d) => d.date), value: timelineValue(second, measure, true) } };
 }
 const overlaps = (event: Pick<TimelineEvent, 'start' | 'end'>, start: string, end: string) => event.start <= end && (event.end === null || event.end >= start);
-/** Conservative empirical floor: largest absolute clean adjacent-fortnight change. Returns the distribution as evidence. */
+/**
+ * Three disjoint, complete fortnights (42 observed days) are the minimum history:
+ * one 28-day comparison cannot establish recurring account variation. Rolling
+ * comparisons below describe the distribution but never inflate this coverage.
+ * This is a history sufficiency rule, not a statistical confidence guarantee.
+ */
+export const MIN_TIMELINE_CALIBRATION_FORTNIGHTS = 3;
+/** Conservative empirical floor: largest absolute clean adjacent-fortnight change. */
 export function timelineNoiseFloor(days: readonly TimelineDaily[], measure: TimelineFocus, events: readonly TimelineEvent[], beforeDate: string) {
     const sorted = [...days].filter((day) => day.date < beforeDate).sort((a, b) => a.date.localeCompare(b.date));
+    const fortnights: { start: string; end: string }[] = [];
+    for (const day of sorted) {
+        const end = shiftTimelineDate(day.date, 13);
+        if (day.date <= (fortnights.at(-1)?.end ?? '') || end >= beforeDate
+            || events.some((event) => overlaps(event, day.date, end))) continue;
+        const rows = between(sorted, day.date, end);
+        if (rows.length === 14 && new Set(rows.map((row) => row.date)).size === 14
+            && timelineValue(rows, measure) !== null) fortnights.push({ start: day.date, end });
+    }
+    const calibration = { fortnights, observed: fortnights.length, required: MIN_TIMELINE_CALIBRATION_FORTNIGHTS,
+        coverage: `${fortnights.length} of ${MIN_TIMELINE_CALIBRATION_FORTNIGHTS} fortnights` };
     const samples: {
         start: string;
         end: string;
@@ -58,7 +76,7 @@ export function timelineNoiseFloor(days: readonly TimelineDaily[], measure: Time
         if (change !== null)
             samples.push({ start: day.date, end, change });
     }
-    return { value: samples.length ? Math.max(...samples.map((sample) => Math.abs(sample.change))) : null, samples };
+    return { value: calibration.observed >= calibration.required && samples.length ? Math.max(...samples.map((sample) => Math.abs(sample.change))) : null, samples, calibration };
 }
 export function timelineEffect(input: {
     event: TimelineEvent;
@@ -84,7 +102,12 @@ export function timelineEffect(input: {
     const accountDelta = delta(accountBefore, accountDuring);
     const netDelta = treatedDelta === null || accountDelta === null ? null : treatedDelta - accountDelta;
     const noise = timelineNoiseFloor(profile, event.focus, events, event.start);
-    const overlap = events.filter((other) => other.id !== event.id && overlaps(other, event.start, end));
+    const overlap = events.filter((other) => other.id !== event.id && overlaps(other, baselineStart, end));
+    const confounders = overlap.flatMap((other) => (['baseline', 'treatment'] as const).flatMap((period) =>
+        overlaps(other, period === 'baseline' ? baselineStart : event.start, period === 'baseline' ? baselineEnd : end)
+            ? [{ eventId: other.id, name: other.name, start: other.start, end: other.end, period }] : []));
+    const baselineConfounders = confounders.filter((other) => other.period === 'baseline');
+    const baselineNames = baselineConfounders.map((other) => other.name);
     const reasons: string[] = [];
     if (settings.minDays === null)
         reasons.push('Missing setting: minimum observed days');
@@ -102,11 +125,18 @@ export function timelineEffect(input: {
         reasons.push('Account and treated facts do not cover the same dates');
     if (netDelta === null)
         reasons.push('Missing or zero baseline denominator');
-    if (noise.value === null)
+    if (noise.calibration.observed < noise.calibration.required)
+        reasons.push(`Insufficient account calibration history: ${noise.calibration.coverage}`);
+    else if (noise.value === null)
         reasons.push('No complete clean fortnight comparison in account history');
-    const read = reasons.length ? 'Insufficient evidence' : overlap.length ? `Confounded by ${overlap.map((other) => other.name).join(', ')}` : Math.abs(netDelta!) > noise.value! ? 'Readable' : 'Within account noise';
+    const read = reasons.length
+        ? `Insufficient evidence${baselineNames.length ? ` · baseline confounded by ${baselineNames.join(', ')}` : ''}`
+        : overlap.length ? `Confounded by ${overlap.map((other) => `${other.name}${baselineConfounders.some((item) => item.eventId === other.id) ? ' (baseline)' : ''}`).join(', ')}`
+        : Math.abs(netDelta!) > noise.value! ? 'Readable' : 'Within account noise';
+    for (const other of confounders)
+        reasons.push(`${other.period === 'baseline' ? 'Baseline' : 'Treatment'} contaminated by ${other.name} (${other.start} → ${other.end ?? 'running'})`);
     return { treatedDelta, accountDelta, netDelta, noise, read, reasons, overlapIds: overlap.map((other) => other.id),
-        evidence: { baselineStart, baselineEnd, start: event.start, end, treatedBefore, treatedDuring, accountBefore, accountDuring } };
+        evidence: { confounders, baselineStart, baselineEnd, start: event.start, end, treatedBefore, treatedDuring, accountBefore, accountDuring } };
 }
 /** OLS uses calendar offsets so gaps never compress the time axis. */
 function slope(days: readonly TimelineDaily[], measure: TimelineFocus): number | null {

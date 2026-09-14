@@ -42,7 +42,7 @@ describe('experiment contracts', () => {
 
   it('preserves every allowed transition and the eventless same-status possibility', () => {
     const allowed = new Set(['planned:running', 'planned:aborted', 'running:ended', 'running:aborted',
-      'ended:analyzed', 'ended:running', 'ended:aborted', 'analyzed:running', 'analyzed:aborted']);
+      'ended:analyzed', 'ended:aborted', 'analyzed:aborted']);
     let pairs = 0;
     for (const from of EXPERIMENT_STATUSES) for (const to of EXPERIMENT_STATUSES) {
       expect(canTransitionExperiment(from, to)).toBe(from === to || allowed.has(`${from}:${to}`)); pairs++;

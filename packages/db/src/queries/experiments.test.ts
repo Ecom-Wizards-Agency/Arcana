@@ -420,8 +420,8 @@ describe.skipIf(!available)('WP-19 experiment queries', () => {
       metricFocus: 'ctr',
       startAt: '2026-08-01T00:00:00Z',
     });
-    await transitionExperiment(database, { orgId: orgA, experimentId: created.id, to: 'running' });
-    const ended = await transitionExperiment(database, { orgId: orgA, experimentId: created.id, to: 'ended' });
+    await transitionExperiment(database, { orgId: orgA, experimentId: created.id, to: 'running', actorId: OWNER_A });
+    const ended = await transitionExperiment(database, { orgId: orgA, experimentId: created.id, to: 'ended', actorId: OWNER_A });
     expect(ended.endAt).not.toBeNull();
 
     // Moving the start past the recorded end is the edit that used to reach the
