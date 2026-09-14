@@ -8,9 +8,13 @@
  * rows written so a store that drops one fails the pass (program rule 4).
  */
 import { describe, expect, it, vi } from 'vitest';
-import type { NewBidSeriesRow } from '@wizard-ads/db';
+import { keywords as keywordMirror, targets as targetMirror } from '@wizard-ads/db';
+import { createTestDatabase } from '@wizard-ads/db/testing';
+import { bidRecommendationTargetKey } from '@wizard-ads/shared';
+import type { DbHandle, NewBidSeriesRow } from '@wizard-ads/db';
 import type { AdsProfileContext, SuggestedBidRequest, SuggestedBidResult } from './ads-api.js';
 import {
+  PostgresBidSeriesStore,
   profileToday,
   runBidSeriesSync,
   syncBidSeriesForProfile,
@@ -55,11 +59,14 @@ class FakeStore implements BidSeriesStore {
   }
 }
 
-function fakeClient(byTarget: Record<string, { low: number; median: number; high: number }>) {
+function fakeClient(byTarget: Record<string, { low: number | null; median: number | null; high: number | null }>) {
   return {
-    getSpSuggestedBids: vi.fn(async (_p: AdsProfileContext, _ids: SuggestedBidRequest): Promise<SuggestedBidResult> => {
-      const map = new Map(Object.entries(byTarget).map(([id, c]) => [id, { targetId: id, ...c }]));
-      return { byTarget: map, submitted: map.size, returned: map.size, errors: 0 };
+    getSpSuggestedBids: vi.fn(async (_p: AdsProfileContext, request: SuggestedBidRequest): Promise<SuggestedBidResult> => {
+      const eligible = request.targets.filter((t) => t.targetingExpression !== null);
+      const map = new Map(eligible.flatMap((t) => byTarget[t.targetId]
+        ? [[bidRecommendationTargetKey(t), { ...t, ...byTarget[t.targetId]! }] as const] : []));
+      return { byTarget: map, offered: request.targets.length, eligible: eligible.length,
+        requested: eligible.length, returned: map.size, refused: eligible.length - map.size, unmatched: 0 };
     }),
   };
 }
@@ -69,6 +76,8 @@ const kw = (over: Partial<BidSeriesTargetInput> = {}): BidSeriesTargetInput => (
   isKeyword: true,
   campaignId: 'c-1',
   adGroupId: 'ag-1',
+  targetingExpression: over.isKeyword === false ? { type: 'CLOSE_MATCH' }
+    : { type: 'KEYWORD_EXACT_MATCH', value: over.targetId ?? 'kw-1' },
   bid: 1.0,
   cpc: 1.4,
   placementModifiers: [{ name: 'top_of_search', pct: 50 }],
@@ -94,7 +103,7 @@ describe('syncBidSeriesForProfile', () => {
     const client = fakeClient({ 'kw-1': { low: 0.5, median: 0.8, high: 1.2 }, 'tg-1': { low: 1, median: 1.5, high: 2 } });
     const result = await syncBidSeriesForProfile(PROFILE, { store, client, buckets: defaultRegionTokenBuckets });
 
-    expect(result).toEqual({ targets: 2, corridors: 2, written: 2 });
+    expect(result).toEqual({ targets: 2, corridors: 2, written: 2, offered: 2, eligible: 2, requested: 2, returned: 2, refused: 0, unmatched: 0 });
     const keyword = store.written.find((r) => r.targetId === 'kw-1');
     expect(keyword?.suggestedBidMedian).toBe(0.8);
     // 1.0 base bid x (1 + 50/100) = 1.5.
@@ -126,7 +135,7 @@ describe('syncBidSeriesForProfile', () => {
     const store = new FakeStore([PROFILE], []);
     const client = fakeClient({});
     const result = await syncBidSeriesForProfile(PROFILE, { store, client });
-    expect(result).toEqual({ targets: 0, corridors: 0, written: 0 });
+    expect(result).toEqual({ targets: 0, corridors: 0, written: 0, offered: 0, eligible: 0, requested: 0, returned: 0, refused: 0, unmatched: 0 });
     expect(client.getSpSuggestedBids).not.toHaveBeenCalled();
   });
 });
@@ -138,7 +147,7 @@ describe('runBidSeriesSync', () => {
     const store = new FakeStore([PROFILE, SECOND], [kw()]);
     const client = fakeClient({ 'kw-1': { low: 0.5, median: 0.8, high: 1.2 } });
     const counts = await runBidSeriesSync({ store, client });
-    expect(counts).toEqual({ profiles: 2, targets: 2, corridors: 2, written: 2, skipped: 0, failed: 0, unvisited: 0 });
+    expect(counts).toEqual({ offered: 2, eligible: 2, requested: 2, returned: 2, refused: 0, unmatched: 0, profiles: 2, targets: 2, corridors: 2, written: 2, skipped: 0, failed: 0, unvisited: 0 });
   });
 
   it('skips a profile that already carries the day, without an Amazon call', async () => {
@@ -148,7 +157,7 @@ describe('runBidSeriesSync', () => {
 
     const counts = await runBidSeriesSync({ store, client });
 
-    expect(counts).toEqual({ profiles: 1, targets: 1, corridors: 1, written: 1, skipped: 1, failed: 0, unvisited: 0 });
+    expect(counts).toEqual({ offered: 1, eligible: 1, requested: 1, returned: 1, refused: 0, unmatched: 0, profiles: 1, targets: 1, corridors: 1, written: 1, skipped: 1, failed: 0, unvisited: 0 });
     // The gated profile was never even read, let alone asked about.
     expect(store.readCalls).toEqual([SECOND.id]);
     expect(client.getSpSuggestedBids).toHaveBeenCalledTimes(1);
@@ -190,8 +199,69 @@ describe('runBidSeriesSync', () => {
     store.failing.add(PROFILE.id);
     store.failing.add(SECOND.id);
     const client = fakeClient({});
-    await expect(
-      runBidSeriesSync({ store, client, logger: { info: () => {}, error: () => {} } }),
-    ).rejects.toThrow(/exploded/);
+    const result = runBidSeriesSync({ store, client, logger: { info: () => {}, error: () => {} } });
+    await expect(result).rejects.toThrow(/exploded/);
+    await expect(result).rejects.toMatchObject({ profiles: 2, written: 0 });
+  });
+});
+
+
+describe('PostgresBidSeriesStore expression selection', () => {
+  it('reads the required expression columns from the migrated database without losing target rows', async () => {
+    const database = await createTestDatabase('bid_expression_read');
+    try {
+      const [tenant] = await database.sql<{ org_id: string }[]>`
+        select app.seed_tenant_fixture('bid-expression-read', ${PROFILE.orgId}, 'owner') as org_id
+      `;
+      const [seedProfile] = await database.sql<{ id: string }[]>`
+        select id from public.ad_profiles where org_id = ${tenant!.org_id} limit 1
+      `;
+      const scoped = { ...PROFILE, id: seedProfile!.id, orgId: tenant!.org_id };
+      const store = new PostgresBidSeriesStore(database);
+      const before = await store.listBidSeriesTargets(scoped, '2026-08-01');
+      const common = { orgId: scoped.orgId, profileId: scoped.id, adProduct: 'SP' as const,
+        state: 'enabled' as const, campaignId: 'expression-campaign', adGroupId: 'expression-group' };
+      const keywords = await database.db.insert(keywordMirror).values({ ...common, amazonId: 'expression-keyword',
+        keywordText: 'synthetic keyword', matchType: 'phrase' }).returning();
+      const targets = await database.db.insert(targetMirror).values([
+        { ...common, amazonId: 'expression-auto', expression: [{ type: 'loose_match', value: null }] },
+        { ...common, amazonId: 'expression-manual', expression: [{ type: 'asin_same_as', value: 'synthetic-product' }] },
+      ]).returning();
+      expect(keywords).toHaveLength(1);
+      expect(targets).toHaveLength(2);
+      const after = await store.listBidSeriesTargets(scoped, '2026-08-01');
+      expect(after).toHaveLength(before.length + keywords.length + targets.length);
+      const added = after.filter((t) => t.campaignId === common.campaignId);
+      expect(added).toHaveLength(3);
+      expect(added.find((t) => t.targetId === 'expression-keyword')?.targetingExpression)
+        .toEqual({ type: 'KEYWORD_PHRASE_MATCH', value: 'synthetic keyword' });
+      expect(added.find((t) => t.targetId === 'expression-auto')?.targetingExpression).toEqual({ type: 'LOOSE_MATCH' });
+      expect(added.find((t) => t.targetId === 'expression-manual')?.targetingExpression).toBeNull();
+    } finally { await database.drop(); }
+  }, 60_000);
+
+  it('loads keyword text/match types and auto expressions, retaining unsupported targets as ineligible', async () => {
+    const keywordTypes = ['exact', 'phrase', 'broad'];
+    const autoTypes = ['close_match', 'loose_match', 'substitutes', 'complements'];
+    const fixtures = [...keywordTypes.map((match_type) => ({ is_keyword: true, match_type, expression: null })),
+      ...autoTypes.map((type) => ({ is_keyword: false, match_type: null, expression: [{ type, value: null }] })),
+      { is_keyword: false, match_type: null, expression: [{ type: 'asin_same_as', value: 'synthetic-product' }] },
+      { is_keyword: false, match_type: null, expression: [] },
+      { is_keyword: false, match_type: null, expression: [{ type: 'close_match', value: null }, { type: 'loose_match', value: null }] },
+    ].map((fixture, index) => ({ ...fixture, target_id: `target-${index}`, campaign_id: 'campaign',
+      ad_group_id: `group-${index}`, keyword_text: 'synthetic keyword', bid: '0.7', cost: '2', clicks: '4', placement_bidding: null }));
+    const sql = vi.fn(async () => fixtures);
+    const store = new PostgresBidSeriesStore({ sql } as unknown as DbHandle);
+    const targets = await store.listBidSeriesTargets(PROFILE, '2026-08-01');
+    expect(sql).toHaveBeenCalledTimes(1);
+    expect(targets).toHaveLength(fixtures.length);
+    expect(targets.map((t) => t.targetingExpression?.type ?? null)).toEqual([
+      'KEYWORD_EXACT_MATCH', 'KEYWORD_PHRASE_MATCH', 'KEYWORD_BROAD_MATCH',
+      'CLOSE_MATCH', 'LOOSE_MATCH', 'SUBSTITUTES', 'COMPLEMENTS', null, null, null,
+    ]);
+    for (const [index, t] of targets.entries()) {
+      expect(t).toMatchObject({ targetId: `target-${index}`, campaignId: 'campaign', adGroupId: `group-${index}`, cpc: 0.5 });
+    }
+    expect(targets[0]?.targetingExpression?.value).toBe('synthetic keyword');
   });
 });

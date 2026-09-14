@@ -22,11 +22,11 @@
  *     recommendation runs in TypeScript (their required ids are minted first)
  *     and the remaining SQL schedules; finally **requeue** jobs a killed tick
  *     stranded.
- *  5. **Drain** until the queue is empty or the budget runs out.
- *  6. **Bid series**, if the budget survived the drain: the daily corridor sync
+ *  5. **Bid series**, before queue work can spend the budget: the daily corridor sync
  *     has no queue job of its own (its payload type is a `packages/shared`
  *     contract change), so without this it never ran in this deployment at all.
  *     It gates itself per profile-local day, so calling it every tick is safe.
+ *  6. **Drain** until the queue is empty or the budget runs out.
  *  7. **Release** anything still running back to `queued`, and unlock.
  */
 import type { Sql } from '@wizard-ads/db';
@@ -96,7 +96,7 @@ export interface SyncTickDeps {
   /**
    * The daily bid-corridor sync, given the tick's own deadline so it stops
    * between profiles rather than being cut off mid-request. Optional: absent,
-   * step 6 is simply not attempted.
+   * step 5 is not attempted.
    */
   bidSeries?: (deadlineMs: number) => Promise<Record<string, number>>;
   /** How long the whole tick may spend before it releases and returns. */
@@ -104,7 +104,10 @@ export interface SyncTickDeps {
   /** Time the bid-series step needs left on the clock to be worth starting. */
   bidSeriesReserveMs?: number;
   now?: () => number;
-  logger?: { info(message: string, details?: Record<string, unknown>): void };
+  logger?: {
+    info(message: string, details?: Record<string, unknown>): void;
+    warn(message: string, details?: Record<string, unknown>): void;
+  };
 }
 
 export interface SyncTickResult {
@@ -127,8 +130,13 @@ export interface SyncTickResult {
   drained: number;
   released: number;
   budgetHit: boolean;
-  bidSeries?: Record<string, number>;
-  /** The bid-series step's failure. It never fails the tick: the drain did run. */
+  bidSeries?: {
+    status: 'failed' | 'ok' | 'skipped';
+    profiles: number;
+    written: number;
+    error: string | null;
+  };
+  /** Legacy error alias; a failed bid-series read still permits draining. */
   bidSeriesError?: string;
   error?: string;
   ms: number;
@@ -154,7 +162,8 @@ export async function runSyncTick(deps: SyncTickDeps): Promise<SyncTickResult> {
     return {
       ok: true, skipped: 'overlap', provisioned: 0, repaired: 0, integrationSchedules: 0,
       enqueued: 0,
-      requeued: 0, drained: 0, released: 0, budgetHit: false, ms: now() - startedAt,
+      requeued: 0, drained: 0, released: 0, budgetHit: false,
+      bidSeries: { status: 'skipped', profiles: 0, written: 0, error: null }, ms: now() - startedAt,
     };
   }
 
@@ -166,7 +175,9 @@ export async function runSyncTick(deps: SyncTickDeps): Promise<SyncTickResult> {
   let requeued = 0;
   let drained = 0;
   let budgetHit = false;
-  let bidSeries: Record<string, number> | undefined;
+  let bidSeries: NonNullable<SyncTickResult['bidSeries']> = {
+    status: 'skipped', profiles: 0, written: 0, error: null,
+  };
   let bidSeriesError: string | undefined;
 
   try {
@@ -207,6 +218,34 @@ export async function runSyncTick(deps: SyncTickDeps): Promise<SyncTickResult> {
       `;
       requeued = Number(requeuedRow?.requeue_stale_sync_jobs ?? 0);
 
+      // Run before draining so queue pressure cannot starve the daily read.
+      if (deps.bidSeries && now() + reserveMs < deadline) {
+        try {
+          const counts = await deps.bidSeries(deadline);
+          const failed = counts['failed'] ?? 0;
+          bidSeries = {
+            status: failed > 0 ? 'failed' : (counts['profiles'] ?? 0) > 0 ? 'ok' : 'skipped',
+            profiles: (counts['profiles'] ?? 0) + failed + (counts['skipped'] ?? 0) + (counts['unvisited'] ?? 0),
+            written: counts['written'] ?? 0,
+            error: failed > 0 ? `bid series failed for ${failed} profiles` : null,
+          };
+          if (failed > 0) deps.logger?.warn('cron bid series failed', {
+            ...bidSeries, errorClass: 'PartialProfileFailure',
+          });
+        } catch (error) {
+          bidSeriesError = error instanceof Error ? error.message : String(error);
+          bidSeries = {
+            status: 'failed',
+            profiles: error instanceof Error && 'profiles' in error && typeof error.profiles === 'number' ? error.profiles : 0,
+            written: error instanceof Error && 'written' in error && typeof error.written === 'number' ? error.written : 0,
+            error: bidSeriesError,
+          };
+          deps.logger?.warn('cron bid series failed', {
+            ...bidSeries, errorClass: error instanceof Error ? error.name : typeof error,
+          });
+        }
+      }
+
       for (;;) {
         if (now() >= deadline) {
           budgetHit = true;
@@ -215,16 +254,6 @@ export async function runSyncTick(deps: SyncTickDeps): Promise<SyncTickResult> {
         const claimed = await deps.worker.drainOnce(undefined, deadline);
         if (claimed === 0) break;
         drained += claimed;
-      }
-    }
-
-    // Only with real time left: a corridor sync started at the edge of the
-    // budget is a request the platform kills mid-flight.
-    if (deps.bidSeries && now() + reserveMs < deadline) {
-      try {
-        bidSeries = await deps.bidSeries(deadline);
-      } catch (error) {
-        bidSeriesError = error instanceof Error ? error.message : String(error);
       }
     }
   } catch (error) {

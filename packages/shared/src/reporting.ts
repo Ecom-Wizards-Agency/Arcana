@@ -73,3 +73,52 @@ export const AttributionObservation = z.object({
   supersededAt: z.iso.datetime().nullable(),
 });
 export type AttributionObservation = z.infer<typeof AttributionObservation>;
+
+/** The expression dialect accepted by theme-based SP bid recommendations v3. */
+export const BidRecommendationExpression = z.object({
+  type: z.enum([
+    'CLOSE_MATCH', 'LOOSE_MATCH', 'SUBSTITUTES', 'COMPLEMENTS',
+    'KEYWORD_BROAD_MATCH', 'KEYWORD_EXACT_MATCH', 'KEYWORD_PHRASE_MATCH',
+  ]),
+  value: z.string().optional(),
+});
+export type BidRecommendationExpression = z.infer<typeof BidRecommendationExpression>;
+
+/** Null expression means the mirror target cannot be represented by v3. */
+export const BidRecommendationTarget = z.object({
+  targetId: z.string().min(1),
+  campaignId: z.string().min(1),
+  adGroupId: z.string().min(1),
+  isKeyword: z.boolean(),
+  targetingExpression: BidRecommendationExpression.nullable(),
+});
+export type BidRecommendationTarget = z.infer<typeof BidRecommendationTarget>;
+
+export const BidRecommendationCorridor = BidRecommendationTarget.extend({
+  low: metric.nullable(),
+  median: metric.nullable(),
+  high: metric.nullable(),
+});
+export type BidRecommendationCorridor = z.infer<typeof BidRecommendationCorridor>;
+
+/** Counts use target rows; unmatched counts extra response expressions in the base theme. */
+export const BidRecommendationReadCounts = z.object({
+  offered: count,
+  eligible: count,
+  requested: count,
+  returned: count,
+  refused: count,
+  unmatched: count,
+}).refine((c) => c.offered >= c.eligible && c.eligible === c.requested
+  && c.requested === c.returned + c.refused, 'bid recommendation counts do not reconcile');
+export type BidRecommendationReadCounts = z.infer<typeof BidRecommendationReadCounts>;
+
+/** Daily history retains one context row for every offered target, even without a corridor. */
+export const BidSeriesReconciliationCounts = BidRecommendationReadCounts.safeExtend({ written: count })
+  .refine((c) => c.written === c.offered, 'bid history rows do not reconcile');
+export type BidSeriesReconciliationCounts = z.infer<typeof BidSeriesReconciliationCounts>;
+
+/** Full mirror identity; numeric keyword and product-target ids may overlap. */
+export function bidRecommendationTargetKey(target: BidRecommendationTarget): string {
+  return JSON.stringify([target.campaignId, target.adGroupId, target.isKeyword, target.targetId]);
+}

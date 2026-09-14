@@ -13,6 +13,7 @@
  *     pnpm smoke                       # uses _local/ads-api.config.json
  *     pnpm smoke path/to/config.json   # or an explicit path
  *     pnpm smoke --reportType spTargeting # target report, including impression-share counts
+ *     pnpm smoke --mode bid-recommendations path/to/config.json # one ad group, no writes
  *     pnpm smoke --writes              # DANGEROUS: configured sandbox writes
  *
  * The configuration is gitignored; only `_local/ads-api.config.TEMPLATE.json`
@@ -27,6 +28,11 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { AdsApiClient } from '../src/client.js';
+import { TokenProvider } from '../src/auth.js';
+import { adsHeaders } from '../src/headers.js';
+import { hostFor } from '../src/regions.js';
+import { isRecord } from '../src/read.js';
+import { buildSpBidRecommendationBody, SP_BID_RECOMMENDATION_ENDPOINTS } from '../src/suggested-bids.js';
 import { DuplicateReportError } from '../src/errors.js';
 import { campaignNameIndex, isExportComplete, isExportFailed } from '../src/exports.js';
 import {
@@ -74,6 +80,8 @@ interface SmokeConfig {
   /** The single day to report on. Yesterday in the profile's timezone is ideal. */
   date: string;
   reportType?: string;
+  /** One existing ad group, with at most 100 v3 keyword/auto expressions. */
+  bidRecommendations?: unknown;
   /** Give up on polling after this many minutes. Amazon allows up to three hours. */
   maxWaitMinutes?: number;
   pollIntervalSeconds?: number;
@@ -112,7 +120,7 @@ function die(message: string): never {
   process.exit(1);
 }
 
-function loadConfig(path: string): SmokeConfig {
+function loadConfig(path: string, needsDate = true): SmokeConfig {
   let raw: string;
   try {
     raw = readFileSync(path, 'utf8');
@@ -127,12 +135,13 @@ function loadConfig(path: string): SmokeConfig {
     die('config needs lwa.clientId, lwa.clientSecret and lwa.refreshToken');
   }
   if (!parsed.profileId) die('config needs profileId');
-  if (!parsed.date) die('config needs date (YYYY-MM-DD)');
+  if (needsDate && !parsed.date) die('config needs date (YYYY-MM-DD)');
   return {
     lwa,
     region: parsed.region ?? 'NA',
     profileId: String(parsed.profileId),
-    date: parsed.date,
+    date: parsed.date ?? '',
+    ...(parsed.bidRecommendations === undefined ? {} : { bidRecommendations: parsed.bidRecommendations }),
     ...(parsed.reportType === undefined ? {} : { reportType: parsed.reportType }),
     ...(parsed.maxWaitMinutes === undefined ? {} : { maxWaitMinutes: parsed.maxWaitMinutes }),
     ...(parsed.pollIntervalSeconds === undefined ? {} : { pollIntervalSeconds: parsed.pollIntervalSeconds }),
@@ -224,14 +233,57 @@ async function runConfiguredWrites(
   for (const call of configured) printWriteResult(call.label, await call.run());
 }
 
+/** Keep values out of diagnostics, including an unexpected error response. */
+function bodyShape(value: unknown): unknown {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return { length: value.length, firstItems: value.slice(0, 3).map(bodyShape) };
+  if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, bodyShape(child)]));
+  return typeof value;
+}
+
+export async function smokeBidRecommendations(config: SmokeConfig): Promise<void> {
+  const body = buildSpBidRecommendationBody(config.bidRecommendations);
+  const endpoint = SP_BID_RECOMMENDATION_ENDPOINTS.targets;
+  const region = assertRegion(config.region);
+  const tokens = new TokenProvider(config.lwa);
+  const mediaType = endpoint.mediaType;
+  const headers = await adsHeaders((force, signal) => force
+    ? tokens.forceRefresh(signal) : tokens.getAccessToken(signal), {
+    clientId: config.lwa.clientId, profileId: config.profileId,
+    contentType: mediaType, accept: mediaType,
+  })(false);
+  // Exactly one recommendation attempt: retain raw status even on a 4xx/5xx.
+  const response = await fetch(`${hostFor(region)}${endpoint.path}`, {
+    method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000),
+  });
+  console.log(`bid-recommendations: requested=${body.targetingExpressions.length}, status=${response.status}`);
+  const text = await response.text();
+  try {
+    console.log(`body shape: ${JSON.stringify(bodyShape(JSON.parse(text) as unknown))}`);
+  } catch {
+    console.log(`body shape: non-JSON, characters=${text.length}`);
+  }
+  if (!response.ok) process.exitCode = 1;
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+  if (args.includes('--help')) {
+    console.log('Usage: pnpm smoke [config-path] [--reportType TYPE] [--writes]\n' +
+      '       pnpm smoke --mode bid-recommendations [config-path] (one ad group, read-only)');
+    return;
+  }
+  let mode = 'reports';
   let writesEnabled = false;
   let reportTypeOverride: string | undefined;
   const positional: string[] = [];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
-    if (arg === '--writes') writesEnabled = true;
+    if (arg === '--mode') {
+      const value = args[++index];
+      if (value !== 'bid-recommendations' && value !== 'reports') die('mode must be reports or bid-recommendations');
+      mode = value;
+    } else if (arg === '--writes') writesEnabled = true;
     else if (arg === '--reportType') {
       const value = args[++index];
       if (value === undefined || value.startsWith('--')) die('--reportType requires a value, e.g. spTargeting');
@@ -241,7 +293,14 @@ async function main(): Promise<void> {
   }
   if (positional.length > 1) die('pass at most one config path');
   const configPath = positional[0] ?? DEFAULT_CONFIG;
-  const config = loadConfig(configPath);
+  if (mode === 'bid-recommendations' && (writesEnabled || reportTypeOverride !== undefined)) {
+    die('bid-recommendations mode cannot be combined with --writes or --reportType');
+  }
+  const config = loadConfig(configPath, mode !== 'bid-recommendations');
+  if (mode === 'bid-recommendations') {
+    await smokeBidRecommendations(config);
+    return;
+  }
   const region = assertRegion(config.region);
   const reportType = reportTypeOf(reportTypeOverride ?? config.reportType);
   const spec: ReportSpec = REPORT_SPECS[reportType];
@@ -394,7 +453,9 @@ async function main(): Promise<void> {
   console.log('done');
 }
 
-main().catch((error: unknown) => {
-  console.error(error);
-  process.exit(1);
-});
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((error: unknown) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

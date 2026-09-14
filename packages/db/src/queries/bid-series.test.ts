@@ -202,4 +202,17 @@ describe.skipIf(!available)('WP-28 bid series queries', () => {
     const error = new BidSeriesLoadCountMismatch({ offered: 3, written: 2 });
     expect(error.message).toMatch(/offered 3 rows, wrote 2/);
   });
+
+  it('persists a missing middle bid as null while retaining both corridor edges', async () => {
+    const targetId = ['synthetic', 'partial', 'corridor'].join('-');
+    const counts = await upsertBidSeries(database, [row({ targetId,
+      suggestedBidLow: 0.3, suggestedBidMedian: null, suggestedBidHigh: 0.9 })]);
+    expect(counts).toEqual({ offered: 1, written: 1 });
+    const saved = await readBidSeries(database, { orgId, profileId, targetId, from: TODAY, to: TODAY });
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ suggestedBidLow: 0.3, suggestedBidMedian: null, suggestedBidHigh: 0.9 });
+    const latest = await readLatestBidSeriesByTargetIds(database, { orgId, profileId, targetIds: [targetId] });
+    expect(latest).toHaveLength(1);
+    expect(latest[0]?.suggestedBidMedian).toBeNull();
+  });
 });

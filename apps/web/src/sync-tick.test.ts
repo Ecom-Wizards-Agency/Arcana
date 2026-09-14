@@ -11,7 +11,7 @@
  *  - the bid-corridor sync runs from the cron tick, which is the only thing
  *    that runs in this deployment, and only when the budget can afford it.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import {
@@ -174,7 +174,7 @@ describe.skipIf(!available)('runSyncTick', () => {
     await database?.drop();
   });
 
-  it('repairs, provisions, drains, syncs the corridor and releases', async () => {
+  it('repairs, provisions, syncs the corridor before draining and releases', async () => {
     const store = new FakeStore();
     store.unscheduled = [{ orgId: 'org', profileId: 'profile' }];
     const worker = new FakeWorker();
@@ -221,6 +221,7 @@ describe.skipIf(!available)('runSyncTick', () => {
       },
       bidSeries: async () => {
         bidSeriesRuns += 1;
+        expect(worker.drains).toBe(0);
         return { profiles: 1, written: 7 };
       },
     });
@@ -250,7 +251,7 @@ describe.skipIf(!available)('runSyncTick', () => {
     expect(result.enqueued).toBeGreaterThanOrEqual(3);
     expect(worker.drains).toBe(1);
     expect(bidSeriesRuns).toBe(1);
-    expect(result.bidSeries).toEqual({ profiles: 1, written: 7 });
+    expect(result.bidSeries).toEqual({ status: 'ok', profiles: 1, written: 7, error: null });
     expect(store.released).toEqual([worker.workerId]);
 
     // The lock is a lock, not a leak: it is free again for the next tick.
@@ -286,7 +287,7 @@ describe.skipIf(!available)('runSyncTick', () => {
     const store = new FakeStore();
     const worker = new FakeWorker();
     let bidSeriesRuns = 0;
-    // A clock that jumps past the budget as soon as the drain is done.
+    // Schedule setup leaves too little time to start the corridor read.
     let calls = 0;
     const start = Date.now();
 
@@ -299,8 +300,7 @@ describe.skipIf(!available)('runSyncTick', () => {
         bidSeriesRuns += 1;
         return { ran: 1 };
       },
-      // Time enough to claim and drain, and 1s left when the drain is done —
-      // less than the corridor sync's reserve, so it waits for the next tick.
+      // One second remains after schedule setup, below the corridor reserve.
       now: () => {
         calls += 1;
         return calls <= 2 ? start : start + 119_000;
@@ -309,7 +309,7 @@ describe.skipIf(!available)('runSyncTick', () => {
 
     expect(result.ok).toBe(true);
     expect(bidSeriesRuns).toBe(0);
-    expect(result.bidSeries).toBeUndefined();
+    expect(result.bidSeries).toEqual({ status: 'skipped', profiles: 0, written: 0, error: null });
     // The drain still happened; only the optional step was skipped.
     expect(worker.drains).toBeGreaterThan(0);
   });
@@ -332,6 +332,60 @@ describe.skipIf(!available)('runSyncTick', () => {
     expect(store.integrationPasses).toBe(0);
     expect(result.integrationSchedules).toBe(0);
     expect(worker.drains).toBe(0);
+  });
+
+  it('logs a swallowed bid-series error with profile count and class and still drains', async () => {
+    const worker = new FakeWorker();
+    const warn = vi.fn();
+    const failure = Object.assign(new TypeError('synthetic provider failure'), { profiles: 3, written: 0 });
+    const result = await runSyncTick({
+      sql: database.sql, store: new FakeStore(), worker,
+      bidSeries: async () => { throw failure; },
+      logger: { info: vi.fn(), warn },
+    });
+    expect(result.ok).toBe(true);
+    expect(worker.drains).toBe(1);
+    expect(result.bidSeries).toEqual({
+      status: 'failed', profiles: 3, written: 0, error: failure.message,
+    });
+    expect(warn).toHaveBeenCalledExactlyOnceWith('cron bid series failed', {
+      ...result.bidSeries, errorClass: 'TypeError',
+    });
+    expect(await lockIsFree()).toBe(true);
+  });
+
+  it('reports partial profile failure and preserves written counts', async () => {
+    const warn = vi.fn();
+    const result = await runSyncTick({
+      sql: database.sql, store: new FakeStore(), worker: new FakeWorker(),
+      bidSeries: async () => ({ profiles: 1, failed: 1, skipped: 1, unvisited: 1, written: 7 }),
+      logger: { info: vi.fn(), warn },
+    });
+    expect(result.bidSeries).toEqual({
+      status: 'failed', profiles: 4, written: 7, error: 'bid series failed for 1 profiles',
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs bid series before a busy drain spends the total deadline', async () => {
+    let time = 0;
+    const order: string[] = [];
+    const result = await runSyncTick({
+      sql: database.sql, store: new FakeStore(), now: () => time, budgetMs: 120_000,
+      worker: { workerId: 'busy', drainOnce: async (_max, deadline) => {
+        expect(deadline).toBe(120_000);
+        order.push('drain');
+        time = 120_000;
+        return 2;
+      } },
+      bidSeries: async (deadline) => {
+        expect(deadline).toBe(120_000);
+        order.push('bid series');
+        return { profiles: 1, written: 2 };
+      },
+    });
+    expect(order).toEqual(['bid series', 'drain']);
+    expect(result).toMatchObject({ budgetHit: true, drained: 2, bidSeries: { status: 'ok', written: 2 } });
   });
 
   it('releases and reports when a step throws', async () => {

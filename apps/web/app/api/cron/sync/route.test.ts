@@ -24,8 +24,14 @@ const doubles = vi.hoisted(() => ({
   authoritySql: vi.fn(async () => [] as unknown[]),
   begin: vi.fn(async () => { throw new Error('scheduled producer must not open a transaction here'); }),
   closed: 0,
+  bidSeriesSync: vi.fn(async () => ({ profiles: 1, written: 2 })),
   tickDeps: [] as SyncTickDeps[],
 }));
+
+vi.mock('@wizard-ads/worker', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, runBidSeriesSync: doubles.bidSeriesSync };
+});
 
 vi.mock('@wizard-ads/db', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -188,6 +194,19 @@ describe('GET /api/cron/sync', () => {
     await expect(response.json()).resolves.toEqual({
       error: 'cron queue ownership is not configured safely',
     });
+  });
+
+  it('passes the cron logger and deadline into the bid-series producer', async () => {
+    configureWiredTick();
+    doubles.bidSeriesSync.mockClear();
+    const response = await GET(request(`Bearer ${SECRET}`));
+    expect(response.status).toBe(200);
+    const deps = doubles.tickDeps[0];
+    await expect(deps?.bidSeries?.(123)).resolves.toEqual({ profiles: 1, written: 2 });
+    expect(doubles.bidSeriesSync).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      logger: console, deadlineMs: 123,
+    }));
+    expect(deps?.logger).toBe(console);
   });
 
   describe('recommendation ownership', () => {

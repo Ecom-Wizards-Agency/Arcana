@@ -6,7 +6,7 @@
  * handoff, the separate always-on Evo process owns Creative and report queue
  * jobs. Recommendation ownership transfers independently to its dedicated
  * claimant; this route always retains entity claims. The tick
- * itself — lock, repair, provision/enqueue/requeue/drain/bid-series/release —
+ * itself — lock, repair, provision/enqueue/requeue/bid-series/drain/release —
  * lives in `src/server/sync-tick.ts`; this file is the door.
  *
  * Auth is the shared secret Vercel Cron sends in the `Authorization` header
@@ -141,6 +141,7 @@ export async function GET(request: Request): Promise<Response> {
           store: new PostgresBidSeriesStore(handle),
           client: adsApi,
           deadlineMs,
+          logger: console,
         })),
       }),
       logger: console,
