@@ -113,6 +113,10 @@ begin
   insert into public.profile_strategy (org_id, profile_id, schema_version, doc)
   values (v_org, null, 'wizard-ads.tenant-strategy.v1', v_strategy);
 
+  if to_regclass('public.market_position_settings') is not null then
+    insert into public.market_position_settings (org_id, profile_id) values (v_org, v_profile);
+  end if;
+
   -- Entity mirror
   insert into public.portfolios (org_id, profile_id, amazon_id, ad_product, name, state)
   values (v_org, v_profile, 'pf-1', 'SP', 'portfolio', 'enabled');

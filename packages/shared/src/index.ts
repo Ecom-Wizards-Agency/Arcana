@@ -37,3 +37,4 @@ export * from './provider-failure.js';
 export * from './ingestion.js';
 export * from './provider-connections.js';
 export * from './grid-views.js';
+export * from './market-position.js';

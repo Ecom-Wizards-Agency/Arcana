@@ -16,6 +16,7 @@ export interface TrendSeries {
   scale?: ValueScale;
   mark?: 'line' | 'bar';
   axis?: 'left' | 'right';
+  tone?: 'own' | 'competitor' | 'muted' | 'faint' | 'threshold';
 }
 
 /**
@@ -62,6 +63,11 @@ export interface TrendChartProps {
    * group-by follows (`https://github.com/Ecom-Wizards-Agency/Arcana/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/02-data-grid.md` §4).
    */
   aggregatable?: boolean;
+  /** Rank charts place 1 at the top; omitted preserves ordinary value axes. */
+  invertedAxis?: boolean;
+  /** Rank labels include series names, # ticks and dated alert markers. */
+  rankLabels?: boolean;
+  showNumbers?: boolean;
   /**
    * Experiment windows to shade behind the series (WP-19). Additive: omitted or
    * empty means an unchanged chart.
@@ -163,9 +169,13 @@ export function TrendChart({
   periodLabel,
   className,
   aggregatable = false,
+  invertedAxis = false,
+  rankLabels = false,
+  showNumbers = true,
   windows = [],
   settlingWindow,
 }: TrendChartProps): ReactNode {
+  const PAD = rankLabels ? { top: 14, right: 112, bottom: 26, left: 52 } : { top: 14, right: 78, bottom: 26, left: 62 };
   const W = width;
   const H = height;
   const PLOT_W = W - PAD.left - PAD.right;
@@ -185,6 +195,11 @@ export function TrendChart({
     entry.points.map((point) => point.value).filter((value): value is number => value !== null),
   );
 
+  const styleOf = (entry: TrendSeries, index: number) => entry.tone === undefined ? seriesStyle(index) : {
+    color: { own: 'var(--wa-viz-1)', competitor: 'var(--wa-bad-text)', muted: 'var(--wa-mist)', faint: 'var(--wa-border-strong)', threshold: 'var(--wa-warn-text)' }[entry.tone],
+    dashed: entry.tone === 'threshold', outline: 'transparent',
+  };
+  const dateLabel = (date: string) => new Date(`${date}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
   const head = header ?? (
     <ChartHead title={title} series={gseries}>
       {aggregatable ? <GranularityToggle value={gran} onChange={setGran} /> : null}
@@ -213,14 +228,25 @@ export function TrendChart({
   const axisTicks = (axis: 'left' | 'right'): number[] => {
     const values = gseries.filter((entry) => (entry.axis ?? 'left') === axis)
       .flatMap((entry) => entry.points.flatMap((point) => point.value === null ? [] : [point.value]));
+    if (invertedAxis) {
+      if (rankLabels) {
+        const maximum = Math.max(2, ...values) * 1.1;
+        const magnitude = 10 ** Math.floor(Math.log10(maximum / 5));
+        const step = Math.max(1, ([1, 2, 2.5, 5, 10].find((factor) => factor * magnitude >= maximum / 5) ?? 10) * magnitude);
+        return [1, ...Array.from({ length: Math.floor(maximum / step) }, (_, index) => (index + 1) * step).filter((tick) => tick > 1 && Number.isInteger(tick))];
+      }
+      const ticks = niceTicks(0, Math.max(2, ...values));
+      return [1, ...ticks.filter((tick) => tick > 1 && Number.isInteger(tick))];
+    }
     return niceTicks(Math.min(0, ...values), Math.max(0, ...values));
   };
   const ticksByAxis = { left: axisTicks('left'), right: axisTicks('right') };
   const axisY = (value: number, axis: 'left' | 'right' = 'left'): number => {
     const ticks = ticksByAxis[axis];
     const low = ticks[0] ?? 0;
-    const high = ticks.at(-1) ?? 1;
-    return PAD.top + PLOT_H - ((value - low) / (high - low || 1)) * PLOT_H;
+    const high = rankLabels ? Math.max(2, ...gseries.filter((entry) => (entry.axis ?? 'left') === axis).flatMap((entry) => entry.points.flatMap((point) => point.value === null ? [] : [point.value]))) * 1.1 : ticks.at(-1) ?? 1;
+    const offset = ((value - low) / (high - low || 1)) * PLOT_H;
+    return invertedAxis ? PAD.top + offset : PAD.top + PLOT_H - offset;
   };
   const seriesY = (entry: TrendSeries) => (value: number): number => axisY(value, entry.axis ?? 'left');
   const bars = gseries.filter((entry) => entry.mark === 'bar');
@@ -264,23 +290,27 @@ export function TrendChart({
         >
           {/* Background windows sit behind axes, series, and hover marks. */}
           {windows.map((window, index) => {
-            const band = windowBand(window, dates, x, PLOT_W);
+            const rankStart = dates.findIndex((date) => date >= window.start);
+            const rankEnd = window.end === null ? dates.length - 1 : dates.findLastIndex((date) => date <= window.end!);
+            const band = rankLabels ? rankStart < 0 || rankEnd < rankStart ? null : { x: x(rankStart), width: Math.max(1, x(rankEnd) - x(rankStart)) } : windowBand(window, dates, x, PLOT_W);
             if (band === null) return null;
             return (
-              <rect
-                key={window.id ?? `${window.label}-${index}`}
+              <g key={window.id ?? `${window.label}-${index}`}><rect
                 data-testid="experiment-window"
                 data-window-label={window.label}
                 x={band.x}
                 y={PAD.top}
                 width={band.width}
                 height={PLOT_H}
-                fill="var(--wa-accent-soft)"
-                stroke="var(--wa-accent-border)"
+                fill={rankLabels ? 'color-mix(in srgb, var(--wa-bad) 6%, transparent)' : 'var(--wa-accent-soft)'}
+                stroke={rankLabels ? 'var(--wa-bad-border)' : 'var(--wa-accent-border)'}
                 strokeWidth={1}
               >
                 <title>{window.label}</title>
-              </rect>
+              </rect>{rankLabels ? <g aria-label={window.label}>
+                <rect x={Math.min(band.x, PAD.left + PLOT_W - 110)} y={PAD.top + 6} width={110} height={16} rx={2} fill="var(--wa-bad-text)" />
+                <text x={Math.min(band.x, PAD.left + PLOT_W - 110) + 5} y={PAD.top + 17} fontSize={10} fill="var(--wa-white)">{window.label}</text>
+              </g> : null}</g>
             );
           })}
 
@@ -320,8 +350,8 @@ export function TrendChart({
                   y1={axisY(tick, axis)} y2={axisY(tick, axis)} stroke="var(--wa-viz-grid)" strokeWidth={1} /> : null}
                 <text x={axis === 'left' ? PAD.left - 8 : PAD.left + PLOT_W + 8}
                   y={axisY(tick, axis) + 3.5} textAnchor={axis === 'left' ? 'end' : 'start'}
-                  fill="var(--wa-viz-ink)" fontSize={12}>
-                  {axisScale === null ? formatValue(tick, 'integer', context) : formatValue(tick, axisScale, context)}
+                  fill="var(--wa-viz-ink)" fontSize={rankLabels ? 10 : 12}>
+                  {rankLabels ? `#${formatValue(tick, 'integer', context)}` : axisScale === null ? formatValue(tick, 'integer', context) : formatValue(tick, axisScale, context)}
                 </text>
               </g>)}
             </g>;
@@ -340,22 +370,26 @@ export function TrendChart({
             x={PAD.left}
             y={H - 8}
             fill="var(--wa-viz-ink)"
-            fontSize={12}
+            fontSize={rankLabels ? 10 : 12}
             style={{ fontVariantNumeric: 'tabular-nums' }}
           >
-            {dates[0]}
+            {rankLabels && dates[0] ? dateLabel(dates[0]) : dates[0]}
           </text>
           <text
             x={PAD.left + PLOT_W}
             y={H - 8}
             textAnchor="end"
             fill="var(--wa-viz-ink)"
-            fontSize={12}
+            fontSize={rankLabels ? 10 : 12}
             style={{ fontVariantNumeric: 'tabular-nums' }}
           >
-            {dates[dates.length - 1]}
+            {rankLabels && dates.at(-1) ? dateLabel(dates.at(-1)!) : dates.at(-1)}
           </text>
 
+          {rankLabels ? [0.33, 0.65, 0.85].map((fraction) => {
+            const index = Math.round((dates.length - 1) * fraction);
+            return dates.length > 5 && dates[index] ? <text key={fraction} x={x(index)} y={H - 8} textAnchor="middle" fontSize={10} fill="var(--wa-viz-ink)">{dateLabel(dates[index])}</text> : null;
+          }) : null}
           {hovered === null ? null : (
             <line
               x1={x(hovered)}
@@ -368,7 +402,7 @@ export function TrendChart({
           )}
 
           {gseries.map((entry, index) => {
-            const visual = seriesStyle(index);
+            const visual = styleOf(entry, index);
             const color = visual.color;
             const y = seriesY(entry);
             const path = linePath(entry.points, x, y);
@@ -398,22 +432,29 @@ export function TrendChart({
                       d={path}
                       fill="none"
                       stroke={color}
-                      strokeWidth={2}
+                      strokeWidth={rankLabels ? entry.tone === 'own' ? 2.5 : 1.5 : 2}
                       strokeDasharray={visual.dashed ? '5 4' : undefined}
                       strokeLinecap="round"
                       strokeLinejoin="round"
                     />
                   </>
                 )}
+                {invertedAxis ? entry.points.map((point, pointIndex) =>
+                  point.value !== null && pointIndex !== last?.index
+                    && (entry.points[pointIndex - 1]?.value ?? null) === null
+                    && (entry.points[pointIndex + 1]?.value ?? null) === null
+                    ? <circle key={point.date} data-isolated-rank="true"
+                        cx={x(pointIndex)} cy={y(point.value)} r={4} fill={color} />
+                    : null) : null}
                 {last === null ? null : (
                   <>
                     <circle
                       cx={x(last.index)}
                       cy={y(last.value)}
-                      r={6}
+                      r={rankLabels ? 0 : 6}
                       fill={index === 0 ? visual.outline : 'var(--wa-viz-surface)'}
                     />
-                    <circle cx={x(last.index)} cy={y(last.value)} r={4} fill={color} />
+                    <circle cx={x(last.index)} cy={y(last.value)} r={rankLabels ? 2 : 4} fill={color} />
                     {labelY === undefined || Math.abs(labelY - (y(last.value) + 3.5)) < 1 ? null : (
                       <line
                         x1={x(last.index) + 5}
@@ -426,13 +467,15 @@ export function TrendChart({
                     )}
                     <text
                       data-testid={`end-label-${index}`}
+                      textLength={rankLabels ? Math.min(PAD.right - 12, `${entry.label} #${formatValue(last.value, entry.scale ?? scale, context)}`.length * 5) : undefined}
+                      lengthAdjust={rankLabels ? "spacingAndGlyphs" : undefined}
                       x={x(last.index) + 10}
                       y={labelY}
-                      fill="var(--wa-viz-ink)"
-                      fontSize={12}
+                      fill={rankLabels ? color : 'var(--wa-viz-ink)'}
+                      fontSize={rankLabels ? 10 : 12}
                       style={{ fontVariantNumeric: 'tabular-nums' }}
                     >
-                      {formatValue(last.value, entry.scale ?? scale, context)}
+                      {rankLabels ? `${entry.label} #${formatValue(last.value, 'integer', context)}` : formatValue(last.value, entry.scale ?? scale, context)}
                     </text>
                   </>
                 )}
@@ -489,9 +532,9 @@ export function TrendChart({
                   aria-hidden="true"
                   className="wa-chart-key"
                   style={{
-                    background: seriesStyle(index).dashed ? 'transparent' : seriesStyle(index).color,
-                    borderTop: seriesStyle(index).dashed
-                      ? `2px dashed ${seriesStyle(index).color}`
+                    background: styleOf(entry, index).dashed ? 'transparent' : styleOf(entry, index).color,
+                    borderTop: styleOf(entry, index).dashed
+                      ? `2px dashed ${styleOf(entry, index).color}`
                       : undefined,
                   }}
                 />
@@ -514,7 +557,7 @@ export function TrendChart({
         )}
       </figcaption>
 
-      <details style={{ marginTop: '0.5rem' }}>
+      {showNumbers ? <details style={{ marginTop: '0.5rem' }}>
         <summary className="wa-hint" style={{ cursor: 'pointer' }}>
           Show the numbers
         </summary>
@@ -544,7 +587,7 @@ export function TrendChart({
             </tbody>
           </table>
         </div>
-      </details>
+      </details> : null}
     </figure>
   );
 }
