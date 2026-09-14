@@ -1,3 +1,4 @@
+import { e2eTestMatch } from './src/e2e-suite-registry';
 /**
  * End-to-end configuration for auth and operator navigation (WP-04).
  *
@@ -37,7 +38,7 @@ export default defineConfig({
   // Member and invitation flows own a fresh process too. Their auth
   // continuation timed out after the guard matrix had compiled every
   // protected route, before the later OAuth heap exhaustion.
-  testMatch: /(dashboard|grid)\.spec\.ts$/,
+  testMatch: e2eTestMatch('auth'),
   // The cross-route dashboard acceptance file compiles several large operator
   // routes and owns a fresh Next process through its dedicated configuration.
   testIgnore: /route-acceptance\.dashboard\.spec\.ts$/,

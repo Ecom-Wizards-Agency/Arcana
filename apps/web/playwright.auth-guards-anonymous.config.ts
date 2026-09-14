@@ -1,3 +1,4 @@
+import { e2eTestMatch } from './src/e2e-suite-registry';
 /** Anonymous frame and guard redirects in a fresh authenticated-test Next process. */
 import { defineConfig, devices } from '@playwright/test';
 import { withE2ESummaryReporter } from './e2e/e2e-count-reporter';
@@ -5,7 +6,7 @@ import authConfig from './playwright.auth.config';
 
 export default defineConfig({
   ...authConfig,
-  testMatch: /guards-anonymous\.spec\.ts$/,
+  testMatch: e2eTestMatch('auth-guards-anonymous'),
   outputDir: './node_modules/.cache/playwright/auth-guards-anonymous',
   reporter: withE2ESummaryReporter(process.env['CI']
     ? [

@@ -1,3 +1,4 @@
+import { e2eTestMatch } from './src/e2e-suite-registry';
 /**
  * The settings and role matrix in a fresh authenticated Next dev process.
  *
@@ -11,7 +12,7 @@ import authConfig from './playwright.auth.config';
 
 export default defineConfig({
   ...authConfig,
-  testMatch: /roles\.spec\.ts$/,
+  testMatch: e2eTestMatch('auth-roles'),
   outputDir: './node_modules/.cache/playwright/auth-roles',
   reporter: withE2ESummaryReporter(process.env['CI']
     ? [

@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import {
   E2E_SUITE_DEFINITIONS,
   E2E_SUITES,
+  e2eTestMatch,
+  E2E_EXPECTED_TOTAL,
   getE2ESuiteDefinition,
   runE2ESuiteMatrix,
 } from './e2e-suite-registry.js';
@@ -19,6 +21,23 @@ describe('web E2E suite registry', () => {
       expect(suite.expectedSpecFiles).toEqual(SCREEN_REGISTRY.flatMap((screen) => screen.specs.filter((spec) => spec.suite === suite.name).map((spec) => spec.file)).sort());
     }
     expect(E2E_SUITES).toEqual(E2E_SUITE_DEFINITIONS.map((suite) => suite.name));
+  });
+
+  it('matches only the exact owned filenames in every config', () => {
+    for (const suite of E2E_SUITE_DEFINITIONS) {
+      const config = readFileSync(new URL(`../${suite.config}`, import.meta.url), 'utf8');
+      expect(config).toContain(`testMatch: e2eTestMatch('${suite.name}')`);
+      const matches = e2eTestMatch(suite.name);
+      for (const file of E2E_SUITE_DEFINITIONS.flatMap((entry) => entry.expectedSpecFiles)) {
+        expect(matches.some((regex) => regex.test(`/repo/e2e/${file}`)), file)
+          .toBe(suite.expectedSpecFiles.includes(file));
+        expect(matches.some((regex) => regex.test(`C:\\e2e\\${file}`)), file)
+          .toBe(suite.expectedSpecFiles.includes(file));
+        expect(matches.some((regex) => regex.test(`/repo/prefix-${file}`))).toBe(false);
+        expect(matches.some((regex) => regex.test(`/repo/${file}.bak`))).toBe(false);
+      }
+    }
+    expect(E2E_EXPECTED_TOTAL).toBe(E2E_SUITE_DEFINITIONS.reduce((total, suite) => total + suite.expectedTests, 0));
   });
 
   it('keeps names, configs, projects and spec ownership unique', () => {

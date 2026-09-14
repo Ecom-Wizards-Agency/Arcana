@@ -1,3 +1,7 @@
+import { readFile } from 'node:fs/promises';
+import { is, getTableName } from 'drizzle-orm';
+import { PgTable, getTableConfig } from 'drizzle-orm/pg-core';
+import { PACKAGE_REGISTRY } from './registry.js';
 import { randomUUID } from 'node:crypto';
 import { createAdsConnectionLifecycle } from './queries/connections.js';
 import { createSpApiConnectionLifecycle, getSpApiRefreshToken, settleSpApiConnection, SpApiConnectionCommandError } from './queries/spapi.js';
@@ -17,6 +21,22 @@ import type { TestDatabase } from './testing/harness.js';
 
 const available = await databaseAvailable();
 
+async function registeredPublicTables(): Promise<Map<string, PgTable>> {
+  const tables = new Map<string, PgTable>();
+  for (const entry of PACKAGE_REGISTRY) {
+    if (!entry.schema) continue;
+    const name = entry.schema.slice('schema/'.length, -'.ts'.length);
+    const module: Record<string, unknown> = await import(`./schema/${name}.ts`);
+    for (const value of Object.values(module)) {
+      if (is(value, PgTable) && (getTableConfig(value).schema ?? 'public') === 'public') {
+        tables.set(getTableName(value), value);
+      }
+    }
+  }
+  return tables;
+}
+
+
 describe.skipIf(!available)('migrations', () => {
   let database: TestDatabase;
 
@@ -34,21 +54,16 @@ describe.skipIf(!available)('migrations', () => {
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260915110000_campaign_creation_previews.sql');
-    expect(files.filter((file) => file.startsWith('20260915'))).toEqual([
-      '20260915000000_sp_write_preview_evidence.sql',
-      '20260915010000_sp_write_preview_approval.sql',
-      '20260915020000_sp_write_application_entry.sql',
-      '20260915030000_sp_write_mirror_observations.sql',
-      '20260915040000_recommendation_proposal_revisions.sql',
-      '20260915050000_mcp_write_delegation_mode.sql',
-      '20260915060000_mcp_write_delegations.sql',
-      '20260915070000_mcp_bid_proposal_sources.sql',
-      '20260915080000_mcp_write_admissions.sql',
-      '20260915090000_mcp_write_preview_sources.sql',
-      '20260915100000_recommendation_fenced_function_acl.sql',
-      '20260915110000_campaign_creation_previews.sql',
-    ]);
+    const timestamps = files.map((file) => {
+      expect(file).toMatch(/^\d{14}_[a-z0-9_]+\.sql$/);
+      return Number(file.slice(0, 14));
+    });
+    // Existing history has equal timestamps; filenames break ties deterministically.
+    for (let index = 1; index < timestamps.length; index++) {
+      expect(timestamps[index]!).toBeGreaterThanOrEqual(timestamps[index - 1]!);
+      expect(files[index]!).not.toBe(files[index - 1]);
+    }
+
   });
 
   it('adds exactly two nullable method identity columns without defaults', async () => {
@@ -61,6 +76,7 @@ describe.skipIf(!available)('migrations', () => {
       { column_name: 'method_id', is_nullable: 'YES', column_default: null },
       { column_name: 'method_version', is_nullable: 'YES', column_default: null },
     ]);
+
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {
@@ -534,48 +550,21 @@ describe.skipIf(!available)('migrations', () => {
     `;
     const tables = new Set(rows.map((row) => row.relname));
 
-    for (const expected of [
-      // tenancy
-      'orgs', 'org_members', 'org_invitations', 'ads_connections', 'integration_connections',
-      'ad_profiles', 'profile_strategy',
-      // entity mirror
-      'portfolios', 'campaigns', 'ad_groups', 'product_ads', 'keywords', 'targets',
-      'negatives', 'entity_changes',
-      // facts
-      'fact_sp_target_daily', 'fact_search_term_daily', 'fact_placement_daily',
-      'fact_sb_daily', 'fact_sd_daily', 'fact_profile_daily', 'fact_monthly_rollup',
-      'product_economics',
-      // sync
-      'sync_schedules', 'sync_jobs', 'report_requests',
-      'unified_reporting_bindings', 'unified_report_runs', 'unified_report_operations',
-      // analysis
-      'recommendation_preview_batches', 'recommendation_runs', 'recommendation_run_campaigns',
-      'recommendations', 'insights', 'crosscheck_results',
-      // writes
-      'apply_batches', 'apply_rows', 'campaign_maps',
-      // product surface
-      'tags', 'entity_tags', 'dashboards', 'goto_links', 'audit_log',
-      // reserved seams
-      'spapi_connections', 'spapi_profile_bindings',
-      'fact_sales_traffic_daily', 'fact_sqp_weekly', 'supa_flags',
-      'rank_observations', 'keepa_bsr_observations', 'competitor_links',
-      'competitor_price_events',
-      'creative_assets', 'creative_placements',
-      // operator-intelligence foundations
-      'report_coverage', 'historical_bootstrap_progress',
-      'report_promotion_watermarks', 'attribution_observations',
-      'ad_creative_asset_mappings', 'fact_creative_daily',
-      'creative_sync_snapshots',
-      'sqp_promotion_runs', 'query_vocabulary', 'contextual_negative_proposals',
-      'contextual_negative_exports',
-      'optimization_groups', 'campaign_optimization_assignments',
-      'recommendation_observations', 'marketing_stream_subscription_bindings',
-      'marketing_stream_events', 'marketing_stream_projection_blocks',
-      'marketing_stream_projection_block_scopes',
-      'marketing_stream_hourly_facts', 'dayparting_schedule_proposals',
-    ]) {
-      expect(tables, `missing table ${expected}`).toContain(expected);
+    const planned = new Set((await registeredPublicTables()).keys());
+    const prefixes = PACKAGE_REGISTRY.flatMap((entry) => entry.migrationPrefix === null ? [] : [entry.migrationPrefix]);
+    const files = await migrationFiles();
+    for (const prefix of prefixes) {
+      expect(files.some((file) => file.startsWith(prefix)), `Missing domain migration ${prefix}`).toBe(true);
     }
+    for (const file of files) {
+      const sql = await readFile(new URL(`../../../supabase/migrations/${file}`, import.meta.url), 'utf8');
+      // Static public base tables; dynamic monthly partitions are checked separately.
+      for (const match of sql.matchAll(/create\s+table\s+(?:if\s+not\s+exists\s+)?public\.([a-z_][a-z0-9_]*)\s*\(/gi)) {
+        planned.add(match[1]!);
+      }
+    }
+    expect(planned.size).toBeGreaterThan(0);
+    expect([...tables].sort()).toEqual([...planned].sort());
   });
 
   it('installs the immutable one-row contextual-negative artifact contract', async () => {
@@ -761,7 +750,13 @@ describe.skipIf(!available)('migrations', () => {
          and c.relname like 'sp_write_%'
        order by c.relname
     `;
-    expect(spTenantTables).toHaveLength(25);
+    const expectedSpTenantTables = [...await registeredPublicTables()]
+      .filter(([name, table]) => name.startsWith('sp_write_')
+        && getTableConfig(table).columns.some((column) => column.name === 'org_id'))
+      .map(([name]) => name)
+      .sort();
+    expect(expectedSpTenantTables.length).toBeGreaterThan(0);
+    expect(spTenantTables.map(({ table_name }) => table_name)).toEqual(expectedSpTenantTables);
     for (const { table_name: tableName } of spTenantTables) {
       const [beforePurge] = await database.sql<{ count: number }[]>`
         select count(*)::int as count

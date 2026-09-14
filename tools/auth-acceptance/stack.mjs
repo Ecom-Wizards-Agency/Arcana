@@ -12,10 +12,10 @@ import { abort, directory, email, root, waitFor, web } from './support.mjs';
 // only gateway.mjs; no application image, private registry or developer cache.
 const pinned = (repository, digest) => repository + '@sha256:' + digest;
 export const images = {
-  db: pinned('docker.io/library/postgres:17', '67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675'),
+  db: pinned('public.ecr.aws/docker/library/postgres:17', '67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675'),
   mail: pinned('public.ecr.aws/supabase/mailpit:v1.30.2', '37a38e48e9338cd7e89dfeb487f37b02ebfcd9cb23111bed2d345e79d37d6dd6'),
   auth: pinned('public.ecr.aws/supabase/gotrue:v2.196.0', 'c0c25187a6b835e65a6f6e6c6b39d090e832d40e6de5186f2c038e0411944232'),
-  gateway: pinned('docker.io/library/node:22.22.0-bookworm-slim', '7cc56ef285a8568121537d17b05e72128f01b89c54607b51acf084a50ef483f3'),
+  gateway: pinned('public.ecr.aws/docker/library/node:22.22.0-bookworm-slim', '7cc56ef285a8568121537d17b05e72128f01b89c54607b51acf084a50ef483f3'),
 };
 const label = 'openspell.auth-acceptance';
 const { createClient } = web('@supabase/supabase-js');

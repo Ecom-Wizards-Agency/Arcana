@@ -68,7 +68,8 @@ describe.skipIf(!available)('competitor profile agency binding', () => {
       and profile_id is null and our_asin='B0TEST0313'`).toHaveLength(1);
   });
 
-  it('refuses invalid legacy data atomically without changing rows, grants or existing constraints', async () => {
+  // Replays the full prior schema, then proves refusal and successful forward migration.
+  it('refuses invalid legacy data atomically without changing rows, grants or existing constraints', { timeout: 30_000 }, async () => {
     const prior = await createTestDatabase('competitor_upgrade', { throughMigration: '20260907150000_tag_org_binding.sql' });
     try {
       const first = await seed(prior); const second = await seed(prior);

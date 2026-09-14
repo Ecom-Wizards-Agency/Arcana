@@ -146,3 +146,14 @@ export async function runE2ESuiteMatrix(
   }
   return finalCode;
 }
+
+/** Exact basename ownership, including a path boundary on Windows and POSIX. */
+export function e2eTestMatch(name: E2ESuite): RegExp[] {
+  return getE2ESuiteDefinition(name).expectedSpecFiles.map((file) =>
+    new RegExp(`(?:^|[/\\\\])${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`),
+  );
+}
+
+export const E2E_EXPECTED_TOTAL = E2E_SUITE_DEFINITIONS.reduce(
+  (total, suite) => total + suite.expectedTests, 0,
+);
