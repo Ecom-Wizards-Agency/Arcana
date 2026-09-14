@@ -1,11 +1,24 @@
 import { z } from 'zod';
 import { SpMoney } from './sp-writes.js';
 
+/** Unicode White_Space plus BOM and zero-width space; kept in sync with SQL admission. */
+export function normalizeQueuedBidOverride(reason: string): string {
+  return reason.replace(/^[\p{White_Space}\uFEFF\u200B]+|[\p{White_Space}\uFEFF\u200B]+$/gu, '');
+}
+
+/** Precision of the supported SP marketplace currencies (see the provider codec). */
+const QueuedBidMoney = SpMoney.refine((money) => {
+  const scale = money.currencyCode === 'JPY' ? 0
+    : ['AED', 'AUD', 'BRL', 'CAD', 'EGP', 'EUR', 'GBP', 'INR', 'MXN', 'PLN', 'SAR', 'SEK', 'SGD', 'TRY', 'USD', 'ZAR'].includes(money.currencyCode) ? 2 : null;
+  return scale !== null && (money.amount.split('.')[1]?.length ?? 0) <= scale;
+}, 'Money must use supported marketplace precision');
+
 /** The common daily evidence consumed by the corridor model and presentation. */
 export const TargetCorridorPoint = z.object({
   date: z.string(), low: z.number().nullable(), median: z.number().nullable(), high: z.number().nullable(),
   bid: z.number().nullable(), cpc: z.number().nullable(), maxCpc: z.number().nullable(),
   components: z.array(z.object({ name: z.string(), pct: z.number() })).readonly(),
+  placementEvidence: z.enum(['known-zero', 'components', 'missing']).optional(),
 });
 export type TargetCorridorPoint = z.infer<typeof TargetCorridorPoint>;
 export const TargetDailyPerformance = z.object({
@@ -32,8 +45,8 @@ export const TargetBidContext = z.object({
 export type TargetBidContext = z.infer<typeof TargetBidContext>;
 export const QueuedBidRequest = z.object({
   requestId: z.uuid(), profileId: z.uuid(), targetId: z.string().min(1).max(200),
-  expectedBid: SpMoney, expectedReadAt: z.string().min(1), newBid: SpMoney,
-  overrideReason: z.string().trim().min(1).max(1000).nullable(),
+  expectedBid: QueuedBidMoney, expectedReadAt: z.string().min(1), newBid: QueuedBidMoney,
+  overrideReason: z.string().transform(normalizeQueuedBidOverride).pipe(z.string().min(1).max(1000)).nullable(),
 }).strict().refine((request) => request.expectedBid.currencyCode === request.newBid.currencyCode, 'Bid currency must stay fixed').refine((request) => request.expectedBid.amount !== request.newBid.amount, 'Proposed bid must differ from the current bid');
 export type QueuedBidRequest = z.infer<typeof QueuedBidRequest>;
 export const QueuedBidChange = z.object({

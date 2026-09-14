@@ -69,3 +69,14 @@ it('renders measured target top-of-search share and retains the SQP gap', () => 
   expect(host.textContent).toContain('I · P not measured');
   expect(host.textContent).not.toContain('Top-of-search share: column empty.');
 });
+
+it('renders authoritative zero-uplift CPC separately from missing placement evidence', () => {
+  const point = { ...ready.payload.points[0]!, bid: 5, maxCpc: 5, components: [], placementEvidence: 'known-zero' as const };
+  const view = render(<Screen data={{ ...ready, payload: { ...ready.payload, points: [point] } }} />);
+  expect(view.container.textContent).toContain('Placement uplifts: 0%.');
+  expect(view.container.textContent).toContain('$5.00 base × (1 + 0% placement uplift)');
+  view.rerender(<Screen data={{ ...ready, payload: { ...ready.payload, points: [{ ...point, maxCpc: null, placementEvidence: 'missing' }] } }} />);
+  expect(view.container.textContent).toContain('Placement modifiers not measured.');
+  expect(view.container.textContent).toContain('Placement formula not measured.');
+  expect(view.container.textContent).not.toContain('Placement uplifts: 0%.');
+});

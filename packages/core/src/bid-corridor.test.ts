@@ -35,3 +35,17 @@ it('does not invent numerical claims in a reading with no numerical evidence', (
   expect(corridorReading([empty],String)).not.toMatch(/\d/);
   expect(corridorSummary([empty]).cpcAverage).toBeNull();
 });
+
+it('refuses a zero-width or Unicode whitespace rank override in model checks', async () => {
+  const { targetBidChecks } = await import('./bid-corridor.js');
+  const context = {
+    profileId: '00000000-0000-4000-8000-000000000001', profileLabel: 'Synthetic profile', targetId: 'synthetic', targetLabel: 'Synthetic target',
+    campaignId: 'synthetic-campaign', campaignLabel: 'Synthetic campaign', oldBid: { amount: '5', currencyCode: 'USD' }, readAt: '2026-09-01',
+    organicRank: 1, protectionRank: 2, suggestedLow: 1, suggestedMedian: 5, suggestedHigh: 10, maxIncrease: 1, maxDecrease: 1,
+    bidFloor: 1, bidCeiling: 10, campaignBudget: 100, placementModifiers: { topOfSearch: 0, restOfSearch: 0, productPages: 0 }, targetAcos: null, settingSource: 'Synthetic settings',
+  };
+  for (const reason of ['\n\t', '\u200B', '\u0085\u2007\uFEFF']) {
+    expect(targetBidChecks(context, 4, reason)[0]?.passed).toBe(false);
+  }
+  expect(targetBidChecks(context, 4, '\u200B Reviewed decrease \u200B')[0]).toMatchObject({ passed: true, reason: 'Rank gate override: Reviewed decrease' });
+});

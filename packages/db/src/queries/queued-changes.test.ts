@@ -77,3 +77,83 @@ it('denies an existing foreign-agency proposal through RLS and approval admissio
   expect(rows).toHaveLength(0);
   await expect(withAuthenticatedOrgEditor(db,actor,tx=>approveQueuedTargetChange(tx,{profileId:otherProfile,targetId:'foreign-target',changeId:otherId}))).rejects.toThrow('Resource not found');
 });
+
+const overrideWhitespace = '\u0009\u000A\u000B\u000C\u000D\u0020\u0085\u00A0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF\u200B';
+async function directProposalRequest() {
+  const c = await withAuthenticatedActor(db, actor, (sql) => readTargetBidContext({ sql }, orgId, profileId, 'keyword'));
+  return { requestId: randomUUID(), profileId, targetId: 'keyword', expectedBid: c!.oldBid!, expectedReadAt: c!.readAt!, newBid: { amount: '4', currencyCode: 'USD' }, overrideReason: 'Reviewed decrease' as string | null };
+}
+function directQueue(request: unknown) {
+  // Deliberately bypass QueuedBidRequest.parse and the HTTP/query adapters.
+  return withAuthenticatedActor(db, actor, (sql) => sql<{ id: string }[]>`
+    select app.queue_target_bid(${orgId}::uuid,${JSON.stringify(request)}::text::jsonb)::text as id
+  `);
+}
+function readProposals() {
+  return withAuthenticatedActor(db, actor, (sql) => listQueuedTargetChanges({ sql }, orgId, profileId, 'keyword'));
+}
+it('refuses Unicode whitespace and zero-width protected overrides through direct authenticated admission', async () => {
+  const request = await directProposalRequest();
+  const c = await withAuthenticatedActor(db, actor, (sql) => readTargetBidContext({ sql }, orgId, profileId, 'keyword'));
+  expect([c!.organicRank, c!.protectionRank, c!.oldBid!.amount]).toEqual([1, 2, '5']);
+  const before = await readProposals();
+  for (const overrideReason of ['\n\t', ...overrideWhitespace, overrideWhitespace]) {
+    await expect(directQueue({ ...request, overrideReason })).rejects.toThrow('Invalid override reason');
+  }
+  expect(await readProposals()).toEqual(before);
+  const [counts] = await db.sql`select (select count(*)::int from public.queued_changes where id=${request.requestId}) as queued,(select count(*)::int from public.queued_change_approvals where change_id=${request.requestId}) as approved`;
+  expect(counts).toEqual({ queued: 0, approved: 0 });
+});
+it('normalizes direct authenticated overrides before immutable storage and idempotent approval', async () => {
+  const request = await directProposalRequest();
+  const raw = { ...request, overrideReason: overrideWhitespace + 'Reviewed decrease' + overrideWhitespace };
+  expect(await directQueue(raw)).toEqual([{ id: request.requestId }]);
+  expect(await directQueue(request)).toEqual([{ id: request.requestId }]);
+  const row = (await readProposals()).find((q) => q.id === request.requestId)!;
+  expect(row.request.overrideReason).toBe('Reviewed decrease');
+  expect(row.checks[0]).toMatchObject({ passed: true, reason: 'Rank gate override: Reviewed decrease' });
+  expect(row.checks.every((check) => check.passed)).toBe(true);
+  const result = await withAuthenticatedActor(db, actor, (sql) => sql<{ id: string }[]>`
+    select app.approve_queued_target_bid(${orgId}::uuid,${profileId}::uuid,'keyword',${request.requestId}::uuid)::text as id
+  `);
+  expect(result).toEqual([{ id: request.requestId }]);
+});
+it('refuses malformed JSON scalars and nested money before they can poison proposal readback', async () => {
+  const request = { ...await directProposalRequest(), newBid: { amount: '6', currencyCode: 'USD' }, overrideReason: null };
+  const malformed: unknown[] = [null, [], {}, { ...request, extra: true }];
+  for (const field of ['requestId', 'profileId', 'targetId', 'expectedReadAt']) {
+    for (const value of [null, 6, false, [], {}]) malformed.push({ ...request, [field]: value });
+  }
+  for (const field of ['expectedBid', 'newBid']) {
+    for (const value of [null, 6, false, [], '6', {}, { amount: '6' }, { amount: '6', currencyCode: 'USD', extra: true }]) {
+      malformed.push({ ...request, [field]: value });
+    }
+    for (const amount of [6, null, false, [], {}, '6.001', '6.0', '-1', 'NaN']) {
+      malformed.push({ ...request, [field]: { amount, currencyCode: 'USD' } });
+    }
+    for (const currencyCode of [6, null, false, [], {}, 'EUR', 'usd', 'XYZ']) {
+      malformed.push({ ...request, [field]: { amount: '6', currencyCode } });
+    }
+  }
+  malformed.push({ ...request, targetId: '😀'.repeat(101) }, { ...request, overrideReason: '😀'.repeat(501) });
+  expect(malformed).toHaveLength(76);
+  const before = await readProposals();
+  for (const input of malformed) await expect(directQueue(input)).rejects.toThrow(/Invalid (proposal|override)/);
+  expect(await readProposals()).toEqual(before);
+  const [count] = await db.sql`select count(*)::int as queued from public.queued_changes where id=${request.requestId}`;
+  expect(count?.queued).toBe(0);
+  expect(await directQueue(request)).toEqual([{ id: request.requestId }]);
+  const after = await readProposals();
+  expect(after).toHaveLength(before.length + 1);
+  expect(after.find((row) => row.id === request.requestId)?.request).toEqual(request);
+});
+it('enforces the profile currency and zero-decimal marketplace precision in direct admission', async () => {
+  await db.sql`update public.ad_profiles set currency_code='JPY' where id=${profileId}`;
+  try {
+    const request = { ...await directProposalRequest(), newBid: { amount: '6.1', currencyCode: 'JPY' }, overrideReason: null };
+    await expect(directQueue(request)).rejects.toThrow('Invalid proposal money: unsupported marketplace precision');
+    await expect(directQueue({ ...request, newBid: { amount: '6', currencyCode: 'USD' } })).rejects.toThrow('currency must match the profile');
+    expect(await directQueue({ ...request, newBid: { amount: '6', currencyCode: 'JPY' } })).toEqual([{ id: request.requestId }]);
+    expect((await readProposals()).find((row) => row.id === request.requestId)?.request.newBid).toEqual({ amount: '6', currencyCode: 'JPY' });
+  } finally { await db.sql`update public.ad_profiles set currency_code='USD' where id=${profileId}`; }
+});

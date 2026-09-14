@@ -78,6 +78,14 @@ left join lateral (select suggested_bid_low,suggested_bid_median,suggested_bid_h
 where (select count(*) from entity)=1 and exists(select 1 from public.org_members where org_id=p_org and user_id=auth.uid())
 $$;
 
+-- Same boundary normalization as normalizeQueuedBidOverride: Unicode White_Space,
+-- BOM and zero-width space. Default PostgreSQL trim only removes ASCII spaces.
+create function app.normalize_queued_bid_override(reason text) returns text
+language sql immutable strict set search_path=pg_catalog as $$
+  select btrim(reason,
+    U&'\0009\000A\000B\000C\000D\0020\0085\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF\200B')
+$$;
+
 create function app.target_bid_checks(c jsonb, bid numeric, override_reason text) returns jsonb
 language plpgsql immutable set search_path=pg_catalog as $$
 declare
@@ -96,8 +104,8 @@ declare
   placements_known boolean := c#>>'{placementModifiers,topOfSearch}' is not null and c#>>'{placementModifiers,restOfSearch}' is not null and c#>>'{placementModifiers,productPages}' is not null;
   delta numeric := (bid-old_bid)/nullif(old_bid,0);
 begin return jsonb_build_array(
-  jsonb_build_object('key','rank_gate','passed',coalesce(not down or (rank is not null and protection is not null and (rank>protection or nullif(trim(override_reason),'') is not null)),false),
-    'source','rank_observations · profile strategy','reason',case when not down then 'No bid decrease.' when rank is null or protection is null then 'Rank protection setting or observation is not measured.' when rank<=protection then coalesce('Rank gate override: '||nullif(trim(override_reason),''),'Protected organic rank: record an override reason before reducing the bid.') else 'Organic rank is outside the configured protection rank.' end),
+  jsonb_build_object('key','rank_gate','passed',coalesce(not down or (rank is not null and protection is not null and (rank>protection or nullif(app.normalize_queued_bid_override(override_reason),'') is not null)),false),
+    'source','rank_observations · profile strategy','reason',case when not down then 'No bid decrease.' when rank is null or protection is null then 'Rank protection setting or observation is not measured.' when rank<=protection then coalesce('Rank gate override: '||nullif(app.normalize_queued_bid_override(override_reason),''),'Protected organic rank: record an override reason before reducing the bid.') else 'Organic rank is outside the configured protection rank.' end),
   jsonb_build_object('key','band_position','passed',coalesce(bid between lo and hi,false),'source','bid_series_daily','reason',case when lo is null or hi is null then 'Suggested band is not measured.' when bid<lo then 'Proposed bid is below the suggested band.' when bid>hi then 'Proposed bid is above the suggested band.' else 'Proposed bid is within the suggested band.' end),
   jsonb_build_object('key','max_increase','passed',coalesce(delta<=inc,false),'source',source,'reason',case when inc is null then 'Maximum increase setting is missing.' else 'Maximum increase '||trim_scale(inc*100)::text||'%.' end),
   jsonb_build_object('key','max_decrease','passed',coalesce(-delta<=dec,false),'source',source,'reason',case when dec is null then 'Maximum decrease setting is missing.' else 'Maximum decrease '||trim_scale(dec*100)::text||'%.' end),
@@ -107,27 +115,70 @@ begin return jsonb_build_array(
 create function app.queue_target_bid(p_org uuid, p_request jsonb) returns uuid
 language plpgsql security definer set search_path=pg_catalog,public as $$
 declare
-  c jsonb; checks jsonb; old public.queued_changes; queue_id uuid := (p_request->>'requestId')::uuid;
-  profile uuid := (p_request->>'profileId')::uuid; target text := p_request->>'targetId';
-  amount text := p_request#>>'{newBid,amount}';
+  c jsonb; checks jsonb; old public.queued_changes;
+  queue_id uuid; profile uuid; target text; amount text;
+  field text; money jsonb; scale integer; reason text;
 begin
   perform app.lock_org_editor(p_org);
+  -- Validate JSON types before extraction/casts: #>> coerces numbers into text.
+  if jsonb_typeof(p_request) is distinct from 'object' then
+    raise exception 'Invalid proposal shape' using errcode='22023'; end if;
+  if (select count(*) from jsonb_object_keys(p_request))<>7
+    or not (p_request ?& array['requestId','profileId','targetId','expectedBid','expectedReadAt','newBid','overrideReason']) then
+    raise exception 'Invalid proposal shape' using errcode='22023'; end if;
+  foreach field in array array['requestId','profileId','targetId','expectedReadAt'] loop
+    if jsonb_typeof(p_request->field) is distinct from 'string' then
+      raise exception 'Invalid proposal shape: % must be a string',field using errcode='22023'; end if;
+  end loop;
+  foreach field in array array['requestId','profileId'] loop
+    if p_request->>field !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      and lower(p_request->>field) not in ('00000000-0000-0000-0000-000000000000','ffffffff-ffff-ffff-ffff-ffffffffffff') then
+      raise exception 'Invalid proposal shape: % must be a UUID',field using errcode='22023'; end if;
+  end loop;
+  target := p_request->>'targetId';
+  -- Zod string limits count UTF-16 code units, including two for astral characters.
+  if length(target)+(select count(*) from regexp_split_to_table(target,'') ch where ascii(ch)>65535) not between 1 and 200
+    or length(p_request->>'expectedReadAt')=0 then
+    raise exception 'Invalid proposal shape: target or read time' using errcode='22023'; end if;
+  if jsonb_typeof(p_request->'overrideReason') not in ('null','string') then
+    raise exception 'Invalid override reason: expected text or null' using errcode='22023'; end if;
+  if jsonb_typeof(p_request->'overrideReason')='string' then
+    reason := app.normalize_queued_bid_override(p_request->>'overrideReason');
+    if length(reason)+(select count(*) from regexp_split_to_table(reason,'') ch where ascii(ch)>65535) not between 1 and 1000 then
+      raise exception 'Invalid override reason: provide nonblank text of at most 1000 characters' using errcode='22023'; end if;
+    p_request := jsonb_set(p_request,'{overrideReason}',to_jsonb(reason));
+  end if;
+  foreach field in array array['expectedBid','newBid'] loop
+    money := p_request->field;
+    if jsonb_typeof(money) is distinct from 'object' then
+      raise exception 'Invalid proposal money: % must be an object',field using errcode='22023'; end if;
+    if (select count(*) from jsonb_object_keys(money))<>2 or not (money ?& array['amount','currencyCode'])
+      or jsonb_typeof(money->'amount') is distinct from 'string'
+      or jsonb_typeof(money->'currencyCode') is distinct from 'string' then
+      raise exception 'Invalid proposal money: exact string amount and currencyCode required' using errcode='22023'; end if;
+    if money->>'amount' !~ '^(0|[1-9][0-9]{0,11})(\.[0-9]{0,5}[1-9])?$' then
+      raise exception 'Invalid proposal money: amount must be canonical decimal text' using errcode='22023'; end if;
+    scale := case when money->>'currencyCode'='JPY' then 0
+      when money->>'currencyCode'=any(array['AED','AUD','BRL','CAD','EGP','EUR','GBP','INR','MXN','PLN','SAR','SEK','SGD','TRY','USD','ZAR']) then 2 else null end;
+    if scale is null or length(split_part(money->>'amount','.',2))>scale then
+      raise exception 'Invalid proposal money: unsupported marketplace precision' using errcode='22023'; end if;
+  end loop;
+  queue_id := (p_request->>'requestId')::uuid;
+  profile := (p_request->>'profileId')::uuid;
+  amount := p_request#>>'{newBid,amount}';
   perform pg_advisory_xact_lock(hashtextextended(p_org::text||queue_id::text,0));
   select * into old from public.queued_changes where queued_changes.id=queue_id;
   if found then
     if old.org_id<>p_org or old.created_by<>auth.uid() or old.request<>p_request then raise exception 'Request identity conflict' using errcode='22023'; end if;
     return queue_id;
   end if;
-  if jsonb_typeof(p_request)<>'object' or (select count(*) from jsonb_object_keys(p_request))<>7
-    or not (p_request ?& array['requestId','profileId','targetId','expectedBid','expectedReadAt','newBid','overrideReason'])
-    or jsonb_typeof(p_request->'newBid')<>'object' or (select count(*) from jsonb_object_keys(p_request->'newBid'))<>2
-    or jsonb_typeof(p_request->'overrideReason') not in ('null','string')
-    or length(p_request->>'overrideReason')>1000 or length(target) not between 1 and 200 then
-    raise exception 'Invalid proposal shape' using errcode='22023'; end if;
   perform 1 from public.keywords where org_id=p_org and profile_id=profile and amazon_id=target for share;
   perform 1 from public.targets where org_id=p_org and profile_id=profile and amazon_id=target for share;
   c := app.target_bid_context(p_org,profile,target);
   if c is null then raise exception 'Target is unavailable or ambiguous' using errcode='42501'; end if;
+  if p_request#>>'{newBid,currencyCode}' is distinct from c#>>'{oldBid,currencyCode}'
+    or p_request#>>'{expectedBid,currencyCode}' is distinct from c#>>'{oldBid,currencyCode}' then
+    raise exception 'Invalid proposal money: currency must match the profile' using errcode='22023'; end if;
   if c->'oldBid' is distinct from p_request->'expectedBid' or c->>'readAt' is distinct from p_request->>'expectedReadAt' or c->>'readAt' is null then
     raise exception 'The synchronized bid changed. Reload before queueing.' using errcode='55000'; end if;
   if amount is null or amount !~ '^(0|[1-9][0-9]{0,11})(\.[0-9]{0,5}[1-9])?$' or amount::numeric<=0 or amount::numeric=(c#>>'{oldBid,amount}')::numeric
@@ -162,5 +213,5 @@ begin
   insert into public.queued_change_approvals(change_id,org_id,profile_id,approved_by) values(p_id,p_org,p_profile,auth.uid()) on conflict(change_id) do nothing;
   return p_id;
 end $$;
-revoke all on function app.reject_queued_change_mutation(), app.target_bid_context(uuid,uuid,text), app.target_bid_checks(jsonb,numeric,text), app.queue_target_bid(uuid,jsonb), app.approve_queued_target_bid(uuid,uuid,text,uuid) from public;
+revoke all on function app.normalize_queued_bid_override(text), app.reject_queued_change_mutation(), app.target_bid_context(uuid,uuid,text), app.target_bid_checks(jsonb,numeric,text), app.queue_target_bid(uuid,jsonb), app.approve_queued_target_bid(uuid,uuid,text,uuid) from public;
 grant execute on function app.target_bid_context(uuid,uuid,text), app.queue_target_bid(uuid,jsonb), app.approve_queued_target_bid(uuid,uuid,text,uuid) to authenticated;

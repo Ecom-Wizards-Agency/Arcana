@@ -1,4 +1,5 @@
 import type { TargetCorridorPoint, TargetBidContext, QueuedBidCheck } from '@wizard-ads/shared';
+import { normalizeQueuedBidOverride } from '@wizard-ads/shared';
 
 export function corridorMaxCpc(base: number | null, components: readonly { name: string; pct: number }[]): number | null {
   if (base === null || components.length === 0) return null;
@@ -33,6 +34,7 @@ export function corridorReading(points: readonly TargetCorridorPoint[], money: (
 }
 /** UI preview only. The database recomputes these checks when admitting a proposal. */
 export function targetBidChecks(c: TargetBidContext, bid: number, overrideReason: string | null): QueuedBidCheck[] {
+  overrideReason = overrideReason === null ? null : normalizeQueuedBidOverride(overrideReason);
   const old = c.oldBid === null ? null : Number(c.oldBid.amount);
   const down = old !== null && bid < old;
   const rankKnown = c.organicRank !== null && c.protectionRank !== null;

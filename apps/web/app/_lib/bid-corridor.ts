@@ -60,6 +60,9 @@ export async function loadCorridor(
     bid: nullableNumber(row.bid),
     cpc: nullableNumber(row.cpc),
     maxCpc: nullableNumber(row.max_potential_cpc),
+    placementEvidence: row.modifier_components === null ? 'missing'
+      : row.modifier_components.length > 0 ? 'components'
+      : row.bid !== null && row.max_potential_cpc !== null && Number(row.bid) === Number(row.max_potential_cpc) ? 'known-zero' : 'missing',
     components: (row.modifier_components ?? []).map((c) => ({ ...c, name: c.name.replaceAll('_', ' ').replace(/^./, (letter) => letter.toUpperCase()) })),
   }));
 }

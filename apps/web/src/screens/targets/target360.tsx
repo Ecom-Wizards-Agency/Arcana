@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { BidCorridorChart, TrendChart } from '@wizard-ads/ui';
 import { corridorReading, corridorSummary, targetBidChecks } from '@wizard-ads/core';
-import { parseGridView, serializeGridView, type GridSavedView } from '@wizard-ads/shared';
+import { normalizeQueuedBidOverride, parseGridView, serializeGridView, type GridSavedView } from '@wizard-ads/shared';
 import type { Target360Model } from './model';
 import styles from './target360.module.css';
 const tabs = ['Corridor', 'Shelf', 'Rank', 'Changes', 'Performance'] as const;
@@ -80,7 +80,7 @@ export function Target360({ model, currencyCode, back, savedView, onClose, showL
     try {
       const response = await fetch(`/api/targets/${encodeURIComponent(current.targetId)}/queue`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
         requestId: requestIdentity.current.id, profileId: current.profileId, targetId: current.targetId, expectedBid: current.oldBid, expectedReadAt: current.readAt,
-        newBid: { amount: String(Number(bid)), currencyCode }, overrideReason: override.trim() || null,
+        newBid: { amount: String(Number(bid)), currencyCode }, overrideReason: normalizeQueuedBidOverride(override) || null,
       }) });
       const data = await response.json() as { id?: string; error?: string };
       if (!response.ok || !data.id) throw new Error(data.error ?? 'The save could not be confirmed. Reload before trying again.');
@@ -89,6 +89,7 @@ export function Target360({ model, currencyCode, back, savedView, onClose, showL
     finally { setBusy(false); }
   };
   const components = model.payload.points.at(-1)?.components ?? [];
+  const zeroPlacements = model.payload.points.at(-1)?.placementEvidence === 'known-zero';
   const maxPlacement = components.length ? components.reduce((a,b) => a.pct >= b.pct ? a : b) : null;
   return <article className={styles.root} style={onClose ? { margin: 0 } : undefined} data-state={queued ? 'queued' : rankBlocked ? 'rank-gated' : hasSeries ? 'populated' : 'empty-series'}>
     <header className={styles.header}>
@@ -101,7 +102,7 @@ export function Target360({ model, currencyCode, back, savedView, onClose, showL
       <div className={styles.notice}>{share ? `T · ${percent(share.topOfSearchShare)} on ${share.date}. I · P not measured` : 'T · I · P not measured'}<small>{share ? '' : 'Top-of-search share: column empty. '}SQP shares are not measured until SP-API ingestion.</small></div></div>
     <nav className={styles.tabs} role="tablist" aria-label="Target analysis">{tabs.map((name) => <button key={name} role="tab" aria-selected={tab === name} aria-controls={`target-${name}`} onClick={() => setTab(name)}>{name}</button>)}</nav>
     {tab === 'Corridor' ? <section id="target-Corridor" role="tabpanel" className={styles.corridor}>
-      <aside className={`${styles.panel} ${styles.seriesPanel}`}><h2>DATA SERIES</h2>{(Object.keys(seriesLabels) as (keyof typeof seriesLabels)[]).map((key) => <div key={key} className={styles.seriesItem}><label className={styles.selector}><input type="checkbox" checked={target.series[key]} onChange={(e) => update({ ...view, target: { ...target, series: { ...target.series, [key]: e.target.checked } } })} /><span aria-hidden="true" className={styles.swatch} data-series={key} />{seriesLabels[key]}</label>{key === 'maxCpc' ? <><button className={styles.expand} aria-label="Placement components" aria-expanded={target.maxCpcExpanded} onClick={() => update({ ...view, target: { ...target, maxCpcExpanded: !target.maxCpcExpanded } })}>▾</button>{target.maxCpcExpanded ? <div className={styles.components}>{components.length ? components.map((c) => <label className={styles.selector} key={c.name}><input type="checkbox" checked={target.placementLines?.[c.name] ?? c.pct > 0} onChange={(e) => update({ ...view, target: { ...target, placementLines: { ...target.placementLines, [c.name]: e.target.checked } } })} /><span aria-hidden="true" className={styles.swatch} />{c.name} {c.pct > 0 ? '+' : ''}{c.pct}%</label>) : <p>Placement modifiers not measured.</p>}</div> : null}</> : null}</div>)}</aside>
+      <aside className={`${styles.panel} ${styles.seriesPanel}`}><h2>DATA SERIES</h2>{(Object.keys(seriesLabels) as (keyof typeof seriesLabels)[]).map((key) => <div key={key} className={styles.seriesItem}><label className={styles.selector}><input type="checkbox" checked={target.series[key]} onChange={(e) => update({ ...view, target: { ...target, series: { ...target.series, [key]: e.target.checked } } })} /><span aria-hidden="true" className={styles.swatch} data-series={key} />{seriesLabels[key]}</label>{key === 'maxCpc' ? <><button className={styles.expand} aria-label="Placement components" aria-expanded={target.maxCpcExpanded} onClick={() => update({ ...view, target: { ...target, maxCpcExpanded: !target.maxCpcExpanded } })}>▾</button>{target.maxCpcExpanded ? <div className={styles.components}>{components.length ? components.map((c) => <label className={styles.selector} key={c.name}><input type="checkbox" checked={target.placementLines?.[c.name] ?? c.pct > 0} onChange={(e) => update({ ...view, target: { ...target, placementLines: { ...target.placementLines, [c.name]: e.target.checked } } })} /><span aria-hidden="true" className={styles.swatch} />{c.name} {c.pct > 0 ? '+' : ''}{c.pct}%</label>) : <p>{zeroPlacements ? 'Placement uplifts: 0%.' : 'Placement modifiers not measured.'}</p>}</div> : null}</> : null}</div>)}</aside>
       <div className={styles.plot}><section aria-label="Bid corridor chart"><BidCorridorChart ariaLabel="Bid, realised CPC, suggested band and max CPC" currencyCode={currencyCode} points={model.payload.points} compact placementLines={target.series.maxCpc ? components.filter((c) => target.placementLines?.[c.name] ?? c.pct > 0).map((c) => c.name) : []} visible={{ bid: target.series.bid, cpc: target.series.realisedCpc, suggested: target.series.suggestedBand, maxCpc: target.series.maxCpc }} /></section>
         <section className={styles.lane} aria-label="Target metrics"><TrendChart title="Daily spend · ACOS" ariaLabel="Daily spend bars and ACOS line" currencyCode={currencyCode} scale="money" height={158} series={[
           ...(target.series.dailySpend ? [{ label: 'Daily spend', mark: 'bar' as const, points: model.performance.map((p) => ({ date: p.date, value: p.spend })) }] : []),
@@ -112,7 +113,7 @@ export function Target360({ model, currencyCode, back, savedView, onClose, showL
       <aside className={`${styles.panel} ${styles.summary}`}><h2>WHAT THIS SHOWS</h2><dl>
         <dt>Bid</dt><dd>{money(summary.bid)}{summary.bid !== null && model.payload.points.every((p) => p.bid === summary.bid) ? <small>Unchanged for all {model.payload.points.length} measured days</small> : null}</dd><dt>Realised CPC</dt><dd>{money(summary.cpcAverage)}{summary.cpcAverage === null ? '' : ' avg'}<small>Highest single day {money(summary.highestCpc)}{summary.highestDate ? ` on ${summary.highestDate}` : ''}</small></dd>
         <dt>Suggested median</dt><dd>{money(summary.median)}{summary.previousMedian ? <small>Was {money(summary.previousMedian.median)} on {summary.previousMedian.date}.</small> : null}</dd>
-        <dt>Bid vs band</dt><dd>{summary.bandPosition}</dd><dt>Max CPC</dt><dd>{money(summary.maxCpc)}<small>{summary.bid !== null && maxPlacement ? `${money(summary.bid)} base × (1 + ${maxPlacement.pct}% ${maxPlacement.name.toLowerCase()})` : 'Placement formula not measured.'}</small></dd>
+        <dt>Bid vs band</dt><dd>{summary.bandPosition}</dd><dt>Max CPC</dt><dd>{money(summary.maxCpc)}<small>{summary.bid !== null && maxPlacement ? `${money(summary.bid)} base × (1 + ${maxPlacement.pct}% ${maxPlacement.name.toLowerCase()})` : summary.bid !== null && zeroPlacements ? `${money(summary.bid)} base × (1 + 0% placement uplift)` : 'Placement formula not measured.'}</small></dd>
       </dl><strong>Reading</strong><p>{corridorReading(model.payload.points, money)}</p>{!hasSeries ? <p className={styles.honesty}>The bid series is empty. No reference values or invented numbers are plotted.</p> : null}</aside>
     </section> : <section id={`target-${tab}`} role="tabpanel" className={styles.tabContent}>
       {tab === 'Shelf' ? <><h2>Shelf</h2><p>Not measured. Listing snapshots are not collected yet.</p></> : null}
