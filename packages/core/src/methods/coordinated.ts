@@ -1,5 +1,5 @@
 import {
-  COORDINATED_METHOD, DependencySet, type CalculationStep, type CalculationTrace,
+  COORDINATED_METHOD, DependencySet, spMarketplaceBidCapability, type CalculationStep, type CalculationTrace,
   type ControlChange, type MethodDescriptor, type MethodEvaluatorInput, type MethodEvaluatorOutput,
   type Recommendation, type HoldReason,
 } from '@wizard-ads/shared';
@@ -56,9 +56,15 @@ export function evaluateCoordinatedMethod(input: MethodEvaluatorInput): MethodEv
   }
   const bidCapability = campaign.capabilities.entries.filter((c) => c.adProduct === 'SP' && c.costType === 'cpc' && c.control === 'target_bid');
   const bidCap = bidCapability[0];
+  const marketplace = campaign.capabilities.marketplace;
+  const verified = spMarketplaceBidCapability(marketplace ?? undefined);
+  if (marketplace == null || verified === null || marketplace.bidMin !== verified.bidMin || marketplace.bidMax !== verified.bidMax
+    || marketplace.decimalPlaces !== verified.decimalPlaces || marketplace.verifiedOn !== verified.verifiedOn) {
+    return hold('INSUFFICIENT_EVIDENCE', 'The capability snapshot lacks verified marketplace bid limits for this currency and region.', 'Capture the profile marketplace capability.');
+  }
   if (bidCapability.length !== 1 || !bidCap?.available || bidCap.unit !== 'currency_per_click'
-    || bidCap.precision !== 'decimal' || bidCap.decimalPlaces !== 2 || bidCap.range === null) {
-    return hold('INSUFFICIENT_EVIDENCE', 'The capability snapshot lacks a supported two-decimal target bid range.', 'Verify target bid capability and currency precision.');
+    || bidCap.precision !== 'decimal' || bidCap.decimalPlaces !== marketplace.decimalPlaces || bidCap.range === null) {
+    return hold('INSUFFICIENT_EVIDENCE', 'The capability snapshot lacks a supported target bid range and currency precision.', 'Verify target bid capability and currency precision.');
   }
   const required = Object.keys(placementProperties) as (keyof typeof placementProperties)[];
   const facts = required.map((placement) => campaign.placementFacts.find((f) => f.placement === placement));
@@ -110,12 +116,15 @@ export function evaluateCoordinatedMethod(input: MethodEvaluatorInput): MethodEv
   for (const target of targets) {
     const current = target.currentBid!;
     const feasible = resolveControlFeasibility({ entityRef: target.entityRef, currentBid: current,
+      marketplaceMin: marketplace.bidMin, marketplaceMax: marketplace.bidMax, decimalPlaces: marketplace.decimalPlaces,
       bidFloor: Math.max(parameters.floors.manualMinBid, bidCap.range.min),
       bidCeiling: Math.min(parameters.ceilings.manualMaxBid, bidCap.range.max ?? Infinity),
       maxIncrease: parameters.caps.maxIncrease, maxDecrease: parameters.caps.maxDecrease,
       exposureCeiling: parameters.exposureCeiling, maximumMultiplier: multiplier });
     if (feasible.kind === 'hold') return hold(feasible.hold.reason, feasible.hold.prose, feasible.hold.reconsiderWhen);
-    step(`Joint bounds: ${target.entityRef.entityId}`, 'intersection(floor, caps, ceiling, exposure)', { lower: feasible.lower, upper: feasible.upper, exposureUpper: feasible.exposureUpper }, feasible.upper, 'currency_per_click');
+    step(`Joint bounds: ${target.entityRef.entityId}`, 'intersection(marketplace bounds, floor, caps, ceiling, exposure)',
+      { marketplaceMin: marketplace.bidMin, marketplaceMax: marketplace.bidMax, decimalPlaces: marketplace.decimalPlaces,
+        lower: feasible.lower, upper: feasible.upper, exposureUpper: feasible.exposureUpper }, feasible.upper, 'currency_per_click');
     // The candidate normalization is calibrated only for fixed bidding without other boosts.
     if (controls.strategy !== 'manual' || audiences.some((a) => a.pct !== 0)) {
       return hold('INSUFFICIENT_EVIDENCE', 'The hard exposure bounds pass, but economic normalization for active audience or dynamic bidding factors is not validated.', 'Validate joint weights before extending this candidate beyond fixed bidding without audience boosts.');
@@ -126,8 +135,9 @@ export function evaluateCoordinatedMethod(input: MethodEvaluatorInput): MethodEv
     step(`C: ${target.entityRef.entityId}`, 'target ACOS × target RPC', { targetAcos: parameters.targetAcos, rpc }, economic, 'currency_per_click');
     const rawBase = economic / z;
     step(`Compensated base: ${target.entityRef.entityId}`, 'C / Z', { C: economic, Z: z }, rawBase, 'currency_per_click');
-    const base = Math.max(feasible.lower, Math.min(feasible.upper, Math.round(rawBase * 100) / 100));
-    step(`Rounding: base ${target.entityRef.entityId}`, 'clamp(round(C / Z, 2), joint bounds)', { rawBase, lower: feasible.lower, upper: feasible.upper }, base, 'currency_per_click',
+    const scale = 10 ** marketplace.decimalPlaces;
+    const base = Math.max(feasible.lower, Math.min(feasible.upper, Math.round(rawBase * scale) / scale));
+    step(`Rounding: base ${target.entityRef.entityId}`, 'clamp(round(C / Z, currency precision), joint bounds)', { rawBase, lower: feasible.lower, upper: feasible.upper, decimalPlaces: marketplace.decimalPlaces }, base, 'currency_per_click',
       { name: 'joint_bounds_and_precision', value: base, before: rawBase, after: base });
     step(`Exposure: ${target.entityRef.entityId}`, 'rounded base × maximum factor', { base, multiplier }, base * multiplier, 'currency_per_click');
     if (base * multiplier > parameters.exposureCeiling + 1e-10) return hold('NO_FEASIBLE_CONTROL_SET', 'The rounded controls exceed the hard exposure ceiling.', 'Review the hard bounds.');

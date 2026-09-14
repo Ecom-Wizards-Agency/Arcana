@@ -1,5 +1,6 @@
 /** Versioned, replayable method contracts. Numeric policy is supplied by the caller. */
 import { z } from 'zod';
+import { SpMarketplaceBidCapability } from './sp-marketplace-capabilities.js';
 import { AdProduct, EntityRef, IsoDate, Uuid } from './primitives.js';
 import { BiddingStrategy } from './entities.js';
 import { SpCompleteCampaignBiddingState, SpPlacementKey } from './sp-writes.js';
@@ -147,7 +148,7 @@ export const CapabilityMatrixEntry = z.object({
   apiVersion: z.string().min(1), verifiedOn: IsoDate,
 });
 export type CapabilityMatrixEntry = z.infer<typeof CapabilityMatrixEntry>;
-export const CapabilityMatrix = z.object({ version: z.string().min(1), entries: z.array(CapabilityMatrixEntry).min(1) });
+export const CapabilityMatrix = z.object({ version: z.string().min(1), entries: z.array(CapabilityMatrixEntry).min(1), marketplace: SpMarketplaceBidCapability.nullable().optional() });
 export type CapabilityMatrix = z.infer<typeof CapabilityMatrix>;
 export const ExposureCeiling = resolvedSettingSchema(z.number().positive());
 export type ExposureCeiling = z.infer<typeof ExposureCeiling>;

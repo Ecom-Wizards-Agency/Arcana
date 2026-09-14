@@ -38,4 +38,5 @@ export * from './ingestion.js';
 export * from './provider-connections.js';
 export * from './grid-views.js';
 export { SpPlacementChange, SpCompleteCampaignBiddingState } from './sp-writes.js';
+export * from './sp-marketplace-capabilities.js';
 export * from './market-position.js';

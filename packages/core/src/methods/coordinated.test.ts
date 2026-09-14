@@ -1,12 +1,16 @@
+import { SP_MARKETPLACE_MONEY_RULES } from '@wizard-ads/shared';
 import { describe, expect, it } from 'vitest';
 import { COORDINATED_METHOD, CoordinatedMethodParameters, CoordinatedMethodInput, ControlChange, DependencySet } from '@wizard-ads/shared';
 import { coordinatedPlacementChange } from './placement-change.js';
 import { resolveMethod } from './registry.js';
-import { SP_COORDINATED_CAPABILITIES } from './capabilities.js';
+import { spCoordinatedCapabilities } from './capabilities.js';
 import { maxPotentialCpc } from '../bidding/placement.js';
 import { resolveControlFeasibility } from './control-feasibility.js';
 
 // Chapter 8 fixtures are synthetic arithmetic examples, never tenant defaults.
+const [marketplaceId, moneyRule] = Object.entries(SP_MARKETPLACE_MONEY_RULES).find(([, rule]) => rule.currencyCode === 'USD')!;
+const marketplaceScope = { marketplaceId, region: moneyRule.region, currencyCode: moneyRule.currencyCode };
+const marketplaceMin = Number(moneyRule.bidMin);
 const profileId = '22222222-2222-4222-8222-222222222222';
 function exampleOne(): CoordinatedMethodInput {
   return {
@@ -26,7 +30,7 @@ function exampleOne(): CoordinatedMethodInput {
       targetCount: 1, attributionMature: true, homogeneousProxyValidation: null,
       currentControls: { strategy: 'manual', placements: { topOfSearch: 100, restOfSearch: 0, productPages: 0, amazonBusiness: null },
         shopperCohorts: [], offAmazonBudgetControlStrategy: null },
-      capabilities: structuredClone(SP_COORDINATED_CAPABILITIES),
+      capabilities: spCoordinatedCapabilities(marketplaceScope),
       placementFacts: [
         { campaignId: 'synthetic-campaign', placement: 'top_of_search', clicks: 40, sales: 160, clickShare: 0.4 },
         { campaignId: 'synthetic-campaign', placement: 'rest_of_search', clicks: 40, sales: 80, clickShare: 0.4 },
@@ -82,6 +86,7 @@ describe('SP coordinated efficiency candidate', () => {
     expect(maximum.multiplier).toBe(6);
     expect(maximum.value).toBeCloseTo(2.4, 12);
     const result = resolveControlFeasibility({ entityRef: exampleOne().evidenceRows[0]!.entityRef,
+      marketplaceMin, marketplaceMax: Number(moneyRule.bidMax), decimalPlaces: moneyRule.scale,
       currentBid: 0.4, bidFloor: 0.1, bidCeiling: 1, maxIncrease: 0.5, maxDecrease: 0.1,
       exposureCeiling: 2, maximumMultiplier: maximum.multiplier });
     expect(result).toMatchObject({ kind: 'hold', hold: { reason: 'NO_FEASIBLE_CONTROL_SET' } });
@@ -102,7 +107,20 @@ describe('SP coordinated efficiency candidate', () => {
     const input = exampleOne(); input.methodParameters.caps.maxDecrease = 0.2; input.resolvedSettings.bidDecreaseCap!.value = 0.2;
     expect(evaluate(input)).toMatchObject({ kind: 'hold', hold: { reason: 'NO_FEASIBLE_CONTROL_SET' } });
   });
-  it.each([{ minimum: 0, expected: 0.01 }, { minimum: 0.025, expected: 0.03 }])(
+  it.each(['missing', 'currency', 'region', 'minimum', 'maximum', 'precision'] as const)(
+    'holds an unverified marketplace capability: %s', (fault) => {
+      const input = exampleOne();
+      const marketplace = input.campaignEvidence.capabilities.marketplace!;
+      if (fault === 'missing') delete input.campaignEvidence.capabilities.marketplace;
+      else if (fault === 'currency') marketplace.currencyCode = 'XXX';
+      else if (fault === 'region') marketplace.region = marketplace.region === 'EU' ? 'NA' : 'EU';
+      else if (fault === 'minimum') marketplace.bidMin /= 2;
+      else if (fault === 'maximum') marketplace.bidMax *= 2;
+      else marketplace.decimalPlaces += 1;
+      expect(evaluate(CoordinatedMethodInput.parse(input))).toMatchObject({ kind: 'hold', hold: { reason: 'INSUFFICIENT_EVIDENCE' } });
+    },
+  );
+  it.each([{ minimum: 0, expected: marketplaceMin }, { minimum: 0.025, expected: 0.03 }])(
     'clamps valid low-revenue evidence to a positive representable bid (provider minimum $minimum)', ({ minimum, expected }) => {
       const input = lowRevenueExample();
       input.campaignEvidence.capabilities.entries.find((c) => c.control === 'target_bid')!.range!.min = minimum;
@@ -133,19 +151,19 @@ describe('SP coordinated efficiency candidate', () => {
       const result = evaluate(CoordinatedMethodInput.parse(input));
       expect(result).toMatchObject({ kind: 'hold', hold: { reason: 'NO_FEASIBLE_CONTROL_SET' } });
       if (result.kind !== 'hold') throw new Error('Expected representability hold');
-      expect(result.hold.prose).toContain('at least 0.01');
+      expect(result.hold.prose).toContain('at least ' + marketplaceMin.toFixed(moneyRule.scale));
       expect(result.hold.prose).toContain('at most 0.00');
     },
   );
   it('admits the smallest positive bid when it meets the exposure ceiling exactly', () => {
     const input = lowRevenueExample();
-    input.methodParameters.exposureCeiling = 0.04;
-    input.resolvedSettings.exposureCeiling!.value = 0.04;
+    input.methodParameters.exposureCeiling = marketplaceMin * 4;
+    input.resolvedSettings.exposureCeiling!.value = marketplaceMin * 4;
     const result = evaluate(CoordinatedMethodInput.parse(input));
     expect(result.kind).toBe('proposal');
     if (result.kind !== 'proposal') throw new Error('Expected exact-bound proposal');
-    expect(result.trace.steps.find((s) => s.label === 'Exposure: synthetic-target')?.result).toBe(0.04);
-    expect(result.dependencySet!.changes.find((c) => c.control === 'target_bid')?.proposed).toBe(0.01);
+    expect(result.trace.steps.find((s) => s.label === 'Exposure: synthetic-target')?.result).toBe(marketplaceMin * 4);
+    expect(result.dependencySet!.changes.find((c) => c.control === 'target_bid')?.proposed).toBe(marketplaceMin);
   });
   it('rejects missing evidence, unsupported proxy claims and zero baselines', () => {
     const input = exampleOne(); input.campaignEvidence.placementFacts[0]!.clicks = 0;

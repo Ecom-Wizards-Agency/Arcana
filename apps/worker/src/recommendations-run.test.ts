@@ -1,3 +1,4 @@
+import { SP_MARKETPLACE_MONEY_RULES } from '@wizard-ads/shared';
 /**
  * Runner orchestration tests. The bid engine's arithmetic belongs to
  * packages/core; these cases assert assembly, lifecycle, mapping and writes.
@@ -7,7 +8,7 @@ import type { ClaimRef, ClaimedJob, ClaimToken } from '@wizard-ads/db';
 import { createTestDatabase, databaseAvailable, migrationFiles } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import type { RecommendationWorkerDatabase } from '@wizard-ads/db/recommendation-worker';
-import { SP_COORDINATED_CAPABILITIES } from '@wizard-ads/core';
+import { spCoordinatedCapabilities } from '@wizard-ads/core';
 import { CalculationTrace, REFERENCE_METHOD, COORDINATED_METHOD, type MethodAdmissionSnapshot, type MethodExperiment, type ScheduledOptimizationGroup, type TenantStrategy } from '@wizard-ads/shared';
 import {
   BID_REASON_TO_DATABASE,
@@ -799,6 +800,22 @@ describe('fenced recommendation run store', () => {
       .rejects.toBeInstanceOf(RecommendationExecutionCustodyError);
   });
 
+  it.each(['valid', 'missing', 'country', 'currency', 'region'] as const)('resolves fenced profile marketplace evidence without defaults: %s', async (fault) => {
+    const database = new FakeFencedDatabase();
+    const read = database.readInputs.bind(database);
+    database.readInputs = async (...args) => ({ ...await read(...args), inputs: { targets: [], campaigns: [], profileFacts: [],
+      marketplaceProfile: fault === 'missing' ? null : { countryCode: fault === 'country' ? 'XX' : 'US',
+        currencyCode: fault === 'currency' ? 'XXX' : marketplaceScope.currencyCode,
+        region: fault === 'region' ? 'EU' : marketplaceScope.region },
+    } });
+    const store = new FencedRecommendationRunStore(database as unknown as RecommendationWorkerDatabase);
+    await store.startRun(scope, undefined, { claim });
+    const inputs = await store.loadInputs(scope, { start: '2026-08-20', end: '2026-08-26' }, { claim });
+    if (fault === 'valid') expect(inputs.marketplace).toEqual(marketplaceScope);
+    expect(spCoordinatedCapabilities(inputs.marketplace).marketplace)
+      .toEqual(fault === 'valid' ? spCoordinatedCapabilities(marketplaceScope).marketplace : null);
+  });
+
   it('rejects a substituted claim locally and maps database custody refusal', async () => {
     const database = new FakeFencedDatabase();
     const store = new FencedRecommendationRunStore(
@@ -1310,14 +1327,18 @@ describe('method worker evidence', () => {
   });
 });
 
+const [marketplaceId, moneyRule] = Object.entries(SP_MARKETPLACE_MONEY_RULES).find(([, rule]) => rule.currencyCode === 'USD')!;
+const marketplaceScope = { marketplaceId, region: moneyRule.region, currencyCode: moneyRule.currencyCode };
+
 it.each([true, false])('stores one ordered coordinated recommendation or a truthful missing-controls hold (complete: %s)', async (completeControls) => {
   const inputs = fixtureInputs();
   const target = inputs.targets[0]!;
   target.currentBid = 0.6;
   target.stock = { status: 'in_stock', asins: [] };
   target.metrics = { impressions: 1000, clicks: 100, cost: 90, orders: 10, sales: 260 };
+  inputs.marketplace = marketplaceScope;
   inputs.campaignControlEvidence = [{ campaignId: 'c-1', costType: 'cpc', targetCount: 1, complete: true, attributionMature: true,
-    homogeneousProxyValidation: null, capabilities: SP_COORDINATED_CAPABILITIES,
+    homogeneousProxyValidation: null, capabilities: spCoordinatedCapabilities(marketplaceScope),
     currentControls: { strategy: 'manual', placements: { topOfSearch: 100, restOfSearch: 0, productPages: 0, amazonBusiness: null }, shopperCohorts: [], offAmazonBudgetControlStrategy: null },
     placementFacts: [
       { campaignId: 'c-1', placement: 'top_of_search', clicks: 40, sales: 160, clickShare: 0.4 },
@@ -1338,6 +1359,9 @@ it.each([true, false])('stores one ordered coordinated recommendation or a truth
     reviewSchedule: { version: 2, weekdays: ['thursday'] },
   } };
   const outcome = await runRecommendations(store, { ...JOB, groupId: GROUP_ID }, EXECUTION, new Date('2026-08-27T12:00:00Z'));
+  expect(store.completed[0]?.narrative.calculationSnapshots).toMatchObject([{ campaignEvidence: {
+    capabilities: spCoordinatedCapabilities(inputs.marketplace),
+  } }]);
   if (!completeControls) {
     expect(outcome.proposals).toBe(0);
     expect(store.completed).toHaveLength(1);

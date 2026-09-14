@@ -1,7 +1,8 @@
+import { SP_MARKETPLACE_MONEY_RULES } from '@wizard-ads/shared';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type SpWriteAdapter } from '@wizard-ads/ads-api/sp-write-adapter';
-import { SP_COORDINATED_CAPABILITIES, resolveMethod } from '@wizard-ads/core';
+import { spCoordinatedCapabilities, resolveMethod } from '@wizard-ads/core';
 import { exportAcceptedRecommendations, withAuthenticatedOrgEditor, withAuthenticatedReadSnapshot } from '@wizard-ads/db';
 import { previewSpWriteForActor, approveSpWriteForActor, readRecordedSpWritePreviewForActor } from '@wizard-ads/db/sp-write-application';
 import { createSpWriteOutboxLedger, createSpWriteRuntimeLedger } from '@wizard-ads/db/sp-write-persistence';
@@ -14,6 +15,9 @@ import { serializeSpWritePredispatchObservationFingerprint, serializeSpWriteProv
 import { hasher, makeReservationArtifacts, providerKey } from './artifacts.js';
 import { createSpWriteOutboxLoop } from './loop.js';
 import { createGuardedSpWriteAdapter } from './guarded-provider-fetch.js';
+
+const [marketplaceId, moneyRule] = Object.entries(SP_MARKETPLACE_MONEY_RULES).find(([, rule]) => rule.currencyCode === 'USD')!;
+const marketplaceScope = { marketplaceId, region: moneyRule.region, currencyCode: moneyRule.currencyCode };
 
 const OWNER = '31313131-3131-4131-8131-313131313131';
 
@@ -34,7 +38,7 @@ function calculation(profileId: string, runId: string): CoordinatedMethodInput {
       targetCount: 1, attributionMature: true, homogeneousProxyValidation: null,
       currentControls: { strategy: 'manual', placements: { topOfSearch: 100, restOfSearch: 0, productPages: 0, amazonBusiness: null },
         shopperCohorts: [], offAmazonBudgetControlStrategy: null },
-      capabilities: structuredClone(SP_COORDINATED_CAPABILITIES),
+      capabilities: spCoordinatedCapabilities(marketplaceScope),
       placementFacts: [
         { campaignId: 'c-1', placement: 'top_of_search', clicks: 40, sales: 160, clickShare: 0.4 },
         { campaignId: 'c-1', placement: 'rest_of_search', clicks: 40, sales: 80, clickShare: 0.4 },
@@ -517,3 +521,4 @@ describe('ordered coordinated execution through the real ledger', () => {
   });
 
 });
+

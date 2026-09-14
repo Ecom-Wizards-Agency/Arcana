@@ -32,7 +32,7 @@ export * from './methods/registry.js';
 export * from './methods/reference.js';
 
 export * from './market-position.js';
-export { SP_COORDINATED_CAPABILITIES } from './methods/capabilities.js';
+export { SP_COORDINATED_CAPABILITIES, spCoordinatedCapabilities } from './methods/capabilities.js';
 export { coordinatedDescriptor } from './methods/coordinated.js';
 export { resolveControlFeasibility } from './methods/control-feasibility.js';
 export { coordinatedPlacementChange } from './methods/placement-change.js';

@@ -1,4 +1,4 @@
-import type { CapabilityMatrix, CapabilityMatrixEntry } from '@wizard-ads/shared';
+import { spMarketplaceBidCapability, type SpMarketplaceScope, type CapabilityMatrix, type CapabilityMatrixEntry } from '@wizard-ads/shared';
 
 /** Versioned provider mechanics captured in the method specification; no tenant policy. */
 const entry = (value: Pick<CapabilityMatrixEntry, 'adProduct' | 'costType' | 'control' | 'unit'> & Partial<CapabilityMatrixEntry>): CapabilityMatrixEntry => ({
@@ -8,8 +8,8 @@ const entry = (value: Pick<CapabilityMatrixEntry, 'adProduct' | 'costType' | 'co
 export const SP_COORDINATED_CAPABILITIES: CapabilityMatrix = {
   version: 'sp-coordinated-capabilities.1',
   entries: [
-    entry({ adProduct: 'SP', costType: 'cpc', control: 'target_bid', unit: 'currency_per_click', available: true,
-      range: { min: 0, max: null }, decimalPlaces: 2, overlapRule: 'not_applicable', apiVersion: 'SP v3' }),
+    entry({ adProduct: 'SP', costType: 'cpc', control: 'target_bid', unit: 'currency_per_click',
+      overlapRule: 'not_applicable', apiVersion: 'SP v3' }),
     ...(['top_of_search', 'rest_of_search', 'product_pages'] as const).map((placementKey) => entry({
       adProduct: 'SP', costType: 'cpc', control: 'placement_adjustment', placementKey, unit: 'percentage',
       available: true, range: { min: 0, max: 900 }, precision: 'integer', decimalPlaces: 0,
@@ -27,3 +27,15 @@ export const SP_COORDINATED_CAPABILITIES: CapabilityMatrix = {
       })))),
   ],
 };
+
+/** Bind writable bid mechanics to the synchronized profile, never a currency default. */
+export function spCoordinatedCapabilities(scope?: SpMarketplaceScope): CapabilityMatrix {
+  const marketplace = spMarketplaceBidCapability(scope);
+  return {
+    version: 'sp-coordinated-capabilities.2', marketplace,
+    entries: SP_COORDINATED_CAPABILITIES.entries.map((entry) => entry.adProduct === 'SP' && entry.control === 'target_bid' && marketplace !== null
+      ? { ...entry, available: true, range: { min: marketplace.bidMin, max: marketplace.bidMax },
+        decimalPlaces: marketplace.decimalPlaces, verifiedOn: marketplace.verifiedOn }
+      : structuredClone(entry)),
+  };
+}

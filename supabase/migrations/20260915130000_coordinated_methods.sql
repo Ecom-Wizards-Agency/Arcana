@@ -456,6 +456,8 @@ begin
 
   v_inputs := pg_catalog.jsonb_build_object(
     'targets', v_targets, 'campaigns', v_campaigns, 'profileFacts', v_profile_facts,
+    'marketplaceProfile', (select jsonb_build_object('countryCode',p.country_code,'region',p.region,'currencyCode',p.currency_code)
+      from public.ad_profiles p where p.org_id=v_run.org_id and p.id=v_run.profile_id),
     'placementFacts', app.recommendation_placement_evidence(v_run.org_id, v_run.profile_id, v_run.id, p_window_start, p_window_end)
   );
   if pg_catalog.octet_length(v_inputs::text) > 67108864 then
@@ -3010,4 +3012,3 @@ begin
   return next;
 end;
 $$;
-

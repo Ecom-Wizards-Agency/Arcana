@@ -16,6 +16,8 @@
  * for an account-wide note would turn narrative into an exportable fake action.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { SpMarketplaceScope } from '@wizard-ads/shared';
+import { marketplaceIdForCountry } from './marketplaces.js';
 import { readMethodExperiments, normalizeScope } from '@wizard-ads/db/recommendation-worker';
 import type { ClaimRef, DbHandle, QueryHandle, QuerySql } from '@wizard-ads/db';
 import { lockPrivilegedOrgEditor } from '@wizard-ads/db/worker';
@@ -27,7 +29,7 @@ import {
   computePacing,
   adjustBidAwayFromMechanicalValue,
   resolveMethod,
-  SP_COORDINATED_CAPABILITIES,
+  spCoordinatedCapabilities,
   referenceMethodInput,
   resolveGoalLens,
   type LevelMetrics,
@@ -265,6 +267,7 @@ export interface RecommendationRunInputs {
   campaigns: CampaignPerformance[];
   profileFacts: ProfilePerformanceRow[];
   placementFacts?: CampaignPlacementFact[];
+  marketplace?: SpMarketplaceScope;
   /** Full controls are optional until the sync adapter can prove their completeness. */
   campaignControlEvidence?: CoordinatedCampaignEvidence[];
 }
@@ -787,12 +790,11 @@ function bidProposals(input: BidProposalInput): {
         }, resolvedSettings: sourced,
         evidenceRows: campaignTargets.map((t) => ({ ...referenceSnapshot.evidenceRows[0]!, entityRef: t.entityRef,
           currentBid: t.currentBid, metrics: t.metrics, stock: t.stock, organicRank: t.organicRank })),
-        campaignEvidence: inputs.campaignControlEvidence?.find((e) => e.campaignId === campaignId) ?? {
+        campaignEvidence: { ...(inputs.campaignControlEvidence?.find((e) => e.campaignId === campaignId) ?? {
           campaignId, costType: 'cpc', currentControls: null, targetCount: campaignTargets.length, complete: false,
           attributionMature: Date.parse(input.admittedAt) - Date.parse(window.end) >= 8 * 86_400_000,
           homogeneousProxyValidation: null, placementFacts: (inputs.placementFacts ?? []).filter((f) => f.campaignId === campaignId),
-          capabilities: SP_COORDINATED_CAPABILITIES,
-        },
+        }), capabilities: spCoordinatedCapabilities(inputs.marketplace) },
       };
     }
     calculationSnapshots.push(snapshot);
@@ -2415,13 +2417,16 @@ implements RecommendationRunStore, RecommendationScheduleStore {
       `,
     ]);
 
-    const placementRows = await this.handle.sql<{ facts: unknown }[]>`
+    const placementRows = await this.handle.sql<{ facts: unknown; marketplace: unknown }[]>`
       select app.recommendation_placement_evidence(${scope.orgId}::uuid, ${scope.profileId}::uuid,
-        ${scope.runId}::uuid, ${window.start}::date, ${window.end}::date) as facts
+        ${scope.runId}::uuid, ${window.start}::date, ${window.end}::date) as facts,
+        (select jsonb_build_object('countryCode',p.country_code,'region',p.region,'currencyCode',p.currency_code)
+          from public.ad_profiles p where p.org_id=${scope.orgId}::uuid and p.id=${scope.profileId}::uuid) as marketplace
     `;
     if (placementRows.length !== 1) throw new RecommendationScopeIntegrityError('Placement evidence result count does not reconcile');
     const placementFacts = CampaignPlacementFact.array().max(30_000).parse(placementRows[0]!.facts);
-    return { ...recommendationInputsFromWire(scope, targetRows, campaignRows, profileRows), ...(placementFacts.length === 0 ? {} : { placementFacts }) };
+    const marketplace = marketplaceScopeFromProfileWire(placementRows[0]!.marketplace);
+    return { ...(marketplace === undefined ? {} : { marketplace }), ...recommendationInputsFromWire(scope, targetRows, campaignRows, profileRows), ...(placementFacts.length === 0 ? {} : { placementFacts }) };
   }
 
   async loadGroupRecommendationSafety(
@@ -3092,7 +3097,18 @@ function parseFencedInputs(scope: RunScope, value: unknown): RecommendationRunIn
     throw new RecommendationScopeIntegrityError();
   }
   const placementFacts = CampaignPlacementFact.array().max(30_000).parse(input['placementFacts'] ?? []);
-  return { ...recommendationInputsFromWire(scope, targets, campaigns, profileFacts), ...(placementFacts.length === 0 ? {} : { placementFacts }) };
+  const marketplace = marketplaceScopeFromProfileWire(input['marketplaceProfile']);
+  return { ...(marketplace === undefined ? {} : { marketplace }), ...recommendationInputsFromWire(scope, targets, campaigns, profileFacts), ...(placementFacts.length === 0 ? {} : { placementFacts }) };
+}
+
+/** Resolve an exact country/region/currency identity; never substitute a currency default. */
+function marketplaceScopeFromProfileWire(value: unknown): SpMarketplaceScope | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  if (typeof row['countryCode'] !== 'string') return undefined;
+  const parsed = SpMarketplaceScope.safeParse({ marketplaceId: marketplaceIdForCountry(row['countryCode']),
+    region: row['region'], currencyCode: row['currencyCode'] });
+  return parsed.success ? parsed.data : undefined;
 }
 
 function parseTargetWire(value: unknown): TargetWireRow {
