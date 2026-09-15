@@ -4,10 +4,15 @@ import { verifyScreen } from '../render-test-support';
 import SharedError from '../shared-error';
 import { context } from '../synthetic-render-fixtures';
 import { descriptor } from './descriptor';
-import { ready } from './render-fixture';
+import { ready, daypartingFixture } from './render-fixture';
 import Screen from './view';
 
 verifyScreen(descriptor, [
+  ...(['draft', 'reviewed', 'enabled', 'paused'] as const).map(state => ({
+    state, name: `registers the persisted ${state} state`,
+    render: () => <Screen data={{ view: 'ready', props: daypartingFixture(state) }} />,
+    text: state[0]!.toUpperCase() + state.slice(1),
+  })),
   { state: 'loading', name: 'renders the route loading boundary', render: () => <Loading />, text: '' },
   { state: 'error', name: 'renders the shared error boundary with its reference', render: () => <SharedError error={Object.assign(new Error('Synthetic failure'), { digest: 'synthetic-reference' })} reset={() => { }} />, text: 'synthetic-reference' },
   { state: 'ready', name: 'renders the screen with synthetic data', render: () => <Screen data={ready} />, text: "Dayparting" },

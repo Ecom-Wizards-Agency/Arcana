@@ -12,7 +12,7 @@ export async function researchScreenshots(page: Page, testInfo: TestInfo, screen
   const dayCss = await readFile('src/screens/dayparting/workspace.css', 'utf8');
   const measurementCss=await readFile('app/dayparting/dayparting.module.css','utf8');
   const shell = (await page.content()).replace(/<script[\s\S]*?<\/script>/g, '');
-  const directory = resolve('node_modules/.cache/playwright/wp266', screen);
+  const directory = resolve('node_modules', '.cache', 'playwright', 'wp266-round1', screen);
   await mkdir(directory, { recursive: true });
   const screenshots: string[] = [];
   for (const [state, html] of Object.entries(markup)) {
@@ -41,4 +41,12 @@ export async function researchScreenshots(page: Page, testInfo: TestInfo, screen
   }
   expect(screenshots).toHaveLength(Object.keys(markup).length);
   return screenshots;
+}
+export async function researchInteractionScreenshot(page: Page, testInfo: TestInfo, screen: string, state: string) {
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  const directory = resolve('node_modules', '.cache', 'playwright', 'wp266-round1', screen);
+  await mkdir(directory, { recursive: true });
+  const path = join(directory, `${state}.png`);
+  await page.screenshot({ path, fullPage: true, animations: 'disabled', style: 'nextjs-portal {display:none;}' });
+  await testInfo.attach(`${screen} ${state}`, { path, contentType: 'image/png' });
 }

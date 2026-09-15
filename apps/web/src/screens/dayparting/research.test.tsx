@@ -14,11 +14,11 @@ for (const state of ['draft', 'reviewed', 'enabled', 'paused'] as const) it(`ren
   expect(screen.getAllByRole('gridcell')).toHaveLength(168);
   expect(container.querySelector('[data-schedule-state]')?.getAttribute('data-schedule-state')).toBe(state);
   expect(screen.getByRole('gridcell', { name: 'Mon 17:00 37%' })).toBeDefined();
-  if (state === 'enabled') expect(screen.getByText(/Next run at 2026-06-08T11:07:00Z/)).toBeDefined();
+  if (state === 'enabled') expect(screen.getByText(/8 Jun 2026, 11:07 UTC/).getAttribute('datetime')).toBe('2026-06-08T11:07:00Z');
 });
 it('reviews and exports while enable stays disabled with its truthful reason', () => {
   render(<DaypartingWorkspaceView data={daypartingFixture('reviewed')} initialSurface="review" initialEvidence={dayEvidence} measurement={null} />);
-  const enable = screen.getByRole('button', { name: 'Yes, enable this schedule for 1 campaign(s)' });
+  const enable = screen.getByRole('button', { name: 'Yes, enable this schedule for 1 campaign' });
   expect(enable.hasAttribute('disabled')).toBe(true);
   expect(screen.getByText('Scheduled writes are not available yet. The reviewed schedule can be exported.')).toBeDefined();
   expect(screen.getByRole('link', { name: 'Export CSV' })).toBeDefined();

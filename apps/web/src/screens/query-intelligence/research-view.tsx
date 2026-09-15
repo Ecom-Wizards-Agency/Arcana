@@ -3,7 +3,8 @@ import { useState } from 'react';
 import type { QueryCategory, QueryVocabularyEntry, SqpWeeklyFact } from '@wizard-ads/shared';
 import { classifyQuery, researchCategoryCounts, researchDemandGroups, researchQueryRows } from '@wizard-ads/core';
 import { EmptyState } from '@wizard-ads/ui';
-import { ResearchAction, researchPercent } from './research-ui';
+import { ResearchSegmented, researchPercent } from './research-ui';
+import { formatResearchTick, researchAxisTicks } from './research-format';
 import { VocabularyEditor } from './vocabulary';
 import './research.css';
 const reason = 'Search Query Performance is not connected for this profile';
@@ -24,7 +25,8 @@ export function QueryResearch({ profileId, marketplaceId, facts, ppc, vocabulary
     return av === null ? 1 : bv === null ? -1 : (ascending ? av - bv : bv - av);
   });
   const core = groups.find(g => g.category === 'core')!, total = rows.reduce((n, row) => n + row.searchVolume, 0);
-  const maxSearch = Math.max(1, ...groups.map(g => g.searches)), maxPurchases = Math.max(1, ...groups.map(g => g.marketPurchases), ...groups.map(g => g.purchases));
+  const maximum = Math.max(0, ...groups.map(g => metric === 'searches' ? g.searches : g.impressionShare ?? 0));
+  const ticks = researchAxisTicks(maximum), maxPurchases = Math.max(1, ...groups.map(g => g.marketPurchases), ...groups.map(g => g.purchases));
   function changeSort(next: typeof sort) {
     if (sort === next) setAscending(!ascending); else {
       setSort(next);
@@ -41,11 +43,12 @@ export function QueryResearch({ profileId, marketplaceId, facts, ppc, vocabulary
     }).category
   })).filter(r => (category === null || r.category === category) && r.searchQuery.toLowerCase().includes(initialSearch.toLowerCase()));
   return <div className="research"><p className="muted">SQP impression share measures product presence in search results. Amazon counts each ASIN shown, so it is not share of voice.</p>
-    <div className="research-actions"><ResearchAction aria-pressed={metric === 'searches'} onClick={() => setMetric('searches')}>Searches</ResearchAction><ResearchAction aria-pressed={metric === 'impressions'} onClick={() => setMetric('impressions')}>Your impression share</ResearchAction></div>
+    <ResearchSegmented label="Demand measure" value={metric} onChange={setMetric} options={[{ value: 'searches', label: 'Searches' }, { value: 'impressions', label: 'Your impression share' }]} />
     <div className="research-charts"><section className="research-card" aria-label="Demand split"><h2>{measured ? `Winnable category demand is ${core.searches.toLocaleString()} searches a week${total ? ` · ${researchPercent(core.searches / total)} of everything searched` : ''}` : 'Winnable category demand'}</h2>
-      {measured ? <div className="research-chart-bars">{groups.map(g => <div className="research-chart-group" data-chart-category={g.category} key={g.category}><div className="research-bar-pair"><div className={`research-bar ${g.category === 'core' ? 'accent' : ''}`} style={{ height: `${(metric === 'searches' ? g.searches / maxSearch : g.impressionShare ?? 0) * 100}%` }}><span className="research-bar-label">{metric === 'searches' ? g.searches.toLocaleString() : researchPercent(g.impressionShare)}</span></div></div><strong>{g.label}</strong><span>({g.caption})</span>{g.example ? <span className="muted">e.g. “{g.example}”</span> : null}</div>)}</div> : missing()}
+      {measured ? <div className="research-chart-with-axis"><div className="research-y-axis" aria-label="Demand axis">{ticks.map(tick => <span key={tick} style={{ bottom: `${maximum ? tick / maximum * 100 : 0}%` }}>{metric === 'searches' ? formatResearchTick(tick) : researchPercent(tick)}</span>)}</div><div className="research-chart-bars">{groups.map(g => <div className="research-chart-group" data-chart-category={g.category} key={g.category}><div className="research-bar-pair"><div className={`research-bar ${g.category === 'core' ? 'accent' : ''}`} style={{ height: `${(metric === 'searches' ? g.searches : g.impressionShare ?? 0) / (maximum || 1) * 100}%` }}><span className="research-bar-label">{metric === 'searches' ? g.searches.toLocaleString() : researchPercent(g.impressionShare)}</span></div></div><strong>{g.label}</strong><span>({g.caption})</span>{g.example ? <span className="muted">e.g. “{g.example}”</span> : null}</div>)}</div></div> : missing()}
       <p className="muted">Counts show where demand is. Capture rates across intents are not comparable.</p></section>
       <section className="research-card" aria-label="You versus the market"><h2>{measured ? `On winnable category demand the market buys ${core.marketPurchases.toLocaleString()} a week. You sell ${core.purchases.toLocaleString()}.` : 'You versus the market'}</h2>
+        <div className="research-chart-legend" aria-label="Purchase chart legend"><span><i />Market</span><span><i className="accent" />You</span></div>
         {measured ? <div className="research-chart-bars">{groups.map(g => <div className="research-chart-group" key={g.category} data-purchase-category={g.category}><div className="research-bar-pair"><div className="research-bar" aria-label={`Market purchases ${g.marketPurchases}`} style={{ height: `${g.marketPurchases / maxPurchases * 100}%` }}><span className="research-bar-label">{g.marketPurchases.toLocaleString()}</span></div><div className="research-bar accent" aria-label={`Your purchases ${g.purchases}`} style={{ height: `${g.purchases / maxPurchases * 100}%` }}><span className="research-bar-label">{g.purchases.toLocaleString()}<br />{researchPercent(g.purchaseShare)}</span></div></div><strong>{g.label}</strong><span>({g.caption})</span></div>)}</div> : missing()}<p className="muted">Market and your purchases use the same measure. Your share is annotated on your bar, never a bar of its own.</p></section></div>
     <div role="status" className={`research-card ${measured ? 'info' : 'warn'}`}>{measured ? `${facts.length} Search Query Performance rows in the selected weekly report. Market counts are counted once per query.` : reason}</div>
     <div className="research-actions" aria-label="Query categories">{counts.map(c => <button type="button" key={c.category} className={`research-chip ${chip(c.category)} ${category === c.category ? 'selected' : ''}`} aria-pressed={category === c.category} onClick={() => setCategory(category === c.category ? null : c.category)}>{labels[c.category]} {c.count}</button>)}</div>

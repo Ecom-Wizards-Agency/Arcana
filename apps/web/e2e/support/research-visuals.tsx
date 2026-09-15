@@ -169,7 +169,10 @@ export function researchVisuals(screen: ResearchScreen): Record<string, ReactNod
     ...common,
     gated: <BrandScreen data={{ view: 'gated' }} />,
     empty: <BrandScreen data={{ view: 'empty' }} />,
-    setup: <BrandLens data={brandReady} />,
+    setup: <BrandLens data={{ ...brandReady, source: { ...brandReady.source, vocabulary: [
+      ...brandReady.source.vocabulary,
+      ...(['competitor_brand', 'core_term'] as const).map((kind, index) => ({ ...brandReady.source.vocabulary[0]!, id: `11111111-1111-4111-8111-11111111111${index + 2}`, kind, value: index ? 'synthetic category' : 'synthetic rival', normalizedValue: index ? 'synthetic category' : 'synthetic rival', source: 'operator' as const })),
+    ] } }} />,
     'no-model-proposals': <BrandLens data={{
       ...brandReady,
       source: {
@@ -194,6 +197,7 @@ export function researchVisuals(screen: ResearchScreen): Record<string, ReactNod
       }
     }} initialTab="review" />])),
     overview: <BrandLens data={brandReady} initialTab="overview" />,
+    'overview-measured': <BrandLens data={{ ...brandReady, profile: { ...brandReady.profile, targetAcos: 0.37 }, source: { ...brandReady.source, keywords: brandReady.source.keywords.map((keyword, index) => index ? keyword : { ...keyword, sales: 36, orders: 2 }) } }} initialTab="overview" />,
     undefined: <BrandLens data={{
       ...brandReady,
       source: {
@@ -201,6 +205,6 @@ export function researchVisuals(screen: ResearchScreen): Record<string, ReactNod
         keywords: []
       }
     }} initialTab="overview" />,
-    exclusions: <BrandLens data={brandReady} initialTab="exclusions" />
+    exclusions: <BrandLens data={{ ...brandReady, source: { ...brandReady.source, campaigns: [...brandReady.source.campaigns, { ...brandReady.source.campaigns[0]!, id: 'synthetic-campaign-three', name: 'Synthetic campaign three', excluded: true }] } }} initialTab="exclusions" />
   };
 }

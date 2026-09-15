@@ -1,4 +1,5 @@
 import type { OrgProfile } from '../../recommendations/data';
+import { formatResearchPeriod } from './research-format';
 import { QueryResearch } from './research-view';
 import type { CSSProperties } from 'react';
 
@@ -70,7 +71,7 @@ function renderReady({ profile, scope, scopes, category, search, model, contextu
       <div>
         <h1 className="wa-page-title">Query Intelligence</h1>
         <p className="wa-page-sub">
-          {profile.label} · {scope.marketplaceId} · {scope.weekStart} to {scope.weekEnd}
+          {profile.label} · {scope.marketplaceId} · {formatResearchPeriod({ start: scope.weekStart, end: scope.weekEnd })}
         </p>
       </div>
       <span className="wa-badge wa-badge--info">Review and evidence only · Amazon not updated</span>
@@ -90,7 +91,7 @@ function renderReady({ profile, scope, scopes, category, search, model, contextu
               key={`${option.marketplaceId}:${option.weekStart}`}
               value={`${option.marketplaceId}|${option.weekStart}`}
             >
-              {option.marketplaceId} · {option.weekStart} to {option.weekEnd}
+              {option.marketplaceId} · {formatResearchPeriod({ start: option.weekStart, end: option.weekEnd })}
             </option>
           ))}
         </select>

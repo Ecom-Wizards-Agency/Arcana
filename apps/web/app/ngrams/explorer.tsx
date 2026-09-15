@@ -35,7 +35,8 @@ import {
   toCsv,
 } from '@wizard-ads/ui';
 import type { FilterSet, GridColumn, GridDensity, GridRow, SortRule } from '@wizard-ads/ui';
-import { GRAM_SIZES, GRAM_SIZE_LABELS, ngramColumns, toGridRows } from '../../src/ngrams/rows';
+import { ResearchSegmented } from '../../src/screens/query-intelligence/research-ui';
+import { GRAM_SIZES, ngramColumns, toGridRows } from '../../src/ngrams/rows';
 import type { GramSize } from '../../src/ngrams/rows';
 import type { ScopeOption } from '../../src/ngrams/data';
 
@@ -354,24 +355,8 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
 
   return (
     <section className="research" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <fieldset style={panel}>
-        <legend style={legend}>Grams</legend>
-        <div role="group" aria-label="Gram size" style={{ display: 'flex', gap: '0.375rem' }}>
-          {GRAM_SIZES.map((value) => (
-            <button
-              key={value}
-              type="button"
-              aria-pressed={size === value}
-              onClick={() => {
-                setSize(value);
-                clearGramSelection();
-              }}
-              style={{ fontWeight: size === value ? 600 : 400 }}
-            >
-              {GRAM_SIZE_LABELS[value]}
-            </button>
-          ))}
-        </div>
+      <div className="research-actions ngram-controls">
+        <ResearchSegmented label="Gram size" value={size} options={GRAM_SIZES.map(value => ({ value, label: ['Unigram', 'Bigram', 'Trigram'][value - 1]! }))} onChange={value => { setSize(value); clearGramSelection(); }} />
         <label style={label}>
           Scope
           <select
@@ -415,10 +400,11 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
             style={{ width: '5rem' }}
           />
         </label>
+      </div>
         <span style={muted} data-testid="gram-count">
           {formatInteger(coverage.grams)} grams · {formatInteger(coverage.representedTerms)} of {formatInteger(coverage.totalTerms)} search terms in window · {new Intl.NumberFormat('en-US',{style:'currency',currency:props.currencyCode}).format(coverage.representedSpend)} of {new Intl.NumberFormat('en-US',{style:'currency',currency:props.currencyCode}).format(coverage.totalSpend)} spend represented · gram spend overlaps by construction, so these do not sum to account spend
         </span>
-      </fieldset>
+
 
       <GridViewport
         fullscreen={fullscreen}

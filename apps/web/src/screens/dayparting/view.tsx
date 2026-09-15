@@ -19,6 +19,7 @@ import {
 import styles from '../../../app/dayparting/dayparting.module.css';
 
 import type { load } from './load';
+import { formatResearchPeriod } from '../query-intelligence/research-format';
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
 
@@ -166,7 +167,7 @@ function Heatmap({
         <span className={styles.corner} />
         {Array.from({ length: 24 }, (_, hour) => <span role="columnheader" className={styles.hour} key={hour}>{String(hour).padStart(2, '0')}</span>)}
         {DAYS.flatMap((day, dayOfWeek) => [
-          <strong role="rowheader" className={styles.day} key={`${day}-label`}>{day}</strong>,
+          <strong role="rowheader" className={styles.day} key={`${day}-label`}>{day.toUpperCase()}</strong>,
           ...Array.from({ length: 24 }, (_, hour) => {
             const cell = cells.get(`${dayOfWeek}|${hour}`);
             return <HeatmapCell key={`${dayOfWeek}-${hour}`} cell={cell} metric={metric} currencyCode={currencyCode} />;
@@ -208,7 +209,7 @@ function ProposalCard({ proposal }: { proposal: DaypartingScheduleProposal; }): 
   return (
     <article className={styles.proposal}>
       <div className={styles.proposalHead}>
-        <div><strong>{proposal.baselineLabel}</strong><small>{proposal.campaignId} · {proposal.evidenceStart} to {proposal.evidenceEnd}</small></div>
+        <div><strong>{proposal.baselineLabel}</strong><small>{proposal.campaignId} · {formatResearchPeriod({ start: proposal.evidenceStart, end: proposal.evidenceEnd })}</small></div>
         <Badge tone={proposal.status === 'proposed' ? 'info' : 'neutral'}>{proposal.status}</Badge>
       </div>
       <div className={styles.proposalMeta}>

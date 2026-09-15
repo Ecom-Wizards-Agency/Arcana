@@ -317,7 +317,7 @@ test.describe('n-gram explorer', () => {
     // Bigrams by default; unigrams pool the same terms differently, and the
     // count changes without a round trip because the engine runs in the page.
     const bigrams = (await page.getByTestId('gram-count').textContent()) ?? '';
-    await page.getByRole('button', { name: 'Unigrams' }).click();
+    await page.getByRole('button', { name: 'Unigram' }).click();
     await expect(page.getByTestId('gram-count')).not.toHaveText(bigrams);
 
     // The explorer now uses the same composable filter model as the main Grid.
@@ -372,7 +372,7 @@ test.describe('n-gram explorer', () => {
     await expect(page.getByRole('region', { name: 'Review negative keyword' })).toContainText(`${chosen} search terms`);
     const proposedRows = await page.getByRole('region', { name: 'Review negative keyword' }).locator('tbody tr').count();
     expect(proposedRows).toBe(1);
-    await page.getByRole('button', { name: `Add ${proposedRows} negatives to change queue` }).click();
+    await page.getByRole('button', { name: `Accept proposal` }).click();
 
     const result = page.getByTestId('propose-result');
     await expect(result).toContainText(`${proposedRows} negative keyword proposals added`);

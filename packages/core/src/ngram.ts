@@ -257,7 +257,7 @@ export function buildNgramNegativeReview(rows:readonly SearchTermRow[],gram:stri
     const row=grouped.get(key)??{campaignId:term.campaignId,adGroupId:term.adGroupId??null,matchType:'negative_phrase',searchTerms:0,spend:0,clicks:0,orders:0,sales:0};
     row.searchTerms++;row.spend+=term.cost;row.clicks+=term.clicks;row.orders+=term.purchases7d;row.sales+=term.sales7d;grouped.set(key,row);}
   const targetCostPerOrder=options.targetAcos*options.aov;
-  return {gram,n,candidate,rows:[...grouped.values()],searchTerms:selected.length,options:{...options},targetCostPerOrder,
+  return {gram,n,candidate,impressions:aggregate.impressions,rows:[...grouped.values()],searchTerms:selected.length,options:{...options},targetCostPerOrder,
     displayedTargetCostPerOrder:Math.round((targetCostPerOrder+Number.EPSILON)*100)/100,spendRatio:aggregate.cost/targetCostPerOrder};
 }
 export type NgramNegativeReview=NonNullable<ReturnType<typeof buildNgramNegativeReview>>;

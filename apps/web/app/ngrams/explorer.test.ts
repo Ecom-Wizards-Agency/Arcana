@@ -229,7 +229,7 @@ describe('n-gram drill-down', () => {
       propose!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    const add=[...host.querySelectorAll('button')].find(button=>button.textContent==='Add 1 negatives to change queue');
+    const add=[...host.querySelectorAll('button')].find(button=>button.textContent==='Accept proposal');
     expect(add).toBeDefined();
     await act(async()=>{add!.click();});
     expect(fetchMock).toHaveBeenCalledTimes(1);

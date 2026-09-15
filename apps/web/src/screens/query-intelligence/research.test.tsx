@@ -20,9 +20,11 @@ it('derives exactly four chart groups while six chip counts retain excluded and 
   const { container } = render(<QueryResearch profileId="synthetic" marketplaceId="synthetic-market" facts={researchFacts} ppc={[]} vocabulary={[]} />);
   expect(container.querySelectorAll('[data-chart-category]')).toHaveLength(4);
   expect(container.querySelector('[data-chart-category="excluded"]')).toBeNull();
+  expect(container.querySelectorAll('.research-y-axis span')).toHaveLength(5);
+  expect(screen.getByLabelText('Purchase chart legend').textContent).toBe('MarketYou');
   expect(screen.getByRole('region',{name:'Demand split'}).textContent).toContain('14.3% of everything searched');
   fireEvent.click(screen.getByRole('button', { name: 'Your impression share' }));
-  expect(within(screen.getByRole('region', { name: 'Demand split' })).getAllByText('10.0%')).toHaveLength(4);
+  expect(within(screen.getByRole('region', { name: 'Demand split' })).getAllByText('10.0%').filter(element => element.closest('[data-chart-category]'))).toHaveLength(4);
   fireEvent.click(screen.getByRole('button', { name: 'CTR gap' }));
   const table = screen.getByRole('table', { name: 'Query performance' });
   expect(within(table).getAllByRole('row')[1]?.textContent).toContain('Synthetic query 5');

@@ -22,7 +22,7 @@ test('Dayparting persists all 168 hours and cannot enable scheduled writes', asy
   const savedResponse=await pending;
   expect(savedResponse.ok(),await savedResponse.text()).toBe(true);
   await expect(page.getByRole('button', {
-    name: 'Yes, enable this schedule for 1 campaign(s)',
+    name: 'Yes, enable this schedule for 1 campaign',
     exact: true
   })).toBeDisabled();
   await expect(page.getByText('Scheduled writes are not available yet. The reviewed schedule can be exported.')).toBeVisible();

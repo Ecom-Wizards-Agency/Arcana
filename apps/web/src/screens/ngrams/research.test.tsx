@@ -38,12 +38,15 @@ for (const reason of ['no_sales_over_target_cpa', 'acos_over_ceiling'] as const)
     aov: 29
   })!;
   expect(review.candidate.reason).toBe(reason);
+  expect(review.impressions).toBe(source.reduce((sum, row) => sum + row.impressions, 0));
   render(<NgramNegativeReviewPanel review={review} profileId="synthetic" period={{
     start: '2026-06-01',
     end: '2026-06-07'
   }} currencyCode="USD" campaignNames={{}} onDismiss={() => { }} />);
   fireEvent.click(screen.getByRole('button', { name: 'View calculation' }));
   const popover = screen.getByRole('dialog');
+  expect(screen.getByText('Impressions').nextElementSibling?.textContent).toBe(String(review.impressions));
+  expect(popover.textContent).toContain(`= $${review.targetCostPerOrder}, displayed as`);
   expect(popover.textContent).toContain(String(review.targetCostPerOrder));
   expect(popover.textContent).toContain(review.spendRatio.toFixed(1));
   expect(popover.textContent).toContain(reason === 'no_sales_over_target_cpa' ? 'ACOS is undefined' : 'ceiling');
@@ -73,7 +76,7 @@ it('posts exactly the reviewed campaign rows and match types, then links the rec
     end: '2026-06-07'
   }} currencyCode="USD" campaignNames={{}} onDismiss={() => { }} />);
   fireEvent.change(screen.getByLabelText('Negative match 2'), { target: { value: 'negative_exact' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Add 2 negatives to change queue' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Accept proposal' }));
   expect(await screen.findByRole('heading', { name: 'Negative keywords queued' })).toBeDefined();
   const body = JSON.parse(fetcher.mock.calls[0]![1].body);
   expect(body.proposals).toHaveLength(2);

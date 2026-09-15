@@ -25,7 +25,7 @@ test('N-grams queues exactly the reviewed negative rows with calculation inputs'
     await expect(page.getByRole('dialog')).toContainText('ACOS is undefined');
     await page.keyboard.press('Escape');
     await page.getByRole('button', {
-      name: 'Add 1 negatives to change queue',
+      name: 'Accept proposal',
       exact: true
     }).click();
     await expect(page.getByRole('heading', {
