@@ -33,6 +33,9 @@ test('timeline measures facts, filters and zooms events, records revisions and p
             ('Synthetic stock interruption','supply','2026-08-03','2026-08-06'),
             ('Seasonal promotion','promotion','2026-08-09','2026-08-30')) e(name,kind,start_on,end_on)
           cross join lateral (select user_id from public.org_members where org_id=${state.orgId} and role in ('owner','admin') order by user_id limit 1) u`;
+        // The tenant fixture starts its experiment seven days before the run; pin it inside this spec's fixed window
+        // so the event count does not depend on the calendar day the suite runs on.
+        await db.sql`update public.experiments set start_at='2026-08-20T00:00:00Z' where org_id=${state.orgId} and profile_id=${state.fixtureProfileId} and name='Fixture bid push'`;
         await signIn(page, 'admin');
         const params = new URLSearchParams({ profile: state.fixtureProfileId, from: '2026-07-11', to: '2026-09-07' });
         await page.goto(`/timeline?${params}`);
