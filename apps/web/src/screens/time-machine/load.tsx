@@ -1,3 +1,5 @@
+import type { StreamConsumerEvidence } from '@wizard-ads/shared';
+import { readStreamConsumerEvidence } from '../creative/stream-evidence-load';
 import { getReversionBatchPreview, listChangeQueue, readRestoreProposal } from '@wizard-ads/db';
 import { ChangeQueueSource, ChangeQueueState, Uuid } from '@wizard-ads/shared';
 import { TimeMachineEntryId, TimeMachineInstant } from '@wizard-ads/shared/time-machine-writes';
@@ -69,7 +71,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       }));
       preserved['profile'] = profile.id;
       return { view: 'ready' as const, props: { profileId: profile.id, currencyCode: profile.currencyCode,
-        role, viewActor:actor, proposal, entries: entries.slice(0,50), hasOlder: entries.length > 50, cursor, query: preserved,
+        role, viewActor:actor, proposal, ...({ streamEvidence: await readStreamConsumerEvidence(database, { orgId: actor.orgId, profileId: profile.id, datasets: ['ads-campaign-management-campaigns','ads-campaign-management-adgroups','ads-campaign-management-ads','ads-campaign-management-targets'], asOf: new Date().toISOString(), maxAgeMs: 86400000, history: true, ...(from ? { from } : {}), ...(to ? { to: new Date(Date.parse(to)+86400000).toISOString() } : {}) }) } as { streamEvidence?: StreamConsumerEvidence }), entries: entries.slice(0,50), hasOlder: entries.length > 50, cursor, query: preserved,
         partial: freshness?.partial ?? true,
         preview: preview === null ? null : { batchId: preview.batchId, label: preview.tag,
           blockedReason: preview.activeReversionBatchId === null ? null : 'This batch already has an active restore batch.',

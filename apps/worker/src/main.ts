@@ -1,8 +1,10 @@
+import { reconcileEvidenceOnWorkerStart, startEvidenceReconciliation } from './evidence-reconciliation.js';
+import { assertStreamQueueDestination, streamExtensionPolicyFromEnv } from './stream-dataset-adapters.js';
 import { registerAssetLibrarySource } from './asset-library.js';
 import { registerSpApiReportSources, postgresSpReportDependencies } from './spapi-report-sources.js';
 import { registerProviderEvidence, postgresProviderEvidenceDependencies } from './provider-evidence.js';
 import { registerOwnCollectors, postgresOwnCollectors } from './own-collectors/index.js';
-import { registerStreamExtensionProjection } from './marketing-stream-extensions.js';
+import { registerStreamExtensionProjection, createStreamExtensionIntake, isStreamExtensionDelivery } from './marketing-stream-extensions.js';
 import { registerTargetTranslation } from './translation/register.js';
 import { registerBudgetUsageSources } from './budget-usage/register.js';
 import { createBudgetUsageStore } from './budget-usage/composition.js';
@@ -72,10 +74,15 @@ const store = new PostgresWorkerStore(handle, undefined, {
 const spWriteLoop = config.startsBackgroundPasses && (config.spWrites.dispatchEnabled || config.spWrites.reconcileEnabled)
   ? createSpWriteWorker(store, { claimantId: `${config.workerId}:sp-writes`, policy: () => spWritePolicyFromEnv(process.env) })
   : undefined;
+const extensionPolicy = streamExtensionPolicyFromEnv(process.env);
+if (extensionPolicy.destinationArn && config.marketingStreamQueueUrl) assertStreamQueueDestination(config.marketingStreamQueueUrl, extensionPolicy.destinationArn);
+const extensionIntake = extensionPolicy.destinationArn ? createStreamExtensionIntake(handle, extensionPolicy.destinationArn, extensionPolicy.enabled) : null;
 const marketingStream = config.startsBackgroundPasses && config.marketingStreamQueueUrl
   ? createMarketingStreamSqsConsumer({
       handle,
       queueUrl: config.marketingStreamQueueUrl,
+      extensionIntake: async (message) => message.body && message.messageId && isStreamExtensionDelivery(message.body) && extensionIntake
+        ? extensionIntake.retain({ messageId: message.messageId, body: message.body }) : null,
       scheduler: {
         enqueue: ({ orgId, profileId, messageIds, runAt, dedupeKey }) => store.enqueue({
           type: 'marketing_stream.normalize',
@@ -170,7 +177,7 @@ const worker = new SyncWorker({
     if (spApiClientId && lwaKey) registerSpApiReportSources(registry, postgresSpReportDependencies({ handle, clientId: spApiClientId, clientSecret: lwaKey }));
     registerOwnCollectors(registry, postgresOwnCollectors(handle, config.ownCollectorDropRoot, config.ownCollectorsEnabled));
     registerTargetTranslation(registry, handle);
-    registerStreamExtensionProjection(registry, handle);
+    registerStreamExtensionProjection(registry, handle, () => extensionPolicy.enabled && config.jobTypes?.includes('marketing_stream.extensions.project') === true);
     registerProviderEvidence(registry, postgresProviderEvidenceDependencies(handle));
     registerBudgetUsageSources(registry, { store: budgetUsageStore, provider: createBudgetUsageProvider(handle),
       apiEnabled: config.budgetUsageApiEnabled, streamEnabled: config.budgetUsageStreamEnabled });
@@ -225,6 +232,7 @@ recommendationObserver?.start();
 
 const CUSTODY_EXIT_CODE = 78;
 let shutdownPromise: Promise<WorkerShutdownEvidence> | null = null;
+let evidenceRecovery: ReturnType<typeof startEvidenceReconciliation> | undefined;
 
 function shutdown(): Promise<WorkerShutdownEvidence> {
   shutdownPromise ??= performShutdown();
@@ -237,6 +245,7 @@ async function performShutdown(): Promise<WorkerShutdownEvidence> {
   provisioner?.stop();
   bidSeries?.stop();
   recommendationObserver?.stop();
+  await evidenceRecovery?.stop();
   await spWritePolling?.stop();
   await marketingStream?.stop();
   await amazonConnections?.stop();
@@ -273,6 +282,16 @@ process.once('SIGTERM', () => void shutdownForSignal());
 process.once('SIGINT', () => void shutdownForSignal());
 
 try {
+  const evidencePolicy = {
+    streamEnabled: extensionPolicy.enabled && config.jobTypes?.includes('marketing_stream.extensions.project') === true,
+    assetEnabled: process.env['OPENSPELL_ASSET_RECONCILIATION_ENABLED'] === '1'
+      && process.env['WORKER_JOB_TYPES'] !== undefined && config.jobTypes?.includes('asset-library.search') === true,
+  };
+  const recovery = await reconcileEvidenceOnWorkerStart(handle,evidencePolicy);
+  console.info('Evidence startup reconciliation', recovery);
+  if (evidencePolicy.streamEnabled || evidencePolicy.assetEnabled) evidenceRecovery = startEvidenceReconciliation(
+    async () => { const result = await reconcileEvidenceOnWorkerStart(handle,evidencePolicy); console.info('Evidence retry reconciliation', result); },
+    () => console.error('Evidence reconciliation failed'));
   await worker.start();
 } catch (error) {
   const failureKind = error instanceof QueueSettlementError ? error.kind : 'unexpected';

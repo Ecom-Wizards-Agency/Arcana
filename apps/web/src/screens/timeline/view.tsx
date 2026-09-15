@@ -1,5 +1,5 @@
-'use client';
 import { ListingEvidencePanel } from '../grid/spapi-evidence';
+import { StreamEvidencePanel } from '../creative/stream-evidence';
 import { useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { TrendChart } from '@wizard-ads/ui';
@@ -10,6 +10,7 @@ import { timelineDates, timelineSummary, timelineValue, timelineEffect, timeline
 import { Button, EmptyState } from '../../ui/primitives';
 import type { TimelineData } from './load';
 import { ManualEventForm } from './manual-event-form';
+'use client';
 import './timeline.css';
 const names = { experiment: 'experiment', apply_batch: 'apply batch', amazon_change: 'Amazon observed', promotion: 'promotion', market: 'market', listing: 'listing', supply: 'supply' };
 const date = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
@@ -95,5 +96,6 @@ function Timeline({ data }: {
     </>}
     {manual ? <ManualEventForm profileId={data.profileId} event={manual === 'new' ? null : manual} start={start} onClose={() => setManual(null)} onSaved={() => { setManual(null); router.refresh(); }}/> : null}
     {info ? <section className="tl-dialog" role="dialog" aria-label="Event info"><h2>{info.name}</h2><p>{names[info.kind]} · {info.start} → {info.end ?? 'running'}</p><p>{info.scopeText}</p><p>{info.note || 'No note recorded.'}</p><p>Event overlap alone does not prove causation.</p>{info.kind === 'experiment' ? <a href={`/experiments/${info.id}`}>Status trail and result</a> : data.canEdit && ['promotion','market','listing','supply'].includes(info.kind) ? <Button onClick={() => { setManual(info); setInfo(null); }}>Supersede event</Button> : null}<Button onClick={() => setInfo(null)}>Close</Button></section> : null}
+    <StreamEvidencePanel evidence={data.streamEvidence} title="Provider change observations" />
   </main>;
 }

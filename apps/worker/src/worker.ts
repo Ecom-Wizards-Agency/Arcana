@@ -1,94 +1,27 @@
 import { isDeepStrictEqual } from 'node:util';
+import { EvidenceRetryPendingError } from './evidence-reconciliation.js';
 import { IngestionRegistry, ReportCoverageCompletion } from './ingestion-registry.js';
-import { CoreFeatureReportType, CoreReportConfiguration, ReportType as DefaultReportType } from '@wizard-ads/shared';
-import { defaultCoreReportConfiguration, parseCoreReport, assertCoreReportAdmission, validateCoreReportWindow } from '@wizard-ads/ads-api';
+import { CoreFeatureReportType, CoreReportConfiguration, ReportType as DefaultReportType, JobPayload, ReportRequestJob, isProviderFailure, isPermanentProviderFailure, type EconomicsSyncJob, type CreativeSyncJob, type JobType, type KeepaSyncJob, type MarketingStreamNormalizeJob, type RankSyncJob, type Region, type ReportType, type SqpRequestJob } from '@wizard-ads/shared';
+import { defaultCoreReportConfiguration, parseCoreReport, assertCoreReportAdmission, validateCoreReportWindow, parseSbAdsReportProbe, type SbAdsReportProbeParseResult, type SkippedReportRow } from '@wizard-ads/ads-api';
 import { ingestionSource } from './ingestion-sources.js';
 import { ControlMirrorMergeCounts, KeywordMirrorMergeCounts } from '@wizard-ads/shared/sp-write-mirror';
 import { Buffer } from 'node:buffer';
-import {
-  parseSbAdsReportProbe,
-  type SbAdsReportProbeParseResult,
-  type SkippedReportRow,
-} from '@wizard-ads/ads-api';
-import {
-  DuplicateFactGrain,
-  InvalidReportDatePromotion,
-  type ClaimedJob,
-} from '@wizard-ads/db';
-import {
-  JobPayload,
-  ReportRequestJob,
-  isProviderFailure,
-  isPermanentProviderFailure,
-  type EconomicsSyncJob,
-  type CreativeSyncJob,
-  type JobType,
-  type KeepaSyncJob,
-  type MarketingStreamNormalizeJob,
-  type RankSyncJob,
-  type Region,
-  type ReportType,
-  type SqpRequestJob,
-} from '@wizard-ads/shared';
+import { DuplicateFactGrain, InvalidReportDatePromotion, type ClaimedJob } from '@wizard-ads/db';
 import { SpApiAmbiguousOutcome } from '@wizard-ads/sp-api';
 import { isPermanentCrosscheckError, type CrosscheckIngest } from './crosscheck.js';
-import {
-  AdsApiRetryableError,
-  DownloadUrlExpiredError,
-  ReportCreateOutcomeUnknownError,
-  downloadUrlExpiresAt,
-  type DownloadUrlRejection,
-  type AdProductCode,
-  type AdsApiClient,
-  type AdsProfileContext,
-  type EntityListFailure,
-} from './ads-api.js';
+import { AdsApiRetryableError, DownloadUrlExpiredError, ReportCreateOutcomeUnknownError, downloadUrlExpiresAt, type DownloadUrlRejection, type AdProductCode, type AdsApiClient, type AdsProfileContext, type EntityListFailure } from './ads-api.js';
 import { runBidSeriesSync, type BidSeriesSyncDeps } from './bid-series.js';
-import {
-  type RecommendationsRun,
-  type RecommendationScheduleStore,
-} from './recommendations-run.js';
-import {
-  DEFAULT_REPORT_DOWNLOAD_LIMITS,
-  mergeParsedFactBatches,
-  ReportDownloadLimitError,
-  ReportPayloadFormatError,
-  ReportPayloadShapeError,
-  type ParsedFactBatch,
-  type ReportDownloadLimits,
-  SKIP_FAILURE_RATIO,
-  gunzipJson,
-  parseReportRows,
-} from './parsers.js';
-import {
-  UnsafeSponsoredProductsReport,
-  prepareSponsoredProductsReportDatesFromCounts,
-  sponsoredProductsSourceRowDate,
-  type prepareSponsoredProductsReportDates,
-  type ReportDateSourceCounts,
-} from './report-promotion.js';
-import {
-  defaultRegionTokenBuckets,
-  type RegionTokenBuckets,
-} from './region-token-buckets.js';
-import {
-  ClaimOwnershipLost,
-  MAX_REPORT_RE_REQUESTS,
-  type ReportRequestState,
-  type WorkerStore,
-} from './store.js';
+import { type RecommendationsRun, type RecommendationScheduleStore } from './recommendations-run.js';
+import { DEFAULT_REPORT_DOWNLOAD_LIMITS, mergeParsedFactBatches, ReportDownloadLimitError, ReportPayloadFormatError, ReportPayloadShapeError, type ParsedFactBatch, type ReportDownloadLimits, SKIP_FAILURE_RATIO, gunzipJson, parseReportRows } from './parsers.js';
+import { UnsafeSponsoredProductsReport, prepareSponsoredProductsReportDatesFromCounts, sponsoredProductsSourceRowDate, type prepareSponsoredProductsReportDates, type ReportDateSourceCounts } from './report-promotion.js';
+import { defaultRegionTokenBuckets, type RegionTokenBuckets } from './region-token-buckets.js';
+import { ClaimOwnershipLost, MAX_REPORT_RE_REQUESTS, type ReportRequestState, type WorkerStore } from './store.js';
 import type { SbVideoIngestionRuntime } from './sb-video-ingestion.js';
-import {
-  SqpWorkflowPendingError,
-  type SqpQueuedJobContext,
-} from './sqp.js';
+import { SqpWorkflowPendingError, type SqpQueuedJobContext } from './sqp.js';
 import type { WeeklySqpScheduleProducer } from './sqp-scheduler.js';
 import type { UnifiedDualRun } from './unified-reporting.js';
-import {
-  ClaimLoopController,
-  isContainedClaimFailure,
-  type ClaimLoopState,
-} from './claim-loop.js';
+import { ClaimLoopController, isContainedClaimFailure, type ClaimLoopState } from './claim-loop.js';
+import { PermanentJobError } from './permanent-job-error.js';
 
 const MINUTE_MS = 60_000;
 const FOUR_HOURS_MS = 4 * 60 * MINUTE_MS;
@@ -116,7 +49,6 @@ type LongLivedClaimPass =
   | { kind: 'rpc_failure'; error: unknown };
 
 export { PermanentJobError } from './permanent-job-error.js';
-import { PermanentJobError } from './permanent-job-error.js';
 
 /** A provider failure that should return to the queue after a known delay. */
 export class RetryableJobError extends Error {
@@ -535,7 +467,7 @@ export class SyncWorker {
       });
       throw new FencedClaimQuarantined(category);
     }
-    if (error instanceof SqpWorkflowPendingError) {
+    if (error instanceof SqpWorkflowPendingError || error instanceof EvidenceRetryPendingError) {
       const retryIn = `${error.retryAfterSeconds} seconds`;
       if (job.claim !== null) {
         if (!this.store.deferClaim) {

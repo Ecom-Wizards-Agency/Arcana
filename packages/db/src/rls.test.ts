@@ -109,6 +109,8 @@ describe.skipIf(!available)('row level security', () => {
     // These are proved separately below because authenticated has no relation
     // grant at all, so attempting the generic SELECT would abort the loop.
     const serviceOnly = new Set([
+      'asset_registration_authorities',
+      'marketing_stream_extension_receipts',
       'sp_write_bounded_authorization_profiles',
       'sp_write_bounded_authorization_entities',
     ]);
@@ -133,6 +135,23 @@ describe.skipIf(!available)('row level security', () => {
     // The other half of the check: the policy must not be so tight that a
     // member cannot see their own data either.
     expect(invisible).toEqual([]);
+  });
+
+  it('keeps asset authority and Stream receipts private while scoped counters remain tenant isolated', async () => {
+    for(const table of ['asset_registration_authorities','marketing_stream_extension_receipts']) {
+      for(const userId of [USER_A,USER_B]) await asUser(database,userId,async sql=>{
+        await expect(sql`select * from ${sql(table)}`).rejects.toThrow(/permission denied/i);
+      });
+      const rows=await asServiceRole(database,sql=>sql<{org_id:string}[]>`select org_id from ${sql(table)} where org_id in (${orgA},${orgB})`);
+      expect(new Set(rows.map(row=>row.org_id))).toEqual(new Set([orgA,orgB]));
+    }
+    const profiles=await database.sql<{org_id:string;profile_id:string}[]>`select org_id,profile_id from public.marketing_stream_extension_receipts where org_id in (${orgA},${orgB})`;
+    const profileA=profiles.find(row=>row.org_id===orgA)!.profile_id,profileB=profiles.find(row=>row.org_id===orgB)!.profile_id;
+    await asUser(database,USER_A,async sql=>{
+      const own=await sql`select * from app.stream_extension_receipt_counts(${orgA},${profileA})`;
+      expect(own).toHaveLength(1);
+      expect(await sql`select * from app.stream_extension_receipt_counts(${orgB},${profileB})`).toHaveLength(0);
+    });
   });
 
   it('keeps bounded SP authority details service-only and non-vacuous', async () => {

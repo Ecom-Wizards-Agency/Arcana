@@ -8,7 +8,7 @@ import { IngestionRegistry, type IngestionContext } from './ingestion-registry.j
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 describe('Stream dimension events through registered graph projection and WP-256 coverage', () => {
-  let db: TestDatabase; let scope: ProviderGraphScope;
+  let db: TestDatabase; const jobIds: string[]=[]; let scope: ProviderGraphScope;
   const at = new Date(Date.now()-1000).toISOString();
   const fixtures = [
     { datasetId: 'ads-campaign-management-adgroups', observation: { entityId:'group',campaignId:'campaign' } },
@@ -21,7 +21,7 @@ describe('Stream dimension events through registered graph projection and WP-256
       type:'marketing_stream.extensions.project', orgId:scope.orgId,profileId:scope.profileId,
       datasetId:fixtures[index]!.datasetId,eventIdentity:hash(`fixture-${index}`),
     };
-    const job: ClaimedJob = { id:randomUUID(),orgId:scope.orgId,profileId:scope.profileId,
+    const job: ClaimedJob = { id:jobIds[index]!,orgId:scope.orgId,profileId:scope.profileId,
       jobType:payload.type,payload,attempts:1,maxAttempts:3,dedupeKey:null,claim:null,claimedBy:'synthetic' };
     return {job,payload,profile:{id:scope.profileId,orgId:scope.orgId,amazonProfileId:scope.amazonProfileId,region:'EU',currencyCode:'EUR',timezone:'UTC'}};
   };
@@ -33,12 +33,17 @@ describe('Stream dimension events through registered graph projection and WP-256
       values(${profileId},${orgId},'synthetic-profile','EU','DE','EUR','UTC')`;
     scope={orgId,profileId,amazonProfileId:'synthetic-profile',region:'EU'};
     for (let i=0;i<fixtures.length;i++) {
-      const record = {contractVersion:'fixture.v1',subscriptionId:'subscription',advertiserId:'advertiser',marketplaceId:'market',region:'EU',
+      const record = {contractVersion:'fixture.v1',subscriptionId:'subscription-'+i,advertiserId:'advertiser',marketplaceId:'market',region:'EU',
         destinationArn:'arn:aws:sqs:eu-west-1:000000000000:synthetic',eventId:`event-${i}`,revision:1,eventTime:at,window:null,
         datasetId:fixtures[i]!.datasetId,observation:{...fixtures[i]!.observation,adProduct:'SD',operation:'patch',state:'enabled'}};
       const event=StreamExtensionEvent.parse({orgId,profileId,identity:hash(`fixture-${i}`),payloadFingerprint:hash(JSON.stringify(record)),receivedAt:at,record});
+      const binding={orgId,profileId,datasetId:record.datasetId,subscriptionId:record.subscriptionId,destinationArn:record.destinationArn,advertiserId:'advertiser',marketplaceId:'market',region:'EU',contractVersion:'fixture.v1',enabled:true,confirmed:true,capabilityVerified:true};
+      await db.sql`insert into public.marketing_stream_extension_bindings(org_id,profile_id,dataset_id,subscription_id,destination_arn,binding,enabled,confirmed,capability_verified)
+        values(${orgId},${profileId},${record.datasetId},${record.subscriptionId},${record.destinationArn},${JSON.stringify(binding)}::jsonb,true,true,true)`;
       await retainStreamExtensionDelivery(db,{deliveryId:hash(`delivery-${i}`),bodyFingerprint:event.payloadFingerprint,
         receivedAt:at,decoded:1,event,reason:null});
+      const [queued]=await db.sql<{id:string}[]>`update public.sync_jobs set status='running',claimed_by='synthetic',attempts=1 where payload->>'eventIdentity'=${event.identity} returning id`;
+      jobIds.push(queued!.id);
     }
   },120000);
   afterAll(async () => {if(db) await db.drop();});
