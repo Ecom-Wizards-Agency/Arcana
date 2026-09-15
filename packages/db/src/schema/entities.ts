@@ -21,7 +21,7 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import type { TargetExpression } from '@wizard-ads/shared';
+import type { TargetExpression, CreativeChangeCertainty } from '@wizard-ads/shared';
 import type { SpCompleteCampaignBiddingState } from '@wizard-ads/shared/sp-writes';
 import { money, ts } from './columns.js';
 import {
@@ -197,6 +197,8 @@ export const entityChanges = pgTable(
     acknowledgedAt: ts('acknowledged_at'),
     acknowledgedBy: uuid('acknowledged_by').references(() => authUsers.id),
     observedAt: ts('observed_at').notNull().defaultNow(),
+    /** Supplied by the insert trigger and immutable thereafter. */
+    certainty: jsonb('certainty').$type<CreativeChangeCertainty>().notNull().default(sql`'{}'::jsonb`),
   },
   (t) => [
     check('entity_changes_ack_pair', sql`(${t.acknowledgedAt} is null) = (${t.acknowledgedBy} is null)`),

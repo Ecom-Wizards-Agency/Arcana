@@ -14,7 +14,7 @@ const ACCOUNT_SURFACES = [
   { route: '/', heading: 'Home' },
   { route: '/grid?entity=campaigns', heading: 'Campaigns' },
   { route: '/optimizer', heading: 'Optimize Now' },
-  { route: '/creative', heading: 'Creative Performance' },
+  { route: '/creative', heading: 'Creatives' },
   { route: '/recommendations', heading: 'Recommendations' },
   { route: '/campaigns', heading: 'Campaign Builder' },
   { route: '/optimizer/groups', heading: 'Optimization Groups' },
@@ -32,7 +32,7 @@ test(
 
     for (const surface of ACCOUNT_SURFACES) {
       await page.goto(surface.route);
-      await expect(surface.route === '/' ? page.getByTestId('shell-title') : page.getByRole('heading', { name: surface.heading, exact: true })).toBeVisible();
+      await expect(surface.route === '/' ? page.getByTestId('shell-title') : surface.route === '/creative' ? page.getByTestId('creative-screen') : page.getByRole('heading', { name: surface.heading, exact: true })).toBeVisible();
 
       const url = new URL(page.url());
       expect(url.searchParams.get('profile')).toBe(fixtureProfileId);
@@ -46,6 +46,10 @@ test(
       if (surface.route === '/') await expect(page.locator('main.wa-home[data-profile-id]')).toHaveAttribute('data-profile-id', fixtureProfileId);
       // Streaming can briefly retain the loading fallback beside the ready main.
       if (surface.route === '/') await expect(page.locator('main.wa-home:not([aria-busy="true"])')).toHaveAttribute('data-profile-id', fixtureProfileId);
+      else if (surface.route === '/creative') {
+        await expect(page.getByTestId('creative-screen')).toHaveAttribute('data-profile-id', fixtureProfileId);
+        await expect(page.getByTestId('creative-screen')).toHaveAttribute('data-profile-label', activeAccount);
+      }
       else await expect(page.locator('#wa-main')).toContainText(activeAccount);
       verified.push(url.pathname);
     }
@@ -62,13 +66,14 @@ test('an inaccessible profile id is replaced by the org-scoped active profile', 
   const inaccessible = '00000000-0000-4000-8000-000000000099';
 
   await page.goto(`/creative?profile=${inaccessible}`);
-  await expect(page.getByRole('heading', { name: 'Creative Performance', exact: true })).toBeVisible();
+  await expect(page.getByTestId('creative-screen')).toBeVisible();
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
 
   const switcher = page.getByTestId('profile-switcher');
   const activeAccount = (await switcher.locator('strong').innerText()).trim();
   expect(activeAccount).not.toBe('');
-  await expect(page.locator('#wa-main')).toContainText(activeAccount);
+  await expect(page.getByTestId('creative-screen')).toHaveAttribute('data-profile-id', fixtureProfileId);
+  await expect(page.getByTestId('creative-screen')).toHaveAttribute('data-profile-label', activeAccount);
 });
 
 test('sidebar, date, entity, back and forward stay in one document and retain the profile', async ({ page }) => {

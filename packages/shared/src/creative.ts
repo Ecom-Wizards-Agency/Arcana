@@ -1,6 +1,8 @@
 /** Contracts for authoritative ad-to-creative-to-asset attribution. */
 import { z } from 'zod';
 import { AdProduct, AmazonId, IsoDate, Placement, Uuid } from './primitives.js';
+import { TimelineDaily, TimelineEvent } from './timeline-events.js';
+import { CampaignCreationAmazonModerationStatus } from './campaign-creation.js';
 
 const count = z.number().int().nonnegative();
 const money = z.number().nonnegative();
@@ -171,3 +173,117 @@ export const CreativeSyncSnapshot = z.object({
   }
 });
 export type CreativeSyncSnapshot = z.infer<typeof CreativeSyncSnapshot>;
+
+/** Read-side contracts keep the exact ad grain available for attribution disclosure. */
+export const CreativeKeywordProvenance = z.enum(['synced', 'from_campaign_name', 'unresolved']);
+export type CreativeKeywordProvenance = z.infer<typeof CreativeKeywordProvenance>;
+export const CreativePerformanceDrilldown = z.object({
+  keywordText: z.string().nullable(), keywordProvenance: CreativeKeywordProvenance,
+  campaignId: z.string(), adGroupId: z.string(), adId: z.string(), creativeId: z.string().nullable(),
+  creativeVersion: z.string().nullable(), mappingProvenance: CreativeMappingProvenance.nullable(), placement: Placement.nullable(),
+  impressions: count, clicks: count, cost: money, purchases: count, sales: money,
+  videoFirstQuartileViews: count.nullable(), videoMidpointViews: count.nullable(),
+  videoThirdQuartileViews: count.nullable(), videoCompleteViews: count.nullable(),
+}).refine((row) => row.keywordProvenance !== 'unresolved' || row.keywordText === null,
+  { message: 'An unresolved keyword must remain blank', path: ['keywordText'] });
+export type CreativePerformanceDrilldown = z.infer<typeof CreativePerformanceDrilldown>;
+export const CreativePerformanceAsset = z.object({
+  assetId: z.string().nullable(), attributionState: CreativeAttributionState,
+  name: z.string().nullable(), assetType: z.string().nullable(), thumbnailUrl: z.string().nullable(),
+  campaignTypes: z.array(z.string()), mappingProvenances: z.array(CreativeMappingProvenance),
+  campaignCount: count, adGroupCount: count, adCount: count, placementCount: count,
+  impressions: count, clicks: count, ctr: z.number().nonnegative().nullable(), cost: money, purchases: count, sales: money,
+  acos: z.number().nonnegative().nullable(), roas: z.number().nonnegative().nullable(),
+  videoFirstQuartileViews: count.nullable(), videoMidpointViews: count.nullable(),
+  videoThirdQuartileViews: count.nullable(), videoCompleteViews: count.nullable(),
+  drilldown: z.array(CreativePerformanceDrilldown),
+});
+export type CreativePerformanceAsset = z.infer<typeof CreativePerformanceAsset>;
+export const CreativeChangeCertainty = z.object({
+  kind: z.enum(['exact', 'window', 'first']),
+  from: z.iso.datetime().nullable(), to: z.iso.datetime(), widthDays: count.nullable(),
+}).superRefine((value, context) => {
+  if (value.from !== null && value.from > value.to) context.addIssue({ code: 'custom', message: 'Observation order is reversed' });
+  if (value.kind === 'exact' && (value.from === null || value.widthDays === null || value.widthDays > 1))
+    context.addIssue({ code: 'custom', message: 'Exact certainty needs consecutive daily observations' });
+  if (value.kind === 'first' && (value.from !== null || value.widthDays !== null))
+    context.addIssue({ code: 'custom', message: 'First observation has no earlier boundary' });
+});
+export type CreativeChangeCertainty = z.infer<typeof CreativeChangeCertainty>;
+export const CreativeWorkspaceAsset = z.object({
+  assetId: z.string().nullable(), attributionState: CreativeAttributionState,
+  name: z.string().nullable(), assetType: z.string().nullable(), thumbnailUrl: z.string().nullable(),
+  firstSeenAt: z.iso.datetime().nullable(), durationSeconds: z.number().positive().nullable(),
+  width: count.nullable(), height: count.nullable(), advertisedAsin: z.string().nullable(),
+  moderation: CampaignCreationAmazonModerationStatus.nullable(),
+  campaignIds: z.array(z.string()), adGroupIds: z.array(z.string()),
+  /** Campaigns from creative_placements overlapping the selected window only. */
+  placementCampaignIds: z.array(z.string()),
+  performance: CreativePerformanceAsset.nullable(),
+});
+export type CreativeWorkspaceAsset = z.infer<typeof CreativeWorkspaceAsset>;
+export const CreativeWorkspaceCampaign = z.object({
+  campaignId: z.string(), name: z.string().nullable(), keywordText: z.string().nullable(),
+  keywordProvenance: CreativeKeywordProvenance, keywordCount: count.nullable(),
+  adGroups: z.array(z.object({ adGroupId: z.string(), name: z.string().nullable(), assetIds: z.array(z.string()), unmappedCount: count })),
+  modifiers: z.object({ topOfSearch: z.number().nullable(), restOfSearch: z.number().nullable(), productPages: z.number().nullable() }),
+}).refine((row) => row.keywordProvenance !== 'unresolved' || row.keywordText === null,
+  { message: 'An unresolved keyword must remain blank', path: ['keywordText'] });
+export type CreativeWorkspaceCampaign = z.infer<typeof CreativeWorkspaceCampaign>;
+export const CreativeWorkspacePlacement = z.object({
+  campaignId: z.string(), placement: Placement, impressions: count, clicks: count,
+  cost: money, sales: money, purchases: count, modifier: z.number().nullable(),
+});
+export type CreativeWorkspacePlacement = z.infer<typeof CreativeWorkspacePlacement>;
+export const CreativeWorkspaceChange = z.object({
+  id: z.string(), assetIds: z.array(z.string()), campaignId: z.string().nullable(), adGroupId: z.string().nullable(),
+  kind: z.enum(['Bid', 'Placement', 'Creative']), field: z.string(), oldValue: z.unknown(), newValue: z.unknown(),
+  observedAt: z.iso.datetime(), certainty: CreativeChangeCertainty,
+  scope: z.string(), effect: z.enum(['direct', 'whole campaign']),
+});
+export type CreativeWorkspaceChange = z.infer<typeof CreativeWorkspaceChange>;
+export const CreativeWorkspace = z.object({
+  assets: z.array(CreativeWorkspaceAsset), campaigns: z.array(CreativeWorkspaceCampaign),
+  placements: z.array(CreativeWorkspacePlacement), changes: z.array(CreativeWorkspaceChange),
+  history: z.array(TimelineDaily), events: z.array(TimelineEvent),
+  minClicks: z.number().nonnegative().nullable(), targetAcos: z.number().positive().nullable(),
+});
+export type CreativeWorkspace = z.infer<typeof CreativeWorkspace>;
+
+export const CreativeCampaignPerformance = z.object({
+  campaignId: z.string(), impressions: count, clicks: count, cost: money, purchases: count, sales: money,
+  ctr: z.number().nullable(), cvr: z.number().nullable(), cpc: z.number().nullable(), acos: z.number().nullable(),
+  share: z.number().nullable(), videoCompleteViews: count.nullable(),
+});
+export type CreativeCampaignPerformance = z.infer<typeof CreativeCampaignPerformance>;
+export const CreativeTestRow = z.object({
+  assetId: z.string().nullable(), adGroupId: z.string(), name: z.string().nullable(), adGroupName: z.string().nullable(),
+  thumbnailUrl: z.string().nullable(), performance: CreativeCampaignPerformance.nullable(),
+  measured: z.boolean(), unmeasuredReason: z.string().nullable(), deliveryShare: z.number().nullable(),
+});
+export type CreativeTestRow = z.infer<typeof CreativeTestRow>;
+export const CreativeMetricVerdict = z.object({
+  metric: z.enum(['ctr', 'cvr']), spread: z.number().nonnegative().nullable(), floor: z.number().nonnegative().nullable(),
+  separates: z.boolean().nullable(), reason: z.string().nullable(), observedFortnights: count, requiredFortnights: count,
+});
+export type CreativeMetricVerdict = z.infer<typeof CreativeMetricVerdict>;
+export const CreativeTest = z.object({
+  campaignId: z.string(), structure: z.object({ state: z.enum(['clean', 'drifted', 'unmeasured']),
+    issues: z.array(z.string()), keywordCount: count.nullable(), adGroupCount: count, creativeCount: count }),
+  rows: z.array(CreativeTestRow), ctr: CreativeMetricVerdict, cvr: CreativeMetricVerdict,
+});
+export type CreativeTest = z.infer<typeof CreativeTest>;
+
+/** Product links have a fixed marketplace host and one validated advertised ASIN. */
+export function creativeProductUrl(countryCode: string, asin: string | null): string | null {
+  const domains: Record<string, string> = {
+    US: 'www.amazon.com', CA: 'www.amazon.ca', MX: 'www.amazon.com.mx', BR: 'www.amazon.com.br',
+    GB: 'www.amazon.co.uk', UK: 'www.amazon.co.uk', DE: 'www.amazon.de', FR: 'www.amazon.fr',
+    IT: 'www.amazon.it', ES: 'www.amazon.es', NL: 'www.amazon.nl', SE: 'www.amazon.se',
+    PL: 'www.amazon.pl', BE: 'www.amazon.com.be', IE: 'www.amazon.ie', JP: 'www.amazon.co.jp',
+    AU: 'www.amazon.com.au', IN: 'www.amazon.in', SG: 'www.amazon.sg', AE: 'www.amazon.ae',
+    SA: 'www.amazon.sa', TR: 'www.amazon.com.tr', EG: 'www.amazon.eg', ZA: 'www.amazon.co.za',
+  };
+  const domain = domains[countryCode.toUpperCase()];
+  return domain && asin !== null && /^[A-Z0-9]{10}$/.test(asin) ? `https://${domain}/dp/${asin}` : null;
+}

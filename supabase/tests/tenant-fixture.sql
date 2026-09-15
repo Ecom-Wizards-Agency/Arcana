@@ -36,6 +36,7 @@ declare
   v_recommendation uuid;
   v_group uuid;
   v_creative_snapshot uuid;
+  v_sponsored_prompt uuid;
   v_unified_binding uuid;
   v_unified_run uuid := gen_random_uuid();
   v_unified_operation uuid := gen_random_uuid();
@@ -781,6 +782,22 @@ begin
       values(v_sp_plan,v_org,v_profile,v_batch,p_user_id);
     insert into public.sp_write_restore_reviews(plan_id,org_id,profile_id,reviewed_by)
       values(v_sp_plan,v_org,v_profile,p_user_id);
+  end if;
+
+  if to_regclass('public.sponsored_prompts') is not null then
+    -- One inert imported interval covers all prompt tables for the RLS audit.
+    -- Guarded so the same fixture can rehearse migrations predating prompts.
+    insert into public.sponsored_prompts(org_id,profile_id,ad_product,campaign_id,ad_group_id,
+      prompt_text,normalized_prompt,first_seen_at,last_seen_at,current_status)
+    values(v_org,v_profile,'SP','c-1','ag-1','Synthetic fixture prompt','synthetic fixture prompt',
+      least(p_date::timestamptz,statement_timestamp()),least(p_date::timestamptz,statement_timestamp()),'live')
+    returning id into v_sponsored_prompt;
+    insert into public.sponsored_prompt_observations(org_id,profile_id,prompt_id,observed_at,status,
+      interval_start,interval_end,spend,clicks,sales,orders)
+    values(v_org,v_profile,v_sponsored_prompt,least(p_date::timestamptz,statement_timestamp()),'live',
+      least(p_date::timestamptz,statement_timestamp())-interval '1 day',least(p_date::timestamptz,statement_timestamp()),0,0,0,0);
+    insert into public.sponsored_prompt_visits(org_id,profile_id,user_id,last_visited_at)
+    values(v_org,v_profile,p_user_id,least(p_date::timestamptz,statement_timestamp()));
   end if;
 
   return v_org;
