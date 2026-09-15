@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ChangeHistoryPage, ProductEligibilityResult, ValidationResult } from '@wizard-ads/ads-api';
-import { readProductEvidence, readAmazonObservedChanges, type PersistCatalogueCollectionInput, type QueryHandle } from '@wizard-ads/db';
+import { catalogueRowIdentity, readProductEvidence, readAmazonObservedChanges, upsertReportCoverage, type persistCataloguePage, type resumeCatalogueAcquisition, type PersistCatalogueCollectionInput, type CatalogueAcquisitionState, type QueryHandle } from '@wizard-ads/db';
 import { createTestDatabase } from '@wizard-ads/db/testing';
 import type { JobPayload } from '@wizard-ads/shared';
 import type { CatalogueAdsClient, AdsProfileContext } from './ads-api.js';
 import { CatalogueSourceRunner, registerCatalogueSources } from './catalogue-sources.js';
+import { PostgresWorkerStore } from './store.js';
 import { IngestionRegistry, type IngestionContext } from './ingestion-registry.js';
 
 const orgId = '11111111-1111-4111-8111-111111111111';
@@ -14,8 +15,8 @@ const profile: AdsProfileContext = { id: profileId, orgId, amazonProfileId: 'syn
 const handle = {} as QueryHandle;
 type CatalogueJob=Extract<JobPayload,{type:'ads.product_metadata.sync'|'ads.product_eligibility.sync'|'ads.validation_configurations.sync'|'ads.change_history.sync'}>;
 
-function context<T extends JobPayload>(payload: T): IngestionContext<T['type']> {
-  return { payload, profile, job: { id: '33333333-3333-4333-8333-333333333333', orgId, profileId, jobType: payload.type, payload, attempts: 1, maxAttempts: 3, dedupeKey: null, claim: null, claimedBy: 'synthetic' } } as IngestionContext<T['type']>;
+function context<T extends CatalogueJob>(payload: T): IngestionContext<T['type']> {
+  return { payload, profile, job: { id: `33333333-3333-4333-8333-${String(['ads.product_metadata.sync','ads.product_eligibility.sync','ads.validation_configurations.sync','ads.change_history.sync'].indexOf(payload.type)+1).padStart(12,'0')}`, orgId:payload.orgId, profileId:payload.profileId, jobType: payload.type, payload, attempts: 1, maxAttempts: 3, dedupeKey: null, claim: null, claimedBy: 'synthetic' } } as IngestionContext<T['type']>;
 }
 
 function fakeClient(overrides: Partial<CatalogueAdsClient> = {}): CatalogueAdsClient {
@@ -39,8 +40,24 @@ function harness(
   });
   const recordFailure = vi.fn(async () => {});
   let tick = 0;
-  const runner = new CatalogueSourceRunner({ handle, client, deploymentEnabled: () => true, isEnabled: enabled, persist, recordFailure, now: () => new Date(Date.parse('2026-09-15T00:00:00.000Z') + tick++ * 1_000) });
-  return { runner, persist, persisted, recordFailure };
+  const states=new Map<string,CatalogueAcquisitionState>();
+  const resume:typeof resumeCatalogueAcquisition=async(_handle,request)=>{
+    const existing=states.get(request.id);if(existing) return existing;
+    const state:CatalogueAcquisitionState={request,acquiredAt:request.proposedAcquiredAt,windowStart:request.windowStart??request.proposedAcquiredAt,windowEnd:request.windowEnd??request.proposedAcquiredAt,next:{page:0,unit:0,token:null},pages:[],result:null,attemptWrittenRows:0};states.set(request.id,state);return state;
+  };
+  const persistPage:typeof persistCataloguePage=async(_handle,input)=>{
+    const state=input.acquisition;
+    const evidence:PersistCatalogueCollectionInput={scope:state.request.scope,family:state.request.family,selectorKey:state.request.selectorKey,windowStart:state.windowStart,windowEnd:state.windowEnd,acquiredAt:state.acquiredAt,requestedMembers:state.request.requestedMembers,pages:1,finalCursor:null,sourceRows:input.sourceRows,parsedRows:input.parsedRows,refusedRows:input.refusedRows,duplicates:input.duplicates,rows:input.rows};
+    state.pages.push({expected:input.expected,next:input.next,evidence});state.next=input.next;state.attemptWrittenRows=input.rows.length;
+    if(input.next===null) {
+      const rows=new Map<string,typeof input.rows[number]>();let sourceRows=0,parsedRows=0,refusedRows=0,duplicates=0;
+      for(const page of state.pages){sourceRows+=page.evidence.sourceRows;parsedRows+=page.evidence.parsedRows;refusedRows+=page.evidence.refusedRows;duplicates+=page.evidence.duplicates;for(const row of page.evidence.rows){const key=catalogueRowIdentity(row);if(rows.has(key))duplicates++;else rows.set(key,row);}}
+      state.result=await persist(_handle,{...evidence,sourceRows,parsedRows,refusedRows,duplicates,rows:[...rows.values()],pages:state.pages.length});
+    }
+    return state;
+  };
+  const runner = new CatalogueSourceRunner({ handle, client, deploymentEnabled: () => true, isEnabled: enabled, resume, persistPage, recordFailure, now: () => new Date(Date.parse('2026-09-15T00:00:00.000Z') + tick++ * 1_000) });
+  return { runner, persist, persisted, recordFailure, states };
 }
 
 describe('catalogue source registration and execution', () => {
@@ -112,7 +129,7 @@ describe('catalogue source registration and execution', () => {
   });
 
   it('fails closed for missing client configuration and a mismatched profile scope', async()=>{
-    const withoutClient=new CatalogueSourceRunner({handle,client:undefined,deploymentEnabled:()=>true,isEnabled:async()=>true,persist:vi.fn()});
+    const withoutClient=new CatalogueSourceRunner({handle,client:undefined,deploymentEnabled:()=>true,isEnabled:async()=>true,persistPage:vi.fn()});
     const payload={type:'ads.product_metadata.sync' as const,orgId,profileId,marketplaceId,sourceEnabled:true as const,asins:['B000TEST01'],adProduct:'SP' as const};
     await expect(withoutClient.plan(context(payload))).rejects.toThrow('not configured');
     const client=fakeClient();const wrong=harness(client,async(scope)=>scope.profileId==='different-profile');
@@ -150,7 +167,7 @@ describe('catalogue source registration and execution', () => {
   it('stops after revocation between history pages and records no receipt or cursor advance', async () => {
     const page = vi.fn().mockResolvedValueOnce({ sourceRows: 1, rows: [{ entityType: 'CAMPAIGN', entityId: '987654321', changeType: 'NAME', timestamp: Date.parse('2026-09-14T10:00:00.000Z'), previousValue: 'old', newValue: 'new', metadata: {} }], nextToken: 'next' });
     let checks = 0;
-    const h = harness(fakeClient({ getChangeHistoryPage: page }), async () => ++checks < 3);
+    const h = harness(fakeClient({ getChangeHistoryPage: page }), async () => ++checks < 4);
     const plan = await h.runner.plan(context({ type: 'ads.change_history.sync', orgId, profileId, marketplaceId, sourceEnabled: true, from: '2026-09-14T00:00:00.000Z', to: '2026-09-15T00:00:00.000Z' }));
     await expect(h.runner.execute(plan)).rejects.toThrow('source is disabled');
     expect(page).toHaveBeenCalledTimes(1);
@@ -190,8 +207,99 @@ it('persists all four fake-provider families and independently reads their scope
     const [stored] = await database.sql<{count:number}[]>`select count(*)::int as count from public.ads_validation_configurations where org_id=${scope.orgId} and profile_id=${scope.profileId} and marketplace_id=${marketplaceId}`;
     expect(stored!.count).toBe(2);
     const receipts = await database.sql`select family,counts from public.ads_catalogue_source_receipts where org_id=${scope.orgId} and profile_id=${scope.profileId} and marketplace_id=${marketplaceId}`;
-    expect(receipts).toHaveLength(4);
-    expect(receipts.find(row=>row['family']==='product_metadata')?.['counts']).toMatchObject({requestedMembers:1});
+    expect(receipts).toHaveLength(9);
+    expect(receipts.filter(row=>row['family']==='validation_configurations')).toHaveLength(3);
+    expect(receipts.filter(row=>row['family']==='product_metadata').some(row=>(row['counts'] as {requestedMembers:number}).requestedMembers===1)).toBe(true);
     expect(receipts.find(row=>row['family']==='change_history')?.['counts']).toMatchObject({requestedMembers:0});
   } finally { await database.drop(); }
+},120_000);
+
+it('resumes durable pages after provider crashes and republishes coverage after a completion crash',async()=>{
+  const database=await createTestDatabase('catalogue_crashes');
+  try {
+    const [tenant]=await database.sql<{id:string}[]>`select app.seed_tenant_fixture('catalogue-crashes',${orgId}::uuid) as id`;
+    const [stored]=await database.sql<{id:string}[]>`select id from public.ad_profiles where org_id=${tenant!.id} limit 1`;
+    const scope={orgId:tenant!.id,profileId:stored!.id,marketplaceId};
+    const payload={...scope,type:'ads.change_history.sync' as const,sourceEnabled:true as const,from:'2026-09-14T00:00:00.000Z',to:'2026-09-15T00:00:00.000Z'};
+    const input=context(payload);input.profile={...profile,...scope,id:scope.profileId};input.job={...input.job,orgId:scope.orgId,profileId:scope.profileId};
+    const tokens:Array<string|null>=[];let failPage=true,failCoverage=true;
+    const base={entityType:'CAMPAIGN' as const,entityId:'987654321',changeType:'BUDGET',timestamp:Date.parse('2026-09-14T10:00:00.000Z'),previousValue:'1',newValue:'2',metadata:{}};
+    const client=fakeClient({getChangeHistoryPage:vi.fn(async(_profile,request)=>{tokens.push(request.nextToken??null);if(request.nextToken&&failPage){failPage=false;throw new Error('synthetic provider crash');}return {sourceRows:1,rows:[{...base,entityId:request.nextToken?'second-event':'first-event'}],nextToken:request.nextToken?null:'second'};})});
+    let clock=0;
+    const runner=new CatalogueSourceRunner({handle:database,client,deploymentEnabled:()=>true,isEnabled:async()=>true,now:()=>new Date(Date.parse('2026-09-15T00:00:00.000Z')+clock++*1000)});
+    const producer=vi.fn(async(...args:Parameters<typeof upsertReportCoverage> extends [unknown,...infer R]?R:never)=>{if(failCoverage){failCoverage=false;throw new Error('synthetic coverage crash');}return upsertReportCoverage(database,...args);});
+    const registry=new IngestionRegistry(producer);registerCatalogueSources(registry,runner);
+    await expect(registry.dispatch({...input})).rejects.toThrow('provider crash');expect(tokens).toEqual([null,'second']);expect(producer).not.toHaveBeenCalled();
+    const [progress]=await database.sql<{next_position:unknown;acquired_at:Date}[]>`select next_position,acquired_at from public.ads_catalogue_acquisitions where org_id=${scope.orgId} and id=${input.job.id}`;
+    expect(progress!.next_position).toEqual({page:1,unit:0,token:'second'});
+    await expect(registry.dispatch({...input,job:{...input.job,attempts:2}})).rejects.toThrow('coverage crash');
+    expect(tokens).toEqual([null,'second','second']);
+    const result=await registry.dispatch({...input,job:{...input.job,attempts:3}});
+    expect(tokens).toEqual([null,'second','second']);
+    expect(result).toMatchObject({pages:2,sourceRows:2,loadedRows:2,verifiedLoadedRows:2,writtenRows:0,existingRows:2,observedAt:new Date(progress!.acquired_at).toISOString()});
+    const coverage=await database.sql`select loaded_rows,status,observed_at from public.report_coverage where org_id=${scope.orgId} and report_type='amazon_change_history'`;
+    expect(coverage).toHaveLength(1);expect(coverage[0]!['status']).toBe('complete');expect(Number(coverage[0]!['loaded_rows'])).toBe(2);
+  } finally {await database.drop();}
+},120_000);
+
+it('keeps two marketplaces and two selectors independently complete or partial in WP-256',async()=>{
+  const database=await createTestDatabase('catalogue_coverage_scope');
+  try {
+    const [tenant]=await database.sql<{id:string}[]>`select app.seed_tenant_fixture('catalogue-coverage',${orgId}::uuid) as id`;
+    const [stored]=await database.sql<{id:string}[]>`select id from public.ad_profiles where org_id=${tenant!.id} limit 1`;
+    const normal=fakeClient();
+    const client=fakeClient({getProductMetadataPage:vi.fn(async(p,request)=>request.asins.includes('B000TEST01')?normal.getProductMetadataPage(p,request):{sourceRows:0,nextToken:null,rows:[]})});
+    const runner=new CatalogueSourceRunner({handle:database,client,deploymentEnabled:()=>true,isEnabled:async()=>true,now:()=>new Date('2026-09-15T00:00:00.000Z')});
+    const registry=new IngestionRegistry((observation,verified)=>upsertReportCoverage(database,observation,verified));registerCatalogueSources(registry,runner);
+    let index=0;
+    for(const market of ['MARKET-A','MARKET-B'])for(const asin of ['B000TEST01','B000TEST02']) {
+      const payload={orgId:tenant!.id,profileId:stored!.id,marketplaceId:market,type:'ads.product_metadata.sync' as const,sourceEnabled:true as const,asins:[asin],adProduct:'SP' as const};
+      const input=context(payload);input.profile={...profile,id:stored!.id,orgId:tenant!.id};input.job={...input.job,id:`44444444-4444-4444-8444-${String(++index).padStart(12,'0')}`,orgId:tenant!.id,profileId:stored!.id};
+      await registry.dispatch({...input});
+    }
+    const coverage=await database.sql<{grain:string;status:string;loaded_rows:number}[]>`select grain,status,loaded_rows from public.report_coverage where org_id=${tenant!.id} and report_type='ads_product_metadata'`;
+    expect(coverage).toHaveLength(4);expect(new Set(coverage.map(row=>row.grain)).size).toBe(4);
+    expect(coverage.filter(row=>row.status==='complete')).toHaveLength(2);expect(coverage.filter(row=>row.status==='partial')).toHaveLength(2);
+    expect(coverage.filter(row=>row.grain.includes('marketplace:MARKET-A:'))).toHaveLength(2);
+    const checkpoints=await database.sql`select * from public.ads_catalogue_source_checkpoints where org_id=${tenant!.id} and marketplace_id in ('MARKET-A','MARKET-B')`;
+    expect(checkpoints).toHaveLength(4);expect(checkpoints.filter(row=>row['covered_through']!==null)).toHaveLength(2);
+  } finally {await database.drop();}
+},120_000);
+
+it('derives distinct placement identities and retains explicit ambiguity for collisions',async()=>{
+  const base={entityType:'CAMPAIGN' as const,entityId:'987654321',changeType:'PLACEMENT_GROUP',timestamp:Date.parse('2026-09-14T10:00:00.000Z'),previousValue:'0',newValue:'10'};
+  const h=harness(fakeClient({getChangeHistoryPage:vi.fn(async()=>({sourceRows:4,nextToken:null,rows:[
+    {...base,metadata:{placementGroupPosition:'TOP_OF_SEARCH'}},
+    {...base,metadata:{placementGroupPosition:'DETAIL_PAGE'}},
+    {...base,newValue:'20',metadata:{placementGroupPosition:'TOP_OF_SEARCH'}},
+    {...base,metadata:{placementGroupPosition:'DETAIL_PAGE'}},
+  ]}))}));
+  const result=await h.runner.execute(await h.runner.plan(context({type:'ads.change_history.sync',orgId,profileId,marketplaceId,sourceEnabled:true,from:'2026-09-14T00:00:00.000Z',to:'2026-09-15T00:00:00.000Z'})));
+  expect(result).toMatchObject({sourceRows:4,duplicates:1,loadedRows:3});
+  const events=h.persisted[0]!.rows.filter((row):row is Extract<typeof row,{sourceEventKey:string}>=>'sourceEventKey' in row);
+  expect(events[0]!.sourceEventKey).not.toBe(events[1]!.sourceEventKey);expect(events[0]!.sourceEventKey).toBe(events[2]!.sourceEventKey);
+  expect(events.every(row=>row.identityAmbiguity==='provider_id_unavailable')).toBe(true);
+  const long=harness(fakeClient({getChangeHistoryPage:vi.fn(async()=>({sourceRows:2,nextToken:null,rows:['A','B'].map(suffix=>({...base,entityType:'PRODUCT_TARGETING' as const,changeType:'BID_AMOUNT',metadata:{targetingExpression:'x'.repeat(300)+suffix}}))}))}));
+  await long.runner.execute(await long.runner.plan(context({type:'ads.change_history.sync',orgId,profileId,marketplaceId,sourceEnabled:true,from:'2026-09-14T00:00:00.000Z',to:'2026-09-15T00:00:00.000Z'})));
+  const distinct=long.persisted[0]!.rows.filter((row):row is Extract<typeof row,{sourceEventKey:string}>=>'sourceEventKey' in row);
+  expect(distinct).toHaveLength(2);expect(distinct[0]!.sourceEventKey).not.toBe(distinct[1]!.sourceEventKey);
+  expect(distinct[0]!.metadata['targetingExpression']).toBe(distinct[1]!.metadata['targetingExpression']);
+});
+
+it('writes zero catalogue schedules while deployment or profile admission is disabled',async()=>{
+  const database=await createTestDatabase('catalogue_provisioning');
+  try {
+    const [tenant]=await database.sql<{id:string}[]>`select app.seed_tenant_fixture('catalogue-provisioning',${orgId}::uuid) as id`;
+    const [stored]=await database.sql<{id:string}[]>`select id from public.ad_profiles where org_id=${tenant!.id} limit 1`;
+    const off=new PostgresWorkerStore(database),on=new PostgresWorkerStore(database,undefined,{catalogueDeploymentEnabled:()=>true});
+    expect(await off.ensureCatalogueSchedules()).toBe(0);expect(await on.ensureCatalogueSchedules()).toBe(0);
+    await database.sql`update public.ads_catalogue_source_settings set enabled=true,reporting_recovery_verified_at=now() where org_id=${tenant!.id} and family='product_metadata'`;
+    await database.sql`update public.ad_profiles set sync_enabled=false where id=${stored!.id}`;
+    expect(await on.ensureCatalogueSchedules()).toBe(0);
+    await database.sql`update public.ad_profiles set sync_enabled=true where id=${stored!.id}`;
+    expect(await off.ensureCatalogueSchedules()).toBe(0);
+    const before=await database.sql`select id from public.sync_schedules where profile_id=${stored!.id} and variant like 'catalogue:%'`;expect(before).toHaveLength(0);
+    expect(await on.ensureCatalogueSchedules()).toBe(1);expect(await on.ensureCatalogueSchedules()).toBe(0);
+    const after=await database.sql`select enabled from public.sync_schedules where profile_id=${stored!.id} and variant like 'catalogue:%'`;expect(after).toHaveLength(1);expect(after[0]!['enabled']).toBe(false);
+  } finally {await database.drop();}
 },120_000);

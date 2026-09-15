@@ -1,3 +1,6 @@
+import { render, screen } from '@testing-library/react';
+import { CatalogueProducts } from './catalogue-products';
+import { catalogueEvidenceFixtures } from './catalogue-fixtures';
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 import { rendered } from '../render-test-support';
@@ -38,4 +41,14 @@ describe('shared performance presets', () => {
       }
     });
   }
+});
+
+it('renders nine Products evidence rows with zero, missing facts, partial facts, stale age and provenance',()=>{
+  const products=catalogueEvidenceFixtures();
+  render(<CatalogueProducts data={{products,missingScopeAsins:[],advertisedIdentities:9,scopedRows:9,truncated:false}}/>);
+  const rows=screen.getAllByTestId('catalogue-product-row');expect(rows).toHaveLength(9);
+  expect(rows[0]!.textContent).toContain('missing');expect(rows[2]!.textContent).toContain('partial');expect(rows[4]!.textContent).toContain('measured');expect(rows[6]!.textContent).toContain('stale');
+  expect(rows[4]!.children[4]!.textContent).toBe('0 USD');expect(rows[4]!.children[6]!.textContent).toBe('0');
+  expect(rows[4]!.textContent).toContain('Amazon Product Metadata v1');expect(rows[4]!.textContent).toContain('provider observed Unavailable');
+  expect(rows[4]!.textContent).toContain('acquired 2026-09-15');expect(rows[4]!.textContent).toContain('retrieved 2026-09-15');
 });
