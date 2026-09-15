@@ -302,7 +302,7 @@ export async function buildSpWriteLegacyPreview(
         and plan.fingerprint=${origin.planFingerprint} and plan.artifact#>>'{source,applyBatchId}'=${request.applyBatchId}) as matches`;
     const population = await sql<{ source_row_id: string }[]>`select source_row_id::text from app.sp_write_retry_population(
       ${orgId}::uuid,${request.profileId}::uuid,${origin.executionId}::uuid,${origin.planId}::uuid) where eligible order by source_row_id`;
-    if (!parent?.matches || JSON.stringify(population.map((row) => row.source_row_id)) !== JSON.stringify(request.forwardRowIds)) {
+    if (!parent?.matches || JSON.stringify(population.map((row) => row.source_row_id)) !== JSON.stringify([...(restoreRowIds ?? request.forwardRowIds ?? [])].sort())) {
       throw new SpWriteApplicationError('source_changed');
     }
   }
@@ -457,8 +457,8 @@ export async function buildSpWriteLegacyPreview(
     orgId: orgId, profileId: request.profileId, providerScope: scope, direction: 'forward',
     source: {
       kind: 'apply_batch', applyBatchId: request.applyBatchId,
-      ...(request.forwardRowIds === undefined ? {} : { forwardRowIds: request.forwardRowIds, sourceArtifactText,
-        ...(request.retryOrigin === undefined ? {} : { retryOrigin: request.retryOrigin }) }),
+      ...(request.forwardRowIds === undefined ? {} : { forwardRowIds: request.forwardRowIds, sourceArtifactText }),
+      ...(request.retryOrigin === undefined ? {} : { retryOrigin: request.retryOrigin }),
       ...(restoreRowIds ? { restoreProposal: {kind:'restore_proposal',sourceArtifactText,sourceBatchId:request.applyBatchId,
         sourceRowIds:rows.map(row=>row.id),rows:rows.map(row=>({sourceRowId:row.id,entityId:row.entity_id,
           current:{amount:decimal(row.current_bid),currencyCode:scope.currencyCode},readAt:row.read_at,

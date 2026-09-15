@@ -1,5 +1,5 @@
 import { readSpWriteConfirmationSnapshot } from '../../writes/http';
-import { assertOptimizerApplyBatch, readOptimizerReview, readOptimizerExports, readOptimizerRetryExclusions } from '@wizard-ads/db';
+import { assertOptimizerApplyBatch, assertRestoreBatchBinding, readRestoreExportPreview, readOptimizerReview, readOptimizerExports, readOptimizerRetryExclusions } from '@wizard-ads/db';
 import { Uuid } from '@wizard-ads/shared';
 import type { ScreenActor } from '../../server/page-read';
 import type { ScreenParams } from '../types';
@@ -12,6 +12,10 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   if (!profile) return { view: 'empty' as const, props: {} };
   const batch = Uuid.safeParse(input.params['batchId']);
   if (!batch.success) return { view: 'error' as const, props: { message: 'Invalid saved preview identity.' } };
+  if (input.searchParams['restoreExport'] === '1') {
+    const restoreExport = await access.snapshot((context) => readRestoreExportPreview(context, { profileId: profile.id, batchId: batch.data }));
+    return { view: 'export-only' as const, props: { profile, restoreExport } };
+  }
   const review = await access.snapshot((context) => readOptimizerReview(context, { orgId: context.actor.orgId, profileId: profile.id, batchId: batch.data }));
   const proposals = review?.proposals ?? [];
   const plan = Uuid.safeParse(input.searchParams['plan']);
@@ -20,7 +24,8 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       const saved = await readSpWriteConfirmationSnapshot(context, { profileId: profile.id, planId: plan.data });
       const source = saved.preview.plan.source;
       if (source.kind !== 'apply_batch') throw new Error('This operation is not an optimizer proposal.');
-      await assertOptimizerApplyBatch(context, { orgId: context.actor.orgId, profileId: profile.id, batchId: batch.data, applyBatchId: source.applyBatchId });
+      if (source.restoreProposal) await assertRestoreBatchBinding(context, { orgId: context.actor.orgId, profileId: profile.id, batchId: batch.data, planId: plan.data });
+      else await assertOptimizerApplyBatch(context, { orgId: context.actor.orgId, profileId: profile.id, batchId: batch.data, applyBatchId: source.applyBatchId });
       const excluded = await readOptimizerRetryExclusions(context, saved.preview);
       return { recorded: saved, ...(source.retryOrigin ? { retryDetails: { excludedSuccessfulNames: excluded.map((row) => row.name) } } : {}) };
     });

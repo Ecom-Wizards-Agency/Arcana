@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { Uuid } from './primitives.js';
 import { OrgActor } from './agency.js';
+import { ReversionBatchPreview } from './optimization.js';
 import { SpWriteSourceEvidence } from './sp-write-preview-evidence.js';
 import { SpWriteMirrorCounts } from './sp-write-mirror.js';
 import {
@@ -81,6 +82,46 @@ export function spWriteConfirmation(logicalChanges: number): string {
   return `Yes, apply ${z.number().int().positive().parse(logicalChanges)} changes to Amazon`;
 }
 
+/** Export-only review needs no write grant and conveys no execution authority. */
+export const SpWriteRestoreExportPreview = z.object({
+  kind: z.literal('export_only'),
+  profileId: Uuid,
+  batchId: Uuid,
+  preview: ReversionBatchPreview,
+  fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict().refine((value) => value.profileId === value.preview.profileId
+  && value.batchId === value.preview.batchId, 'restore export identity must match its source');
+export type SpWriteRestoreExportPreview = z.infer<typeof SpWriteRestoreExportPreview>;
+
+export function spWriteRestoreExportConfirmation(changes: number): string {
+  return `Export restore proposal (${z.number().int().positive().parse(changes)} changes)`;
+}
+
+export const SpWriteRestoreExportRequest = z.object({
+  profileId: Uuid,
+  batchId: Uuid,
+  expectedRows: z.number().int().positive(),
+  fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  note: z.string().trim().min(1),
+  confirmation: z.string(),
+}).strict().refine((value) => value.confirmation === spWriteRestoreExportConfirmation(value.expectedRows), {
+  path: ['confirmation'], message: 'Confirmation must name the exact restore export count',
+});
+export type SpWriteRestoreExportRequest = z.infer<typeof SpWriteRestoreExportRequest>;
+
+export const SpWriteRestoreExportResult = z.object({
+  batchId: Uuid,
+  sourceBatchId: Uuid,
+  tag: z.string().min(1),
+  rows: z.number().int().positive(),
+  artifactSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  files: z.object({ rows: z.string().min(1) }).strict(),
+  downloads: z.object({ rows: z.string().min(1) }).strict(),
+  amazonUpdated: z.literal(false),
+  guardrail: z.literal('This is a review file only. Arcana did not update Amazon.'),
+}).strict();
+export type SpWriteRestoreExportResult = z.infer<typeof SpWriteRestoreExportResult>;
+
 
 export const SpWriteOperationRequest = SpWriteOperationId.extend({
   profileId: Uuid,
@@ -155,6 +196,8 @@ export const SpWriteRecordedPreview = z.object({
     status: z.enum(['current', 'stale', 'unavailable']),
     reasons: z.array(SpWritePreviewFreshnessReason),
   }).strict(),
+  /** Current gate state is separate from a changed, still-enabled grant version. */
+  gates: z.object({ environmentEnabled: z.boolean(), profileAllowlisted: z.boolean() }).strict().optional(),
   admission: SpWriteAdmission.nullable(),
 }).strict().superRefine((value, context) => {
   const plan = value.preview.plan;

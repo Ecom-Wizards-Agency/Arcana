@@ -1,4 +1,4 @@
-import { assertOptimizerApplyBatch, readOptimizerOperation, readOptimizerRetryExclusions, readOptimizerReview } from '@wizard-ads/db';
+import { assertOptimizerApplyBatch, assertRestoreBatchBinding, readRestoreOperation, readOptimizerOperation, readOptimizerRetryExclusions, readOptimizerReview } from '@wizard-ads/db';
 import { SpWriteOperationRequest } from '@wizard-ads/shared/sp-write-application';
 import { Uuid } from '@wizard-ads/shared';
 import type { ScreenActor } from '../../server/page-read';
@@ -16,6 +16,12 @@ export async function load(access: ScreenActor, input: ScreenParams) {
     const saved = await readOptimizerOperation(context, identity.data);
     const source = saved.plan.source;
     if (source.kind !== 'apply_batch') throw new Error('This operation is not an optimizer proposal.');
+    if (source.restoreProposal) {
+      await assertRestoreBatchBinding(context, { orgId: context.actor.orgId, profileId: profile.id, batchId: batchId.data, planId: saved.plan.id });
+      const restore = await readRestoreOperation(context, identity.data);
+      const excluded = await readOptimizerRetryExclusions(context, { plan: saved.plan });
+      return { operation: restore, retryProposals: [], retrySnapshots: [], ...(source.retryOrigin ? { retryDetails: { excludedSuccessfulNames: excluded.map((row) => row.name) } } : {}) };
+    }
     await assertOptimizerApplyBatch(context, { orgId: context.actor.orgId, profileId: profile.id, batchId: batchId.data, applyBatchId: source.applyBatchId });
     const excluded = await readOptimizerRetryExclusions(context, { plan: saved.plan });
     const review = await readOptimizerReview(context, { orgId: context.actor.orgId, profileId: profile.id, batchId: batchId.data });
