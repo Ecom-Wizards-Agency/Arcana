@@ -12,6 +12,8 @@ describe('runtime job coverage', () => {
     // These are production bindings, not injectable test-only handlers.
     const bindings = {
       'translation.request': 'registerTargetTranslation(',
+      'budget_usage.collect': 'registerBudgetUsageSources(',
+      'budget_usage.stream': 'registerBudgetUsageSources(',
       'entity.sync': 'adsApi,',
       'report.request': 'adsApi,',
       'report.poll': 'adsApi,',

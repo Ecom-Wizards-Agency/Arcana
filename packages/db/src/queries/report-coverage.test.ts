@@ -158,3 +158,9 @@ it('does not backfill a superseded zero-row completion over newer promoted evide
   expect(entries).toHaveLength(1);
   expect(entries[0]).toMatchObject({ loadedRows: 2, observedAt: '2026-08-14T03:00:00.000Z' });
 });
+
+it('refuses budget accounting replacement for unrelated sources or missing run identity', async () => {
+  await expect(upsertReportCoverage(database, observation(), 4, { accounting: 'verified_budget_run' })).rejects.toThrow('scoped budget source run');
+  await expect(upsertReportCoverage(database, observation({ source: 'amazon_ads_api', reportType: 'campaign_budget_usage', grain: 'campaign_budget_usage' }), 4, { accounting: 'verified_budget_run' })).rejects.toThrow('scoped budget source run');
+  expect(await database.sql`select id from public.report_coverage`).toHaveLength(0);
+});

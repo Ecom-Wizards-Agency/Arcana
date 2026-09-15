@@ -279,3 +279,14 @@ describe('client.getBudgetUsage', () => {
     expect(result).toEqual({ usage: [], failures: [], requested: 0 });
   });
 });
+
+describe('budget observation validation', () => {
+  it.each([{ budget: -1 }, { budgetUsagePercent: -1 }, { usageUpdatedTimestamp: 'invalid' }])('rejects malformed evidence %j', (patch) => {
+    expect(() => parseBudgetUsageResponse({ error: [], success: [{ index: 0, campaignId: 'synthetic-campaign', budget: 20, budgetUsagePercent: 0, usageUpdatedTimestamp: '2026-09-15T01:00:00Z', ...patch }] }, ['synthetic-campaign'])).toThrow('invalid budget evidence');
+  });
+  it('rejects repeated input identities before making any HTTP request', async () => {
+    const { client, server } = clientFor([]);
+    await expect(client.getBudgetUsage(PROFILE_ID, 'SP', ['same', 'same'])).rejects.toThrow('distinct');
+    expect(server.requests).toHaveLength(0);
+  });
+});

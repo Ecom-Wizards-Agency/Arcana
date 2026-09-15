@@ -107,6 +107,22 @@ export const PACKAGE_REGISTRY = [
   {
     "module": "./timeline-effect.js",
     "clause": "{ timelineDates, timelineSummary, timelineValue, timelineEffect, timelinePretrend, shiftTimelineDate }"
+  },
+  {
+    "module": "./creative/performance.js",
+    "clause": "*"
+  },
+  {
+    "module": "./creative/certainty.js",
+    "clause": "*"
+  },
+  {
+    "module": "./creative/prompt-loop.js",
+    "clause": "*"
+  },
+  {
+    "module": "./budget-usage.js",
+    "clause": "*"
   }
 ] as const;
 

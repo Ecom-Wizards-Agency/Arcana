@@ -41,6 +41,8 @@ describe('worker deployment role', () => {
       jobTypes: undefined,
       startsBackgroundPasses: true,
       amazonConnectionsEnabled: false,
+      budgetUsageApiEnabled: false,
+      budgetUsageStreamEnabled: false,
       unifiedReporting: { enabled: false, profileIds: [] },
     });
   });
