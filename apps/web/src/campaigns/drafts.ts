@@ -19,15 +19,19 @@ export function validateBuilderDraft(draft: CampaignDraft, context: CampaignBuil
     topOfSearch: draft.recipe.topOfSearch, audienceAdjustment: draft.recipe.audienceAdjustment }).usable);
   const exposure = checks.find((check) => check.id === 'exposure');
   if (exposure && unverified.length && !exposure.blocking) Object.assign(exposure, { status: 'blocked', blocking: true,
-    currentValue: `Bid basis requires verification for ${unverified.length} keyword(s)`, requiredAction: 'Verify the bid source or select a manual bid and review its exposure.' });
-  const additional = (id: CampaignBuilderCheck['id'], label: string, pass: boolean, source: string): CampaignBuilderCheck => ({ id, label, source,
-    status: pass ? 'passed' : 'blocked', blocking: !pass, currentValue: pass ? 'Confirmed' : 'Unavailable or changed', requiredAction: pass ? '' : 'Review this draft against the current profile.' });
+    label: 'Starting bid basis requires verification', currentValue: unverified.map((keyword) => `${keyword.text} · ${keyword.basis} · ${context.profile.currencyCode} ${keyword.bid}`).join('; '), requiredAction: 'Verify the bid source or select a manual bid and review its exposure.' });
+  const additional = (id: CampaignBuilderCheck['id'], label: string, failure: string, pass: boolean, source: string, currentValue: string, requiredAction: string): CampaignBuilderCheck => ({ id, label: pass ? label : failure, source,
+    status: pass ? 'passed' : 'blocked', blocking: !pass, currentValue, requiredAction: pass ? '' : requiredAction });
   const productNodes = draft.plan.nodes.filter((node) => node.kind === 'eligibility.require_product');
-  checks.push(additional('product', 'Selected products are in the advertised-product mirror', draft.recipe.productKeys.every((key) => context.products.some((product) => product.key === key)) && productNodes.every((node) => context.products.some((product) => product.asin === node.payload.asin && product.sku === node.payload.sku)), 'Advertised-product mirror'),
-    additional('permission', 'Operator can edit this profile', context.canEdit, 'Current organization membership'),
-    additional('count', 'Requested resource count and optimization group match the saved draft', context.groups.some((group) => group.id === draft.recipe.groupId && group.role === draft.recipe.play) && draft.plan.counts.byKind['campaign.create'] === draft.recipe.productKeys.length * (draft.recipe.structure === 'keyword-product' ? draft.recipe.keywords.length : 1)
-      && draft.plan.counts.byKind['target.create'] === draft.recipe.productKeys.length * draft.recipe.keywords.length
-      && draft.plan.nodes.filter((node) => node.kind === 'target.create').every((node) => { const target = node.payload; return target.targetType === 'keyword' && draft.recipe.keywords.some((keyword) => keyword.text === target.text && keyword.bid === target.bid); }), 'Saved draft'));
+  const productsPresent = draft.recipe.productKeys.every((key) => context.products.some((product) => product.key === key)) && productNodes.every((node) => context.products.some((product) => product.asin === node.payload.asin && product.sku === node.payload.sku));
+  const expectedCampaigns = draft.recipe.productKeys.length * (draft.recipe.structure === 'keyword-product' ? draft.recipe.keywords.length : 1);
+  const expectedKeywords = draft.recipe.productKeys.length * draft.recipe.keywords.length;
+  const groupMatches = context.groups.some((group) => group.id === draft.recipe.groupId && group.role === draft.recipe.play);
+  const countMatches = groupMatches && draft.plan.counts.byKind['campaign.create'] === expectedCampaigns && draft.plan.counts.byKind['target.create'] === expectedKeywords
+    && draft.plan.nodes.filter((node) => node.kind === 'target.create').every((node) => { const target = node.payload; return target.targetType === 'keyword' && draft.recipe.keywords.some((keyword) => keyword.text === target.text && keyword.bid === target.bid); });
+  checks.push(additional('product', 'Selected products are in the advertised-product mirror', 'Selected products are missing or changed in the mirror', productsPresent, 'Advertised-product mirror', draft.recipe.productKeys.join(', '), 'Sync the products and select an advertised product with the same ASIN and SKU.'),
+    additional('permission', 'Operator can edit this profile', 'Operator lacks permission to edit this profile', context.canEdit, 'Current organization membership', context.canEdit ? 'Editing permission confirmed' : 'Editing permission unavailable', 'Ask an organization owner or administrator for editing access to this profile.'),
+    additional('count', 'Requested resource count and optimization group match the saved draft', 'Resource counts, keyword bids or optimization group do not match', countMatches, 'Saved draft', `${draft.plan.counts.byKind['campaign.create']} campaign resources · ${draft.plan.counts.byKind['target.create']} keyword resources · Group ${groupMatches ? 'matches' : 'does not match'}`, `Rebuild this exact draft with ${expectedCampaigns} campaign resources and ${expectedKeywords} keyword resources, the selected bids and a ${draft.recipe.play} optimization group.`));
   return { planFingerprint: draft.plan.fingerprint, recipeFingerprint: digest(JSON.stringify(draft.recipe)), checkedAt: now, checks };
 }
 export async function validateSavedBuilderDraft(context: AuthenticatedEditorTransaction, profileId: string, id: string, expectedRevision: number): Promise<CampaignDraft> {

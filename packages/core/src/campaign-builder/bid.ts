@@ -37,8 +37,9 @@ export function campaignBidRationale(input: {
   topOfSearch: number; audienceAdjustment: number; evidence: CampaignBuilderBidEvidence | null;
 }): string {
   const exposure = input.bid * (1 + input.topOfSearch / 100) * (1 + input.audienceAdjustment / 100);
+  const date = (value: string) => new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${value}T00:00:00Z`));
   const basis = input.basis === 'manual' ? 'an operator-entered bid'
-    : input.basis === 'keyword_cpc' ? `keyword CPC from ${input.evidence?.start ?? 'an unavailable period'} to ${input.evidence?.end ?? 'an unavailable period'}`
+    : input.basis === 'keyword_cpc' ? input.evidence ? `keyword CPC from ${date(input.evidence.start)} to ${date(input.evidence.end)}` : 'keyword CPC from an unavailable reporting period'
       : 'SQP value';
   return `Starting bid ${input.currency} ${input.bid} for “${input.keyword}” uses ${basis}. Top-of-search adjustment ${input.topOfSearch}% and audience adjustment ${input.audienceAdjustment}% compound to ${input.currency} ${Number(exposure.toFixed(6))} exposure.`;
 }

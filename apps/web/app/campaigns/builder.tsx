@@ -1,6 +1,7 @@
 'use client';
 
 /** Guided campaign planning, preflight, and export-only bulksheet handoff. */
+import { CampaignEndDateInput } from '../../src/screens/campaigns-update/date-input';
 import { useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import {
@@ -420,8 +421,8 @@ function UpdateFields({
               {BIDDING_STRATEGIES.map((strategy) => <option key={strategy}>{strategy}</option>)}
             </Select>
           </Field>
-          <Field label="End date" htmlFor="update-end-date" hint="Leave blank to keep the current date.">
-            <Input id="update-end-date" type="date" disabled={state.clearEndDate} value={state.endDate} onChange={(event) => update('endDate', event.target.value)} />
+          <Field label="End date" htmlFor="update-end-date" hint="Day, month name and year. Leave blank to keep the current date.">
+            <CampaignEndDateInput id="update-end-date" disabled={state.clearEndDate} value={state.endDate} onChange={(value) => update('endDate', value)} />
           </Field>
         </div>
         <label className="wa-row" htmlFor="update-clear-date">

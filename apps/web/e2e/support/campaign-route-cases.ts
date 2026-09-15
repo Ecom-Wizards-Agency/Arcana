@@ -1,3 +1,4 @@
+import { CAMPAIGN_UNAVAILABLE_COPY } from '../../src/screens/campaigns/unavailable';
 /** Data-only fixture manifest. Routes render their own registered screen views. */
 import { randomUUID, createHash } from 'node:crypto';
 import { serializeCampaignCreationPlanFingerprint } from '@wizard-ads/shared';
@@ -52,7 +53,7 @@ export function campaignRouteCases(fixture: E2EState, profileLabel = builderCont
   add('campaigns-assets', 'no-snapshot', { ...assetsData, snapshot: null }, 'No asset-library snapshot exists yet');
   add('campaigns-assets', 'empty-snapshot', { ...assetsData, snapshot: { ...assetsData.snapshot, assets: [], sourceRows: 0, persistedRows: 0 } }, 'No assets match this snapshot');
   add('campaigns-naming', 'preview-saved-copy', namingData, 'Copy to another profile');
-  add('campaigns-naming', 'reverse-read', namingData, 'matches the selected preset', 'reverse-read');
+  add('campaigns-naming', 'reverse-read', namingData, 'matches the Synthetic convention preset', 'reverse-read');
   add('campaigns-naming', 'reverse-unparseable', namingData, 'does not match', 'reverse-unparseable');
   add('campaigns-eligibility', 'nine-checks', { view: 'ready', context, step: 'products' }, 'A check we cannot run is shown as unavailable, never as passed.');
   add('campaigns-update', 'recipe', { view: 'ready', profileId: fixture.fixtureProfileId, profileLabel: context.profile.label, marketplace: 'US' }, 'Update campaigns');
@@ -60,7 +61,7 @@ export function campaignRouteCases(fixture: E2EState, profileLabel = builderCont
     add(screen, 'loading', { view: 'empty', message: 'Loading fixture completed.' }, 'Loading this screen', undefined, undefined, 'loading');
     add(screen, 'error', { view: 'error', message: 'Synthetic campaign route failure' }, 'Something failed on our side', undefined, undefined, 'error');
     if (screen === 'campaigns-new') continue;
-    for (const state of ['empty', 'gated', 'not-measured']) add(screen, state, { view: state, message: `Campaign screen ${state}` }, `Campaign screen ${state}`);
+    for (const state of ['empty', 'gated', 'not-measured'] as const) { const copy = CAMPAIGN_UNAVAILABLE_COPY[screen as keyof typeof CAMPAIGN_UNAVAILABLE_COPY][state]; add(screen, state, { view: state, message: copy[1] }, copy[0]); }
   }
   return cases;
 }

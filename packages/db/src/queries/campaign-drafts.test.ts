@@ -24,7 +24,7 @@ describe.each(['orm', 'request'] as const)('campaign draft and convention persis
   function validation(value: CampaignDraft, blocked = false): CampaignBuilderValidation {
     return { planFingerprint: value.plan.fingerprint, recipeFingerprint: digest(JSON.stringify(value.recipe)), checkedAt: new Date().toISOString(), checks: CampaignBuilderCheck.shape.id.options.map((id) => {
       const unmeasured = ['stock', 'buy-box', 'suppression', 'moderation'].includes(id);
-      return { id, label: id, source: 'Synthetic evidence', status: unmeasured ? 'not_measured' : blocked && id === 'budget' ? 'blocked' : 'passed', blocking: blocked && id === 'budget', currentValue: 'Synthetic value', requiredAction: blocked && id === 'budget' ? 'Edit budget' : '' };
+      return { id, label: id, source: 'Synthetic evidence', status: unmeasured ? 'not_measured' : blocked && id === 'budget' ? 'blocked' : 'passed', blocking: blocked && id === 'budget', currentValue: 'Synthetic value', requiredAction: blocked && id === 'budget' ? 'Edit budget' : '', ...(id === 'exposure' ? { requiredValue: '$2.40' } : {}) };
     }) };
   }
   it('saves creator-bound plans and transitions draft → validated → blocked → draft on edit', async () => {
@@ -52,8 +52,11 @@ describe.each(['orm', 'request'] as const)('campaign draft and convention persis
     expect(await withAuthenticatedReadSnapshot(handle,teammate,(tx)=>readCampaignDraft(tx,profileId,draft.id))).toBeNull();
   });
   it('reads the frozen rationale unchanged after strategy changes', async () => {
+    draft=await withAuthenticatedOrgEditor(handle,actor,(tx)=>recordCampaignDraftValidation(tx,draft,validation(draft)));
     await db.sql`update public.profile_strategy set doc=jsonb_set(doc,'{caps}',${JSON.stringify({campaign_exposure_ceiling:99})}::jsonb) where org_id=${actor.orgId}`;
-    expect((await withAuthenticatedReadSnapshot(handle,actor,(tx)=>readCampaignDraft(tx,profileId,draft.id)))?.rationale).toEqual(draft.rationale);
+    const saved = await withAuthenticatedReadSnapshot(handle,actor,(tx)=>readCampaignDraft(tx,profileId,draft.id));
+    expect(saved?.rationale).toEqual(draft.rationale);
+    expect(saved?.validation?.checks.find((check)=>check.id==='exposure')?.requiredValue).toBe('$2.40');
   });
   it('saves and copies a convention inside its org and derives usage', async () => {
     const preset=await withAuthenticatedOrgEditor(handle,actor,(tx)=>saveCampaignNamingPreset(tx,{name:'Synthetic convention',naming:draft.recipe.naming}));

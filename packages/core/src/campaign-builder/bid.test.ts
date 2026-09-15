@@ -40,5 +40,6 @@ describe('starting bid evidence and exposure', () => {
     expect(stored).toContain('1.2096 exposure');
     value.topOfSearch = 200;
     expect(stored).toContain('140%'); expect(campaignBidRationale(value)).not.toBe(stored);
+    expect(campaignBidRationale({ ...value, basis: 'keyword_cpc' })).toContain('1 May 2026 to 30 May 2026');
   });
 });

@@ -25,6 +25,8 @@ describe('exact-draft eligibility', () => {
     const checks = validate(context).checks;
     expect(checks.filter((row) => row.blocking).map((row) => row.id).sort()).toEqual(['naming', 'permission', 'product']);
     expect(checks.find((row) => row.id === 'naming')?.status).toBe('not_measured');
+    expect(checks.find((row) => row.id === 'permission')).toMatchObject({ label: 'Operator lacks permission to edit this profile', currentValue: 'Editing permission unavailable' });
+    expect(checks.find((row) => row.id === 'product')).toMatchObject({ label: 'Selected products are missing or changed in the mirror', currentValue: savedDraft.recipe.productKeys.join(', ') });
   });
   it('rejects a validation document that omits checks or marks unknown listing checks passed', () => {
     const result = validate();

@@ -34,7 +34,13 @@ export const savedDraft = CampaignDraft.parse({ id: fixtureId(3), orgId: fixture
 });
 export const validationChecks = [...fixtureChecks, ...(['product', 'permission', 'count'] as const).map((id) => ({ id, label: id, source: 'Synthetic review evidence', status: 'passed' as const, blocking: false, currentValue: 'Verified', requiredAction: '' }))];
 export const validatedDraft = CampaignDraft.parse({ ...savedDraft, status: 'validated', validation: { planFingerprint: fixturePlan.fingerprint, recipeFingerprint: digest(JSON.stringify(builderRecipe)), checkedAt: fixtureTime, checks: validationChecks } });
-export const blockedDraft = CampaignDraft.parse({ ...validatedDraft, status: 'blocked', validation: { ...validatedDraft.validation!, checks: validationChecks.map((check) => check.id === 'budget' ? { ...check, status: 'blocked', blocking: true, currentValue: 'Below marketplace minimum', requiredAction: 'Increase the budget.' } : check) } });
+const blockedRecipe = { ...builderRecipe, dailyBudget: 0.3 };
+const blockedPlan = campaignRecipeCreationPlan(buildCampaignRecipe(blockedRecipe, builderContext), {
+  orgId: fixtureId(1), profileId: fixtureId(2), marketplaceId: scope.marketplaceId, currencyCode: 'USD', now: fixtureTime,
+  expiresAt: '2026-06-11T12:00:00.000Z', uuid: () => fixtureId(sequence++), hasher: { algorithm: 'sha256', digest },
+});
+const blockedBudget = campaignBuilderEligibility({ plan: blockedPlan, budget: builderContext.budget, existingNames: [], naming: builderContext.naming, parsedNames: [], bounds: { floor: 0.12, ceiling: 0.96, exposureCeiling: 2.4, decimalPlaces: 2 }, audienceAdjustment: 0, capabilities: builderContext.capabilities }).find((check) => check.id === 'budget')!;
+export const blockedDraft = CampaignDraft.parse({ ...validatedDraft, recipe: blockedRecipe, plan: blockedPlan, status: 'blocked', validation: { ...validatedDraft.validation!, planFingerprint: blockedPlan.fingerprint, recipeFingerprint: digest(JSON.stringify(blockedRecipe)), checks: validationChecks.map((check) => check.id === 'budget' ? blockedBudget : check) } });
 
 /** V2 current provider evidence exists only in this synthetic rendering fixture. */
 function currentReview() {

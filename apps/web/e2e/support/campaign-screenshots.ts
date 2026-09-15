@@ -13,7 +13,7 @@ export async function captureCampaignStates(page: Page, testInfo: TestInfo) {
   expect(profile).toBeTruthy();
   const cases = campaignRouteCases(fixture, profile!.label);
   expect(cases).toHaveLength(72); expect(new Set(cases.map((item) => `${item.screen}--${item.key}`)).size).toBe(72);
-  const directory = process.env['WP_SCRATCH'] ? resolve(process.env['WP_SCRATCH'], 'tmp', 'wp270-round1', 'screenshots') : resolve(testInfo.project.outputDir, '..', 'wp270-round1', 'screenshots'); await mkdir(directory, { recursive: true });
+  const directory = process.env['WP_SCRATCH'] ? resolve(process.env['WP_SCRATCH'], 'tmp', 'wp270-round2', 'screenshots') : resolve(testInfo.project.outputDir, '..', 'wp270-round2', 'screenshots'); await mkdir(directory, { recursive: true });
   try {
     // Created only in the disposable browser database; production has no fixture table.
     await db.sql`create table public.campaign_screen_fixtures (id uuid primary key, org_id uuid not null references public.orgs(id), profile_id uuid not null references public.ad_profiles(id), created_by uuid not null, screen_id text not null, mode text not null, payload jsonb not null)`;
@@ -46,6 +46,7 @@ export async function captureCampaignStates(page: Page, testInfo: TestInfo) {
         await page.getByRole('button', { name: 'Read it', exact: true }).click();
       }
       await expect(page.locator('#wa-main')).toContainText(item.expected);
+      await page.evaluate(() => window.scrollTo(0, 0));
       if (item.mode === 'loading') await expect(page.getByLabel('Screen loading')).toBeVisible();
       if (item.mode === 'error') await expect(page.getByTestId('app-error')).toBeVisible();
       if (item.key.includes('confirm-') || item.key.includes('retry-')) {
@@ -53,6 +54,17 @@ export async function captureCampaignStates(page: Page, testInfo: TestInfo) {
         if (item.key.endsWith('executor-fixture')) { await expect(button).toBeEnabled(); await button.click(); } else await expect(button).toBeDisabled();
         await expect(page.getByRole('button', { name: 'Export bulk sheet', exact: true })).toBeVisible();
       }
+      if (item.screen === 'campaigns' && item.key.startsWith('targets-')) {
+        await expect(page.locator('.campaign-live-preview')).toBeInViewport({ ratio: 1 });
+        await expect(page.getByRole('link', { name: 'Reverse Builder', exact: true })).toBeInViewport({ ratio: 1 });
+      }
+      if (item.key.startsWith('bid-')) {
+        await expect(page.getByRole('heading', { name: 'Set starting bid', exact: true })).toBeInViewport({ ratio: 1 });
+        await expect(page.getByRole('button', { name: 'Use this bid', exact: true })).toBeInViewport({ ratio: 1 });
+        if (item.key === 'bid-reconcile-warning') await expect(page.getByText('Source totals do not reconcile', { exact: true })).toBeInViewport({ ratio: 1 });
+      }
+      if (item.key === 'edit') { await expect(page.getByLabel('Edited values summary')).toBeVisible(); await expect(page.getByRole('button', { name: 'Save draft', exact: true })).toBeInViewport({ ratio: 1 }); }
+      if (item.key.startsWith('confirm-')) { await expect(page.getByText('Created resources cannot be deleted through rollback.')).toBeVisible(); }
       if (item.key === 'partial') await expect(page.getByRole('cell', { name: 'Failed · 429', exact: true })).toBeVisible();
       if (item.key === 'nine-checks') { await expect(page.locator('.campaign-check-chip[data-runnable="true"]')).toHaveCount(5); await expect(page.locator('.campaign-check-chip[data-runnable="false"]')).toHaveCount(4); }
       await page.evaluate(async () => { await document.fonts.ready; }); await page.mouse.move(0, 0);

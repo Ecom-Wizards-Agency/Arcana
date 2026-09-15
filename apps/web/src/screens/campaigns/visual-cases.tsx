@@ -1,3 +1,4 @@
+import { CAMPAIGN_UNAVAILABLE_COPY } from './unavailable';
 import type { ReactNode } from 'react';
 import type { ScreenState } from '../types';
 import Loading from '../shared-loading';
@@ -41,19 +42,19 @@ add('campaigns-draft', 'bid-reconcile-warning', 'Source totals do not reconcile'
 add('campaigns-draft', 'bid-verified-cpc', 'Source reconciled', () => <BidEditor {...bidProps} expanded keyword={{ ...bidProps.keyword, basis: 'keyword_cpc' }} />);
 add('campaigns-draft', 'bid-sqp-unmeasured', 'SQP value: not measured', () => <BidEditor {...bidProps} keyword={{ ...bidProps.keyword, basis: 'sqp_value' }} />);
 add('campaigns-draft', 'validation', 'Fix draft issues', () => <DraftReady data={{ ...draftData, draft: blockedDraft, step: 'validation' }} />);
-add('campaigns-draft', 'confirm-unavailable', 'Creation in Amazon is not available yet', () => <CreationConfirm review={fixtureReview} checks={validationChecks} executor={unavailable} onExport={noop} onBack={noop} />);
-add('campaigns-draft', 'confirm-executor-fixture', 'Yes, create 1 campaign in Amazon', () => <CreationConfirm review={fixtureReview} checks={validationChecks} executor={available} onExport={noop} onBack={noop} />);
+add('campaigns-draft', 'confirm-unavailable', 'Creation in Amazon is not available yet', () => <CreationConfirm marketplaceLabel={builderContext.profile.countryCode} review={fixtureReview} checks={validationChecks} executor={unavailable} onExport={noop} onBack={noop} />);
+add('campaigns-draft', 'confirm-executor-fixture', 'Yes, create 1 campaign in Amazon', () => <CreationConfirm marketplaceLabel={builderContext.profile.countryCode} review={fixtureReview} checks={validationChecks} executor={available} onExport={noop} onBack={noop} />);
 add('campaigns-draft', 'partial', 'Campaign partially created', () => <CreationResult result={creationResult(false)} onRetry={noop} onBack={noop} />);
 add('campaigns-draft', 'retry-unavailable', 'Yes, retry 1 keyword in Amazon', () => <KeywordRetry result={creationResult(false)} executor={unavailable} onBack={noop} onExport={noop} />);
 add('campaigns-draft', 'retry-executor-fixture', 'Successful resources will not be created again', () => <KeywordRetry result={creationResult(false)} executor={available} onBack={noop} onExport={noop} />);
 add('campaigns-draft', 'complete', '0 duplicated resources', () => <CreationResult result={creationResult(true)} onRetry={noop} onBack={noop} />);
 add('campaigns-draft', 'result-not-recorded', 'No creation result has been recorded', () => <DraftReady data={{ ...draftData, step: 'result' }} />);
-for (const tab of ['library', 'used', 'upload'] as const) add('campaigns-assets', tab, tab === 'used' ? 'Synthetic mirrored creative' : 'Pick a creative you already have', () => <CampaignPage title="Creative asset library"><AssetPicker snapshot={assetSnapshot} used={[{ id: fixtureId(9), amazonAssetId: 'synthetic-asset', name: 'Synthetic mirrored creative', kind: 'sb_video', usedInCampaignIds: ['synthetic-campaign'] }]} canRefresh onRefresh={async () => {}} initialTab={tab} /></CampaignPage>);
-add('campaigns-assets', 'no-snapshot', 'No asset-library snapshot exists yet', () => <CampaignPage title="Creative asset library"><AssetPicker snapshot={null} used={[]} canRefresh onRefresh={async () => {}} /></CampaignPage>);
-add('campaigns-assets', 'empty-snapshot', 'No assets match this snapshot', () => <CampaignPage title="Creative asset library"><AssetPicker snapshot={{ ...assetSnapshot, sourceRows: 0, persistedRows: 0, assets: [] }} used={[]} canRefresh onRefresh={async () => {}} /></CampaignPage>);
+for (const tab of ['library', 'used', 'upload'] as const) add('campaigns-assets', tab, tab === 'used' ? 'Synthetic mirrored creative' : 'Pick a creative you already have', () => <CampaignPage title="Pick a creative you already have"><AssetPicker snapshot={assetSnapshot} used={[{ id: fixtureId(9), amazonAssetId: 'synthetic-asset', name: 'Synthetic mirrored creative', kind: 'sb_video', usedInCampaignIds: ['synthetic-campaign'] }]} canRefresh onRefresh={async () => {}} initialTab={tab} /></CampaignPage>);
+add('campaigns-assets', 'no-snapshot', 'No asset-library snapshot exists yet', () => <CampaignPage title="Pick a creative you already have"><AssetPicker snapshot={null} used={[]} canRefresh onRefresh={async () => {}} /></CampaignPage>);
+add('campaigns-assets', 'empty-snapshot', 'No assets match this snapshot', () => <CampaignPage title="Pick a creative you already have"><AssetPicker snapshot={{ ...assetSnapshot, sourceRows: 0, persistedRows: 0, assets: [] }} used={[]} canRefresh onRefresh={async () => {}} /></CampaignPage>);
 add('campaigns-naming', 'preview-saved-copy', 'Copy to another profile', () => <NamingReady data={namingData} />);
 const name = fixtureReverseName;
-add('campaigns-naming', 'reverse-read', 'matches the selected preset', () => <NamingReady data={namingData} initialName={name} initiallyRead />);
+add('campaigns-naming', 'reverse-read', 'matches the Synthetic convention preset', () => <NamingReady data={namingData} initialName={name} initiallyRead />);
 add('campaigns-naming', 'reverse-unparseable', 'does not match', () => <NamingReady data={namingData} initialName="unparseable" initiallyRead />);
 add('campaigns-eligibility', 'nine-checks', 'yes', () => <EligibilityScreen data={ready} />);
 add('campaigns-update', 'recipe', 'Update campaigns', () => <UpdateScreen data={{ view: 'ready', profileId: fixtureId(2), profileLabel: 'Synthetic account', marketplace: 'US' }} />);
@@ -64,7 +65,7 @@ const screens = {
 for (const [screen, View] of Object.entries(screens)) {
   add(screen, 'loading', 'Loading this screen', () => <Loading />, 'loading');
   add(screen, 'error', 'synthetic-reference', () => <SharedError error={Object.assign(new Error('Synthetic failure'), { digest: 'synthetic-reference' })} reset={noop} />, 'error');
-  for (const state of ['empty', 'gated', 'not-measured'] as const) add(screen, state, `Campaign screen ${state}`, () => <View data={{ view: state, message: `Campaign screen ${state}` }} />, state);
+  for (const state of ['empty', 'gated', 'not-measured'] as const) add(screen, state, CAMPAIGN_UNAVAILABLE_COPY[screen as keyof typeof CAMPAIGN_UNAVAILABLE_COPY][state][0], () => <View data={{ view: state, message: CAMPAIGN_UNAVAILABLE_COPY[screen as keyof typeof CAMPAIGN_UNAVAILABLE_COPY][state][1] }} />, state);
 }
 add('campaigns-new', 'loading', 'Loading this screen', () => <Loading />, 'loading');
 add('campaigns-new', 'error', 'synthetic-reference', () => <SharedError error={Object.assign(new Error('Synthetic failure'), { digest: 'synthetic-reference' })} reset={noop} />, 'error');

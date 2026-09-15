@@ -41,6 +41,8 @@ export const CampaignBuilderCheck = z.object({
   id: z.enum(['budget', 'unique-name', 'naming', 'exposure', 'capability', 'stock', 'buy-box', 'suppression', 'moderation', 'product', 'permission', 'count']),
   label: z.string(), source: z.string(), status: z.enum(['passed', 'blocked', 'not_measured']),
   blocking: z.boolean(), currentValue: z.string(), requiredAction: z.string(),
+  /** Frozen rule value used by this validation; absent on older drafts. */
+  requiredValue: z.string().optional(),
 }).strict().superRefine((value, ctx) => {
   if (value.status === 'passed' && value.blocking) ctx.addIssue({ code: 'custom', message: 'Passed checks cannot block' });
 });

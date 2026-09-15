@@ -31,4 +31,17 @@ describe('five runnable campaign creation checks', () => {
     expect(result.filter((row) => row.blocking).map((row) => row.id)).toEqual(['budget', 'unique-name', 'naming', 'exposure']);
     expect(result.filter((row) => row.blocking).every((row) => row.status === 'not_measured')).toBe(true);
   });
+  it('records exact budget amounts and both marketplace requirements with a failure-specific label', () => {
+    const result = campaignBuilderEligibility({ ...input, budget: { minimum: 9, maximum: 99 } });
+    expect(result.find((row) => row.id === 'budget')).toMatchObject({ label: 'Daily budget is below the marketplace minimum', currentValue: '$7.25', requiredValue: 'at least $9.00 and at most $99.00', requiredAction: 'Set the daily budget to at least $9.00.' });
+    expect(campaignBuilderEligibility({ ...input, budget: { minimum: 2, maximum: 6 } }).find((row) => row.id === 'budget')?.label).toBe('Daily budget exceeds the marketplace maximum');
+  });
+  it('distinguishes base range, precision and hard exposure failures and retains the reviewed ceiling', () => {
+    expect(campaignBuilderEligibility({ ...input, bounds: { ...input.bounds, ceiling: 0.2 } }).find((row) => row.id === 'exposure')).toMatchObject({ label: 'Starting bid is outside the allowed range', currentValue: '$0.36' });
+    expect(campaignBuilderEligibility({ ...input, bounds: { ...input.bounds, decimalPlaces: 1 } }).find((row) => row.id === 'exposure')?.label).toBe('Starting bid exceeds marketplace precision');
+    expect(campaignBuilderEligibility({ ...input, bounds: { ...input.bounds, exposureCeiling: 0.2 } }).find((row) => row.id === 'exposure')).toMatchObject({ label: 'Maximum exposure exceeds the hard ceiling', currentValue: '$0.864', requiredValue: '$0.20' });
+    const saved = campaignBuilderEligibility(input).find((row) => row.id === 'exposure');
+    campaignBuilderEligibility({ ...input, bounds: { ...input.bounds, exposureCeiling: 0.2 } });
+    expect(saved).toMatchObject({ status: 'passed', requiredValue: '$2.40' });
+  });
 });
