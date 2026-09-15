@@ -19,7 +19,7 @@ it('rejects malformed and oversized exports',async()=>{
   await writeFile(join(root,ref.objectKey),'x'.repeat(2*1024*1024+1));await expect(readCollectorExport(root,ref)).rejects.toThrow('bounded');
 });
 it('refuses a symlink outside its configured root',async()=>{
-  const outside=await mkdtemp(join(process.env['WP_SCRATCH']!,'tmp','outside-export-'));
+  const outside=await mkdtemp(join(process.env['WP_SCRATCH']?join(process.env['WP_SCRATCH'],'tmp'):tmpdir(),'outside-export-'));
   try {
     await writeFile(join(outside,'source.json'),'{}');
     await symlink(join(outside,'source.json'),join(root,'escape.json'));
