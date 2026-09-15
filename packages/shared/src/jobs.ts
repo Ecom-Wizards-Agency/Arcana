@@ -37,6 +37,8 @@ export const JobType = z.enum([
   'own_bids.collect',
   'own_listings.collect',
   'prompts.collect',
+  'budget_usage.collect',
+  'budget_usage.stream',
 ]);
 export type JobType = z.infer<typeof JobType>;
 
@@ -299,6 +301,10 @@ export const CatalogueReportJob = z.object({ ...jobBase, type: z.literal("catalo
 export const OwnBidsCollectJob = z.object({ ...jobBase, type: z.literal('own_bids.collect') }).strict();
 export const OwnListingsCollectJob = z.object({ ...jobBase, type: z.literal('own_listings.collect') }).strict();
 export const PromptsCollectJob = z.object({ ...jobBase, type: z.literal('prompts.collect') }).strict();
+export const BudgetUsageCollectJob = z.object({ ...jobBase, type: z.literal('budget_usage.collect') });
+export type BudgetUsageCollectJob = z.infer<typeof BudgetUsageCollectJob>;
+export const BudgetUsageStreamJob = z.object({ ...jobBase, type: z.literal('budget_usage.stream') });
+export type BudgetUsageStreamJob = z.infer<typeof BudgetUsageStreamJob>;
 
 export const JobPayload = z.discriminatedUnion('type', [
   RetailReportJob, AbaReportJob, CatalogueReportJob,
@@ -306,6 +312,8 @@ export const JobPayload = z.discriminatedUnion('type', [
   OwnBidsCollectJob, OwnListingsCollectJob, PromptsCollectJob,
   EntitySyncJob,
   AssetLibrarySearchJob,
+  BudgetUsageCollectJob,
+  BudgetUsageStreamJob,
   ReportRequestJob,
   ReportPollJob,
   ReportFetchJob,

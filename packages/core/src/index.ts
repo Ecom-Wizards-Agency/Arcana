@@ -54,3 +54,4 @@ export { campaignBuilderEligibility } from './campaign-builder/eligibility.js';
 export * from './dayparting/schedule.js';
 export * from './brand-lens/model.js';
 export * from './own-collectors.js';
+export * from './budget-usage.js';

@@ -20,6 +20,8 @@ describe('runtime job coverage', () => {
       'own_listings.collect': 'registerOwnCollectors(',
       'prompts.collect': 'registerOwnCollectors(',
       'translation.request': 'registerTargetTranslation(',
+      'budget_usage.collect': 'registerBudgetUsageSources(',
+      'budget_usage.stream': 'registerBudgetUsageSources(',
       'entity.sync': 'adsApi,',
       'report.request': 'adsApi,',
       'report.poll': 'adsApi,',

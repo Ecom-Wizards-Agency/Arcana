@@ -22,6 +22,8 @@ export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
   {domain: 'queries/own-collectors', contract: null, schema: null, queries: 'queries/own-collectors.ts', migrationPrefix: '20260915290000', exports: [
     {barrel: 'index.ts', order: 110, clause: '{ readEffectiveBidObservations, readListingEvidence, readListingChanges }', after: ''},
     {barrel: 'worker.ts', order: 10, clause: '{ OwnCollectorReferenceError, OwnCollectorConflictError, collectorProfile, readOwnBidMirrors, readOwnListingAsins, readListingCollectorCoverage, readCollectorExports, persistEffectiveBidObservations, persistListingSnapshots }', after: ''}]},
+  {domain: "queries/budget-usage", contract: null, schema: null, queries: "queries/budget-usage.ts", migrationPrefix: null, exports: [{barrel: "index.ts", order: 110, clause: "*", after: ""}]},
+  {domain: "schema/budget-usage", contract: null, schema: "schema/budget-usage.ts", queries: null, migrationPrefix: "20260915300000", exports: [{barrel: "schema/index.ts", order: 40, clause: "*", after: ""}]},
   {domain: "queries/sp-write-application-optimizer", contract: null, schema: null, queries: "queries/sp-write-application-optimizer.ts", migrationPrefix: null, exports: [{barrel: "index.ts", order: 106, clause: "{ prepareOptimizerRetry, readOptimizerRetryExclusions }", after: ""}]},
   {domain: "queries/optimizer-export", contract: null, schema: null, queries: "queries/optimizer-export.ts", migrationPrefix: "20260915190000", exports: [{barrel: "index.ts", order: 105, clause: "*", after: ""}]},
   {"domain": "queries/optimizer-run", "contract": null, "schema": null, "queries": "queries/optimizer-run.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 104, "clause": "*", "after": ""}]},

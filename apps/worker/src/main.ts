@@ -3,6 +3,9 @@ import { registerSpApiReportSources, postgresSpReportDependencies } from './spap
 import { registerProviderEvidence, postgresProviderEvidenceDependencies } from "./provider-evidence.js";
 import { registerOwnCollectors, postgresOwnCollectors } from './own-collectors/index.js';
 import { registerTargetTranslation } from './translation/register.js';
+import { registerBudgetUsageSources } from './budget-usage/register.js';
+import { createBudgetUsageStore } from './budget-usage/composition.js';
+import { createBudgetUsageProvider } from './budget-usage/provider.js';
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
 import { exchangeSpApiAuthorizationCode, runSpApiConnectionPass } from './spapi-connections.js';
 import { registerIntegrationSources } from './integration-sources.js';
@@ -72,6 +75,8 @@ const handle = createDb({ connectionString: config.databaseUrl, max: config.maxC
 const store = new PostgresWorkerStore(handle, undefined, {
   claimProtocol: config.claimProtocol,
   ownCollectorsEnabled: config.ownCollectorsEnabled,
+  ...((config.jobTypes === undefined || config.jobTypes.includes('budget_usage.collect'))
+    ? { budgetUsageApiEnabled: config.budgetUsageApiEnabled } : {}),
   ...((config.spWrites.dispatchEnabled || config.spWrites.reconcileEnabled)
     ? { keywordMirror: createKeywordMirrorCapability(handle) } : {}),
 });
@@ -143,12 +148,20 @@ const sqpRequest = runsSqpJobs && config.spApiClientId && config.spApiClientSecr
 const sqpSchedules = sqpRequest
   ? new PostgresWeeklySqpScheduler(handle, store)
   : undefined;
+const budgetUsageStore = createBudgetUsageStore(handle);
 const integrations = {
     economicsSync: createMrpEconomicsSync(handle),
     rankSync: createDataDiveRankSyncHandler({ handle }),
     keepaSync: createKeepaSyncHandler(handle, { ownListingsEnabled: config.ownCollectorsEnabled }),
     ...(sqpRequest === undefined ? {} : { sqpRequest }),
-    marketingStreamNormalize: createMarketingStreamNormalizeHandler({ handle, queue: store }),
+    marketingStreamNormalize: createMarketingStreamNormalizeHandler({ handle, queue: store,
+      ...(config.budgetUsageStreamEnabled ? { onBudgetNormalized: async (scope: { orgId: string; profileId: string }, observedAt: Date) => {
+        const settings = await budgetUsageStore.config(scope);
+        if (!settings.streamEnabled) return;
+        await store.enqueue({ ...scope, type: 'budget_usage.stream' }, observedAt,
+          ['budget-usage', 'stream', scope.profileId, observedAt.toISOString()].join(':'));
+      } } : {}),
+    }),
   };
 const worker = new SyncWorker({
   coreReportingEnabled: process.env['OPENSPELL_CORE_REPORTING_ENABLED'] === '1',
@@ -169,6 +182,8 @@ const worker = new SyncWorker({
     registerOwnCollectors(registry, postgresOwnCollectors(handle, config.ownCollectorDropRoot, config.ownCollectorsEnabled));
     registerTargetTranslation(registry, handle);
     registerProviderEvidence(registry, postgresProviderEvidenceDependencies(handle));
+    registerBudgetUsageSources(registry, { store: budgetUsageStore, provider: createBudgetUsageProvider(handle),
+      apiEnabled: config.budgetUsageApiEnabled, streamEnabled: config.budgetUsageStreamEnabled });
   },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,

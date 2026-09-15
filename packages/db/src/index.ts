@@ -101,6 +101,7 @@ export { SponsoredPromptInputError, importSponsoredPrompts, readSponsoredPrompts
 export { prepareOptimizerRetry, readOptimizerRetryExclusions } from './queries/sp-write-application-optimizer.js';
 export { readProviderEvidence } from './queries/provider-evidence.js';
 export { readEffectiveBidObservations, readListingEvidence, readListingChanges } from './queries/own-collectors.js';
+export * from './queries/budget-usage.js';
 export * from './queries/report-families.js';
 export * from './queries/spapi-reports.js';
 export * from './queries/grid-performance-evidence.js';

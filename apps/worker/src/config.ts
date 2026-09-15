@@ -53,6 +53,9 @@ export interface WorkerConfig {
   staleClaimAfter: string;
   /** Enables the independent long-poll consumer when present. Never logged. */
   marketingStreamQueueUrl: string | undefined;
+  /** Read collectors remain off until deployment and profile configuration both enable them. */
+  budgetUsageApiEnabled: boolean;
+  budgetUsageStreamEnabled: boolean;
   /** Deployment-owned LWA application credentials. Tenant refresh values stay in Vault. */
   spApiClientId: string | undefined;
   spApiClientSecret: string | undefined;
@@ -168,6 +171,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
       positiveInteger(env['WORKER_AUTH_HEALTHCHECK_MINUTES'], 60, 'WORKER_AUTH_HEALTHCHECK_MINUTES') * 60_000,
     staleClaimAfter: env['WORKER_STALE_CLAIM_AFTER'] ?? '30 minutes',
     marketingStreamQueueUrl: env['MARKETING_STREAM_SQS_QUEUE_URL']?.trim() || undefined,
+    budgetUsageApiEnabled: env['OPENSPELL_BUDGET_USAGE_API_ENABLED'] === '1',
+    budgetUsageStreamEnabled: env['OPENSPELL_BUDGET_USAGE_STREAM_ENABLED'] === '1',
     spApiClientId,
     spApiClientSecret,
     spApiReportMinIntervalMs: positiveInteger(

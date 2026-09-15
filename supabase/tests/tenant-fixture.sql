@@ -29,6 +29,8 @@ declare
   v_provider_scope jsonb;
   v_provider_config_json jsonb;
   v_provider_counts jsonb;
+  v_budget_run uuid := gen_random_uuid();
+  v_budget_observation jsonb;
   v_conn uuid;
   v_profile uuid;
   v_run uuid;
@@ -941,6 +943,20 @@ begin
       values(v_org::text||':import',v_org,v_profile,'US',v_org,repeat('a',64),'1970-01-01','1970-01-01',
         jsonb_build_object('counts',jsonb_build_object('sourceRows',0,'parsedRows',0,'refusedRows',0,'loadedRows',0,'verifiedLoadedRows',0),
           'inserted',0,'alreadyPresent',0,'outputIdentities','[]'::jsonb,'observedAt',null,'state','missing'));
+  end if;
+
+  if to_regclass('public.budget_usage_settings') is not null then
+    v_budget_observation := jsonb_build_object('orgId',v_org,'profileId',v_profile,'adProduct','SP','campaignId','c-1','sourceIdentity','synthetic-budget-observation',
+      'source','amazon_ads_api','providerUpdatedAt',p_date::timestamptz,'receivedAt',p_date::timestamptz,'currency','USD','budgetAmount',10,'budgetType','daily','period',null,'usagePercent',0,'completeness','complete');
+    insert into public.budget_usage_settings(org_id,profile_id) values(v_org,v_profile);
+    insert into public.budget_usage_runs(id,org_id,profile_id,source,received_at,input,counts)
+    values(v_budget_run,v_org,v_profile,'amazon_ads_api',p_date::timestamptz,
+      jsonb_build_object('runId',v_budget_run,'scope',jsonb_build_object('orgId',v_org,'profileId',v_profile),'source','amazon_ads_api',
+        'selected',jsonb_build_array(jsonb_build_object('adProduct','SP','campaignId','c-1')),'observations',jsonb_build_array(v_budget_observation),'failures','[]'::jsonb,'receivedAt',p_date::timestamptz,'populationComplete',false),
+      '{"selected":1,"requested":1,"returned":1,"failed":0,"sourceRows":1,"parsedRows":1,"refusedRows":0,"loadedRows":1,"existingRows":0,"verifiedLoadedRows":1}'::jsonb);
+    insert into public.budget_usage_observations(org_id,profile_id,ad_product,campaign_id,source_identity,provider_updated_at,received_at,run_id,observation)
+    values(v_org,v_profile,'SP','c-1','synthetic-budget-observation',p_date::timestamptz,p_date::timestamptz,v_budget_run,
+      v_budget_observation);
   end if;
   return v_org;
 end;

@@ -1,7 +1,6 @@
 import type { SpEvidence, SpRetailSpendEvidence } from '@wizard-ads/shared';
-import { readProviderEvidence } from '@wizard-ads/db';
-import { analyzeAccount, classifyCampaignCategory, computePacing, evaluate, pacingFlag } from '@wizard-ads/core';
-import { listHomeInsights, listHomeMarketGaps, listRecommendations, readSpReportEvidence, readSpRetailSpendEvidence } from '@wizard-ads/db';
+import { analyzeAccount, classifyCampaignCategory, computePacing, computePortfolioPacing, evaluate, pacingFlag, selectBudgetUsage } from '@wizard-ads/core';
+import { listHomeInsights, listHomeMarketGaps, listRecommendations, listPortfolioSpendEvidence, readBudgetUsageEvidence, readProviderEvidence, readSpReportEvidence, readSpRetailSpendEvidence } from '@wizard-ads/db';
 import { loadCampaignDailyRows, loadHomeRankWatch, loadProfileDailyRows } from '../../../app/_lib/dashboard-data';
 import { kpiTiles, totalsOf } from '../../optimizer/view';
 import { addDays, precedingPeriod, periodFromParams } from '../../../app/_lib/periods';
@@ -30,7 +29,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   const home = await access.read(async (handle, actor) => {
     const scope = { orgId: actor.orgId, profileId: profile.id };
     const providerEvidence = await readProviderEvidence(handle, { ...scope, consumer: 'home' });
-    const [role, proposals, events, ranks, market, campaigns, monthRows, comparisonRows, retail, retailSpend, previousRetail] = await Promise.all([
+    const [role, proposals, events, ranks, market, campaigns, monthRows, comparisonRows, retail, retailSpend, previousRetail, budgetEvidence, portfolioEvidence] = await Promise.all([
       requireOrgRole(handle, actor),
       listRecommendations(handle, { ...scope, statuses: ['proposed'], limit: 20000 }),
       listHomeInsights(handle, { ...scope, start: addDays(today, -6), end: today }),
@@ -42,6 +41,8 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       readSpReportEvidence(handle, { ...scope, family: 'retail', start: period.start, end: period.end }),
       readSpRetailSpendEvidence(handle, { ...scope, start: period.start, end: period.end }),
       readSpReportEvidence(handle, { ...scope, family: 'retail', start: comparison.start, end: comparison.end }),
+      readBudgetUsageEvidence(handle, scope),
+      listPortfolioSpendEvidence(handle, { ...scope, asOf: reportDate }),
     ]);
     const pacing = computePacing(monthRows, reportDate, profile.monthlyBudget);
     const pacingAlert = pacingFlag(pacing, null);
@@ -62,6 +63,8 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       }),
       proposalsCapped: proposals.length === 20000,
       events, ranks: ranks.map((row) => ({ ...row, spend: null as number | null })), market, pacing,
+      budgetUsage: selectBudgetUsage(budgetEvidence, new Date().toISOString()),
+      portfolioPacing: portfolioEvidence.map(computePortfolioPacing),
       activeFlags: pacingAlert === null ? flags.active : [pacingAlert, ...flags.active],
       suppressedFlags: flags.suppressed,
       weekStart: addDays(weekEnd, -6), weekEnd,
