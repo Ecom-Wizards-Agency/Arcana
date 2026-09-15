@@ -37,6 +37,8 @@ it('renders each data tab, shelf gap and all fact/change rows', () => {
   expect(host.container.querySelectorAll('tbody tr')).toHaveLength(ready.performance.length);
   fireEvent.click(screen.getByRole('tab',{name:'Shelf'}));
   expect(host.container.textContent).toContain('No scoped listing observations are available');
+  expect(host.container.textContent).toContain('Product evidence is missing');
+  expect(host.container.textContent).toContain('does not establish asset moderation approval');
 });
 it('keeps SQP and ABA evidence in the Rank tab after rank observations', () => {
   const host = render(<Screen data={ready} />);

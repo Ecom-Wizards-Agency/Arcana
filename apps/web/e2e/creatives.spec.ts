@@ -66,6 +66,8 @@ test('creative workspace preserves selection, filters, evidence and detail route
   const listingEvidence = page.getByRole('region', { name: 'Listing observations' });
   await expect(listingEvidence.getByTestId('sp-source-status')).toHaveAttribute('data-state', 'unavailable');
   await expect(listingEvidence).toContainText('No listing fields observed in this period');
+  await expect(page.getByRole('heading', { name: 'Listing changes not measured', exact: true })).toBeVisible();
+  await expect(page.getByText(/No changed adjacent Product Metadata observations/)).toBeVisible();
   await page.getByRole('link', { name: 'Compare creatives', exact: true }).click();
   await expect(page).toHaveURL(new RegExp('/creative/campaign/' + CREATIVE_CAMPAIGN_ID));
   await expect(page.getByText(/1 keyword.*2 ad groups.*2 creatives/)).toBeVisible();

@@ -1,10 +1,11 @@
 import type { ChangeQueueEntry } from '@wizard-ads/shared';
 import { buildGridModel, ZERO_TOTALS, type GridColumn } from '@wizard-ads/ui';
-export const SOURCE_LABEL = { apply: 'we sent it', sync: 'changed at Amazon', queued: 'queued', restore: 'Restore' } as const;
+export const SOURCE_LABEL = { apply: 'we sent it', sync: 'changed at Amazon', amazon: 'Amazon observed', queued: 'queued', restore: 'Restore' } as const;
 export function attribution(row: ChangeQueueEntry): string {
   const batch = row.batchLabel === null ? null : (/^Batch\s/i.test(row.batchLabel) ? row.batchLabel : `Batch ${row.batchLabel}`);
   if (row.candidateCount > 1) return `${batch === null ? '' : `${batch} · `}${row.candidateCount === 2 ? 'two' : row.candidateCount} rows could explain it`;
   if (row.source === 'queued' || (row.source === 'restore' && ['awaiting review', 'approved'].includes(row.state))) return 'Review proposal';
+  if (row.source === 'amazon') return 'Provider history · no local actor';
   if (batch === null) return row.source === 'apply' ? 'Approved application' : 'not ours';
   return `${batch} · ${row.experimentStart ? 'experiment start' : row.batchCount === null ? '— changes' : `${row.batchCount} changes`}`;
 }

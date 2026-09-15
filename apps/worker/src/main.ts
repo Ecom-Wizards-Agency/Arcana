@@ -9,6 +9,7 @@ import { createBudgetUsageProvider } from './budget-usage/provider.js';
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
 import { exchangeSpApiAuthorizationCode, runSpApiConnectionPass } from './spapi-connections.js';
 import { registerIntegrationSources } from './integration-sources.js';
+import { CatalogueSourceRunner, registerCatalogueSources } from './catalogue-sources.js';
 import { createKeywordMirrorCapability, createSpWriteWorker } from './sp-write-outbox/composition.js';
 import { startSpWritePolling } from './sp-write-outbox/polling.js';
 import { spWritePolicyFromEnv } from './sp-write-outbox/policy.js';
@@ -64,6 +65,10 @@ const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
   'report.fetch',
   'report.unified.advance',
   'creative.sync',
+  'ads.product_metadata.sync',
+  'ads.product_eligibility.sync',
+  'ads.validation_configurations.sync',
+  'ads.change_history.sync',
 ]);
 
 const config = configFromEnv();
@@ -184,6 +189,8 @@ const worker = new SyncWorker({
     registerProviderEvidence(registry, postgresProviderEvidenceDependencies(handle));
     registerBudgetUsageSources(registry, { store: budgetUsageStore, provider: createBudgetUsageProvider(handle),
       apiEnabled: config.budgetUsageApiEnabled, streamEnabled: config.budgetUsageStreamEnabled });
+    registerCatalogueSources(registry, new CatalogueSourceRunner({ handle, client: adsApi,
+      deploymentEnabled: () => config.catalogueSourcesEnabled }));
   },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,

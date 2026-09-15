@@ -77,6 +77,11 @@ declare
   v_sp_outbox uuid := gen_random_uuid();
   v_sp_source_sync_job uuid := gen_random_uuid();
   v_sp_observation uuid := gen_random_uuid();
+  v_catalogue_receipt uuid := gen_random_uuid();
+  v_eligibility_receipt uuid := gen_random_uuid();
+  v_validation_receipt uuid := gen_random_uuid();
+  v_change_receipt uuid := gen_random_uuid();
+  v_change_event uuid := gen_random_uuid();
   v_week_start date := p_date - extract(dow from p_date)::integer;
   v_previous_month date := (date_trunc('month', p_date) - interval '1 month')::date;
   v_strategy jsonb := jsonb_build_object(
@@ -126,6 +131,60 @@ begin
 
   insert into public.profile_strategy (org_id, profile_id, schema_version, doc)
   values (v_org, null, 'wizard-ads.tenant-strategy.v1', v_strategy);
+
+  -- Historical migration-window tests install this fixture before WP-311.
+  if to_regclass('public.ads_catalogue_source_settings') is not null then
+  insert into public.ads_catalogue_source_settings
+    (org_id, profile_id, marketplace_id, family, enabled, reporting_recovery_verified_at)
+  values
+    (v_org, v_profile, 'ATVPDKIKX0DER', 'product_metadata', false, null),
+    (v_org, v_profile, 'ATVPDKIKX0DER', 'product_eligibility', false, null),
+    (v_org, v_profile, 'ATVPDKIKX0DER', 'validation_configurations', false, null),
+    (v_org, v_profile, 'ATVPDKIKX0DER', 'change_history', false, null);
+  insert into public.ads_catalogue_source_receipts
+    (id, org_id, profile_id, marketplace_id, family, selector_key, window_start,
+     window_end, acquired_at, counts, page_count)
+  values
+    (v_catalogue_receipt, v_org, v_profile, 'ATVPDKIKX0DER', 'product_metadata', repeat('a',64), now(), now(), now(), '{"sourceRows":1,"parsedRows":1,"refusedRows":0,"canonicalRows":1,"verifiedRows":1}'::jsonb, 1),
+    (v_eligibility_receipt, v_org, v_profile, 'ATVPDKIKX0DER', 'product_eligibility', repeat('b',64), now(), now(), now(), '{"sourceRows":1,"parsedRows":1,"refusedRows":0,"canonicalRows":1,"verifiedRows":1}'::jsonb, 1),
+    (v_validation_receipt, v_org, v_profile, 'ATVPDKIKX0DER', 'validation_configurations', repeat('c',64), now(), now(), now(), '{"sourceRows":1,"parsedRows":1,"refusedRows":0,"canonicalRows":1,"verifiedRows":1}'::jsonb, 1),
+    (v_change_receipt, v_org, v_profile, 'ATVPDKIKX0DER', 'change_history', repeat('d',64), now(), now(), now(), '{"sourceRows":1,"parsedRows":1,"refusedRows":0,"canonicalRows":1,"verifiedRows":1}'::jsonb, 1);
+  insert into public.ads_catalogue_source_checkpoints
+    (org_id, profile_id, marketplace_id, family, selector_key, covered_from,
+     covered_through, source_observed_at, receipt_id)
+  values
+    (v_org, v_profile, 'ATVPDKIKX0DER', 'product_metadata', repeat('a',64), now(), now(), now(), v_catalogue_receipt);
+  insert into public.ads_product_metadata_snapshots
+    (org_id, profile_id, marketplace_id, asin, ad_product, acquired_at, retrieved_at,
+     contract_version, snapshot, payload_digest, receipt_id)
+  values
+    (v_org, v_profile, 'ATVPDKIKX0DER', 'B0RLS00001', 'SP', now(), now(),
+     'product_metadata:v1:fixture', '{"fixture":true}'::jsonb, repeat('a',64), v_catalogue_receipt);
+  insert into public.ads_product_eligibility_snapshots
+    (org_id, profile_id, marketplace_id, asin, ad_product, verdict, reasons,
+     acquired_at, retrieved_at, contract_version, payload_digest, receipt_id)
+  values
+    (v_org, v_profile, 'ATVPDKIKX0DER', 'B0RLS00001', 'SP', 'eligible', '[]'::jsonb,
+     now(), now(), 'product_eligibility:v1:fixture', repeat('b',64), v_eligibility_receipt);
+  insert into public.ads_validation_configurations
+    (org_id, profile_id, marketplace_id, resource, country_code, entity_type,
+     ad_product, content_digest, configuration, acquired_at, retrieved_at, receipt_id)
+  values
+    (v_org, v_profile, 'ATVPDKIKX0DER', 'campaigns', 'US', 'SELLER', 'SP',
+     repeat('c',64), '{"fixture":true}'::jsonb, now(), now(), v_validation_receipt);
+  insert into public.amazon_change_events
+    (id, org_id, profile_id, marketplace_id, source_namespace, source_event_key,
+     identity_quality, payload_digest, entity_type, entity_id, change_type,
+     occurred_at, retrieved_at, sanitized_payload, receipt_id)
+  values
+    (v_change_event, v_org, v_profile, 'ATVPDKIKX0DER', 'amazon_ads_change_history_v1',
+     repeat('d',64), 'derived', repeat('e',64), 'CAMPAIGN', 'c-1', 'BUDGET', now(), now(),
+     '{"fixture":true}'::jsonb, v_change_receipt);
+  insert into public.amazon_change_event_resolutions
+    (org_id, profile_id, event_id, resolved_entity_type, resolved_amazon_id)
+  values
+    (v_org, v_profile, v_change_event, 'campaign', 'c-1');
+  end if;
 
   if to_regclass('public.market_position_settings') is not null then
     insert into public.market_position_settings (org_id, profile_id) values (v_org, v_profile);

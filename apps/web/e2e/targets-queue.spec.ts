@@ -123,6 +123,7 @@ test('target stages an immutable change and review records approval without outb
     await captureThemes('empty-series');
     await page.getByRole('tab',{name:'Shelf',exact:true}).click();
     await expect(page.getByText('Not measured. No scoped listing observations are available.')).toBeVisible();
+    await expect(page.getByText("Product evidence is missing for this target's advertised ASINs.")).toBeVisible();
     await captureThemes('not-measured');
     const scope = { orgId, profileId: fixtureProfileId, marketplace: 'US' };
     const observedAt = new Date().toISOString();

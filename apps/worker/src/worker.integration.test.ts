@@ -2476,7 +2476,8 @@ describe.skipIf(!available)('worker + real Postgres', () => {
 
     const provisioner = new ScheduleProvisioner(store, 60_000, quietLogger);
     provisioner.start();
-    const expectedSchedules = 1 + 3 * DEFAULT_REPORT_TYPES.length;
+    const expectedCatalogueSchedules = 4;
+    const expectedSchedules = 1 + 3 * DEFAULT_REPORT_TYPES.length + expectedCatalogueSchedules;
     await waitFor(async () => {
       const [row] = await database.sql<{ n: string }[]>`
         select count(*) as n from public.sync_schedules where profile_id = ${profileId}
@@ -2489,9 +2490,16 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       select count(*) as n, count(distinct variant) as variants
         from public.sync_schedules where profile_id = ${profileId}
     `;
-    // One entity pass plus recent, restatement and comparison per report type.
+    // One entity pass, three variants per report type, and four disabled
+    // catalogue templates that still require an operator-completed payload.
     expect(Number(counts?.n)).toBe(expectedSchedules);
-    expect(Number(counts?.variants)).toBe(3);
+    expect(Number(counts?.variants)).toBe(3 + expectedCatalogueSchedules);
+    const [catalogue] = await database.sql<{ n: string; enabled: string }[]>`
+      select count(*) as n, count(*) filter (where enabled) as enabled
+        from public.sync_schedules
+       where profile_id = ${profileId} and variant like 'catalogue:%'
+    `;
+    expect(catalogue).toEqual({ n: '4', enabled: '0' });
 
     // Re-provisioning the same profile finds nothing to do rather than
     // duplicating: `variant` is in the scope key, so every row conflicts.

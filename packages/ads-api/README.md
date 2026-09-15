@@ -122,9 +122,15 @@ Do not assign an ad group's totals to a guessed asset or present generic `ACTIVE
 status as proof of program/marketplace eligibility, moderation approval or delivery.
 Missing, partial, rejected and pending states remain visible and fail closed.
 
-Product eligibility, brands/Stores, Asset Library registration/moderation and ad
-delivery need their own proven provider contracts before being offered in a creation
-workflow. SP-API retail/Brand Analytics data cannot be reconstructed from advertising
+Product Metadata v1, Product Eligibility v1, Validation Configurations v1 and
+Change History v1 are page or bounded-batch reads. Their worker sources remain
+disabled by default. Metadata and eligibility do not return provider observation
+timestamps, validation does not return a provider configuration version, and Change
+History does not return a provider event id. Arcana preserves those absences; a
+derived event fingerprint is never presented as an Amazon-issued id.
+
+Brands/Stores, Asset Library registration/moderation and ad delivery need their own
+proven provider contracts before being offered in a creation workflow. SP-API retail/Brand Analytics data cannot be reconstructed from advertising
 reports. Marketing Stream needs separate delivery infrastructure, subscription
 binding and counted provider-to-ledger translation; an HTTP client alone does not
 provide it.
@@ -452,3 +458,36 @@ rows, verify two-agency isolation and zero writes/approvals/execution cadences,
 then separately authorize collection schedules. Resolve conditional extension
 contracts before probing them. Provider-derived application remains a separate
 guarded action.
+## Catalogue and Amazon Change History
+
+The four clients in `src/catalogue.ts` use the public OpenAPI documents inspected
+on 2026-09-15. Fixtures in `src/catalogue.test.ts` are synthetic protocol examples;
+they do not verify live permissions or provider availability.
+
+| Delivery row | Pinned document under `https://d1y2lf8k3vrkfu.cloudfront.net/openapi/en-us/dest/` | SHA-256 |
+| --- | --- | --- |
+| catalog-46 | ProductSelector_prod_3p.json | f57ee28943b52097697ab74959ce827dd07a224f81c3b61ba241154a720343ff |
+| catalog-47 | Eligibility_prod_3p.json | f9e23e41e87582c50482e460bc210f59a8a77c740c7f58b479a10bbbede2ea83 |
+| catalog-51 | ValidationConfigurationsAPI_prod_3p.json | fec38640f4a6e8ff2558f4dc2da703b51679bec8d3c9afa083b4fd1e1870902a |
+| catalog-53 | Changehistory_prod_3p.json | a4944c16e893322b3e560452c33c3033db2c2f872c68a64b405404683a2bbc57 |
+
+All four use POST reads. Metadata accepts up to 300 ASINs and returns a cursor;
+eligibility accepts 50 ASINs and may return multiple SKU rows per ASIN. Validation
+uses separate campaign and targeting-clause endpoints, with explicit country,
+entity-type and ad-product contexts. Its schema response keys take precedence over
+the inconsistent descriptive prose. The provider has no configuration version
+field, so persistence caches content digests.
+
+Change History v1 uses 200-event pages and a bounded window within the documented
+90-day retention. It excludes SD and the v1.1 THEME event type. The pinned schema
+has no provider event ID or actor: the ledger labels its identity as derived from
+tenant scope, entity, change type and occurrence time. Different payloads under
+that key remain visible as conflicts. Timestamp units need bounded hosted
+verification; the worker accepts contemporary millisecond timestamps only.
+
+Metadata has no observation timestamp or inventory quantity in this contract.
+Retrieval and acquisition times remain separate from a null provider observation
+time. Missing members create unavailable evidence, and signed image URLs are
+excluded. Product eligibility never establishes asset moderation approval.
+All four source gates and provisioned schedules remain disabled by default;
+reporting recovery evidence and explicit source authorization are prerequisites.
