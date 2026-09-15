@@ -132,7 +132,7 @@ export async function loadGridRows(
   // server/client boundary.
   const queryLimit = limit + 1;
   const rankDays: GridPerformanceEvidence['rankDays'] = {};
-  const performanceRead = readGridPerformance(handle, options.orgId, options.profileId, options.period.start, options.period.end);
+  const performanceRead = readGridPerformance(handle, options.orgId, options.profileId, options.period.start, options.period.end, level);
   const loaders: Record<EntityLevel, () => Promise<GridRow[]>> = {
     campaigns: () => loadCampaigns(handle, options, queryLimit),
     ad_groups: () => loadAdGroups(handle, options, queryLimit),

@@ -56,16 +56,29 @@ it('persists refusal reasons while leaving prior facts visible as partial eviden
   const evidence = await readCoreReportEvidence(db, { orgId, profileId, families: ['spAdvertisedProduct'], startDate: p.startDate, endDate: p.endDate });
   expect(evidence[0]).toMatchObject({ status: 'partial', rowCount: 1, observedAt: '2026-09-03T00:00:00.000Z' });
 });
-it('provisions 72 disabled schedules once, verifies persisted identities, and enables no capability', async () => {
-  expect(await store.provisionCoreFamilySchedules(orgId, profileId)).toEqual({ offered: 72, written: 72, existing: 0 });
-  expect(await store.provisionCoreFamilySchedules(orgId, profileId)).toEqual({ offered: 72, written: 0, existing: 72 });
-  const rows = await db.sql`select enabled from public.sync_schedules where org_id=${orgId} and profile_id=${profileId} and job_type='report.request'`;
-  expect(rows).toHaveLength(72);
-  expect(rows.every((row) => row['enabled'] === false)).toBe(true);
+it('persists no schedules or jobs for absent capabilities', async () => {
+  expect(await store.provisionCoreFamilySchedules(orgId, profileId)).toEqual({ offered: 0, written: 0, existing: 0 });
+  const rows = await db.sql`select id from public.sync_schedules where org_id=${orgId} and profile_id=${profileId} and report_type::text=any(${CoreFeatureReportType.options})`;
+  expect(rows).toHaveLength(0);
   await db.sql`select * from public.enqueue_due_schedules(now())`;
   const jobs = await db.sql`select id from public.sync_jobs where org_id=${orgId} and profile_id=${profileId} and job_type='report.request' and payload->>'reportType'=any(${CoreFeatureReportType.options})`;
   expect(jobs).toHaveLength(0);
   expect(await store.coreReportCapability(orgId, profileId, 'spAdvertisedProduct')).toBeNull();
+});
+it('persists no schedules or jobs for explicitly disabled capabilities', async () => {
+  await db.sql`insert into public.report_family_capabilities(org_id,profile_id,family,marketplace,enabled) values(${orgId},${profileId},'spAdvertisedProduct','synthetic',false)`;
+  expect(await store.provisionCoreFamilySchedules(orgId, profileId)).toEqual({ offered: 0, written: 0, existing: 0 });
+  expect(await db.sql`select id from public.sync_schedules where org_id=${orgId} and profile_id=${profileId} and report_type::text=any(${CoreFeatureReportType.options})`).toHaveLength(0);
+  await db.sql`select * from public.enqueue_due_schedules(now())`;
+  expect(await db.sql`select id from public.sync_jobs where org_id=${orgId} and profile_id=${profileId} and payload->>'reportType'=any(${CoreFeatureReportType.options})`).toHaveLength(0);
+});
+it('provisions only an opted-in family and independently verifies its three disabled schedules', async () => {
+  await db.sql`update public.report_family_capabilities set enabled=true,status='eligible',recovery_gate_evidence='synthetic-recovery',observed_at='2026-09-01T00:00:00Z' where org_id=${orgId} and profile_id=${profileId} and family='spAdvertisedProduct'`;
+  expect(await store.provisionCoreFamilySchedules(orgId, profileId)).toEqual({ offered: 3, written: 3, existing: 0 });
+  expect(await store.provisionCoreFamilySchedules(orgId, profileId)).toEqual({ offered: 3, written: 0, existing: 3 });
+  const rows = await db.sql`select report_type::text,enabled from public.sync_schedules where org_id=${orgId} and profile_id=${profileId} and report_type::text=any(${CoreFeatureReportType.options})`;
+  expect(rows).toHaveLength(3);
+  expect(rows.every((row) => row['report_type'] === 'spAdvertisedProduct' && row['enabled'] === false)).toBe(true);
 });
 it('rolls back staged facts and coverage when the final ledger update fails', async () => {
   const p = await report('2026-09-06T00:00:00.000Z', [{ ...raw, cost: 999 }]);

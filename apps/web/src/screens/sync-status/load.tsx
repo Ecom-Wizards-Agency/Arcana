@@ -16,6 +16,7 @@ import type { ScreenParams } from '../types';
  */
 
 import { loadSyncStatus } from '../../data/sync-status';
+import { listProfiles } from '../../../app/_lib/profiles';
 
 interface Props {
   searchParams: Promise<{ profile?: string; }>;
@@ -35,8 +36,11 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   const org = context.active;
   if (!org) return null;
 
-  const status = await access.readSql((sql) => loadSyncStatus({ sql }, org.orgId, query.profile ?? null));
+  const profiles = await access.read((handle) => listProfiles(handle, org.orgId));
+  const selected = access.selectProfile(profiles, query.profile);
+  const profileId = selected?.id ?? null;
+  const status = await access.readSql((sql) => loadSyncStatus({ sql }, org.orgId, profileId));
   const today = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
-  const coreEvidence = query.profile ? await access.readSql((sql) => readCoreReportEvidence({ sql }, { orgId: org.orgId, profileId: query.profile!, families: CoreFeatureReportType.options, startDate: today, endDate: today, limit: 10 })) : [];
+  const coreEvidence = profileId ? await access.readSql((sql) => readCoreReportEvidence({ sql }, { orgId: org.orgId, profileId, families: CoreFeatureReportType.options, startDate: today, endDate: today, limit: 10 })) : [];
   return { view: 'ready' as const, props: { context, status, ...(coreEvidence.length ? { coreEvidence } : {}) } };
 }

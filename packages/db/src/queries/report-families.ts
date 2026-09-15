@@ -116,7 +116,7 @@ export async function promoteCoreReportWindow(handle: QueryHandle, raw: CoreRepo
 export async function readCoreReportFacts(handle: QueryHandle, input: { orgId: string; profileId: string; configuration: CoreReportConfiguration; startDate: string; endDate: string; limit?: number }) {
   const { configuration } = input;
   const limit = Math.min(Math.max(input.limit ?? 1000, 1), 50_000);
-  const rows = await handle.sql<{ row_data: CoreReportRow; observed_at: string }[]>`select row_data, observed_at from ${handle.sql(`public.${coreReportFactTable(configuration)}`)} where org_id=${input.orgId} and profile_id=${input.profileId} and family=${configuration.family} and variant=${coreReportVariant(configuration)} and date >= ${input.startDate} and period_end <= ${input.endDate} order by date, identity_hash limit ${limit + 1}`;
+  const rows = await handle.sql<{ row_data: CoreReportRow; observed_at: string }[]>`select row_data, observed_at from ${handle.sql(`public.${coreReportFactTable(configuration)}`)} where org_id=${input.orgId} and profile_id=${input.profileId} and family=${configuration.family} and variant=${coreReportVariant(configuration)} and date >= ${input.startDate} and period_end <= ${input.endDate} and (${configuration.timeUnit !== 'SUMMARY'} or (date=${input.startDate} and period_end=${input.endDate})) order by date, identity_hash limit ${limit + 1}`;
   return { rows: rows.slice(0, limit).map((row) => ({ ...CoreReportRow.parse(row.row_data), observedAt: new Date(row.observed_at).toISOString() })), rowCount: Math.min(rows.length, limit), truncated: rows.length > limit };
 }
 
@@ -124,14 +124,20 @@ export async function readCoreReportEvidence(handle: QueryHandle, input: { orgId
   const groups = await Promise.all(input.families.map(async (family) => {
     const spec = CORE_REPORT_FAMILIES[family];
     const configuration: CoreReportConfiguration = { version: 1, family, timeUnit: 'DAILY', format: 'GZIP_JSON', attributionGeneration: 'legacy', columns: ['date', ...spec.required, ...spec.optional, ...spec.defaultMetrics] };
-    const attempts = await handle.sql<{ configuration: CoreReportConfiguration }[]>`select distinct configuration from public.report_family_attempts where org_id=${input.orgId} and profile_id=${input.profileId} and configuration->>'family'=${family}`;
-    const configurations = attempts.length ? attempts.map((item) => item.configuration) : [configuration];
-    return Promise.all(configurations.map(async (configuration) => {
+    const attempts = await handle.sql<{ configuration: CoreReportConfiguration; refused_rows: number; observed_at: string }[]>`select configuration,refused_rows,observed_at from public.report_family_attempts where org_id=${input.orgId} and profile_id=${input.profileId} and configuration->>'family'=${family} order by observed_at desc,report_request_id`;
+    // Column order is not storage identity. Keep the latest attempt for each
+    // canonical variant, including refusals from equivalent reordered requests.
+    const variants = new Map<string, { configuration: CoreReportConfiguration; attempt?: typeof attempts[number] }>();
+    for (const attempt of attempts) {
+      const variant = coreReportVariant(attempt.configuration);
+      if (!variants.has(variant)) variants.set(variant, { configuration: attempt.configuration, attempt });
+    }
+    if (!variants.size) variants.set(coreReportVariant(configuration), { configuration });
+    return Promise.all([...variants.values()].map(async ({ configuration, attempt }) => {
     const facts = await readCoreReportFacts(handle, { ...input, configuration });
     const [coverage] = await handle.sql`select status, latest_loaded_date::text as through, observed_at from public.report_coverage where org_id=${input.orgId} and profile_id=${input.profileId} and report_type=${family} and grain=${coreReportGrain(configuration)} and source='amazon_reporting_v3'`;
-    const [periods] = await handle.sql`select count(*) as n from public.report_family_watermarks where org_id=${input.orgId} and profile_id=${input.profileId} and family=${family} and variant=${coreReportVariant(configuration)} and period_start>=${input.startDate} and period_end<=${input.endDate}`;
+    const [periods] = await handle.sql`select count(*) as n from public.report_family_watermarks where org_id=${input.orgId} and profile_id=${input.profileId} and family=${family} and variant=${coreReportVariant(configuration)} and period_start>=${input.startDate} and period_end<=${input.endDate} and (${configuration.timeUnit !== 'SUMMARY'} or (period_start=${input.startDate} and period_end=${input.endDate}))`;
     const days = configuration.timeUnit === 'SUMMARY' ? 1 : (Date.parse(input.endDate) - Date.parse(input.startDate)) / 86_400_000 + 1;
-    const [attempt] = await handle.sql`select refused_rows,observed_at from public.report_family_attempts where org_id=${input.orgId} and profile_id=${input.profileId} and configuration=${JSON.stringify(configuration)}::jsonb order by observed_at desc limit 1`;
     const partialAttempt = Number(attempt?.['refused_rows'] ?? 0) > 0 && (!coverage?.['observed_at'] || Date.parse(String(attempt?.['observed_at'])) >= Date.parse(String(coverage['observed_at'])));
     const status: CoreReportEvidence['status'] = partialAttempt ? 'partial' : !coverage && facts.rowCount === 0 ? 'unmeasured' : coverage && String(coverage['through']) < input.endDate ? 'stale' : facts.truncated || !coverage || coverage['status'] !== 'complete' || Number(periods?.['n']) !== days ? 'partial' : 'measured';
     return { family, grain: spec.grain, variant: coreReportVariant(configuration), status, rows: facts.rows.map(({ observedAt: _observedAt, ...row }) => row), rowCount: facts.rowCount, truncated: facts.truncated, observedAt: coverage?.['observed_at'] == null ? null : new Date(coverage['observed_at'] as string).toISOString() };

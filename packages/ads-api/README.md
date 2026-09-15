@@ -269,7 +269,9 @@ from legacy facts, but provider admission refuses it until its exact column
 contract is pinned; evidence alone cannot relabel a legacy request. No local test supplies
 hosted authorization. The Unified sidecar does not admit these variants.
 
-`provisionCoreFamilySchedules` creates three disabled schedules per variant:
+`provisionCoreFamilySchedules` creates three disabled schedules only for each
+explicitly enabled profile/family capability. Missing or disabled capabilities
+produce zero persisted schedules. The eligible family templates contain:
 three recent calendar days daily, at most 32 calendar days weekly for restatement,
 and a bounded weekly comparison window. The maximum *date difference* and oldest
 permitted date are validated separately. SB purchased-product retention never

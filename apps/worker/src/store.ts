@@ -797,7 +797,10 @@ export class PostgresWorkerStore implements WorkerStore {
   }
 
   async provisionCoreFamilySchedules(orgId: string, profileId: string): Promise<{ offered: number; written: number; existing: number }> {
-    const schedules = coreFamilySchedules();
+    const capabilities = await this.handle.sql<{ family: string }[]>`select family from public.report_family_capabilities where org_id=${orgId} and profile_id=${profileId} and enabled=true`;
+    const enabled = new Set(capabilities.map((row) => row.family));
+    const schedules = coreFamilySchedules().filter((spec) => enabled.has(spec.reportType));
+    if (!schedules.length) return { offered: 0, written: 0, existing: 0 };
     let written = 0;
     for (const spec of schedules) {
       const rows = await this.handle.sql`insert into public.sync_schedules (org_id,profile_id,job_type,report_type,variant,cadence,lookback_days,window_offset_days,payload,enabled) values (${orgId},${profileId},'report.request',${spec.reportType}::public.report_type,${spec.variant},${spec.cadence}::interval,${spec.lookbackDays},${spec.windowOffsetDays},${JSON.stringify(spec.payload)}::jsonb,false) on conflict (profile_id,job_type,report_type,variant) do nothing returning id`;
