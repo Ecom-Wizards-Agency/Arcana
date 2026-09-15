@@ -109,6 +109,24 @@ export async function persistCatalogueCollection(handle: QueryHandle, raw: Persi
       pages: input.pages, sourceRows: input.sourceRows, parsedRows: input.parsedRows, refusedRows: input.refusedRows,
       duplicates: input.duplicates, canonicalRows, writtenRows, existingRows, verifiedRows: reconciledRows });
     if (!replayed) await sql`update public.ads_catalogue_source_receipts set counts=${JSON.stringify(counts)}::jsonb where id=${receiptId}`;
+    // Reverification repairs only this receipt's failure marker; coverage and source age stay immutable.
+    // A newer partial receipt or unfinished acquisition may still own the visible failure.
+    if (input.checkpoint !== false && replayed && input.refusedRows === 0 && input.finalCursor === null) await sql`
+      update public.ads_catalogue_source_checkpoints checkpoint set cursor_failure=null,updated_at=now()
+      where checkpoint.org_id=${input.scope.orgId} and checkpoint.profile_id=${input.scope.profileId}
+        and checkpoint.marketplace_id=${input.scope.marketplaceId} and checkpoint.family=${input.family}
+        and checkpoint.selector_key=${input.selectorKey} and checkpoint.receipt_id=${receiptId}
+        and checkpoint.source_observed_at=${input.acquiredAt} and checkpoint.cursor_failure is not null
+        and not exists(select 1 from public.ads_catalogue_source_receipts newer
+          where newer.org_id=checkpoint.org_id and newer.profile_id=checkpoint.profile_id
+            and newer.marketplace_id=checkpoint.marketplace_id and newer.family=checkpoint.family
+            and newer.selector_key=checkpoint.selector_key and newer.acquired_at>=${input.acquiredAt}
+            and newer.id<>${receiptId})
+        and not exists(select 1 from public.ads_catalogue_acquisitions newer
+          where newer.org_id=checkpoint.org_id and newer.profile_id=checkpoint.profile_id
+            and newer.marketplace_id=checkpoint.marketplace_id and newer.family=checkpoint.family
+            and newer.selector_key=checkpoint.selector_key and newer.acquired_at>=${input.acquiredAt}
+            and newer.final_receipt_id is distinct from ${receiptId}::uuid)`;
     if (input.checkpoint !== false && !replayed && input.refusedRows === 0 && input.finalCursor === null) await sql`insert into public.ads_catalogue_source_checkpoints(org_id,profile_id,marketplace_id,family,selector_key,covered_from,covered_through,source_observed_at,receipt_id,cursor,cursor_failure)
       values(${input.scope.orgId},${input.scope.profileId},${input.scope.marketplaceId},${input.family},${input.selectorKey},${input.windowStart},${input.windowEnd},${input.acquiredAt},${receiptId},${input.finalCursor},null)
       on conflict(profile_id,marketplace_id,family,selector_key) do update set covered_from=least(ads_catalogue_source_checkpoints.covered_from,excluded.covered_from),covered_through=excluded.covered_through,source_observed_at=excluded.source_observed_at,receipt_id=excluded.receipt_id,cursor=excluded.cursor,cursor_failure=null,updated_at=now()

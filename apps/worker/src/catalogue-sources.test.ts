@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ChangeHistoryPage, ProductEligibilityResult, ValidationResult } from '@wizard-ads/ads-api';
-import { catalogueRowIdentity, readProductEvidence, readAmazonObservedChanges, upsertReportCoverage, type persistCataloguePage, type resumeCatalogueAcquisition, type PersistCatalogueCollectionInput, type CatalogueAcquisitionState, type QueryHandle } from '@wizard-ads/db';
+import { catalogueRowIdentity, readProductEvidence, readAmazonObservedChanges, upsertReportCoverage, persistCataloguePage, type resumeCatalogueAcquisition, type PersistCatalogueCollectionInput, type CatalogueAcquisitionState, type QueryHandle } from '@wizard-ads/db';
 import { createTestDatabase } from '@wizard-ads/db/testing';
 import type { JobPayload } from '@wizard-ads/shared';
 import type { CatalogueAdsClient, AdsProfileContext } from './ads-api.js';
@@ -239,6 +239,40 @@ it('resumes durable pages after provider crashes and republishes coverage after 
     expect(result).toMatchObject({pages:2,sourceRows:2,loadedRows:2,verifiedLoadedRows:2,writtenRows:0,existingRows:2,observedAt:new Date(progress!.acquired_at).toISOString()});
     const coverage=await database.sql`select loaded_rows,status,observed_at from public.report_coverage where org_id=${scope.orgId} and report_type='amazon_change_history'`;
     expect(coverage).toHaveLength(1);expect(coverage[0]!['status']).toBe('complete');expect(Number(coverage[0]!['loaded_rows'])).toBe(2);
+  } finally {await database.drop();}
+},120_000);
+
+it('clears post-persistence cursor failure on a verified replay with no new provider calls',async()=>{
+  const database=await createTestDatabase('catalogue_status_replay');
+  try {
+    const [tenant]=await database.sql<{id:string}[]>`select app.seed_tenant_fixture('catalogue-status-replay',${orgId}::uuid) as id`;
+    const [stored]=await database.sql<{id:string}[]>`select id from public.ad_profiles where org_id=${tenant!.id} limit 1`;
+    const scope={orgId:tenant!.id,profileId:stored!.id,marketplaceId};
+    const payload={...scope,type:'ads.product_metadata.sync' as const,sourceEnabled:true as const,asins:['B000TEST01'],adProduct:'SP' as const};
+    const input=context(payload);input.profile={...profile,id:scope.profileId,orgId:scope.orgId};
+    const client=fakeClient();let fail=true,clock=0;
+    const runner=new CatalogueSourceRunner({handle:database,client,deploymentEnabled:()=>true,isEnabled:async()=>true,
+      now:()=>new Date(Date.parse('2026-09-15T00:00:00.000Z')+clock++*1000),
+      persistPage:async(handle,page)=>{
+        const state=await persistCataloguePage(handle,page);
+        if(state.result && fail){fail=false;throw new Error('synthetic crash after final persistence');}
+        return state;
+      }});
+    await expect(runner.execute(await runner.plan(input))).rejects.toThrow('crash after final persistence');
+    expect(client.getProductMetadataPage).toHaveBeenCalledTimes(1);
+    const checkpoint=async()=>{
+      const rows=await database.sql`select receipt_id,covered_from,covered_through,source_observed_at,cursor,cursor_failure
+        from public.ads_catalogue_source_checkpoints where org_id=${scope.orgId} and profile_id=${scope.profileId}
+        and marketplace_id=${scope.marketplaceId} and family='product_metadata'`;
+      expect(rows).toHaveLength(1);return rows[0]!;
+    };
+    const failed=await checkpoint();
+    expect(failed['cursor_failure']).toBe('catalogue source failed (Error)');
+    const replay=await runner.execute(await runner.plan({...input,job:{...input.job,attempts:2}}));
+    expect(client.getProductMetadataPage).toHaveBeenCalledTimes(1);
+    expect(replay).toMatchObject({writtenRows:0,existingRows:1,verifiedLoadedRows:1,
+      observedAt:new Date(failed['source_observed_at'] as Date).toISOString()});
+    expect(await checkpoint()).toEqual({...failed,cursor_failure:null});
   } finally {await database.drop();}
 },120_000);
 
