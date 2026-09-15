@@ -1,11 +1,12 @@
 import { mkdtemp, writeFile, symlink, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import type { StoredCollectorExport } from '@wizard-ads/shared';
 import { readCollectorExport } from './exports.js';
 let root:string;
 const ref:StoredCollectorExport={id:'00000000-0000-4000-8000-000000000003',scope:{orgId:'00000000-0000-4000-8000-000000000001',profileId:'00000000-0000-4000-8000-000000000002',marketplace:'US'},family:'prompts',enabled:true,objectKey:'export.json'};
-beforeAll(async()=>{const scratch=process.env['WP_SCRATCH'];if(!scratch)throw new Error('WP_SCRATCH required');root=await mkdtemp(join(scratch,'tmp','exports-'));});
+beforeAll(async()=>{const scratch=process.env['WP_SCRATCH'];root=await mkdtemp(join(scratch?join(scratch,'tmp'):tmpdir(),'exports-'));});
 afterAll(async()=>{if(root)await rm(root,{recursive:true,force:true});});
 it('handles missing files and preserves content fingerprints',async()=>{
   expect(await readCollectorExport(root,ref)).toBeNull();
