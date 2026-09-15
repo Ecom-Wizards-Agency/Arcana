@@ -248,10 +248,27 @@ describe.skipIf(!available)('SP write worker with real ledger and fake HTTP prov
 
   it('refuses a conflicting restore mixed batch row before mutation while observing the unchanged row', async () => {
     await restoreLegacySource();
+    const conflictingActions = preview.plan.actions.filter(action =>
+      action.routeKey === 'sp.v3.keywords.update' && action.entity.keywordId === 'kw-1');
+    expect(conflictingActions).toHaveLength(1);
+    const conflictingAction = conflictingActions[0]!;
     providerBids.set('kw-1', 0.8);
     const worker = loop();
     expect(await worker.tick()).toEqual({ kind: 'completed', attemptedCalls: 1 });
     expect(attemptedKeywords).toEqual([['kw-2']]);
+    const refusals = await database.sql`select action_id,action_fingerprint,reason::text
+      from public.sp_write_predispatch_dispositions where org_id=${orgId} and profile_id=${profileId}
+        and plan_id=${preview.plan.id} and execution_id=${admission.operation.executionId}`;
+    expect(refusals).toEqual([{ action_id: conflictingAction.actionId,
+      action_fingerprint: conflictingAction.fingerprint, reason: 'stale_expected_state' }]);
+    const positions = await database.sql<{ action_id: string }[]>`select action_id
+      from public.sp_write_provider_call_positions where org_id=${orgId} and profile_id=${profileId}
+        and plan_id=${preview.plan.id} and execution_id=${admission.operation.executionId}`;
+    expect(positions).toHaveLength(1);
+    expect(positions.map(position => position.action_id)).not.toContain(conflictingAction.actionId);
+    expect(positions.map(position => position.action_id)).toEqual(preview.plan.actions
+      .filter(action => action.routeKey === 'sp.v3.keywords.update' && action.entity.keywordId === 'kw-2')
+      .map(action => action.actionId));
     expect(providerBids.get('kw-1')).toBe(0.8);
     expect(await worker.tick()).toEqual({ kind: 'completed', attemptedCalls: 0 });
     expect((await detail()).snapshot.accounting).toMatchObject({ approvedRows: 2, refusedBeforeDispatch: 1,

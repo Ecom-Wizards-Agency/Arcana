@@ -273,9 +273,10 @@ begin
        or v_policy ->> 'applyRowId' is distinct from v_source ->> 'applyRowId'
        or v_policy ->> 'recommendationId' is distinct from v_source ->> 'recommendationId'
        or v_policy ->> 'runId' is distinct from v_source ->> 'runId'
-       or v_run.strategy_snapshot is null or v_run.strategy_goal is null
-       or v_policy ->> 'strategySnapshotText' is distinct from v_run.strategy_snapshot::text
-       or v_policy ->> 'strategyGoal' is distinct from v_run.strategy_goal
+       or (case when v_run.scope_version=2 then v_run.execution_snapshot is null or v_run.status<>'succeeded'
+         else v_run.strategy_snapshot is null or v_run.strategy_goal is null end)
+       or v_policy ->> 'strategySnapshotText' is distinct from (case when v_run.scope_version=2 then v_run.execution_snapshot else v_run.strategy_snapshot end)::text
+       or v_policy ->> 'strategyGoal' is distinct from (case when v_run.scope_version=2 then 'one_time' else v_run.strategy_goal end)
        or v_policy ->> 'groupId' is distinct from v_run.group_id::text
        or v_policy ->> 'groupSnapshotText' is distinct from v_run.group_snapshot::text
        or v_action ->> 'routeKey' is distinct from 'sp.v3.keywords.update'
@@ -291,6 +292,9 @@ begin
          'old', v_row.old_value, 'new', v_row.new_value, 'name', v_row.entity_name,
          'clicks', v_row.clicks, 'revenue', v_row.revenue)) then
       raise exception 'SP preview source or policy changed' using errcode = '55000',detail='source_changed';
+    end if;
+    if v_run.scope_version=2 then
+      perform app.assert_optimizer_export_source(v_org,v_profile,v_batch.id);
     end if;
     perform 1 from public.entity_changes ec where ec.org_id=v_org and ec.profile_id=v_profile
       and ec.apply_row_id=v_row.id order by ec.id for share;
