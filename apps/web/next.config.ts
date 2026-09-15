@@ -60,7 +60,7 @@ const nextConfig: NextConfig = {
     // loads its schemas and metric helpers without unrelated engine modules.
     optimizePackageImports: ['@wizard-ads/shared', '@wizard-ads/core', '@wizard-ads/ui'],
     ...(process.env['WIZARD_ADS_E2E_AUTH'] === '1'
-      ? { devMemoryThresholdRestart: false }
+      ? { devMemoryThresholdRestart: false, webpackMemoryOptimizations: true }
       : {}),
   },
   webpack: (config, { isServer, dev }) => {
