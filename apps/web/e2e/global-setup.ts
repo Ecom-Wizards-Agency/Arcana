@@ -363,6 +363,8 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock, fixturePro
         DATABASE_URL: connectionString,
         WIZARD_ADS_APP_URL: BASE_URL,
         WIZARD_ADS_E2E_AUTH: '1',
+        // Brand lens ships behind its rollout flag (off in production); the suites exercise it.
+        WIZARD_ADS_BRAND_LENS_ENABLED: '1',
         GOTO_LINK_SIGNING_SECRET: randomBytes(32).toString('hex'),
         AMAZON_LWA_CLIENT_ID: 'amzn1.application-oa2-client.e2e',
         AMAZON_OAUTH_REDIRECT_URI: `${BASE_URL}/api/amazon/oauth/callback`,
