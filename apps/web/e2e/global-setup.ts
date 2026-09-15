@@ -89,6 +89,9 @@ export async function runE2EGlobalSetup<Mock, Server>(
 }
 
 export default async function globalSetup(): Promise<void> {
+  // Brand lens ships behind its rollout flag (off in production). Set it for this process so the
+  // spec expectations (nav links from the registry) and the dev server (below) agree.
+  process.env['WIZARD_ADS_BRAND_LENS_ENABLED'] ??= '1';
   await runE2EGlobalSetup({
     installTeardown: (teardown) => {
       (globalThis as Record<string, unknown>)['__wizardAdsE2E'] = teardown;
