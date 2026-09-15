@@ -1,0 +1,10 @@
+import type { BuilderScreenData } from '../campaigns/load';
+import { CampaignPage, DetailsTable, Notice } from '../campaigns/ui';
+export default function EligibilityScreen({ data }: { data: BuilderScreenData }) {
+  const ready = data.view === 'ready';
+  const sources = [['Daily budget meets the marketplace minimum', 'Invalid daily budget', 'Marketplace rules', ready && data.context.budget !== null], ['Campaign name is not already in use', 'Duplicate campaign names', 'Campaign mirror', ready], ['Name matches your saved convention', 'Names that cannot be read back', 'Your naming preset', ready && data.context.naming !== null], ['Bid × placement multiplier stays under the ceiling', 'Excessive compounded exposure', 'Your exposure ceiling', ready && data.context.exposureCeiling !== null], ['Ad type supports the control you set', 'Unsupported controls', 'Capability snapshot', ready], ['Product is in stock', 'Advertising unavailable inventory', 'Listing snapshots', false], ['Product holds the Buy Box', 'Advertising without the Buy Box', 'Listing snapshots', false], ['Listing is not suppressed', 'Advertising a suppressed listing', 'Listing snapshots', false], ['Creative is approved by Amazon', 'Using an unapproved creative', 'Moderation status', false]] as const;
+  return <CampaignPage title="Eligibility before creation" subtitle="Available checks and their sources. Save a draft to validate its exact values.">
+    {!ready && <Notice>{data.message}</Notice>}<DetailsTable headings={['Check', 'What it prevents', 'Can we run it', 'Where it comes from']} rows={sources.map(([label, prevents, source, runnable]) => [label, prevents, runnable ? 'Yes · Not yet validated' : 'Not measured', source])} />
+    <Notice>A check we cannot run is shown as unavailable, never as passed. Listing and moderation checks are not measured. They remain listed at confirmation.</Notice><a href={ready ? `/campaigns?profile=${data.context.profile.id}` : '/campaigns'}>Return to builder</a>
+  </CampaignPage>;
+}

@@ -10,7 +10,7 @@ export const descriptor = {
   guard: { "kind": "requested", "canonicalProfile": true },
   prefetch: "cheap",
   rollout: { "enabled": true },
-  states: ["loading", "error"],
+  states: ["loading", "error", "empty", "gated", "not-measured"],
   entry: "request-message",
   specs: [{ "file": "campaigns.spec.ts", "suite": "tags-goto" }],
   load: (actor, params) => import('./load').then((module) => module.load(actor, params)),

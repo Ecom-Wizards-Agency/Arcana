@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AmazonId, Region } from './primitives.js';
+import { AmazonId, Region, Uuid } from './primitives.js';
 
 /** Amazon scope; server authentication must resolve this from the operator's profile. */
 export const AssetLibraryScope = z.object({
@@ -43,6 +43,31 @@ export const AssetLibraryObservation = z.object({
   specChecks: AssetLibrarySpecChecks,
 }).strict();
 export type AssetLibraryObservation = z.infer<typeof AssetLibraryObservation>;
+
+/** Display metadata never substitutes for a selected Amazon identity or moderation. */
+export const AssetLibrarySnapshotAsset = z.object({
+  observation: AssetLibraryObservation,
+  durationSeconds: z.number().nonnegative().nullable(),
+  thumbnailUrl: z.url().nullable(), thumbnailExpiresAt: z.iso.datetime().nullable(),
+  usedInCampaignIds: z.array(AmazonId),
+}).strict();
+export type AssetLibrarySnapshotAsset = z.infer<typeof AssetLibrarySnapshotAsset>;
+export const AssetLibrarySnapshot = z.object({
+  id: Uuid, profileId: Uuid, observedAt: z.iso.datetime(), assets: z.array(AssetLibrarySnapshotAsset),
+  sourceRows: z.number().int().nonnegative(), persistedRows: z.number().int().nonnegative(),
+}).strict().superRefine((value, ctx) => {
+  if (value.sourceRows !== value.assets.length || value.persistedRows !== value.assets.length
+    || new Set(value.assets.map((asset) => JSON.stringify(asset.observation.identity))).size !== value.assets.length) {
+    ctx.addIssue({ code: 'custom', message: 'Asset snapshot rows must reconcile' });
+  }
+});
+export type AssetLibrarySnapshot = z.infer<typeof AssetLibrarySnapshot>;
+
+export const UsedCampaignCreative = z.object({ id: Uuid, amazonAssetId: AmazonId.nullable(), name: z.string().nullable(), kind: z.string(), usedInCampaignIds: z.array(AmazonId) }).strict();
+export type UsedCampaignCreative = z.infer<typeof UsedCampaignCreative>;
+
+export const AssetLibrarySearchJob = z.object({ type: z.literal('asset-library.search'), orgId: Uuid, profileId: Uuid }).strict();
+export type AssetLibrarySearchJob = z.infer<typeof AssetLibrarySearchJob>;
 
 export const AssetLibrarySearchRequest = z.object({
   text: z.string().optional(),

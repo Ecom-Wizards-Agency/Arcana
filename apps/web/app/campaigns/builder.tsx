@@ -760,7 +760,7 @@ export function CampaignBuilder({
                   disabled={busy !== null || preview?.exportable !== true}
                   onClick={() => void request('xlsx')}
                 >
-                  {busy === 'xlsx' ? 'Building…' : 'Download bulksheet'}
+                  {busy === 'xlsx' ? 'Building…' : 'Export bulk sheet'}
                 </Button>
                 <span className="wa-hint">Manual upload file · no Amazon API write</span>
               </div>

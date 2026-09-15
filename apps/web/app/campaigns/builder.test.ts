@@ -86,7 +86,7 @@ describe('Campaign Builder guided modes', () => {
     expect(button(host, 'Campaign settings').getAttribute('aria-pressed')).toBe('true');
     expect((host.querySelector('[data-testid="campaign-builder-advanced"]') as HTMLDetailsElement).open).toBe(false);
     expect(host.textContent).toContain('Neither action changes Amazon');
-    expect(button(host, 'Download bulksheet').disabled).toBe(true);
+    expect(button(host, 'Export bulk sheet').disabled).toBe(true);
   });
 
   it('validates guided fields before making a request', async () => {
@@ -123,7 +123,7 @@ describe('Campaign Builder guided modes', () => {
       expect.stringContaining('Archive'),
       expect.stringContaining('Create'),
     ]);
-    expect(button(host, 'Download bulksheet').disabled).toBe(false);
+    expect(button(host, 'Export bulk sheet').disabled).toBe(false);
   });
 
   it('switches to CREATE recipes and updates the live engine name preview', () => {

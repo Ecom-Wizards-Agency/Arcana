@@ -3,10 +3,13 @@
  * The only outbound artifact is a manual Bulk Operations workbook.
  */
 import { expect, test } from '@playwright/test';
+import { captureCampaignStates } from './support/campaign-screenshots';
+import { verifyCampaignDraftFlow } from './support/campaign-draft-flow';
 
-test('guided create previews every row and exports a workbook without an Amazon action', async ({ page }) => {
-  await page.goto('/campaigns');
-  await expect(page.getByRole('heading', { name: 'Campaign Builder', exact: true })).toBeVisible();
+test('guided create previews every row and exports a workbook without an Amazon action', async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  await page.goto('/campaigns/update');
+  await expect(page.getByRole('heading', { name: 'Update campaigns', exact: true })).toBeVisible();
   await expect(page.getByText('Neither action changes Amazon')).toBeVisible();
 
   await page.getByRole('tab', { name: 'Create new' }).click();
@@ -27,8 +30,10 @@ test('guided create previews every row and exports a workbook without an Amazon 
 
   const [download] = await Promise.all([
     page.waitForEvent('download'),
-    page.getByRole('button', { name: 'Download bulksheet' }).click(),
+    page.getByRole('button', { name: 'Export bulk sheet' }).click(),
   ]);
   expect(download.suggestedFilename()).toMatch(/\.xlsx$/);
   await expect(page.getByText('Manual upload file · no Amazon API write')).toBeVisible();
+  await verifyCampaignDraftFlow(page);
+  await captureCampaignStates(page, testInfo);
 });
