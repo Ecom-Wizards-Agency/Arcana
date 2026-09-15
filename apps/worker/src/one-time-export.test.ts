@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { decideRecommendations, exportAcceptedRecommendations, getExportBatch } from '@wizard-ads/db';
+import {
+  decideRecommendationsForActor, exportAcceptedRecommendationsForActor, getExportBatch, withAuthenticatedOrgEditor,
+} from '@wizard-ads/db';
 import { asActor, asServiceRole, asUser, createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
 import type { OneTimeRpcConfiguration } from '@wizard-ads/shared';
 import { PostgresRecommendationRunStore } from './recommendations-run.js';
@@ -10,7 +12,7 @@ const revision = 'b'.repeat(40);
 const workerId = 'one-time-export-proof';
 const refusal = 'One-time preview export awaits observation support.';
 const configuration: OneTimeRpcConfiguration = {
-  version: 1, method: 'rpc', targetAcos: 0.37,
+  version: 1, method: 'sp.reference-efficiency', targetAcos: 0.37,
   bidFloor: 0.11, bidCeiling: 4.3, bidIncreaseCap: 0.23, bidDecreaseCap: 0.41,
   window: { start: '2026-08-01', end: '2026-08-26' },
 };
@@ -100,10 +102,10 @@ describe.skipIf(!available)('one-time recommendations remain reviewable before o
   afterEach(async () => { await database?.drop(); });
 
   async function review(decision: 'accepted' | 'dismissed') {
-    // The web review boundary performs the audited write with its server credential.
-    expect(await asServiceRole(database, async (sql) => decideRecommendations({ sql }, {
-      orgId, ids: [recommendationId], actorId, decision, note: 'Synthetic review decision.',
-    }))).toEqual({ updated: 1, refused: [] });
+    expect(await withAuthenticatedOrgEditor(database, { orgId, userId: actorId }, (context) =>
+      decideRecommendationsForActor(context, {
+        ids: [recommendationId], decision, note: 'Synthetic review decision.',
+      }))).toEqual({ updated: 1, refused: [], unique: 1, duplicates: 0, matched: 1, unmatched: 0 });
   }
 
   async function state() {
@@ -137,10 +139,11 @@ describe.skipIf(!available)('one-time recommendations remain reviewable before o
 
   it('refuses the transactional export with zero batch, row, audit or recommendation side effects', async () => {
     const before = await state();
-    await expect(exportAcceptedRecommendations(database, {
-      orgId, profileId, runId, ids: [recommendationId], tag: 'one-time-refused', optGroup: 'synthetic',
-      lever: 'bid-down', note: 'Synthetic export attempt.', actorId,
-    })).rejects.toThrow(refusal);
+    await expect(withAuthenticatedOrgEditor(database, { orgId, userId: actorId }, (context) =>
+      exportAcceptedRecommendationsForActor(context, {
+        profileId, runId, ids: [recommendationId], tag: 'one-time-refused', optGroup: 'synthetic',
+        lever: 'bid-down', note: 'Synthetic export attempt.',
+      }))).rejects.toThrow(refusal);
     expect(await state()).toEqual(before);
     expect(await database.sql`select count(*)::integer as count from public.apply_batches where org_id = ${orgId}::uuid and tag = 'one-time-refused'`)
       .toEqual([{ count: 0 }]);
@@ -149,6 +152,12 @@ describe.skipIf(!available)('one-time recommendations remain reviewable before o
   it('refuses direct exported and applied status updates by an authenticated owner', async () => {
     const before = await state();
     await asUser(database, actorId, async (sql) => {
+      for (const status of ['exported', 'applied']) {
+        await expect(sql`update public.recommendations set status = ${status}::public.recommendation_status where id = ${recommendationId}::uuid`)
+          .rejects.toMatchObject({ code: '42501' });
+      }
+    });
+    await asServiceRole(database, async (sql) => {
       for (const status of ['exported', 'applied']) {
         await expect(sql`update public.recommendations set status = ${status}::public.recommendation_status where id = ${recommendationId}::uuid`)
           .rejects.toMatchObject({ code: '23514', message: refusal });
@@ -196,7 +205,11 @@ describe.skipIf(!available)('one-time recommendations remain reviewable before o
     const artifact = await getExportBatch(database, { orgId, batchId });
     expect(artifact).not.toBeNull();
     expect(artifact?.proposals).toEqual([]);
-    expect(error).toMatchObject({ code: '23514', message: refusal });
+    expect(error).toMatchObject({ code: '42501' });
+    await asServiceRole(database, async (sql) => {
+      await expect(sql`update public.recommendations set export_batch_id = ${batchId}::uuid where id = ${recommendationId}::uuid`)
+        .rejects.toMatchObject({ code: '23514', message: refusal });
+    });
     expect(await state()).toEqual(before);
   });
 
@@ -206,6 +219,10 @@ describe.skipIf(!available)('one-time recommendations remain reviewable before o
     `;
     expect(legacyRuns).toHaveLength(1);
     await asUser(database, actorId, async (sql) => {
+      await expect(sql`update public.recommendations set run_id = ${legacyRuns[0]!.id}::uuid where id = ${recommendationId}::uuid returning run_id`)
+        .rejects.toMatchObject({ code: '42501' });
+    });
+    await asServiceRole(database, async (sql) => {
       await expect(sql`update public.recommendations set run_id = ${legacyRuns[0]!.id}::uuid where id = ${recommendationId}::uuid returning run_id`)
         .rejects.toThrow(/one-time|immutable|identity/i);
     });
@@ -220,23 +237,40 @@ describe.skipIf(!available)('one-time recommendations remain reviewable before o
       where recommendation.org_id = ${orgId}::uuid and run.scope_version = 1
     `;
     expect(legacy).toHaveLength(1);
-    const batchId = await emptyBatch();
+    const exported = await withAuthenticatedOrgEditor(database, { orgId, userId: actorId }, async (context) => {
+      expect(await decideRecommendationsForActor(context, {
+        ids: [legacy[0]!.id], decision: 'accepted', note: 'Synthetic legacy review.',
+      })).toEqual({ updated: 1, refused: [], unique: 1, duplicates: 0, matched: 1, unmatched: 0 });
+      return exportAcceptedRecommendationsForActor(context, {
+        profileId, runId: legacy[0]!.run_id, ids: [legacy[0]!.id], tag: 'legacy-lineage',
+        optGroup: 'synthetic', lever: 'bid-down', note: 'Synthetic lineage export.',
+      });
+    });
+    expect(exported.exported).toBe(1);
+    expect(exported.rows).toHaveLength(1);
+    expect(exported.skipped).toEqual([]);
     const links = await database.sql<{ id: string }[]>`
-      insert into public.apply_rows
-        (batch_id, org_id, profile_id, recommendation_id, entity_type, entity_id, field, old_value, new_value)
-      values (${batchId}::uuid, ${orgId}::uuid, ${profileId}::uuid, ${legacy[0]!.id}::uuid,
-        'keyword', 'kw-1', 'bid', '0.9'::jsonb, '0.7'::jsonb) returning id
+      select id from public.apply_rows
+      where batch_id = ${exported.batchId}::uuid and recommendation_id = ${legacy[0]!.id}::uuid
     `;
     expect(links).toHaveLength(1);
     await asUser(database, actorId, async (sql) => {
-      await sql`update public.recommendations set status = 'exported', export_batch_id = ${batchId}::uuid where id = ${legacy[0]!.id}::uuid`;
       await expect(sql`update public.recommendations set run_id = ${runId}::uuid where id = ${legacy[0]!.id}::uuid`)
-        .rejects.toThrow(/one-time|immutable|identity/i);
-      // Clearing the row's export flags must not conceal the existing apply-row lineage.
-      await sql`update public.recommendations set status = 'accepted', export_batch_id = null where id = ${legacy[0]!.id}::uuid`;
-      await expect(sql`update public.recommendations set run_id = ${runId}::uuid where id = ${legacy[0]!.id}::uuid returning run_id`)
-        .rejects.toThrow(/one-time|immutable|identity/i);
+        .rejects.toMatchObject({ code: '42501' });
+      await expect(sql`update public.recommendations set status = 'accepted', export_batch_id = null where id = ${legacy[0]!.id}::uuid`)
+        .rejects.toMatchObject({ code: '42501' });
     });
+    await asServiceRole(database, async (sql) => {
+      await expect(sql`update public.recommendations set run_id = ${runId}::uuid where id = ${legacy[0]!.id}::uuid`)
+        .rejects.toThrow(/one-time|immutable|identity|frozen/i);
+      // Frozen export identity survives even a service attempt to hide its lineage.
+      await expect(sql`update public.recommendations set status = 'accepted', export_batch_id = null where id = ${legacy[0]!.id}::uuid`)
+        .rejects.toMatchObject({ code: '55000', message: 'recommendation export is frozen' });
+      await expect(sql`update public.recommendations set run_id = ${runId}::uuid where id = ${legacy[0]!.id}::uuid returning run_id`)
+        .rejects.toThrow(/one-time|immutable|identity|frozen/i);
+    });
+    expect(await database.sql`select run_id, status::text, export_batch_id from public.recommendations where id = ${legacy[0]!.id}::uuid`)
+      .toEqual([{ run_id: legacy[0]!.run_id, status: 'exported', export_batch_id: exported.batchId }]);
     expect(await database.sql`
       select run.scope_version from public.apply_rows apply_row
       join public.recommendations recommendation on recommendation.id = apply_row.recommendation_id

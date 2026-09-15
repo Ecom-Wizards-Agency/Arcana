@@ -122,6 +122,9 @@ export type ReportDownloadLimitKind =
 
 /** Fixed-category limit failure. Source chunks and provider details are never retained. */
 export class ReportDownloadLimitError extends Error {
+  readonly provider = 'amazon_ads';
+  readonly retryAfterSeconds = undefined;
+  get retryable(): boolean { return this.kind !== 'compressed_bytes' && this.kind !== 'decompressed_bytes'; }
   override readonly name = 'ReportDownloadLimitError';
 
   constructor(readonly kind: ReportDownloadLimitKind, readonly limit: number) {

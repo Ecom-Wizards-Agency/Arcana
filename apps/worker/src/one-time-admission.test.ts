@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import { readMethodExperiments } from '@wizard-ads/db';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
@@ -10,7 +12,7 @@ import { SyncWorker } from './worker.js';
 
 const actorId = 'abababab-abab-4bab-8bab-abababababab';
 const configuration: OneTimeRpcConfiguration = {
-  version: 1, method: 'rpc', targetAcos: 0.37,
+  version: 1, method: 'sp.reference-efficiency', targetAcos: 0.37,
   bidFloor: 0.11, bidCeiling: 4.3, bidIncreaseCap: 0.23, bidDecreaseCap: 0.41,
   window: { start: '2026-08-01', end: '2026-08-26' },
 };
@@ -26,6 +28,17 @@ describe.skipIf(!available)('one-time preview persisted admission and execution'
   beforeEach(async () => {
     // Exercise format/store compatibility before the separate runtime activation gate.
     database = await createTestDatabase('one_time_admission', { throughMigration: '20260907000000_one_time_rpc_previews.sql' });
+    // Add method storage while retaining this suite's pre-runtime-gate authority fixture.
+    await database.sql.unsafe(await readFile(new URL('../../../supabase/migrations/20260913120000_recommendation_methods.sql', import.meta.url), 'utf8'));
+    // Project the current group storage into this historical authority fixture.
+    // Execute the migration's exact DDL so field names and constraints cannot drift.
+    const coordinatedMigration = await readFile(new URL('../../../supabase/migrations/20260915130000_coordinated_methods.sql', import.meta.url), 'utf8');
+    const groupStorage = coordinatedMigration.match(/^alter table public\.optimization_groups\n[\s\S]*?;/gm);
+    expect(groupStorage).toHaveLength(1);
+    await database.sql.unsafe(groupStorage![0]!);
+    const placementReader = coordinatedMigration.match(/^create function app\.recommendation_placement_evidence\([\s\S]*?^\$\$;/gm);
+    expect(placementReader).toHaveLength(1);
+    await database.sql.unsafe(placementReader![0]!);
     store = new PostgresRecommendationRunStore(database);
     const [row] = await database.sql<{ org_id: string }[]>`
       select app.seed_tenant_fixture('one-time-synthetic', ${actorId}::uuid, 'owner', date '2026-08-26') as org_id
@@ -34,6 +47,12 @@ describe.skipIf(!available)('one-time preview persisted admission and execution'
     const [group] = await database.sql<{ id: string }[]>`select id from public.optimization_groups where org_id = ${row!.org_id}::uuid`;
     scope = { orgId: row!.org_id, profileId: profile!.id, groupId: group!.id };
     await database.sql`delete from public.profile_strategy where org_id = ${scope.orgId}::uuid`;
+    // Group precedence must still leave this execution fixture a feasible bid change.
+    await database.sql`update public.optimization_groups
+      set target_acos = 0.37, bid_floor = 0.11, bid_ceiling = 4.3,
+          bid_increase_cap = 0.23, bid_decrease_cap = 0.41
+      where id = ${scope.groupId}::uuid`;
+
   }, 60_000);
   afterEach(async () => { await database?.drop(); });
 
@@ -111,6 +130,44 @@ describe.skipIf(!available)('one-time preview persisted admission and execution'
     expect(result?.actual_count).toBe(result?.proposals_count);
     const status = await store.getRecommendationPreviewBatchStatus({ orgId: scope.orgId, profileId: scope.profileId, batchId: accepted.batchId });
     expect(status).toMatchObject({ status: 'succeeded', campaignCount: 1, proposalsCount: result?.actual_count });
+  });
+
+  it('freezes all 501 normalized experiment scopes and retains their holds after the live experiment ends', async () => {
+    await database.sql`
+      insert into public.experiments (org_id, profile_id, name, type, scope, metric_focus, start_at, status)
+      select ${scope.orgId}::uuid, ${scope.profileId}::uuid, 'Synthetic lock ' || ordinal, 'bid_push',
+             jsonb_build_object('campaignIds', jsonb_build_array(case when ordinal = 501 then ' c-1 ' else 'unrelated-' || ordinal end)),
+             'acos', '2026-08-01T00:00:00Z'::timestamptz, 'running'
+        from generate_series(1, 501) ordinal
+    `;
+    const experiments = await readMethodExperiments(database, scope.orgId, scope.profileId, runAt.toISOString());
+    expect(experiments).toHaveLength(501);
+    expect(experiments.filter((experiment) => experiment.scope.campaignIds?.includes('c-1'))).toHaveLength(1);
+    const accepted = await store.enqueueRecommendationPreviewBatch({ ...request(),
+      oneTimeConfiguration: { ...configuration, method: 'sp.reference-efficiency' },
+    });
+    const queued = await child(accepted.batchId);
+    const [saved] = await database.sql<{ method_id: string; method_version: string; context: { methodAdmission: { experiments: unknown[] } } }[]>`
+      select method_id, method_version, schedule_context as context from public.recommendation_runs where id = ${queued.id}::uuid
+    `;
+    expect(saved).toMatchObject({ method_id: 'sp.reference-efficiency', method_version: 'reference.1' });
+    expect(saved?.context.methodAdmission.experiments).toHaveLength(501);
+    // Storage and readback use the same canonical identity as the dialog.
+    expect(queued.execution_snapshot).toMatchObject({ configuration: { method: 'sp.reference-efficiency' } });
+    await database.sql`update public.experiments set status = 'ended' where org_id = ${scope.orgId}::uuid`;
+    expect(await readMethodExperiments(database, scope.orgId, scope.profileId, runAt.toISOString())).toHaveLength(0);
+    const worker = new SyncWorker({ workerId: 'method-lock-worker', store: new PostgresWorkerStore(database, { info: () => {} }),
+      jobTypes: ['recommendations.run'], recommendationsRun: createRecommendationsRunner(store),
+      logger: { info: () => {}, error: () => {} } });
+    expect(await worker.drainOnce()).toBe(1);
+    const [audit] = await database.sql<{ payload: { holds: { reason: string }[]; diagnostics: { targetsRead: number } } }[]>`
+      select payload -> 'narrative' as payload from public.audit_log where action = 'recommendation.run.succeeded' and target_id = ${queued.id}
+    `;
+    expect(audit?.payload.holds.length).toBe(audit?.payload.diagnostics.targetsRead);
+    expect(audit?.payload.holds.every((hold) => hold.reason === 'EXPERIMENT_LOCK')).toBe(true);
+    const status = await store.getRecommendationPreviewBatchStatus({ ...scope, batchId: accepted.batchId });
+    expect(status).toMatchObject({ status: 'succeeded', proposalsCount: 0,
+      executionSnapshot: { methodId: 'sp.reference-efficiency', methodVersion: 'reference.1' } });
   });
 
   it('blocks overlapping manual and scheduled admissions after reassignment and rejects foreign selections', async () => {

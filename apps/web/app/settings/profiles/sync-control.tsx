@@ -30,11 +30,13 @@ import { useToast } from '../../../src/ui/toast';
 import { toggleSync } from './actions';
 
 export function SyncControl({
+  orgId,
   profileId,
   profileLabel,
   enabled,
 }: {
   profileId: string;
+  orgId: string;
   profileLabel: string;
   enabled: boolean;
 }): ReactNode {
@@ -58,6 +60,7 @@ export function SyncControl({
 
         const form = new FormData();
         form.set('profileId', profileId);
+        form.set('orgId', orgId);
         form.set('enabled', next);
 
         startTransition(async () => {

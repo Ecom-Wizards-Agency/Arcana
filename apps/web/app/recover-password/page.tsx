@@ -9,14 +9,16 @@ import { RecoveryPasswordForm } from './password-form';
 export const dynamic = 'force-dynamic';
 
 export default async function RecoverPasswordPage({ searchParams }: {
-  searchParams: Promise<{ next?: string }>;
+  searchParams: Promise<{ next?: string; setup?: string }>;
 }): Promise<ReactNode> {
-  const next = safeNextPath((await searchParams).next, '/dashboard');
+  const query = await searchParams;
+  const next = safeNextPath(query.next, '/dashboard');
+  const setup = query.setup === '1';
   if ((await currentUser()) === null) redirect(`/forgot-password?${new URLSearchParams({ error: 'link is no longer valid', next }).toString()}`);
   return (
     <main style={{ ...page, maxWidth: '30rem' }}>
-      <PageHeader title="Replace password" subtitle="Choose a new password for this invited account." />
-      <Card><RecoveryPasswordForm next={next} /></Card>
+      <PageHeader title={setup ? 'Set password' : 'Replace password'} subtitle="Choose a new password for this invited account." />
+      <Card><RecoveryPasswordForm next={next} setup={setup} /></Card>
     </main>
   );
 }

@@ -9,8 +9,9 @@
  * a shape is a scope nobody can read back, and the comparison view depends on
  * knowing which ids it holds.
  */
-import { bigint, index, jsonb, pgEnum, pgTable, text, uuid } from 'drizzle-orm/pg-core';
+import { bigint, index, jsonb, pgEnum, pgTable, text, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { ts } from './columns.js';
+import type { ExperimentSystemActor } from '@wizard-ads/shared';
 import { adProfiles, authUsers, orgs } from './tenancy.js';
 
 export const experimentType = pgEnum('experiment_type', [
@@ -78,6 +79,7 @@ export const experiments = pgTable(
     statusChangedAt: ts('status_changed_at').notNull().defaultNow(),
   },
   (t) => [
+    uniqueIndex('experiments_org_profile_id_key').on(t.orgId, t.profileId, t.id),
     index('experiments_org_status_idx').on(t.orgId, t.status, t.startAt),
     index('experiments_profile_window_idx').on(t.profileId, t.startAt),
   ],
@@ -95,6 +97,7 @@ export const experimentEvents = pgTable(
     toStatus: experimentStatus('to_status').notNull(),
     note: text('note'),
     actorId: uuid('actor_id').references(() => authUsers.id, { onDelete: 'set null' }),
+    systemActor: jsonb('system_actor').$type<ExperimentSystemActor>(),
     createdAt: ts('created_at').notNull().defaultNow(),
   },
   (t) => [index('experiment_events_experiment_idx').on(t.orgId, t.experimentId, t.createdAt)],

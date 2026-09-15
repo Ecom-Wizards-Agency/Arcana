@@ -1,8 +1,8 @@
 /** Browser-safe policy shared by the issue form, route, and server data layer. */
-export const MCP_KEY_EXPIRY_DAY_OPTIONS = [7, 30, 90] as const;
-export const DEFAULT_MCP_KEY_EXPIRY_DAYS = 30;
+import { MCP_KEY_EXPIRY_DAY_OPTIONS } from '@wizard-ads/shared';
+export { MCP_KEY_EXPIRY_DAY_OPTIONS, DEFAULT_MCP_KEY_EXPIRY_DAYS } from '@wizard-ads/shared';
 
-export function isMcpKeyExpiryDays(value: unknown): value is number {
+export function isMcpKeyExpiryDays(value: unknown): value is (typeof MCP_KEY_EXPIRY_DAY_OPTIONS)[number] {
   return (
     typeof value === 'number' &&
     MCP_KEY_EXPIRY_DAY_OPTIONS.some((candidate) => candidate === value)

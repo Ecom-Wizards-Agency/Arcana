@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 import { GUARDED_ROUTES } from '../src/e2e-guard-routes';
 import { signIn } from './support/auth';
 import { readState } from './support/fixture';
+import { guardRoutePath } from './support/guard-route-path';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -12,9 +13,9 @@ test('the index opens the signed-in operator dashboard with its active profile',
   const { fixtureProfileId } = await readState();
 
   await page.waitForURL((url) =>
-    url.pathname === '/dashboard' && url.searchParams.get('profile') === fixtureProfileId,
+    url.pathname === '/' && url.searchParams.get('profile') === fixtureProfileId,
   );
-  await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+  await expect(page.getByTestId('shell-title')).toBeVisible();
 
   const nav = page.getByTestId('app-nav');
   await expect(nav).toBeVisible();
@@ -29,14 +30,24 @@ test('the index opens the signed-in operator dashboard with its active profile',
 });
 
 test('the same screens open once there is a session', async ({ page }) => {
-  test.setTimeout(300_000); // same routes, same CI compile cost as above
+  // Each guarded route compiles on first visit. Night mode can exceed eight
+  // minutes before Timeline loads; keep the hydration assertions below and
+  // allow the complete route list to finish on the four-core runner.
+  test.setTimeout(900_000);
   await signIn(page, 'admin');
 
+  const timelineErrors: string[] = [];
+  const captureTimelineError = (message: string) => {
+    if (new URL(page.url()).pathname === '/timeline') timelineErrors.push(message);
+  };
+  page.on('pageerror', error => captureTimelineError(error.message));
+  page.on('console', message => { if (message.type() === 'error') captureTimelineError(message.text()); });
   const landed: string[] = [];
   for (const { path, signedIn } of GUARDED_ROUTES) {
-    const expectedPath = new URL(path, 'https://example.test').pathname;
+    const requestedPath = guardRoutePath(path);
+    const expectedPath = new URL(requestedPath, 'https://example.test').pathname;
     const expectedFollowUp = signedIn.canonicalProfile === true;
-    await page.goto(path).catch((error: unknown) => {
+    await page.goto(requestedPath).catch((error: unknown) => {
       if (!expectedFollowUp || !String(error).includes('is interrupted by')) {
         throw error;
       }
@@ -53,29 +64,47 @@ test('the same screens open once there is a session', async ({ page }) => {
           && (!signedIn.canonicalProfile || url.searchParams.has('profile'))
         ),
       );
-      await expect(page.locator(signedIn.artifact)).toBeVisible();
-      await expect(page.getByRole('heading', {
-        name: signedIn.heading,
-        exact: true,
-      })).toBeVisible();
+      await expect(signedIn.pathname === '/' ? page.getByLabel('Performance summary') : page.locator(signedIn.artifact)).toBeVisible();
+      await expect(signedIn.pathname === '/' ? page.getByTestId('shell-title') : page.getByRole('heading', { name: signedIn.heading, exact: true })).toBeVisible();
     }
     if (signedIn.kind === 'requested' && signedIn.heading !== undefined) {
-      await expect(page.getByRole('heading', { name: signedIn.heading, exact: true })).toBeVisible();
+      // The scoped Home adapter replaces the cockpit presentation; route admission is unchanged.
+      await expect(expectedPath === '/' ? page.getByTestId('shell-title') : page.getByRole('heading', { name: signedIn.heading, exact: true })).toBeVisible();
+    }
+    if (expectedPath === '/timeline') {
+      // Exercise a state change so this asserts successful hydration, not only SSR.
+      const kind = page.getByRole('button', {name:'experiment',exact:true});
+      await expect(kind).toHaveAttribute('aria-pressed','true');
+      await kind.click();
+      await expect(kind).toHaveAttribute('aria-pressed','false');
+      expect(timelineErrors).toEqual([]);
     }
     landed.push(new URL(page.url()).pathname);
   }
 
-  // Strategy Overview now lives inside Dashboard. Assert that one intentional
-  // redirect exactly; every other route must stay on its requested pathname.
+  // Declared redirects retain their destination; every other route stays on
+  // its concrete requested pathname, counted against every descriptor.
   expect(landed).toEqual(GUARDED_ROUTES.map(({ path, signedIn }) => (
-    signedIn.kind === 'redirect' ? signedIn.pathname : path
+    signedIn.kind === 'redirect' ? signedIn.pathname : guardRoutePath(path)
   )));
   await expect(page.getByTestId('app-nav')).toBeVisible();
 });
 
 test('an unknown address is a not-found page, not a crash', async ({ page }) => {
   await signIn(page, 'admin');
+  const shellRequests: string[] = [];
+  const errors: string[] = [];
+  page.on('request', (request) => {
+    if (request.headers()['next-action'] !== undefined) shellRequests.push(request.url());
+  });
+  page.on('pageerror', (error) => errors.push(error.message));
   const response = await page.goto('/no-such-screen');
   expect(response?.status()).toBe(404);
+  await expect(page.getByTestId('app-not-found')).toBeVisible();
+  await page.waitForLoadState('networkidle');
+  expect(shellRequests.filter((url) => new URL(url).pathname === '/no-such-screen')).toEqual([]);
+  expect(errors).toEqual([]);
+  // The next request also proves the process survived navigation away from a shell read.
+  expect((await page.reload())?.status()).toBe(404);
   await expect(page.getByTestId('app-not-found')).toBeVisible();
 });

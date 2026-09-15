@@ -25,6 +25,7 @@
  * for every metric. `_delta_absolute` is in the metric's own unit, so for a
  * percent-scaled metric it is a difference of fractions -- percentage points.
  */
+import type { GridMeasurement } from '@wizard-ads/shared';
 import type { BaseTotals } from './metrics.js';
 import { deriveMetric, metricSpec, safeRatio } from './metrics.js';
 
@@ -36,6 +37,8 @@ export const DELTA_PERCENT_SUFFIX = '_delta_percent';
 export type DimensionValue = string | number | boolean | null;
 
 export interface GridRow {
+  /** Omitted on fully measured rows; zero remains a measured value. */
+  measurement?: GridMeasurement;
   /** Stable across renders and re-sorts. The virtualizer's key. */
   id: string;
   /** Non-metric columns: ids, names, states, bids, dates. */
@@ -81,6 +84,19 @@ export function parseFieldId(columnId: string): FieldRef | null {
   return metricSpec(columnId) ? { metric: columnId, part: 'value' } : null;
 }
 
+/** Missing bases make a ratio unknown as well as its base cells. */
+function measuredMetric(row: GridRow, key: string, part: 'value' | 'comparison'): number | null {
+  const totals = part === 'value' ? row.totals : row.comparison;
+  if (totals === null) return null;
+  const missing = part === 'value' ? row.measurement?.missing : row.measurement?.comparisonMissing;
+  const spec = metricSpec(key);
+  if (missing?.length && spec) {
+    const absent: readonly string[] = missing;
+    if (spec.derived === null ? absent.includes(key) : absent.includes(spec.derived.numerator) || absent.includes(spec.derived.denominator)) return null;
+  }
+  return deriveMetric(key, totals);
+}
+
 /**
  * The value behind any column id, for any row.
  *
@@ -93,10 +109,10 @@ export function resolveField(row: GridRow, columnId: string): DimensionValue {
   const ref = parseFieldId(columnId);
   if (ref === null) return row.dimensions[columnId] ?? null;
 
-  const current = deriveMetric(ref.metric, row.totals);
+  const current = measuredMetric(row, ref.metric, 'value');
   if (ref.part === 'value') return current;
 
-  const previous = row.comparison === null ? null : deriveMetric(ref.metric, row.comparison);
+  const previous = row.comparison === null ? null : measuredMetric(row, ref.metric, 'comparison');
   if (ref.part === 'comparison') return previous;
   if (current === null || previous === null) return null;
   if (ref.part === 'delta_absolute') return current - previous;
@@ -116,22 +132,22 @@ export function fieldAccessor(columnId: string): (row: GridRow) => DimensionValu
   if (ref === null) return (row) => row.dimensions[columnId] ?? null;
 
   const { metric, part } = ref;
-  if (part === 'value') return (row) => deriveMetric(metric, row.totals);
+  if (part === 'value') return (row) => measuredMetric(row, metric, 'value');
   if (part === 'comparison') {
-    return (row) => (row.comparison === null ? null : deriveMetric(metric, row.comparison));
+    return (row) => (row.comparison === null ? null : measuredMetric(row, metric, 'comparison'));
   }
   if (part === 'delta_absolute') {
     return (row) => {
       if (row.comparison === null) return null;
-      const current = deriveMetric(metric, row.totals);
-      const previous = deriveMetric(metric, row.comparison);
+      const current = measuredMetric(row, metric, 'value');
+      const previous = measuredMetric(row, metric, 'comparison');
       return current === null || previous === null ? null : current - previous;
     };
   }
   return (row) => {
     if (row.comparison === null) return null;
-    const current = deriveMetric(metric, row.totals);
-    const previous = deriveMetric(metric, row.comparison);
+    const current = measuredMetric(row, metric, 'value');
+    const previous = measuredMetric(row, metric, 'comparison');
     if (current === null || previous === null) return null;
     return safeRatio(current - previous, Math.abs(previous));
   };

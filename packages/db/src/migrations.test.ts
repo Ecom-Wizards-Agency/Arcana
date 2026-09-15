@@ -1,3 +1,11 @@
+import { JobType } from '@wizard-ads/shared';
+import { readFile } from 'node:fs/promises';
+import { is, getTableName } from 'drizzle-orm';
+import { PgTable, getTableConfig } from 'drizzle-orm/pg-core';
+import { PACKAGE_REGISTRY } from './registry.js';
+import { randomUUID } from 'node:crypto';
+import { createAdsConnectionLifecycle } from './queries/connections.js';
+import { createSpApiConnectionLifecycle, getSpApiRefreshToken, settleSpApiConnection, SpApiConnectionCommandError } from './queries/spapi.js';
 /**
  * Migrations apply cleanly, and the schema they produce is the schema the rest
  * of the system assumes.
@@ -14,6 +22,22 @@ import type { TestDatabase } from './testing/harness.js';
 
 const available = await databaseAvailable();
 
+async function registeredPublicTables(): Promise<Map<string, PgTable>> {
+  const tables = new Map<string, PgTable>();
+  for (const entry of PACKAGE_REGISTRY) {
+    if (!entry.schema) continue;
+    const name = entry.schema.slice('schema/'.length, -'.ts'.length);
+    const module: Record<string, unknown> = await import(`./schema/${name}.ts`);
+    for (const value of Object.values(module)) {
+      if (is(value, PgTable) && (getTableConfig(value).schema ?? 'public') === 'public') {
+        tables.set(getTableName(value), value);
+      }
+    }
+  }
+  return tables;
+}
+
+
 describe.skipIf(!available)('migrations', () => {
   let database: TestDatabase;
 
@@ -25,13 +49,59 @@ describe.skipIf(!available)('migrations', () => {
     await database?.drop();
   });
 
+  it('installs one profile-local market preference with tenant RLS and bounded percentages', async () => {
+    const columns = await database.sql<{ column_name: string; is_nullable: string }[]>`
+      select column_name, is_nullable from information_schema.columns
+       where table_schema='public' and table_name='market_position_settings' order by column_name
+    `;
+    expect(columns).toEqual([
+      { column_name: 'org_id', is_nullable: 'NO' },
+      { column_name: 'profile_id', is_nullable: 'NO' },
+      { column_name: 'threshold_percent', is_nullable: 'NO' },
+      { column_name: 'updated_at', is_nullable: 'NO' },
+    ]);
+    const [table] = await database.sql<{ relrowsecurity: boolean }[]>`
+      select relrowsecurity from pg_class where oid='public.market_position_settings'::regclass
+    `;
+    expect(table?.relrowsecurity).toBe(true);
+    const constraints = await database.sql<{ definition: string }[]>`
+      select pg_get_constraintdef(oid) as definition from pg_constraint
+       where conrelid='public.market_position_settings'::regclass
+    `;
+    expect(constraints.some((row) => row.definition === 'PRIMARY KEY (profile_id)')).toBe(true);
+    expect(constraints.some((row) => row.definition.includes('FOREIGN KEY (org_id, profile_id)'))).toBe(true);
+    expect(constraints.some((row) => row.definition.includes('threshold_percent') && row.definition.includes('100'))).toBe(true);
+  });
+
   it('applies every migration file in order', async () => {
     const files = await migrationFiles();
     expect(files.length).toBeGreaterThan(0);
     // Filenames sort chronologically; Supabase applies them in exactly this
     // order, so a file numbered out of sequence would apply out of sequence.
     expect([...files].sort()).toEqual(files);
-    expect(files.at(-1)).toBe('20260907020000_one_time_preview_exports.sql');
+    const timestamps = files.map((file) => {
+      expect(file).toMatch(/^\d{14}_[a-z0-9_]+\.sql$/);
+      return Number(file.slice(0, 14));
+    });
+    // Existing history has equal timestamps; filenames break ties deterministically.
+    for (let index = 1; index < timestamps.length; index++) {
+      expect(timestamps[index]!).toBeGreaterThanOrEqual(timestamps[index - 1]!);
+      expect(files[index]!).not.toBe(files[index - 1]);
+    }
+
+  });
+
+  it('adds exactly two nullable method identity columns without defaults', async () => {
+    const columns = await database.sql<{ column_name: string; is_nullable: string; column_default: string | null }[]>`
+      select column_name, is_nullable, column_default from information_schema.columns
+       where table_schema = 'public' and table_name = 'recommendation_runs'
+         and column_name in ('method_id', 'method_version') order by column_name
+    `;
+    expect(columns).toEqual([
+      { column_name: 'method_id', is_nullable: 'YES', column_default: null },
+      { column_name: 'method_version', is_nullable: 'YES', column_default: null },
+    ]);
+
   });
 
   it('keeps every shared feature job representable in the database queue', async () => {
@@ -42,14 +112,8 @@ describe.skipIf(!available)('migrations', () => {
        where t.typname = 'sync_job_type'
        order by e.enumsortorder
     `;
-    expect(labels.slice(-6).map((row) => row.enumlabel)).toEqual([
-      'creative.sync',
-      'sqp.request',
-      'history.bootstrap',
-      'report.promote',
-      'marketing_stream.normalize',
-      'report.unified.advance',
-    ]);
+    expect(labels.map((row) => row.enumlabel).sort()).toEqual([...JobType.options].sort());
+
   });
 
   it('installs canonical weekday scheduling and immutable run context', async () => {
@@ -505,48 +569,21 @@ describe.skipIf(!available)('migrations', () => {
     `;
     const tables = new Set(rows.map((row) => row.relname));
 
-    for (const expected of [
-      // tenancy
-      'orgs', 'org_members', 'org_invitations', 'ads_connections', 'integration_connections',
-      'ad_profiles', 'profile_strategy',
-      // entity mirror
-      'portfolios', 'campaigns', 'ad_groups', 'product_ads', 'keywords', 'targets',
-      'negatives', 'entity_changes',
-      // facts
-      'fact_sp_target_daily', 'fact_search_term_daily', 'fact_placement_daily',
-      'fact_sb_daily', 'fact_sd_daily', 'fact_profile_daily', 'fact_monthly_rollup',
-      'product_economics',
-      // sync
-      'sync_schedules', 'sync_jobs', 'report_requests',
-      'unified_reporting_bindings', 'unified_report_runs', 'unified_report_operations',
-      // analysis
-      'recommendation_preview_batches', 'recommendation_runs', 'recommendation_run_campaigns',
-      'recommendations', 'insights', 'crosscheck_results',
-      // writes
-      'apply_batches', 'apply_rows', 'campaign_maps',
-      // product surface
-      'tags', 'entity_tags', 'dashboards', 'goto_links', 'audit_log',
-      // reserved seams
-      'spapi_connections', 'spapi_profile_bindings',
-      'fact_sales_traffic_daily', 'fact_sqp_weekly', 'supa_flags',
-      'rank_observations', 'keepa_bsr_observations', 'competitor_links',
-      'competitor_price_events',
-      'creative_assets', 'creative_placements',
-      // operator-intelligence foundations
-      'report_coverage', 'historical_bootstrap_progress',
-      'report_promotion_watermarks', 'attribution_observations',
-      'ad_creative_asset_mappings', 'fact_creative_daily',
-      'creative_sync_snapshots',
-      'sqp_promotion_runs', 'query_vocabulary', 'contextual_negative_proposals',
-      'contextual_negative_exports',
-      'optimization_groups', 'campaign_optimization_assignments',
-      'recommendation_observations', 'marketing_stream_subscription_bindings',
-      'marketing_stream_events', 'marketing_stream_projection_blocks',
-      'marketing_stream_projection_block_scopes',
-      'marketing_stream_hourly_facts', 'dayparting_schedule_proposals',
-    ]) {
-      expect(tables, `missing table ${expected}`).toContain(expected);
+    const planned = new Set((await registeredPublicTables()).keys());
+    const prefixes = PACKAGE_REGISTRY.flatMap((entry) => entry.migrationPrefix === null ? [] : [entry.migrationPrefix]);
+    const files = await migrationFiles();
+    for (const prefix of prefixes) {
+      expect(files.some((file) => file.startsWith(prefix)), `Missing domain migration ${prefix}`).toBe(true);
     }
+    for (const file of files) {
+      const sql = await readFile(new URL(`../../../supabase/migrations/${file}`, import.meta.url), 'utf8');
+      // Static public base tables; dynamic monthly partitions are checked separately.
+      for (const match of sql.matchAll(/create\s+table\s+(?:if\s+not\s+exists\s+)?public\.([a-z_][a-z0-9_]*)\s*\(/gi)) {
+        planned.add(match[1]!);
+      }
+    }
+    expect(planned.size).toBeGreaterThan(0);
+    expect([...tables].sort()).toEqual([...planned].sort());
   });
 
   it('installs the immutable one-row contextual-negative artifact contract', async () => {
@@ -732,7 +769,13 @@ describe.skipIf(!available)('migrations', () => {
          and c.relname like 'sp_write_%'
        order by c.relname
     `;
-    expect(spTenantTables).toHaveLength(23);
+    const expectedSpTenantTables = [...await registeredPublicTables()]
+      .filter(([name, table]) => name.startsWith('sp_write_')
+        && getTableConfig(table).columns.some((column) => column.name === 'org_id'))
+      .map(([name]) => name)
+      .sort();
+    expect(expectedSpTenantTables.length).toBeGreaterThan(0);
+    expect(spTenantTables.map(({ table_name }) => table_name)).toEqual(expectedSpTenantTables);
     for (const { table_name: tableName } of spTenantTables) {
       const [beforePurge] = await database.sql<{ count: number }[]>`
         select count(*)::int as count
@@ -791,16 +834,24 @@ describe.skipIf(!available)('migrations', () => {
     expect(definitions).toContain('(org_id, asin, event_kind, detected_at)');
   });
 
-  it('enables row level security on every tenant table', async () => {
-    const rows = await database.sql<{ relname: string; relrowsecurity: boolean }[]>`
-      select c.relname, c.relrowsecurity
+  it('enables row level security on every tenant table and the private method authority', async () => {
+    const rows = await database.sql<{ relation: string; relrowsecurity: boolean }[]>`
+      select n.nspname || '.' || c.relname as relation, c.relrowsecurity
       from pg_catalog.pg_class c
       join pg_catalog.pg_namespace n on n.oid = c.relnamespace
-      join pg_catalog.pg_attribute a on a.attrelid = c.oid and a.attname = 'org_id' and a.attnum > 0
-      where n.nspname = 'public' and c.relkind in ('r', 'p') and c.relispartition = false
+      where c.relkind in ('r', 'p') and c.relispartition = false
+        and ((n.nspname = 'public' and exists(select 1 from pg_catalog.pg_attribute a
+          where a.attrelid = c.oid and a.attname = 'org_id' and a.attnum > 0))
+          or (n.nspname = 'app' and c.relname = 'sp_write_method_releases'))
     `;
-    const unprotected = rows.filter((row) => !row.relrowsecurity).map((row) => row.relname);
-    expect(unprotected).toEqual([]);
+    expect(rows).toContainEqual({ relation: 'app.sp_write_method_releases', relrowsecurity: true });
+    expect(rows.filter((row) => !row.relrowsecurity).map((row) => row.relation)).toEqual([]);
+    const authority = await database.sql<{ role: string; readable: boolean; writable: boolean }[]>`
+      select role, has_table_privilege(role,'app.sp_write_method_releases','SELECT') as readable,
+        has_table_privilege(role,'app.sp_write_method_releases','INSERT,UPDATE,DELETE,TRUNCATE') as writable
+      from unnest(array['anon','authenticated','service_role']) role
+    `;
+    expect(authority).toEqual(['anon', 'authenticated', 'service_role'].map((role) => ({ role, readable: false, writable: false })));
   });
 
   it('matches every authenticated relation privilege to an applicable RLS policy', async () => {
@@ -843,6 +894,19 @@ describe.skipIf(!available)('migrations', () => {
          where privilege.grantee in (
            0::oid,
            (select oid from pg_catalog.pg_roles where rolname = 'authenticated')
+         )
+        union all
+        select 'ad_profiles'::name as table_name, 'UPDATE'::text as privilege
+         where (
+           select bool_and(
+             case when attribute.attname = any(array[
+               'target_acos','target_total_acos','goal_lens','monthly_budget',
+               'sync_enabled','timezone','timezone_locked','preferred_sync_hour'
+             ]) then has_column_privilege('authenticated', 'public.ad_profiles', attribute.attname, 'UPDATE')
+             else not has_column_privilege('authenticated', 'public.ad_profiles', attribute.attname, 'UPDATE') end
+           ) from pg_catalog.pg_attribute attribute
+            where attribute.attrelid = 'public.ad_profiles'::regclass
+              and attribute.attnum > 0 and not attribute.attisdropped
          )
         union all
         select 'sync_jobs'::name as table_name, 'SELECT'::text as privilege
@@ -1200,4 +1264,155 @@ describe.skipIf(!available)('migrations', () => {
     expect(byName.get('wizard-ads-fact-retention')).toBe('40 3 * * 0');
     expect(byName.get('wizard-ads-requeue-stale-jobs')).toBe('*/15 * * * *');
   });
+  async function connectionActor() {
+    const userId = randomUUID();
+    await database.sql`insert into auth.users(id) values (${userId})`;
+    const [org] = await database.sql<{ id: string }[]>`insert into public.orgs(slug,name)
+      values (${randomUUID()},'Synthetic provider agency') returning id`;
+    await database.sql`insert into public.org_members(org_id,user_id,role) values (${org!.id},${userId},'owner')`;
+    return { orgId: org!.id, userId };
+  }
+  function spInstallation() {
+    return { requestId: randomUUID(), nonceHash: 'a'.repeat(64), clientId: 'synthetic-client',
+      redirectUri: 'https://example.test/callback', label: 'Synthetic connection',
+      sellingPartnerId: 'synthetic-seller', marketplaceIds: ['synthetic-marketplace'] };
+  }
+  async function spConsent() {
+    const actor = await connectionActor(); const input = spInstallation();
+    const lifecycle = createSpApiConnectionLifecycle(database, () => true);
+    const operation = await lifecycle.begin(actor, input);
+    const submission = { operationId: operation.operationId, nonceHash: input.nonceHash,
+      code: ['synthetic',randomUUID(),'consent'].join('-') };
+    await lifecycle.submit(actor, submission);
+    return { actor, input, lifecycle, operation, submission };
+  }
+
+  it('runs SP-API lifecycle admission, one-use custody, attachment, health and revocation', async () => {
+    const c = await spConsent();
+    expect(await c.lifecycle.begin(c.actor,c.input)).toMatchObject({ operationId: c.operation.operationId, state: 'queued' });
+    expect(await c.lifecycle.submit(c.actor,c.submission)).toMatchObject({ state: 'queued' });
+    const claims = await Promise.all([randomUUID(),randomUUID()].map((lease) => c.lifecycle.custody.claim(lease)));
+    const claimed = claims.filter((claim) => claim !== null);
+    expect(claimed).toHaveLength(1);
+    const claim = claimed[0]!;
+    expect(claim.code).toBe(c.submission.code);
+    expect(await c.lifecycle.custody.claim(claim.leaseId)).toBeNull();
+    const refresh = ['synthetic',randomUUID(),'grant'].join('-');
+    const completed = await c.lifecycle.custody.attach(c.operation.operationId,claim.leaseId,refresh);
+    expect(completed).toMatchObject({ state: 'completed', orgId: c.actor.orgId });
+    expect(await c.lifecycle.custody.attach(c.operation.operationId,claim.leaseId,'must-not-replace')).toEqual(completed);
+    expect(await c.lifecycle.operation(c.actor,c.operation.operationId)).toEqual(completed);
+    expect(await c.lifecycle.health(c.actor,completed.connectionId!)).toEqual({ connectionId: completed.connectionId, state: 'active', hasCredential: true });
+    expect(await getSpApiRefreshToken(database,{ orgId: c.actor.orgId,connectionId: completed.connectionId! })).toBe(refresh);
+    const serialized = JSON.stringify(completed);
+    expect(serialized).not.toContain(refresh); expect(serialized).not.toContain(c.submission.code);
+    expect(await database.sql`select id from vault.secrets where name=${'openspell:spapi-consent:' + c.operation.operationId}`).toHaveLength(0);
+    expect(await c.lifecycle.revoke(c.actor,completed.connectionId!)).toMatchObject({ state: 'revoked', hasCredential: false });
+    expect(await getSpApiRefreshToken(database,{ orgId: c.actor.orgId,connectionId: completed.connectionId! })).toBeNull();
+  });
+
+  it('refuses SP-API admission with a closed gate, mismatched identity or insufficient authority', async () => {
+    const c = await spConsent();
+    await expect(createSpApiConnectionLifecycle(database).begin(c.actor,spInstallation())).rejects.toThrow('disabled');
+    await expect(c.lifecycle.begin(c.actor,{ ...c.input, label: 'changed' })).rejects.toThrow();
+    await expect(c.lifecycle.submit(c.actor,{ ...c.submission, code: 'changed' })).rejects.toThrow(SpApiConnectionCommandError);
+    const stranger = await connectionActor();
+    expect(await c.lifecycle.operation(stranger,c.operation.operationId)).toBeNull();
+    await asUser(database,c.actor.userId,async (sql) => {
+      await expect(sql`select app.claim_spapi_connection(${randomUUID()})`).rejects.toMatchObject({ code: '42501' });
+    });
+    await database.sql`update public.org_members set role='viewer' where org_id=${c.actor.orgId} and user_id=${c.actor.userId}`;
+    expect(await c.lifecycle.custody.claim(randomUUID())).toBeNull();
+    expect(await c.lifecycle.custody.read(c.operation.operationId)).toMatchObject({ state: 'reconnect_required', reason: 'authority_changed' });
+    await expect(c.lifecycle.begin(c.actor,spInstallation())).rejects.toThrow();
+  });
+
+  it('inserts only placeholders for SP consent and refresh custody', async () => {
+    await database.sql`create table app.spapi_custody_insert_probe(value text not null)`;
+    await database.sql`create function app.spapi_custody_insert_probe() returns trigger language plpgsql as $$
+      begin insert into app.spapi_custody_insert_probe values (new.secret); return new; end;
+    $$`;
+    await database.sql`create trigger spapi_custody_insert_probe before insert on vault.secrets
+      for each row execute function app.spapi_custody_insert_probe()`;
+    try {
+      const c = await spConsent(); const claim = (await c.lifecycle.custody.claim(randomUUID()))!;
+      const refresh = ['synthetic',randomUUID(),'grant'].join('-');
+      const completed = await c.lifecycle.custody.attach(c.operation.operationId,claim.leaseId,refresh);
+      expect(await database.sql`select value from app.spapi_custody_insert_probe`).toEqual([{ value: 'pending' },{ value: 'pending' }]);
+      expect(await getSpApiRefreshToken(database,{ orgId: c.actor.orgId,connectionId: completed.connectionId! })).toBe(refresh);
+    } finally {
+      await database.sql`drop trigger spapi_custody_insert_probe on vault.secrets`;
+      await database.sql`drop function app.spapi_custody_insert_probe()`;
+      await database.sql`drop table app.spapi_custody_insert_probe`;
+    }
+  });
+
+  it('revokes only the selected SP connection and its pending reconnect', async () => {
+    const c = await spConsent(); const claim = (await c.lifecycle.custody.claim(randomUUID()))!;
+    const completed = await c.lifecycle.custody.attach(c.operation.operationId,claim.leaseId,'synthetic-grant');
+    const other = { ...spInstallation(), label: 'Other synthetic connection' };
+    const otherOperation = await c.lifecycle.begin(c.actor,other);
+    await c.lifecycle.submit(c.actor,{ operationId: otherOperation.operationId,nonceHash: other.nonceHash,code: 'other-consent' });
+    await c.lifecycle.revoke(c.actor,completed.connectionId!);
+    expect(await c.lifecycle.operation(c.actor,otherOperation.operationId)).toMatchObject({ state: 'queued' });
+    await c.lifecycle.cancel(c.actor,otherOperation.operationId);
+    const reconnect = await c.lifecycle.begin(c.actor,spInstallation());
+    await c.lifecycle.submit(c.actor,{ operationId: reconnect.operationId,nonceHash: 'a'.repeat(64),code: 'reconnect-consent' });
+    const reconnectClaim = (await c.lifecycle.custody.claim(randomUUID()))!;
+    await c.lifecycle.revoke(c.actor,completed.connectionId!);
+    expect(await c.lifecycle.custody.attach(reconnect.operationId,reconnectClaim.leaseId,'must-not-attach')).toMatchObject({ state: 'cancelled' });
+    expect(await getSpApiRefreshToken(database,{ orgId: c.actor.orgId,connectionId: completed.connectionId! })).toBeNull();
+  });
+
+  it('bounds SP custody lock waits and leaves queued consent recoverable', async () => {
+    const c = await spConsent(); const locked = await database.sql.reserve();
+    try {
+      await locked`begin`;
+      await locked`select id from app.spapi_connection_operations where id=${c.operation.operationId} for update`;
+      await expect(c.lifecycle.custody.read(c.operation.operationId)).rejects.toThrow(SpApiConnectionCommandError);
+    } finally {
+      await locked`rollback`;
+      locked.release();
+    }
+    expect(await c.lifecycle.custody.read(c.operation.operationId)).toMatchObject({ state: 'queued' });
+    await c.lifecycle.cancel(c.actor,c.operation.operationId);
+  }, 15_000);
+
+  it('rechecks membership and expiry before SP attachment and never reissues consumed consent', async () => {
+    const c = await spConsent(); const claim = (await c.lifecycle.custody.claim(randomUUID()))!;
+    await database.sql`delete from public.org_members where org_id=${c.actor.orgId} and user_id=${c.actor.userId}`;
+    expect(await c.lifecycle.custody.attach(c.operation.operationId,claim.leaseId,'synthetic')).toMatchObject({ state: 'reconnect_required', reason: 'authority_changed' });
+    const expired = await spConsent(); const second = (await expired.lifecycle.custody.claim(randomUUID()))!;
+    await database.sql`update app.spapi_connection_operations set expires_at=clock_timestamp()-interval '1 second' where id=${second.operation.operationId}`;
+    expect(await expired.lifecycle.custody.claim(randomUUID())).toBeNull();
+    expect(await expired.lifecycle.custody.read(second.operation.operationId)).toMatchObject({ state: 'reconnect_required', reason: 'exchange_uncertain' });
+    expect(await expired.lifecycle.custody.attach(second.operation.operationId,second.leaseId,'synthetic')).toMatchObject({ state: 'reconnect_required' });
+  });
+
+  it('settles the unconfigured exchange and preserves cancellation without storing a credential', async () => {
+    const c = await spConsent(); const claim = (await c.lifecycle.custody.claim(randomUUID()))!;
+    const failed = await settleSpApiConnection(database,c.operation.operationId,claim.leaseId,{ reason: 'not_configured' });
+    expect(failed).toMatchObject({ state: 'reconnect_required', reason: 'not_configured', connectionId: null });
+    expect(await c.lifecycle.custody.claim(randomUUID())).toBeNull();
+    const cancelled = await spConsent();
+    expect(await cancelled.lifecycle.cancel(cancelled.actor,cancelled.operation.operationId)).toMatchObject({ state: 'cancelled' });
+    expect(await cancelled.lifecycle.custody.claim(randomUUID())).toBeNull();
+    const rows = await database.sql`select id from public.spapi_connections where org_id in (${c.actor.orgId},${cancelled.actor.orgId})`;
+    expect(rows).toHaveLength(0);
+  });
+
+  it('reuses Ads admission and custody through the provider lifecycle', async () => {
+    const actor = await connectionActor(); const lifecycle = createAdsConnectionLifecycle(database,() => true);
+    const begin = { requestId: randomUUID(), nonceHash: 'b'.repeat(64), clientId: 'synthetic-client',
+      scope: 'synthetic-scope', redirectUri: 'https://example.test/callback' };
+    const operation = await lifecycle.begin(actor,begin);
+    await lifecycle.submit(actor,{ operationId: operation.operationId,nonceHash: begin.nonceHash,code: 'synthetic-consent' });
+    const claim = (await lifecycle.custody.claim(randomUUID()))!;
+    const attached = await lifecycle.custody.attach(operation.operationId,claim.leaseId,'synthetic-grant');
+    expect(attached.state).toBe('discovering');
+    expect(await lifecycle.operation(actor,operation.operationId)).toEqual(attached);
+    expect(await lifecycle.health(actor,attached.connectionId!)).toMatchObject({ state: 'active',hasCredential: true });
+    expect(await lifecycle.revoke(actor,attached.connectionId!)).toMatchObject({ state: 'revoked',hasCredential: false });
+  });
+
 });

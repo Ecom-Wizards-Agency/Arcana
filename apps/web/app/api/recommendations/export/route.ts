@@ -13,22 +13,20 @@
  * RLS remains the second.
  */
 import {
-  exportAcceptedRecommendations,
+  exportAcceptedRecommendationsForActor,
+  RecommendationReviewError,
   getRecommendationRun,
 } from '@wizard-ads/db';
-import { errorResponse, openWebDatabase, requestActor } from '../../../../src/server/request-context';
-import { requireCapability } from '../../../../src/server/org-role';
+import { authenticatedMutation, mutationBody, mutationUuid, MutationInputError } from '../../../../src/server/authenticated-mutation';
 import { batchTag, exportFilenames } from '../../../../src/recommendations/export';
 
 export const runtime = 'nodejs';
 
 export async function POST(request: Request): Promise<Response> {
-  const database = openWebDatabase();
-  try {
-    const actor = await requestActor(request.headers);
-    await requireCapability(database, actor, 'exportBatches');
+  return authenticatedMutation(request, async (database) => {
+    const actor = database.actor;
 
-    const body = (await request.json()) as {
+    const body = (await mutationBody(request)) as {
       runId?: unknown;
       profileId?: unknown;
       optGroup?: unknown;
@@ -38,18 +36,22 @@ export async function POST(request: Request): Promise<Response> {
       today?: unknown;
       ids?: unknown;
     };
-    if (typeof body.runId !== 'string') throw new Error('runId is required');
-    if (typeof body.profileId !== 'string') throw new Error('profileId is required');
+    if (typeof body.runId !== 'string') throw new MutationInputError('runId is required');
+    if (typeof body.profileId !== 'string') throw new MutationInputError('profileId is required');
     if (typeof body.note !== 'string' || body.note.trim().length === 0) {
-      throw new Error('note is required: it is the note the staged apply carries');
+      throw new MutationInputError('note is required: it is the note the staged apply carries');
     }
     const optGroup = typeof body.optGroup === 'string' && body.optGroup.trim() ? body.optGroup.trim() : 'ungrouped';
     const lever = typeof body.lever === 'string' && body.lever.trim() ? body.lever.trim() : 'bid-down';
-    const ids = Array.isArray(body.ids) ? (body.ids.filter((id) => typeof id === 'string') as string[]) : null;
+    mutationUuid(body.runId, 'runId'); mutationUuid(body.profileId, 'profileId');
+    if (body.ids !== undefined && body.ids !== null && (!Array.isArray(body.ids) || body.ids.length === 0)) {
+      throw new MutationInputError('ids must be a non-empty explicit selection');
+    }
+    const ids = Array.isArray(body.ids) ? body.ids.map((id) => mutationUuid(id, 'proposal id')) : null;
 
     const run = await getRecommendationRun(database, { orgId: actor.orgId, runId: body.runId });
-    if (run === null) throw new Error('Not found');
-    if (run.profileId !== body.profileId) throw new Error('Not found');
+    if (run === null) throw new MutationInputError('Not found', 404);
+    if (run.profileId !== body.profileId) throw new MutationInputError('Not found', 404);
 
     const today =
       typeof body.today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.today)
@@ -58,8 +60,7 @@ export async function POST(request: Request): Promise<Response> {
     const client = typeof body.client === 'string' && body.client.trim() ? body.client : body.profileId;
     const tag = batchTag({ client, date: today, optGroup, lever });
 
-    const result = await exportAcceptedRecommendations(database, {
-      orgId: actor.orgId,
+    const result = await exportAcceptedRecommendationsForActor(database, {
       profileId: body.profileId,
       runId: body.runId,
       ids,
@@ -67,7 +68,6 @@ export async function POST(request: Request): Promise<Response> {
       optGroup,
       lever,
       note: body.note,
-      actorId: actor.userId,
     });
 
     return Response.json(
@@ -82,9 +82,6 @@ export async function POST(request: Request): Promise<Response> {
       },
       { status: 201 },
     );
-  } catch (error) {
-    return errorResponse(error);
-  } finally {
-    await database.close();
-  }
+  }, (error) => error instanceof RecommendationReviewError
+    ? Response.json({ error: error.message }, { status: 400 }) : null);
 }

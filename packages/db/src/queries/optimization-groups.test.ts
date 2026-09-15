@@ -1,3 +1,4 @@
+import { COORDINATED_METHOD } from '@wizard-ads/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '../testing/harness.js';
 import type { TestDatabase } from '../testing/harness.js';
@@ -6,6 +7,7 @@ import {
   saveOptimizationGroup,
   type OptimizationGroupSettings,
 } from './optimization-groups.js';
+import { createRequestDatabase } from './request-client.js';
 import { getRecommendationRun, listRecommendationRuns } from './recommendations.js';
 
 const available = await databaseAvailable();
@@ -62,6 +64,25 @@ describe.skipIf(!available)('optimization-group workspace', () => {
 
   afterAll(async () => {
     await database?.drop();
+  });
+
+  it('persists the coordinated method and its explicit settings without changing legacy groups', async () => {
+    const methodSettings = { exposureCeiling: 1.73, minClicksPerPlacement: 19, placementEvidenceRequirements: 'single_target' as const };
+    const saved = await saveOptimizationGroup(database, { orgId: orgA, profileId: profileA, actorId: USER_A,
+      settings: { ...settings, name: 'Synthetic coordinated group', method: COORDINATED_METHOD, methodSettings }, campaignIds: [] });
+    const read = await readOptimizationWorkspace(database, { orgId: orgA, profileId: profileA });
+    expect(read.groups.find((g) => g.group.id === saved.record.group.id)?.group).toMatchObject({ method: COORDINATED_METHOD, methodSettings });
+    expect(await database.sql`select method_id, method_version from public.optimization_groups where id=${saved.record.group.id}`)
+      .toEqual([{ method_id: COORDINATED_METHOD.id, method_version: COORDINATED_METHOD.version }]);
+    const request = createRequestDatabase(database.connectionString);
+    try {
+      const throughRequest = await saveOptimizationGroup(request, { orgId: orgA, profileId: profileA, actorId: USER_A,
+        settings: { ...settings, name: 'Synthetic request method', method: COORDINATED_METHOD, methodSettings }, campaignIds: [] });
+      expect(throughRequest.record.group.methodSettings).toEqual(methodSettings);
+      const legacy = await saveOptimizationGroup(request, { orgId: orgA, profileId: profileA, actorId: USER_A,
+        id: throughRequest.record.group.id, settings: { ...settings, name: 'Synthetic request method' }, campaignIds: [] });
+      expect(legacy.record.group).toMatchObject({ method: COORDINATED_METHOD, methodSettings });
+    } finally { await request.close(); }
   });
 
   it('atomically saves settings and moves the exact campaign set', async () => {

@@ -18,4 +18,18 @@ describe('recovery authenticator continuation', () => {
     expect(mocks.authorize).toHaveBeenCalledExactlyOnceWith('/recover-password?next=%2Finvite%2Fsynthetic-token');
     expect(mocks.update).not.toHaveBeenCalled();
   });
+
+  it('reports a lost password response without automatically retrying or leaking its error', async () => {
+    mocks.authorize.mockResolvedValue({ status: 'ok', user: { id: 'synthetic-user' } });
+    const passphrase = ['synthetic', 'chosen', 'password'].join('-');
+    const form = new FormData();
+    form.set('password', passphrase);
+    form.set('confirmation', passphrase);
+    form.set('next', '/agency-invite/synthetic');
+    mocks.update.mockRejectedValue(new Error(`synthetic provider failure ${passphrase}`));
+    const result = await completePasswordRecovery({ status: 'idle' }, form);
+    expect(result).toMatchObject({ status: 'error', message: expect.stringContaining('could not be confirmed') });
+    expect(JSON.stringify(result)).not.toContain(passphrase);
+    expect(mocks.update).toHaveBeenCalledTimes(1);
+  });
 });

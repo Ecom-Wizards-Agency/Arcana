@@ -39,6 +39,7 @@ describe.skipIf(!available)('feedback routes', () => {
   let database: TestDatabase;
   let orgA: string;
   let orgB: string;
+  let profileA: string;
   let foreignItemId: string;
   const previous = {
     databaseUrl: process.env['DATABASE_URL'],
@@ -64,6 +65,8 @@ describe.skipIf(!available)('feedback routes', () => {
     `;
     orgA = a?.seed_tenant_fixture ?? '';
     orgB = b?.seed_tenant_fixture ?? '';
+    const [profile] = await database.sql<{ id: string }[]>`select id from public.ad_profiles where org_id=${orgA}`;
+    profileA = profile!.id;
 
     await database.sql`select public.auth_user_stub(${VIEWER_A})`;
     await database.sql`
@@ -115,7 +118,7 @@ describe.skipIf(!available)('feedback routes', () => {
       severity: 'high',
       pageContext: {
         route: '/settings/profiles?region=NA',
-        profileId: '8a8a8a8a-8a8a-4a8a-8a8a-8a8a8a8a8a8a',
+        profileId: profileA,
         appVersion: '0.1.0',
       },
     });
@@ -125,7 +128,7 @@ describe.skipIf(!available)('feedback routes', () => {
     expect(item.severity).toBe('high');
     expect(item.pageContext).toEqual({
       route: '/settings/profiles?region=NA',
-      profileId: '8a8a8a8a-8a8a-4a8a-8a8a-8a8a8a8a8a8a',
+      profileId: profileA,
       appVersion: '0.1.0',
       actorType: 'user',
     });
@@ -325,5 +328,60 @@ describe.skipIf(!available)('feedback routes', () => {
       new Request('http://localhost/api/feedback', { headers: headers(OWNER_A, orgB) }),
     );
     expect(noMembership.status).toBe(403);
+  });
+
+  it('lets a viewer create a planned feature with private response headers', async () => {
+    const response = await file(VIEWER_A, orgA, { type: 'feature', title: 'Synthetic planned feature' });
+    expect(response.status).toBe(201);
+    expect(response.headers.get('cache-control')).toContain('private, no-store');
+    expect(response.headers.get('vary')).toContain('Cookie');
+    expect(response.headers.get('vary')).toContain('Authorization');
+    expect((await response.json() as ItemBody).item.status).toBe('planned');
+  });
+
+  it('refuses missing and foreign context profiles identically before inserting feedback', async () => {
+    const [profile] = await database.sql<{ id: string }[]>`select id from public.ad_profiles where org_id=${orgB}`;
+    const bodies = [];
+    for (const profileId of [profile!.id, '00000000-0000-4000-8000-000000000099']) {
+      const response = await file(VIEWER_A, orgA, { type: 'bug', title: 'Synthetic refused profile context', pageContext: { profileId } });
+      expect(response.status).toBe(404);
+      expect(response.headers.get('cache-control')).toContain('no-store');
+      bodies.push(await response.json());
+    }
+    expect(bodies[0]).toEqual(bodies[1]);
+    expect(await database.sql`select id from public.feedback_items where title='Synthetic refused profile context'`).toEqual([]);
+  });
+
+  it('rejects malformed bodies, forged authority and mixed modes without a mutation', async () => {
+    for (const value of [null, [], { type: 'bug', title: 'Synthetic invalid command', orgId: orgB },
+      { type: 'bug', title: 1 }, { type: 'bug', title: 'Synthetic invalid command', severity: 'unknown' }]) {
+      const response = await POST(new Request('http://localhost/api/feedback', {
+        method: 'POST', headers: headers(VIEWER_A, orgA), body: JSON.stringify(value),
+      }));
+      expect(response.status).toBe(400);
+      expect(response.headers.get('cache-control')).toContain('no-store');
+    }
+    const badId = await VOTE(new Request('http://localhost/api/feedback/invalid/vote', {
+      method: 'POST', headers: headers(VIEWER_A, orgA),
+    }), params('invalid'));
+    expect(badId.status).toBe(400);
+    const mixed = await PATCH(new Request('http://localhost/api/feedback/' + foreignItemId, {
+      method: 'PATCH', headers: headers(OWNER_A, orgA), body: JSON.stringify({ title: 'Synthetic invalid command', status: 'planned' }),
+    }), params(foreignItemId));
+    expect(mixed.status).toBe(400);
+    expect(await database.sql`select id from public.feedback_items where title='Synthetic invalid command'`).toEqual([]);
+  });
+
+  it('enforces authenticated RLS and hides driver failures on the actual create route', async () => {
+    await database.sql`create policy synthetic_refuse_feedback on public.feedback_items as restrictive
+      for insert to authenticated with check(title <> 'Synthetic policy refusal')`;
+    try {
+      const response = await file(OWNER_A, orgA, { type: 'bug', title: 'Synthetic policy refusal' });
+      expect(response.status).toBe(503);
+      const text = JSON.stringify(await response.json());
+      expect(text).toContain('could not be confirmed');
+      expect(text).not.toMatch(/row-level|synthetic_refuse_feedback|Synthetic policy refusal/);
+      expect(await database.sql`select id from public.feedback_items where title='Synthetic policy refusal'`).toEqual([]);
+    } finally { await database.sql`drop policy synthetic_refuse_feedback on public.feedback_items`; }
   });
 });

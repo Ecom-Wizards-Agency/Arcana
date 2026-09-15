@@ -6,6 +6,7 @@ import * as rootDatabase from './index.js';
 import { syncJobType } from './schema/enums.js';
 import * as persistence from './sp-write-persistence.js';
 import * as workerDatabase from './worker.js';
+import { SP_WRITE_ACTIVATION_FILES, SP_WRITE_MIGRATIONS } from './testing/sp-write-consumer-scope.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
@@ -72,7 +73,7 @@ describe('SP write persistence facade blast radius', () => {
     expect(syncJobType.enumValues.some((value) => value.startsWith('sp_write.'))).toBe(false);
   });
 
-  it('has no current app consumer or provider/runtime dependency', async () => {
+  it('has exactly the approved application consumers and no provider dependency in persistence', async () => {
     const appRoots = ['apps/worker', 'apps/web', 'apps/mcp', 'apps/analyst']
       .map((path) => `${REPO_ROOT}${path}`);
     const appFiles = (await Promise.all(appRoots.map(sourceFiles))).flat();
@@ -82,7 +83,14 @@ describe('SP write persistence facade blast radius', () => {
       const text = await readFile(path, 'utf8');
       if (text.includes('@wizard-ads/db/sp-write-persistence')) consumers.push(path);
     }
-    expect(consumers).toEqual([]);
+    expect(consumers.map((path) => path.slice(REPO_ROOT.length)).sort()).toEqual([
+      'apps/worker/src/sp-write-outbox/artifacts.ts',
+      'apps/worker/src/sp-write-outbox/coordinated.test.ts',
+      'apps/worker/src/sp-write-outbox/live-smoke.ts',
+      'apps/worker/src/sp-write-outbox/loop.test.ts',
+      'apps/worker/src/sp-write-outbox/loop.ts',
+      'apps/worker/src/sp-write-outbox/mcp-history.test.ts',
+    ]);
 
     const productionFiles = [
       `${REPO_ROOT}packages/db/src/sp-write-persistence.ts`,
@@ -107,7 +115,7 @@ describe('SP write persistence facade blast radius', () => {
     expect(productionText).not.toMatch(/\bfetch\s*\(/);
   });
 
-  it('finds no operational activation in apps, CI, seeds, or deployment surfaces', async () => {
+  it('limits activation to the declared backend files and migrations', async () => {
     const roots = [
       'apps',
       '.github',
@@ -127,36 +135,21 @@ describe('SP write persistence facade blast radius', () => {
     ];
     expect(operationalFiles.length).toBeGreaterThan(150);
 
-    const activationMarkers = [
-      'sp_write_',
-      'SP_WRITE',
-      'sp-write-persistence',
-      'sp-write-adapter',
-      '@wizard-ads/db/sp-write-persistence',
-      '@wizard-ads/ads-api/sp-write-adapter',
-      'createSpWriteRuntimeLedger',
-      'createSpWriteStagingLedger',
-      'createSpWriteOutboxLedger',
-      'record_sp_write_plan',
-      'reserve_sp_write_provider_call',
-      'sp_write.dispatch',
-      'sp_write.observe',
-      'OPEN_SPELL_SP_WRITE',
-    ];
+    const activationMarkers = ['@wizard-ads/db/sp-write', '@wizard-ads/ads-api/sp-write',
+      'SP_WRITE', 'sp_write_', 'sp-write-outbox', 'createSpWriteWorker'];
     const matches: Array<{ path: string; marker: string }> = [];
     for (const path of operationalFiles) {
+      if (path.includes('.test.')) continue;
       const source = await readFile(path, 'utf8');
       for (const marker of activationMarkers) {
         if (source.includes(marker)) matches.push({ path, marker });
       }
     }
-    expect(matches).toEqual([]);
+    expect([...new Set(matches.map((match) => match.path.slice(REPO_ROOT.length)))].sort())
+      .toEqual([...SP_WRITE_ACTIVATION_FILES].sort());
 
     const migrations = await sourceFiles(`${REPO_ROOT}supabase/migrations`);
-    const inertSpWriteMigrationSuffixes = [
-      '/20260901020000_sp_write_persistence_ledger.sql',
-      '/20260901030000_sp_write_outbox_delivery.sql',
-    ];
+    const inertSpWriteMigrationSuffixes = SP_WRITE_MIGRATIONS.map((name) => `/${name}`);
     const inertSpWriteMigrations = migrations.filter((path) =>
       inertSpWriteMigrationSuffixes.some((suffix) => path.endsWith(suffix)));
     expect(inertSpWriteMigrations.map((path) => `/${path.split('/').at(-1)}`).sort())

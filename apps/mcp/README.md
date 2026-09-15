@@ -1,12 +1,13 @@
-# OpenSpell MCP
+# Arcana MCP
 
 The production MCP endpoint is a stateless, analytical-read-only view of one
-OpenSpell organization. It accepts Streamable HTTP at `POST /mcp`; `GET
+Arcana organization. It accepts Streamable HTTP at `POST /mcp`; `GET
 /healthz` reports database readiness plus a sanitized Git revision.
 
-The MCP protocol server name and health `service` are `openspell`, and health
-also reports `product: "OpenSpell"`. The `@wizard-ads/*` package scope and
-`wizardads://` resource URIs remain compatibility identifiers; changing them
+The MCP protocol server name is `arcana`. Health retains `service: "openspell"`
+and `product: "OpenSpell"` until a separately planned hosted migration. The
+`@wizard-ads/*` package scope and `wizardads://` resource URIs remain compatibility
+identifiers; changing them
 would break installed clients without adding an operator capability.
 
 ## Usage
@@ -22,7 +23,7 @@ The production catalog contains only these analytical tools:
 - `get_recommendations`, `get_flags`, `get_pacing`
 - `list_experiments`, `get_experiment`
 
-Amazon-write stubs and OpenSpell mutation tools are deliberately absent from
+Amazon-write stubs and Arcana mutation tools are deliberately absent from
 discovery. There is no environment switch that can add them accidentally.
 
 ## Shape

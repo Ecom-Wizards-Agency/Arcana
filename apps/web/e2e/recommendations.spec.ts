@@ -60,7 +60,7 @@ async function firstProposalId(page: Page): Promise<string> {
 }
 
 test.describe('recommendations review', () => {
-  test('shows every proposal in one full-width grid, with its work and its strategy', async ({ page }) => {
+  test('shows every proposal in one full-width grid, with its work and its strategy', async ({ page }, info) => {
     await openReview(page);
 
     // Full width, one continuous grid, and none of the nested tables the
@@ -78,6 +78,12 @@ test.describe('recommendations review', () => {
     await expect(page.getByTestId('queue-count')).toHaveText(
       `${PROPOSALS} of ${PROPOSALS} loaded rows shown`,
     );
+    for (const theme of ['light','dark']) {
+      await page.evaluate((theme) => { document.documentElement.dataset['theme']=theme; },theme);
+      const screenshot = info.outputPath(`recommendations-full-grid-${theme}.png`);
+      await page.screenshot({ path:screenshot,fullPage:true });
+      await info.attach(`Recommendations ${theme}`,{path:screenshot,contentType:'image/png'});
+    }
     // Decision-queue order survives the conversion: needs review leads, and the
     // lane the old sections carried is a column on the row.
     await expect(page.getByTestId('grid-row').first()).toContainText('Needs review');
@@ -311,7 +317,7 @@ test.describe('n-gram explorer', () => {
     // Bigrams by default; unigrams pool the same terms differently, and the
     // count changes without a round trip because the engine runs in the page.
     const bigrams = (await page.getByTestId('gram-count').textContent()) ?? '';
-    await page.getByRole('button', { name: 'Unigrams' }).click();
+    await page.getByRole('button', { name: 'Unigram' }).click();
     await expect(page.getByTestId('gram-count')).not.toHaveText(bigrams);
 
     // The explorer now uses the same composable filter model as the main Grid.
@@ -340,7 +346,7 @@ test.describe('n-gram explorer', () => {
     const csv = await readFile(downloadPath!, 'utf8');
     expect(csv.trim().split(/\r?\n/)).toHaveLength(3);
 
-    // Click a gram to see the terms behind it: you negate terms, not grams.
+    // Inspect the search terms supporting the selected gram.
     await page.getByTestId('grid-row').first().click();
     await page.getByRole('button', { name: /Select all \d+/ }).click();
 
@@ -362,18 +368,22 @@ test.describe('n-gram explorer', () => {
     expect(chosen).toBeGreaterThan(0);
     expect(chosen).toBeLessThanOrEqual(SEARCH_TERMS);
     await selectAll.click();
-    await terms.getByRole('button', { name: 'Propose selected as negatives' }).click();
+    await terms.getByRole('button', { name: 'Review negative keyword' }).click();
+    await expect(page.getByRole('region', { name: 'Review negative keyword' })).toContainText(`${chosen} search terms`);
+    const proposedRows = await page.getByRole('region', { name: 'Review negative keyword' }).locator('tbody tr').count();
+    expect(proposedRows).toBe(1);
+    await page.getByRole('button', { name: `Accept proposal` }).click();
 
     const result = page.getByTestId('propose-result');
-    await expect(result).toContainText(`Proposed ${chosen} of ${chosen} negatives`);
-    await expect(result).toContainText('Nothing was negated');
+    await expect(result).toContainText(`${proposedRows} negative keyword proposals added`);
+    await expect(page.getByRole('region', { name: 'Negative keywords queued' })).toContainText('Review and approve the proposals in the change queue before they are sent to Amazon.');
 
     // They are reviewable like any other proposal, in their own run — the
     // newest one, which the review screen lists first.
     await page.goto(`/recommendations?profile=${PROFILE}`);
     await page.getByText(/^Choose run/).click();
     await page.getByRole('navigation', { name: 'Runs' }).getByRole('link').first().click();
-    await expect(page.locator('[data-testid^="proposal-"]')).toHaveCount(chosen);
+    await expect(page.locator('[data-testid^="proposal-"]')).toHaveCount(proposedRows);
     await expect(page.getByTestId('grid-row').first()).toContainText('Flag');
   });
 });

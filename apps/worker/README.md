@@ -3,7 +3,14 @@
 The worker handles Amazon entity sync, asynchronous report ingestion, recommendation
 runs and crosscheck ingestion. Web requests preview, approve and enqueue work;
 provider execution belongs here. The root [installation guide](../../README.md)
-records the remaining onboarding and legacy OAuth limitations.
+describes agency onboarding and the supported runtime topology.
+
+The worker uses a service-role connection with the job payload's `orgId`.
+Job claims are intentionally org-blind so one worker can drain several agencies.
+Before dispatching a job, [`SyncWorker.execute`](src/worker.ts) checks that the
+payload's org, profile and job type match the claimed row, then verifies that the
+profile belongs to the payload's org. This check precedes every dispatched
+mutation; claiming a job alone does not establish its agency boundary.
 
 ## The shape of it
 
@@ -16,6 +23,8 @@ records the remaining onboarding and legacy OAuth limitations.
 | `crosscheck.ts` | The seam WP-10's `runCrosscheckIngest` is called through, plus the retry classification. |
 | `schedules.ts` | The default cadences, as rows rather than as a comment. |
 | `ads-api.ts` | The narrow client interface the worker needs, plus `DbAdsApiClient` — the adapter that maps it onto the real `@wizard-ads/ads-api` client (per-connection/per-region, Vault-backed refresh token). |
+| `amazon-connections.ts` | Serial single-use authorization exchange and resumable, counted regional discovery. |
+| `amazon-connection-adapters.ts` | Worker-only provider credentials and protected database commands for connection operations. |
 | `main.ts` | Process entry: config, health server, the two passes, graceful shutdown. |
 | `marketing-stream-sqs.ts` | Optional SQS long-poll ingress. It acknowledges only after the raw ledger and hourly projection counts reconcile. |
 | `spapi-sqp.ts` | Exact profile/marketplace binding, Vault-backed LWA token composition, and regional Reports API client pool. |
@@ -61,8 +70,8 @@ job result reports `reportRows` (what Amazon sent) alongside `parsed`/`loaded` (
 |---|---|
 | Any handler throws | `attempts++`, requeued with exponential backoff, `dead` after `max_attempts` |
 | `AdsApiRetryableError` with `Retry-After` | requeued with exactly that delay |
-| `PermanentJobError`, `ExportContractError`, `ProfileNotFound` | straight to `dead`, attempts unspent |
-| Reporting v3 create may have reached Amazon without returning an id | quarantined in `dead`; attended reconciliation only |
+| `PermanentJobError` (including accounting mismatch), `ExportContractError`, `ProfileNotFound` | straight to `dead` on the current attempt; no further retries |
+| Reporting v3 create may have reached Amazon without returning an id | fenced claim retained in `running` (exit 78); tokenless claim goes to `dead`; attended reconciliation only |
 | General worker SIGKILLed mid-job | the tokenless job sits in `running` until a sweep requeues it |
 | Evo report worker SIGKILLed mid-job | the fenced job remains `running`; elapsed time never authorizes replay |
 
@@ -74,6 +83,23 @@ in-process for plain Postgres. Both paths ignore token-bearing claims. The Evo r
 it. Recovery is deliberately attended because a timeout cannot prove provider work stopped.
 
 ## The auth healthcheck is not a queue job — deliberately
+
+New agency connections use a separate durable operation before profiles exist.
+Install the matching connection migrations, configure the worker's application
+credentials and exact comma-separated `AMAZON_OAUTH_ALLOWED_REDIRECT_URIS`, then
+enable `OPENSPELL_AMAZON_CONNECTIONS_ENABLED=1` on a general worker that can claim
+`entity.sync`. The singular `AMAZON_OAUTH_REDIRECT_URI` is accepted for an installation
+with one callback. The report and recommendation lanes cannot own this consumer.
+Verify `components.amazonConnections` on `/healthz` before enabling the web flag.
+
+The worker consumes an authorization code once. An uncertain exchange requires new
+consent; a lost attachment response is reconciled against the committed operation.
+Discovery resumes without re-exchanging the code and records each region's received,
+parsed, refused, upserted and newly created counts together. Shutdown aborts a regional
+request and leaves it resumable after its lease expires. Membership removal or
+credential rotation refuses stale custody. Three consecutive command failures degrade
+health; no code, token, profile identifier or provider response appears in that health
+payload. Connecting does not select profiles for sync or copy tenant strategy settings.
 
 `AuthHealthMonitor` probes account access on an in-process timer. It does not depend
 on the queue it monitors.
@@ -186,6 +212,22 @@ does not apply a migration, enqueue a job, or construct an Amazon client. Its
 JSON output contains counts and catalog names only, never profile identifiers.
 
 ### Weekly SQP
+
+| Job type | Runtime and prerequisites |
+|---|---|
+| `sqp.request` | Always-on `general` worker; `WORKER_JOB_TYPES` set to `keepa.sync,rank.sync,economics.sync,sqp.request` (or unset); both `SP_API_LWA_CLIENT_ID` and `SP_API_LWA_CLIENT_SECRET`; active credentialed SP-API connection and exact profile/marketplace binding. |
+| `sqp.categorize`, `history.bootstrap`, `report.promote` | Declared but unimplemented; permanently rejected. No schedules are provisioned; reconciliation disables legacy `sqp.categorize` integration schedules. |
+
+The weekly producer remains in `ScheduleProvisioner`, which runs only with
+`startsBackgroundPasses=true` on the general worker. The configured allowlist
+must include `sqp.request` (or be unset). Vercel cron and the Evo report lane do
+not produce or consume this job. Keep the general worker online for weekly SQP.
+
+`enqueue_due_schedules()` does not construct SQP's exact bound marketplace,
+validated and counted ASIN set, or completed profile-local week. Moving the
+producer there requires a SQL scheduler migration outside the schedule-removal
+scope of WP-247. Keeping it beside the credential-gated consumer avoids producing
+jobs on deployments without an SP-API handler. The Evo lane contract is unchanged.
 
 When both SP-API LWA application variables are present, the schedule
 provisioner also inspects active `spapi_profile_bindings`. Each eligible
@@ -355,3 +397,198 @@ validate the worker. CI requires its disposable database and fails on an outage.
 Everything above the client is exercised against `AdsApiClient` fakes and a real database;
 `DbAdsApiClient` itself is unit-tested against a mock underlying client and a mock Vault
 (`ads-api.test.ts`, no network, no DB).
+
+## Reconciling ambiguous report creates
+
+A create that may have reached Amazon must never be blindly replayed. The fenced
+worker retains the `running` job and exits 78. A tokenless worker dead-letters it.
+New failures record the phase, HTTP status (when available), known Amazon report
+id, and timestamp in `report_requests.reconciliation`. The client deliberately
+retains no raw provider response. The request UUID is also the original queue job
+UUID; its payload records the profile, type and date window.
+
+Apply the additive report-reconciliation migration before deploying this worker.
+The separate JSON column preserves evidence and the operator audit when ordinary
+polling clears `error`. No existing column or enum changes.
+
+1. Stop the owning worker and confirm its process is gone, including any restarted
+   instance. Pause the producer for the affected scope during investigation. A
+   stale timestamp alone does not prove an Amazon request stopped.
+2. Use an authorized database runtime for the exact organisation. Keep IDs and
+   command output in private operational records. List requests:
+
+   ```bash
+   pnpm --filter @wizard-ads/worker reconcile-reports list --org-id "$ORG_ID"
+   ```
+
+   The output includes a count, request identity, known Amazon id and stored
+   evidence. Older unmarked fenced requests appear as **legacy candidates**.
+   They are not proven ambiguous: confirm the stopped claimant's exit/log evidence
+   before resolving one. The command cannot reconstruct a response that was lost.
+3. Independently obtain Amazon's report id from existing provider evidence or
+   support records. Verify the exact account/profile, report type, date window and
+   create time. Do not submit a new create to discover whether one exists. Adopt
+   only after a match:
+
+   ```bash
+   pnpm --filter @wizard-ads/worker reconcile-reports adopt \
+     --org-id "$ORG_ID" --request-id "$REQUEST_ID" \
+     --amazon-report-id "$AMAZON_REPORT_ID" \
+     --actor "$OPERATOR" --reason "$EVIDENCE_REFERENCE_AND_REASON" --worker-stopped
+   ```
+
+   Adoption records actor/time/reason and the supplied id in the ledger, finishes
+   the original create job, revokes its retained claim and enqueues exactly one
+   `report.poll` atomically. Expected counts: `requests: 1, jobs: 1, polls: 1`.
+   A conflicting known provider id, existing downstream job or repeated resolution
+   is refused; inspect the evidence instead of changing identifiers to force it.
+4. If the request cannot be safely adopted, leave it quarantined or explicitly
+   abandon it with a reason:
+
+   ```bash
+   pnpm --filter @wizard-ads/worker reconcile-reports abandon \
+     --org-id "$ORG_ID" --request-id "$REQUEST_ID" \
+     --actor "$OPERATOR" --reason "$REASON" --worker-stopped
+   ```
+
+   Expected counts: `requests: 1, jobs: 1, polls: 0`. Abandonment fails the ledger
+   row and dead-letters the original job without resetting attempts. It does not
+   cancel or delete anything at Amazon and does not authorize a replacement.
+5. Read back the ledger audit and queue outcome, then restart the worker. An
+   adopted request must progress through polling and fetch to reconciled loaded
+   counts. Restore the producer only after reviewing the affected scope.
+
+These commands never construct an Amazon client, create an Amazon report, or
+queue `report.request`. `--worker-stopped` is an explicit operator attestation,
+not an automatic process check. The supplied actor is recorded as an operator
+statement under the database runtime's authority.
+
+`/healthz.reports` exposes `deadJobsByType`, `staleRequests`,
+`quarantinedRequests`, and `newestCompletedReportDateByType` (the newest completed
+report's end date, not its completion timestamp). `WORKER_REPORT_STALE_HOURS`
+sets the pending/processing age threshold; default 6 hours. Quarantine counts
+include recorded markers; older unmarked candidates require the list command.
+These diagnostics do not change the existing 503 policy. A failed diagnostics
+read, or one that takes more than a second, returns `reports: null, reportsAvailable: false`,
+never fabricated zeroes. Concurrent probes share an outstanding diagnostics read.
+
+The sync-status lifecycle table counts requests with evidence of each stage over
+the whole scoped ledger. Stages overlap; `polled` counts requests with at least
+one poll, and `promoted` counts requests with positive promoted/canonical rows.
+A zero-row completion counts as parsed/loaded but not promoted. `refused` uses
+stored refusal counts or parser-refusal errors. Multiple dead child jobs count
+once per request. The separate dead-letter table shows the newest 100 jobs;
+first/last seen are queue creation/update times. Errors retain the existing
+operator-safe display labels; exact details remain in the private ledger.
+### SB keyword sync (WP-246)
+
+`OPENSPELL_SB_KEYWORD_SYNC_ENABLED=1` sets `sbKeywordSyncEnabled`; absent or other
+values keep it off. Enable only after an operator records live evidence for the
+candidate SB keyword path, media type and response key and updates the endpoint's
+verification status. Use the [SB keyword smoke mode](../../packages/ads-api/README.md#sb-keyword-verification).
+
+With the flag enabled, keywords list after SB campaigns and ad groups. Truncation,
+refused mappings or listed/mapped count disagreement fail the SB product group.
+Accepted keyword rows enter the existing mirror upsert, which asserts listed versus
+upserted counts. SP keyword sync is unchanged. The creative read model independently
+falls back to an unambiguous preset Keyword slot when no synchronized SB keyword
+exists; conflicting keywords and malformed names remain unresolved.
+
+### Coverage initialization
+
+After applying the coverage freshness migration, run
+`pnpm --filter @wizard-ads/worker backfill-coverage` with the installation's authorized
+worker database connection injected as `DATABASE_URL`. The command performs no Amazon
+calls. It prints ledger groups, written rows and unchanged rows and asserts that the
+counts reconcile. It selects the successful request with the furthest end date per
+profile/source/report type, breaking ties by completion time and request ID. Repeating it
+preserves existing observations and their timestamps.
+
+Legacy source/refusal counts remain null when the ledger never recorded them; fact
+rows cannot reconstruct omitted source records. Settled dates are not inferred from
+ledger completion. Live SP promotions supply settlement evidence and all four counts,
+including explicit zero-row ranges. Superseded promotions do not refresh coverage; the backfill also excludes requests
+superseded by newer promotion watermarks. Imported ledger groups retain a separate
+`secondary_import` source.
+The coverage source column is text with a nonempty check, so integrations can publish
+coverage without expanding the enums used by Ads promotion and attribution records.
+
+## Registering an ingestion
+
+`SyncWorkerOptions.sources` receives a registry with a typed `register` method.
+A source supplies its shared descriptor, `plan`, `execute`, `counts`, and a
+coverage target. The registry validates both count equations and calls the
+WP-256 producer itself. A callback cannot replace that producer or claim success
+without a reconciled coverage receipt. Existing `IntegrationHandlers` remain a
+compatibility input; production Keepa, rank, economics and SQP composition uses
+registered sources.
+
+Lane lists derive from `ingestion-sources.ts`. Registration does not enable a
+schedule, provider credential, claim protocol, or deployment gate. Ads request,
+poll and fetch remain separate queue jobs, with fetch completion and coverage in
+the existing database transaction. Control jobs and superseded loads do not
+publish data freshness.
+
+The registry captures each source's payload and plan types at registration. This
+keeps execution under the common tenant checks, claim loop and retry/settlement
+policy. The alternative of giving each source its own worker loop was rejected
+because it would duplicate custody and completion rules. The report completion
+capability preserves the current transaction boundary instead of writing coverage
+after a separately committed ledger update.
+
+### Guarded Amazon writes (WP-280)
+
+The general worker hosts a separate, serial `sp_write_outbox` poller for the
+approved-write ledger and its observation/recovery work. Ingestion continues through
+the source registry and its shared claim loop; the outbox adds no `sync_jobs` types
+and preserves report-lane ownership. The poller starts only when
+`OPENSPELL_SP_WRITE_DISPATCH_ENABLED=1` or
+`OPENSPELL_SP_WRITE_RECONCILE_ENABLED=1`; both default off. Either flag requires an
+explicit comma-separated UUID list in `OPENSPELL_SP_WRITE_PROFILE_IDS`. The report
+lane refuses these flags. Shutdown stops the poller and awaits its active pass
+before closing SQL. Enabling this consumer creates no schedule or cadence.
+
+Dispatch also requires the current database environment gate, exact profile grant,
+immutable approval receipt and synchronized old value. The flags alone grant no
+Amazon authority. The worker rechecks runtime flags before each attempt; SQL checks
+current authority when reserving provider intent. Closing dispatch still allows a
+separately enabled reconciliation pass to observe an already reserved request.
+
+Each row has a disposition, provider intent/result and observation ledger. Requested
+and admitted counts come from the immutable plan and receipt. `attemptedCalls`
+counts calls actually handed to the adapter in that pass. A committed intent is
+not proof that HTTP started: a crash between reservation and the call remains
+unresolved until recovery. Accepted, rejected, ambiguous, refused and observed rows
+are separately counted; only observation plus a mirror receipt proves the current
+synchronized value. Ordinary entity sync records its read-start time and uses the
+same keyword merge fence, including the default cron store after migration.
+
+The approval backend is limited to source-backed SP keyword bid changes. Web
+preview, exact-count confirmation and status use the current authenticated
+transaction/snapshot boundary. Approval requires the recommendation method ID,
+version and hashes of its recorded trace and setting sources. Historical plan bytes
+remain readable; a methodless pending plan cannot begin a new execution. UI direct
+restore, delegation issuance and cadence management are separate workstreams.
+
+`src/sp-write-outbox/live-smoke.ts` is an explicit operator entry, never a startup
+hook or test-suite action. It first requires the gitignored
+`_local/amazon-write-authorization.json` in the shared bounded-authorization format,
+including its verified fingerprint, exact provider/entity scope, expiry, one-cycle
+limit and mandatory observed inverse. It accepts six CLI IDs: organization,
+profile, execution, forward plan, approval and generation. The immutable forward,
+inverse and bounded receipt must already be recorded. It creates no approval.
+Before invoking it, stop the general write poller and set
+`OPENSPELL_SP_WRITE_SMOKE_EXCLUSIVE=1`, both write flags and the exact profile
+allowlist. Inject credentials through the approved runtime. The smoke limits its
+consumer to those two plan IDs, refuses stale/conflicting evidence, observes both
+legs and verifies that the bounded authorization closes. Its unit tests exercise
+only local-file refusal and validation; they never invoke the live entry.
+
+### Campaign builder asset snapshots
+
+`asset-library.search` runs on the general worker in the `integrations` lane. Include
+it in an explicit `WORKER_JOB_TYPES` list, or leave the general worker list unset.
+The campaign builder Refresh action admits this scoped read job. It reads the
+Creative Asset Library and current Sponsored Brands ads, persists an immutable
+snapshot, and verifies source, parsed and stored counts. It never uploads assets
+or creates campaigns. Queue replay reuses the original observation and timestamp.

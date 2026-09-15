@@ -1,40 +1,26 @@
 /**
  * Feedback items, votes, and the roadmap read model (WP-15).
  *
- * Every function here takes an `orgId` and puts it in the WHERE clause, even
- * where RLS would already do it. The web request handle connects as the
- * application's own role rather than as `authenticated`, so RLS is the second
- * fence and not the first: a query that forgets the org predicate would be a
- * cross-tenant read in the browser even though the same query is safe from
- * PostgREST. The two layers are tested separately for that reason.
- *
- * The author/status rules are likewise enforced twice: `app.feedback_guard_update`
- * refuses the write in the database, and the update helpers below scope their
- * statements so a refused write affects zero rows and throws here. The trigger
- * is the truth; these predicates are what turn "nothing happened" into an error
- * the route can turn into a 403.
+ * Web mutations use the complete actor command below: current member authority,
+ * authenticated RLS, explicit organization predicates and readback share one
+ * transaction. Low-level helpers remain available to explicit service callers;
+ * their privileged handles do not gain RLS protection from an org predicate.
  */
-import type { DbHandle } from '../client.js';
+import {
+  FEEDBACK_TYPES, FEEDBACK_SEVERITIES, FEEDBACK_STATUSES, FeedbackBody, FeedbackTitle,
+  FeedbackCommand, FeedbackCommandResult, FeedbackSeverity as FeedbackSeveritySchema,
+  OrgActor, OrgRole, ORG_CAPABILITY_ROLES,
+} from '@wizard-ads/shared';
+import type { FeedbackType, FeedbackSeverity, FeedbackStatus, FeedbackItemRecord } from '@wizard-ads/shared';
+import type { DbHandle, QueryHandle } from '../client.js';
 import type { JsonValue } from './goto.js';
 import { toDate } from './pg-time.js';
+import { withAuthenticatedIdentity } from './authenticated-actor.js';
 
-export type FeedbackQueryHandle = Pick<DbHandle, 'sql'>;
+export type FeedbackQueryHandle = QueryHandle;
 
-export const FEEDBACK_TYPES = ['bug', 'feature'] as const;
-export type FeedbackType = (typeof FEEDBACK_TYPES)[number];
-
-export const FEEDBACK_SEVERITIES = ['low', 'medium', 'high', 'critical'] as const;
-export type FeedbackSeverity = (typeof FEEDBACK_SEVERITIES)[number];
-
-export const FEEDBACK_STATUSES = [
-  'new',
-  'triaged',
-  'planned',
-  'in_progress',
-  'shipped',
-  'declined',
-] as const;
-export type FeedbackStatus = (typeof FEEDBACK_STATUSES)[number];
+export { FEEDBACK_TYPES, FEEDBACK_SEVERITIES, FEEDBACK_STATUSES };
+export type { FeedbackType, FeedbackSeverity, FeedbackStatus, FeedbackItemRecord };
 
 /** The three roadmap columns, in the order they are shown. */
 export const ROADMAP_STATUSES = ['planned', 'in_progress', 'shipped'] as const;
@@ -43,28 +29,6 @@ export const ROADMAP_STATUSES = ['planned', 'in_progress', 'shipped'] as const;
 export const OPEN_FEEDBACK_STATUSES = ['new', 'triaged', 'planned', 'in_progress'] as const;
 
 export type FeedbackSort = 'votes' | 'newest';
-
-export interface FeedbackItemRecord {
-  id: string;
-  orgId: string;
-  authorId: string | null;
-  type: FeedbackType;
-  title: string;
-  body: string;
-  severity: FeedbackSeverity | null;
-  status: FeedbackStatus;
-  adminNote: string | null;
-  duplicateOf: string | null;
-  /** Null until the out-of-band semantic duplicate checker has evaluated it. */
-  dedupCheckedAt: Date | null;
-  pageContext: JsonValue;
-  votes: number;
-  /** Whether the viewer named in the query has voted. False when none was. */
-  viewerHasVoted: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-  statusChangedAt: Date;
-}
 
 export interface FeedbackCounts {
   openBugs: number;
@@ -165,19 +129,28 @@ export class FeedbackNotEditable extends Error {
   }
 }
 
+export class FeedbackInputError extends Error {}
+
+/** Fixed errors never retain SQL text, parameters, request data or driver causes. */
+export class FeedbackCommandError extends Error {
+  constructor(readonly code: 'invalid' | 'not_found' | 'forbidden' | 'unconfirmed') {
+    super({ invalid: 'Check the feedback fields and try again.', not_found: 'Feedback item or context not found',
+      forbidden: 'This feedback change is not permitted.',
+      unconfirmed: 'The save could not be confirmed. Reload before trying again.' }[code]);
+    this.name = 'FeedbackCommandError';
+  }
+}
+
 export function normalizeFeedbackTitle(title: string): string {
-  const normalized = title.trim().replace(/\s+/g, ' ');
-  if (!normalized) throw new Error('A feedback title cannot be empty');
-  if (normalized.length > 200) throw new Error('A feedback title cannot exceed 200 characters');
-  return normalized;
+  const parsed = FeedbackTitle.safeParse(title);
+  if (!parsed.success) throw new FeedbackInputError(parsed.error.issues[0]!.message);
+  return parsed.data;
 }
 
 export function normalizeFeedbackBody(body: string | undefined): string {
-  const normalized = (body ?? '').trim();
-  if (normalized.length > 20_000) {
-    throw new Error('A feedback description cannot exceed 20000 characters');
-  }
-  return normalized;
+  const parsed = FeedbackBody.safeParse(body ?? '');
+  if (!parsed.success) throw new FeedbackInputError(parsed.error.issues[0]!.message);
+  return parsed.data;
 }
 
 /**
@@ -189,9 +162,10 @@ export function normalizeFeedbackSeverity(
   severity: FeedbackSeverity | null | undefined,
 ): FeedbackSeverity | null {
   if (severity === null || severity === undefined) return null;
-  if (type !== 'bug') throw new Error('Only a bug report carries a severity');
-  if (!FEEDBACK_SEVERITIES.includes(severity)) throw new Error(`Unknown severity: ${severity}`);
-  return severity;
+  if (type !== 'bug') throw new FeedbackInputError('Only a bug report carries a severity');
+  const parsed = FeedbackSeveritySchema.safeParse(severity);
+  if (!parsed.success) throw new FeedbackInputError('Unknown feedback severity');
+  return parsed.data;
 }
 
 function serializeContext(context: JsonValue | undefined): string {
@@ -225,7 +199,7 @@ export async function createFeedbackItem(
     returning id
   `;
   const id = rows[0]?.id;
-  if (!id) throw new Error('Creating a feedback item returned no row');
+  if (rows.length !== 1 || !id) throw new Error('Creating a feedback item returned an unexpected row count');
   const created = await getFeedbackItem(handle, {
     orgId: input.orgId,
     itemId: id,
@@ -244,10 +218,10 @@ export async function getFeedbackItem(
     select i.id, i.org_id, i.author_id, i.type::text as type, i.title, i.body,
            i.severity::text as severity, i.status::text as status, i.admin_note,
            i.duplicate_of, i.dedup_checked_at, i.page_context,
-           (select count(*) from public.feedback_votes v where v.item_id = i.id) as votes,
+           (select count(*) from public.feedback_votes v where v.org_id = i.org_id and v.item_id = i.id) as votes,
            exists(
              select 1 from public.feedback_votes v
-              where v.item_id = i.id and v.user_id = ${viewerId}::uuid
+              where v.org_id = i.org_id and v.item_id = i.id and v.user_id = ${viewerId}::uuid
            ) as viewer_has_voted,
            i.created_at, i.updated_at, i.status_changed_at
       from public.feedback_items i
@@ -269,10 +243,10 @@ export async function listFeedbackItems(
     select i.id, i.org_id, i.author_id, i.type::text as type, i.title, i.body,
            i.severity::text as severity, i.status::text as status, i.admin_note,
            i.duplicate_of, i.dedup_checked_at, i.page_context,
-           (select count(*) from public.feedback_votes v where v.item_id = i.id) as votes,
+           (select count(*) from public.feedback_votes v where v.org_id = i.org_id and v.item_id = i.id) as votes,
            exists(
              select 1 from public.feedback_votes v
-              where v.item_id = i.id and v.user_id = ${viewerId}::uuid
+              where v.org_id = i.org_id and v.item_id = i.id and v.user_id = ${viewerId}::uuid
            ) as viewer_has_voted,
            i.created_at, i.updated_at, i.status_changed_at
       from public.feedback_items i
@@ -283,7 +257,7 @@ export async function listFeedbackItems(
      -- One statement rather than two, so the projection cannot drift between
      -- the two orderings. The CASE collapses to a constant per query.
      order by (case when ${sort} = 'votes'
-                    then (select count(*) from public.feedback_votes v where v.item_id = i.id)
+                    then (select count(*) from public.feedback_votes v where v.org_id = i.org_id and v.item_id = i.id)
                     else 0 end) desc,
               i.created_at desc, i.id
      limit ${limit}
@@ -392,10 +366,10 @@ export async function findSimilarOpenBugs(
     select i.id, i.org_id, i.author_id, i.type::text as type, i.title, i.body,
            i.severity::text as severity, i.status::text as status, i.admin_note,
            i.duplicate_of, i.dedup_checked_at, i.page_context,
-           (select count(*) from public.feedback_votes v where v.item_id = i.id) as votes,
+           (select count(*) from public.feedback_votes v where v.org_id = i.org_id and v.item_id = i.id) as votes,
            exists(
              select 1 from public.feedback_votes v
-              where v.item_id = i.id and v.user_id = ${viewerId}::uuid
+              where v.org_id = i.org_id and v.item_id = i.id and v.user_id = ${viewerId}::uuid
            ) as viewer_has_voted,
            i.created_at, i.updated_at, i.status_changed_at
       from public.feedback_items i
@@ -404,7 +378,7 @@ export async function findSimilarOpenBugs(
        and i.status in ('new', 'triaged', 'planned', 'in_progress')
        and i.duplicate_of is null
        and i.title ilike ${pattern} escape '\\'
-     order by (select count(*) from public.feedback_votes v where v.item_id = i.id) desc,
+     order by (select count(*) from public.feedback_votes v where v.org_id = i.org_id and v.item_id = i.id) desc,
               i.created_at desc, i.id
      limit ${limit}
   `;
@@ -415,8 +389,8 @@ export async function findSimilarOpenBugs(
  * Cast or withdraw one person's vote, and report the resulting count.
  *
  * A delete that removed a row means the vote was on; otherwise it is inserted.
- * `on conflict do nothing` covers the double-click that races itself, and the
- * returned count is read after the write rather than incremented in memory.
+ * A conflict is not a confirmed toggle. Actor commands serialize through their
+ * held authority lock; callers outside that boundary may receive a refusal.
  */
 export async function toggleFeedbackVote(
   handle: FeedbackQueryHandle,
@@ -433,26 +407,32 @@ export async function toggleFeedbackVote(
      where org_id = ${input.orgId} and item_id = ${input.itemId} and user_id = ${input.userId}
     returning item_id
   `;
+  if (removed.length > 1) throw new Error('Unexpected feedback vote removal count');
   if (removed.length === 0) {
-    await handle.sql`
+    const inserted = await handle.sql<{ item_id: string }[]>`
       insert into public.feedback_votes (item_id, org_id, user_id)
       values (${input.itemId}, ${input.orgId}, ${input.userId})
       on conflict (item_id, user_id) do nothing
+      returning item_id
     `;
+    if (inserted.length !== 1) throw new Error('Feedback vote transition could not be confirmed');
   }
 
   const counted = await handle.sql<{ votes: string; voted: boolean }[]>`
     select
-      (select count(*) from public.feedback_votes v where v.item_id = ${input.itemId}) as votes,
+      (select count(*) from public.feedback_votes v where v.org_id = ${input.orgId} and v.item_id = ${input.itemId}) as votes,
       exists(
         select 1 from public.feedback_votes v
-         where v.item_id = ${input.itemId} and v.user_id = ${input.userId}
+         where v.org_id = ${input.orgId} and v.item_id = ${input.itemId} and v.user_id = ${input.userId}
       ) as voted
   `;
+  const votes = Number(counted[0]?.votes);
+  if (counted.length !== 1 || !Number.isSafeInteger(votes) || votes < 0
+    || counted[0]?.voted !== (removed.length === 0)) throw new Error('Feedback vote readback differs');
   return {
     itemId: input.itemId,
-    voted: counted[0]?.voted ?? false,
-    votes: Number(counted[0]?.votes ?? 0),
+    voted: counted[0].voted,
+    votes,
   };
 }
 
@@ -484,7 +464,7 @@ export async function markFeedbackDuplicate(
     returning source.id
   `;
   const id = rows[0]?.id;
-  if (!id) throw new FeedbackNotFound('Feedback item or duplicate target not found');
+  if (rows.length !== 1 || !id) throw new FeedbackNotFound('Feedback item or duplicate target not found');
   const item = await getFeedbackItem(handle, {
     orgId: input.orgId,
     itemId: id,
@@ -530,7 +510,7 @@ export async function setFeedbackStatus(
     returning id
   `;
   const id = rows[0]?.id;
-  if (!id) throw new FeedbackNotFound();
+  if (rows.length !== 1 || !id) throw new FeedbackNotFound();
   const item = await getFeedbackItem(handle, {
     orgId: input.orgId,
     itemId: id,
@@ -565,23 +545,25 @@ export async function updateFeedbackContent(
     throw new FeedbackNotEditable();
   }
 
-  const title = input.title === undefined ? current.title : normalizeFeedbackTitle(input.title);
-  const body = input.body === undefined ? current.body : normalizeFeedbackBody(input.body);
+  const title = input.title === undefined ? null : normalizeFeedbackTitle(input.title);
+  const body = input.body === undefined ? null : normalizeFeedbackBody(input.body);
   const severity =
     input.severity === undefined
-      ? current.severity
+      ? null
       : normalizeFeedbackSeverity(current.type, input.severity);
 
   const rows = await handle.sql<{ id: string }[]>`
     update public.feedback_items
-       set title = ${title}, body = ${body}, severity = ${severity}::public.feedback_severity
+       set title = case when ${input.title !== undefined} then ${title}::text else title end,
+           body = case when ${input.body !== undefined} then ${body}::text else body end,
+           severity = case when ${input.severity !== undefined} then ${severity}::public.feedback_severity else severity end
      where org_id = ${input.orgId}
        and id = ${input.itemId}
        and author_id = ${input.authorId}
        and status = 'new'
     returning id
   `;
-  if (!rows[0]) throw new FeedbackNotEditable();
+  if (rows.length !== 1) throw new FeedbackNotEditable();
   const item = await getFeedbackItem(handle, {
     orgId: input.orgId,
     itemId: input.itemId,
@@ -589,4 +571,66 @@ export async function updateFeedbackContent(
   });
   if (!item) throw new FeedbackNotFound();
   return item;
+}
+
+/** One complete authenticated command. An exception never authorizes replay. */
+export async function mutateFeedbackForActor(
+  handle: Pick<DbHandle, 'sql'>,
+  rawActor: OrgActor,
+  rawCommand: FeedbackCommand,
+): Promise<FeedbackCommandResult> {
+  try {
+    const actorParse = OrgActor.safeParse(rawActor);
+    if (!actorParse.success) throw new FeedbackCommandError('forbidden');
+    const actor = Object.freeze(actorParse.data);
+    const commandParse = FeedbackCommand.safeParse(rawCommand);
+    if (!commandParse.success) throw new FeedbackCommandError('invalid');
+    const command = commandParse.data;
+    return await withAuthenticatedIdentity(handle, { userId: actor.userId }, async (sql) => {
+      const [locked] = await sql<{ role: string }[]>`select app.lock_feedback_member(${actor.orgId}::uuid) as role`;
+      const role = OrgRole.parse(locked?.role);
+      if ((command.kind === 'triage' || command.kind === 'duplicate')
+        && !(ORG_CAPABILITY_ROLES.triageFeedback as readonly OrgRole[]).includes(role)) {
+        throw new FeedbackCommandError('forbidden');
+      }
+      const query = { sql };
+      let result: FeedbackCommandResult;
+      switch (command.kind) {
+        case 'create': {
+          const context = command.pageContext ?? { route: null, profileId: null, appVersion: null };
+          if (context.profileId !== null) {
+            const profiles = await sql`select id from public.ad_profiles
+              where org_id=${actor.orgId} and id=${context.profileId}`;
+            if (profiles.length !== 1) throw new FeedbackCommandError('not_found');
+          }
+          const item = await createFeedbackItem(query, { ...command, orgId: actor.orgId, authorId: actor.userId,
+            pageContext: { ...context, actorType: 'user' } });
+          result = { kind: 'created', item };
+          break;
+        }
+        case 'edit':
+          result = { kind: 'updated', item: await updateFeedbackContent(query, { ...command, orgId: actor.orgId, authorId: actor.userId }) };
+          break;
+        case 'triage':
+          result = { kind: 'updated', item: await setFeedbackStatus(query, { ...command, orgId: actor.orgId, viewerId: actor.userId }) };
+          break;
+        case 'duplicate':
+          result = { kind: 'updated', item: await markFeedbackDuplicate(query, { ...command, orgId: actor.orgId, viewerId: actor.userId }) };
+          break;
+        case 'toggleVote':
+          result = { kind: 'vote', ...await toggleFeedbackVote(query, { orgId: actor.orgId, itemId: command.itemId, userId: actor.userId }) };
+          break;
+      }
+      // Validate readback before COMMIT; malformed counts/rows roll back the DML.
+      return FeedbackCommandResult.parse(result);
+    });
+  } catch (error) {
+    if (error instanceof FeedbackCommandError) throw error;
+    if (error instanceof FeedbackNotFound) throw new FeedbackCommandError('not_found');
+    if (error instanceof FeedbackNotEditable) throw new FeedbackCommandError('forbidden');
+    if (error instanceof FeedbackInputError) throw new FeedbackCommandError('invalid');
+    const sqlError = error as { code?: unknown; message?: unknown } | null;
+    if (sqlError?.code === '42501' && sqlError.message === 'Resource not found') throw new FeedbackCommandError('forbidden');
+    throw new FeedbackCommandError('unconfirmed');
+  }
 }

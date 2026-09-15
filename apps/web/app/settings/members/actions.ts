@@ -11,6 +11,7 @@ import {
 } from '../../../src/data/invitations';
 import type { InvitationRecord } from '../../../src/data/invitations';
 import { listMembers, removeMember, updateMemberRole } from '../../../src/data/members';
+import { deliverTeamInvitation, teamInvitationDeliveryMessage } from '../../../src/invitations/delivery';
 
 export type MemberActionResult =
   | { status: 'idle' }
@@ -53,11 +54,12 @@ export async function createInvite(
       role,
       invitedBy: actor.id,
     });
+    const delivery = await deliverTeamInvitation(handle, { orgId: active.orgId, userId: actor.id }, issued.token);
 
     revalidatePath('/settings/members');
     return {
       status: 'ok',
-      message: `Invitation created for ${issued.invitation.email}.`,
+      message: `Invitation created for ${issued.invitation.email}. ${teamInvitationDeliveryMessage(delivery)}`,
       invitation: issued.invitation,
       inviteUrl: `${appUrl}/invite/${issued.token}`,
     };
@@ -101,7 +103,7 @@ export async function changeMemberRole(
     const actor = await actorId();
     const userId = requiredText(formData.get('userId'), 'No member was selected.');
     const role = roleFrom(formData.get('role'));
-    const members = await listMembers(handle, active.orgId);
+    const members = await listMembers(handle, { orgId: active.orgId, userId: actor.id });
     const target = members.find((member) => member.userId === userId);
     if (!target) return errorResult('That person is no longer a member.');
 
@@ -150,7 +152,7 @@ export async function removeOrgMember(
     const userId = requiredText(formData.get('userId'), 'No member was selected.');
     if (userId === actor.id) return errorResult('You cannot remove yourself.');
 
-    const members = await listMembers(handle, active.orgId);
+    const members = await listMembers(handle, { orgId: active.orgId, userId: actor.id });
     const target = members.find((member) => member.userId === userId);
     if (!target) return errorResult('That person is no longer a member.');
     if (target.role === 'owner' && active.role !== 'owner') {

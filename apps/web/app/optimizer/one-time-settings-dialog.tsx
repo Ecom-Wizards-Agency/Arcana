@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ONE_TIME_RPC_BID_FIELDS, OneTimeRpcConfiguration, type OneTimeRpcBidSettings } from '@wizard-ads/shared';
+import { ONE_TIME_RPC_BID_FIELDS, OneTimeRpcConfiguration, type OneTimeRpcBidSettings, type MethodId } from '@wizard-ads/shared';
 import { commonOneTimeSettings, completedPreviewWindow } from '../../src/optimizer/one-time-settings';
 
 const fields: Array<{ name: typeof ONE_TIME_RPC_BID_FIELDS[number]; label: string; percentage: boolean }> = [
@@ -24,6 +24,7 @@ export function OneTimeSettingsDialog({ campaignCount, settings, period, profile
   onConfirm(configuration: OneTimeRpcConfiguration): void;
 }): ReactNode {
   const dialog = useRef<HTMLDialogElement>(null);
+  const [method, setMethod] = useState<MethodId>('sp.reference-efficiency');
   const [error, setError] = useState<string | null>(null);
   const common = commonOneTimeSettings(settings);
   const window = completedPreviewWindow(period, profileToday);
@@ -43,17 +44,33 @@ export function OneTimeSettingsDialog({ campaignCount, settings, period, profile
         const raw = String(data.get(field.name) ?? '').trim();
         return [field.name, raw === '' ? undefined : Number(raw) / (field.percentage ? 100 : 1)];
       }));
-      const result = OneTimeRpcConfiguration.safeParse({ ...numbers, version: 1, method: 'rpc', window: { start: data.get('start'), end: data.get('end') } });
+      const result = OneTimeRpcConfiguration.safeParse({ ...numbers, version: method === 'sp.coordinated-efficiency' ? 2 : 1, method,
+        ...(method === 'sp.coordinated-efficiency' ? { exposureCeiling: Number(data.get('exposureCeiling')),
+          minClicksPerPlacement: Number(data.get('minClicksPerPlacement')), placementEvidenceRequirements: data.get('placementEvidenceRequirements') } : {}), window: { start: data.get('start'), end: data.get('end') } });
       if (!result.success) { setError(result.error.issues[0]?.message ?? 'Review the preview settings.'); return; }
       if (result.data.window.end >= profileToday) { setError('Choose completed days before today in this account’s timezone.'); return; }
       setError(null);
       onConfirm(result.data);
     }}>
       <h2 id="one-time-preview-title" className="wa-card__title">Confirm one-time preview</h2>
-      <p>{campaignCount.toLocaleString('en-US')} campaigns · RPC · {currencyCode}</p>
-      <p className="wa-hint">Uses revenue per click with the existing bid rules and stock, rank, and observation safeguards. Saved strategies and schedules stay unchanged.</p>
+      <p>{campaignCount.toLocaleString('en-US')} campaigns · {method === 'sp.reference-efficiency' ? 'SP reference efficiency' : 'SP coordinated efficiency (draft)'} · {currencyCode}</p>
+      {method === 'sp.coordinated-efficiency' ? <p className="wa-hint">Calculates base bids and placements together. Draft previews cannot be approved for Amazon execution.</p> : null}
+      <p className="wa-hint">Uses the selected method with stock, rank, and observation safeguards. Assigned group values override the run fields below; run fields fill missing group values. Saved settings stay unchanged.</p>
       {missing ? <p className="wa-hint">Some settings are mixed or missing. Choose a value for each blank field.</p> : <p className="wa-hint">Matching settings from the selected campaigns are prefilled.</p>}
       <fieldset disabled={submitting} style={{ border: 0, padding: 0, display: 'grid', gap: '0.75rem', gridTemplateColumns: '1fr 1fr' }}>
+        <label className="wa-label" style={{ gridColumn: '1 / -1' }}>Method
+          <select className="wa-input" name="method" value={method} onChange={(event) => setMethod(event.target.value as MethodId)}>
+            <option value="sp.reference-efficiency">SP reference efficiency</option>
+            <option value="sp.coordinated-efficiency">SP coordinated efficiency (draft)</option>
+          </select>
+        </label>
+        {method === 'sp.coordinated-efficiency' ? <>
+          <label className="wa-label">Exposure ceiling ({currencyCode})<input className="wa-input" name="exposureCeiling" type="number" min="0" step="any" required /></label>
+          <label className="wa-label">Minimum clicks per placement<input className="wa-input" name="minClicksPerPlacement" type="number" min="1" step="1" required /></label>
+          <label className="wa-label" style={{ gridColumn: '1 / -1' }}>Placement evidence
+            <select className="wa-input" name="placementEvidenceRequirements"><option value="single_target">Single-target campaigns</option><option value="validated_homogeneous">Validated homogeneous campaigns</option></select>
+          </label>
+        </> : null}
         {fields.map((field) => <label className="wa-label" key={field.name}>
           {field.label}{field.percentage ? '' : ` (${currencyCode})`}
           <input className="wa-input" name={field.name} type="number" required step="any" min="0"

@@ -50,7 +50,8 @@ export async function verifyArtifact(directory: string, revision: string, instal
   }
   const inputs = (await text('SOURCE_INPUTS')).split('\n');
   if (inputs.pop() !== '' || inputs.length < 4
-    || inputs.some((line) => !/^[0-9a-f]{64} {2}[A-Za-z0-9_@+./-]+$/u.test(line)
+    || inputs.some((line) => (!/^[0-9a-f]{64} {2}[A-Za-z0-9_@+./-]+$/u.test(line)
+      && !/^[0-9a-f]{64} {2}node_modules\/\.pnpm\/postgres@3\.4\.9_patch_hash=[0-9a-f]{64}\/node_modules\/postgres\/[A-Za-z0-9_./-]+$/u.test(line))
       || line.includes('/../') || line.slice(66).startsWith('/'))
     || new Set(inputs.map((line) => line.slice(66))).size !== inputs.length) throw new Error('Authority source census differs');
   if (installed) {

@@ -1,28 +1,4 @@
-/**
- * "Show your work": the provenance panel's model.
- *
- * This is the product differentiator, not decoration. AdLabs publishes the
- * White Box formulas but not the numbers that went into a given row; every
- * proposal we show carries the RPC, the click count, which level of the
- * data-confidence hierarchy supplied the CVR, which ceiling bound the result
- * and whether a change cap clamped it.
- *
- * Two shapes are cloned from the recon (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/04-optimizer.md` §3), and
- * both matter:
- *
- * - **Change reason and limit reason are separate facts.** "This bid went up
- *   because the target is under-clicked" and "it did not go up as far as the
- *   formula wanted because the ad-group ceiling bound it" are two different
- *   statements and they get two different lines.
- * - **A bound value is stated as bound.** We do not store the algorithm's
- *   unclamped number, so the panel says *that* a ceiling or a cap bound the
- *   result rather than inventing the value it would otherwise have taken.
- *
- * Every field of `RecommendationInputs` is rendered for every reason. A field
- * that is null renders as an explicit "not applicable / no clicks" line rather
- * than being dropped: a missing row reads as an oversight, and an operator
- * cannot tell an absent input from an input we forgot to show.
- */
+/** Render historical calculation evidence without recomputing its arithmetic. */
 import type { RecommendationInputs } from '@wizard-ads/shared';
 
 export interface ProvenanceLine {
@@ -146,6 +122,23 @@ export function provenanceLines(inputs: RecommendationInputs): ProvenanceLine[] 
       hint: 'The optimization period the numbers above were measured over.',
     },
   ];
+  if (inputs.methodId !== undefined) lines.push({ key: 'method', label: 'Method',
+    value: `${inputs.methodId}@${inputs.methodVersion ?? 'version not recorded'}`, hint: 'Method version saved with this calculation.' });
+  for (const [name, setting] of Object.entries(inputs.settingSources ?? {})) {
+    const label = SETTING_LABELS[name] ?? name;
+    const value = setting.value === null ? 'not configured' : String(setting.value);
+    lines.push({ key: `setting:${name}`, label, value: `${value} · ${setting.source}: ${setting.sourceLabel}`,
+      hint: setting.source === 'group' ? 'The assigned group value overrides this run field.' : 'Effective value saved for this calculation.' });
+  }
+  for (const step of inputs.trace?.steps ?? []) {
+    const bound = step.boundApplied;
+    lines.push({ key: `trace:${step.index}`, label: `${step.index + 1}. ${step.label}`,
+      value: `${step.formula} → ${step.result === null ? 'not applicable' : step.result}`,
+      hint: [step.inputs.map((value) => `${value.name}=${value.value ?? 'not available'} ${value.unit}`).join('; '),
+        bound === null ? '' : `${bound.name}: ${bound.before} → ${bound.after} (bound ${bound.value})`,
+        step.intermediateValue === null ? '' : `Intermediate value: ${step.intermediateValue}`,
+      ].filter(Boolean).join('; ') || 'Saved calculation step.' });
+  }
   return lines;
 }
 
@@ -156,3 +149,8 @@ export function reasonLabel(reason: string): string {
 export function reasonFormula(reason: string): string {
   return REASON_FORMULAS[reason] ?? 'No published formula for this reason.';
 }
+
+const SETTING_LABELS: Record<string, string> = {
+  targetAcos: 'Target ACOS (ratio)', bidFloor: 'Minimum bid', bidCeiling: 'Maximum bid',
+  bidIncreaseCap: 'Maximum bid increase (ratio)', bidDecreaseCap: 'Maximum bid decrease (ratio)',
+};

@@ -1,57 +1,27 @@
 'use client';
 
-/**
- * The sidebar's navigation: one direct home link, three task groups, and quiet
- * utility links above the icon-rail collapse toggle.
- *
- * The shape is the recon's (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/01-navigation-map.md`): the incumbent's
- * nav is a projection of the entity hierarchy into named groups, which is why an
- * operator can guess where anything lives. Ours is the same idea over our own
- * routes — and it fixes the finding that indicted theirs, that a whole working
- * surface sat at an unlinked route. **Every screen this product has is in this
- * list.** `nav.test.ts` counts them against `NAV_LINKS` so it stays true.
- *
- * `<details>` rather than a JavaScript disclosure: it collapses, it is keyboard
- * operable and it is announced correctly with no code from us, and — the reason
- * that matters here — the links inside are present in the server-rendered markup
- * whether or not the group is open, so nothing about navigation waits on
- * hydration. When the rail is collapsed to icons the labels stay in the DOM and
- * are hidden with CSS, so the same server markup carries both states and the
- * unit test sees every label. The rail also hides the group summaries, and a
- * closed `<details>` with no visible summary is a dead end, so every group is
- * forced open while collapsed; that forced state is never written back to the
- * operator's remembered closed set.
- *
- * A client component for three reasons: marking the current page, remembering
- * the collapse/open state in `localStorage`, and carrying the active
- * `?profile=` across App Router navigation. Next's pathname/search hooks keep
- * the chrome current through push, back and forward transitions.
- */
+/** Renders the server's registry projection and remembers disclosure state. */
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { shouldPrefetchRoute } from '../performance/routes';
-import { NAV_GROUPS } from './nav-links';
-import type { NavLink } from './nav-links';
+import type { NavGroup, NavLink } from './nav-links';
+import { useShellEvidence } from './shell-evidence';
 import { NavIcon } from './nav-icons';
 
 const CLOSED_KEY = 'openspell.nav.closed.v2';
 const COLLAPSED_KEY = 'wizard-ads.nav.collapsed';
-const WORKFLOW_GROUP_IDS = new Set(['optimize', 'analyze', 'verify']);
-const PRIMARY_LINKS = NAV_GROUPS.filter((group) => group.id === 'insights').flatMap(
-  (group) => group.links,
-);
-const WORKFLOW_GROUPS = NAV_GROUPS.filter((group) => WORKFLOW_GROUP_IDS.has(group.id));
-const UTILITY_LINKS = NAV_GROUPS.filter(
-  (group) => group.id === 'ai' || group.id === 'product' || group.id === 'admin',
-).flatMap((group) => group.links);
-const DEFAULT_CLOSED = WORKFLOW_GROUPS.map((group) => group.id);
-
-export function SidebarNav(): ReactNode {
+export function SidebarNav({ groups }: { groups: readonly NavGroup[] }): ReactNode {
   const pathname = usePathname();
-  const profile = useSearchParams().get('profile');
-  const [closed, setClosed] = useState<readonly string[]>(DEFAULT_CLOSED);
+  const searchParams = useSearchParams();
+  const profile = searchParams.get('profile');
+  const entity = searchParams.get('entity') ?? 'search_terms';
+  const primaryLinks = groups.filter((group) => group.placement === 'primary').flatMap((group) => group.links);
+  const workflowGroups = groups.filter((group) => group.placement === 'workflow');
+  const afterWorkflowLinks = groups.filter((group) => group.placement === 'after-workflow').flatMap((group) => group.links);
+  const utilityLinks = groups.filter((group) => group.placement === 'utility').flatMap((group) => group.links);
+  const defaultClosed: readonly string[] = [];
+  const [closed, setClosed] = useState<readonly string[]>(defaultClosed);
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
@@ -90,14 +60,14 @@ export function SidebarNav(): ReactNode {
     <>
       <nav aria-label="Primary" className="wa-sidebar-main">
         <ul className="wa-navlist wa-navlist--direct">
-          {PRIMARY_LINKS.map((link) => (
-            <NavLinkRow key={link.href} link={link} pathname={pathname} profile={profile} />
+          {primaryLinks.map((link) => (
+            <NavLinkRow key={link.href} link={link} pathname={pathname} profile={profile} entity={entity} />
           ))}
         </ul>
 
-        {WORKFLOW_GROUPS.map((group) => {
+        {workflowGroups.map((group) => {
           const holdsCurrent =
-            pathname !== null && group.links.some((link) => isCurrent(link.href, pathname));
+            pathname !== null && group.links.some((link) => isCurrent(link.href, pathname, entity));
           return (
             <details
               key={group.id}
@@ -120,22 +90,33 @@ export function SidebarNav(): ReactNode {
               </summary>
               <ul className="wa-navlist">
                 {group.links.map((link) => (
-                  <NavLinkRow key={link.href} link={link} pathname={pathname} profile={profile} />
+                  <NavLinkRow key={link.href} link={link} pathname={pathname} profile={profile} entity={entity} />
                 ))}
               </ul>
             </details>
           );
         })}
+        <ul className="wa-navlist wa-navlist--direct">
+          {afterWorkflowLinks.map((link) => (
+            <NavLinkRow key={link.href} link={link} pathname={pathname} profile={profile} entity={entity} />
+          ))}
+        </ul>
       </nav>
 
       <footer className="wa-sidebar-utilities">
         <nav aria-label="Product and account">
           <ul className="wa-navlist">
-            {UTILITY_LINKS.map((link) => (
-              <NavLinkRow key={link.href} link={link} pathname={pathname} profile={profile} />
+            {utilityLinks.slice(0, 1).map((link) => (
+              <NavLinkRow key={link.href} link={link} pathname={pathname} profile={profile} entity={entity} />
             ))}
           </ul>
         </nav>
+        <details className="wa-shell-more" open={collapsed}>
+          <summary>More</summary>
+          <nav aria-label="More destinations"><ul className="wa-navlist">
+            {utilityLinks.slice(1).map((link) => <NavLinkRow key={link.href} link={link} pathname={pathname} profile={profile} entity={entity} />)}
+          </ul></nav>
+        </details>
 
         <button
           type="button"
@@ -167,29 +148,33 @@ function NavLinkRow({
   link,
   pathname,
   profile,
+  entity,
 }: {
   link: NavLink;
   pathname: string | null;
   profile: string | null;
+  entity: string;
 }): ReactNode {
-  const current = pathname !== null && isCurrent(link.href, pathname);
-  return (
-    <li>
-      <Link
-        href={withProfile(link.href, profile)}
-        prefetch={shouldPrefetchRoute(link.href) ? null : false}
-        className="wa-navlink"
-        title={link.label}
-        {...(current ? { 'aria-current': 'page' as const } : {})}
-      >
-        <span aria-hidden="true" className="wa-navlink-icon">
-          <NavIcon icon={link.icon} />
-        </span>
-        <span className="wa-navlink-label">{link.label}</span>
-        {link.tag === undefined ? null : <span className="wa-navlink-tag">{link.tag}</span>}
-      </Link>
-    </li>
-  );
+  const current = !link.disabled && pathname !== null && isCurrent(link.href, pathname, entity);
+  const content = <>
+    <span aria-hidden="true" className="wa-navlink-icon"><NavIcon icon={link.icon} /></span>
+    <span className="wa-navlink-label">{link.label}</span>
+    {link.tag === undefined ? null : <span className="wa-navlink-tag">{link.tag}</span>}
+    {link.badgeSource === undefined ? null : <NavBadge source={link.badgeSource} />}
+  </>;
+  return <li>
+    {link.disabled ? <span className="wa-navlink" aria-disabled="true" title="Planned">{content}</span> :
+      <Link href={withProfile(link.href, profile)} prefetch={link.prefetch ? null : false}
+        className="wa-navlink" title={link.label} aria-current={current ? 'page' : undefined}>{content}</Link>}
+  </li>;
+}
+
+function NavBadge({ source }: { source: 'change-queue' | 'timeline' }) {
+  const count = useShellEvidence()?.badges[source];
+  return <span className="wa-shell-badge" data-badge-source={source}
+    aria-label={count == null ? 'Count unavailable' : `${count} ${source === 'timeline' ? 'active experiments' : 'pending review'}`}>
+    {count ?? '—'}
+  </span>;
 }
 
 /** Reflect the collapse state onto the root so CSS can resize the whole frame. */
@@ -199,27 +184,19 @@ function applyCollapsed(value: boolean, set: (value: boolean) => void): void {
   else document.documentElement.removeAttribute('data-nav-collapsed');
 }
 
-/**
- * Carry the chosen advertising profile through the navigation.
- *
- * Tenancy in this product is a parameter on the route, not a path prefix (see
- * `topbar-controls.tsx`), so a bare `href` is an instruction to forget which
- * profile the operator is looking at. Every link therefore re-states it. The `href` the
- * active-link check compares is still the bare one: the profile decides what a
- * screen shows, never which screen you are on.
- *
- * The links have no query of their own, so appending is the whole job.
- */
-function withProfile(href: string, profile: string | null): string {
+/** Merge profile context with a preset's existing query. */
+export function withProfile(href: string, profile: string | null): string {
   if (profile === null || profile === '') return href;
-  return `${href}?profile=${encodeURIComponent(profile)}`;
+  const [path, search = ''] = href.split('?');
+  const query = new URLSearchParams(search);
+  query.set('profile', profile);
+  return `${path}?${query.toString()}`;
 }
 
-/**
- * `/settings` is current while you are on `/settings/profiles`; `/grid` is not
- * current because you are on `/gridiron`. Prefix matching, on a segment
- * boundary.
- */
-function isCurrent(href: string, pathname: string): boolean {
-  return pathname === href || pathname.startsWith(`${href}/`);
+/** Grid presets match their entity; ordinary routes match whole path segments. */
+export function isCurrent(href: string, pathname: string, entity = 'search_terms'): boolean {
+  const [path = href, search = ''] = href.split('?');
+  const preset = new URLSearchParams(search).get('entity');
+  if (preset !== null) return pathname === path && entity === preset;
+  return pathname === path || (path !== '/' && pathname.startsWith(`${path}/`));
 }

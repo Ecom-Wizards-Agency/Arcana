@@ -1,12 +1,14 @@
+import { e2eTestMatch } from './src/e2e-suite-registry';
 /** Member and invitation flows in a fresh authenticated Next dev process. */
 import { defineConfig, devices } from '@playwright/test';
+import { withE2ESummaryReporter } from './e2e/e2e-count-reporter';
 import authConfig from './playwright.auth.config';
 
 export default defineConfig({
   ...authConfig,
-  testMatch: /members\.spec\.ts$/,
+  testMatch: e2eTestMatch('auth-members'),
   outputDir: './node_modules/.cache/playwright/auth-members',
-  reporter: process.env['CI']
+  reporter: withE2ESummaryReporter(process.env['CI']
     ? [
         ['list'],
         [
@@ -17,6 +19,6 @@ export default defineConfig({
           },
         ],
       ]
-    : [['list']],
+    : [['list']]),
   projects: [{ name: 'auth-members', use: { ...devices['Desktop Chrome'] } }],
 });

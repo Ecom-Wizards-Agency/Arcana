@@ -1,3 +1,4 @@
+import { sbKeywordSyncEnabledFromEnv } from './config.js';
 import {
   AdsApiClient as UnderlyingAdsApiClient,
   AdsApiHttpError,
@@ -11,15 +12,17 @@ import {
   type UnifiedReportOutcome,
   type CreativeAssetProbePage,
   type ReportMetadata,
+  type CreateReportInput as ProviderCreateReportInput,
   type SbAdProbePage,
 } from '@wizard-ads/ads-api';
 import {
-  getAdsRefreshToken,
-  getProfileConnectionId,
+  getAdsRefreshTokenForGeneration,
+  getProfileCredentialBinding,
+  getConnectionCredentialBinding,
   listActiveConnectionIdsForRegion,
   type DbHandle,
 } from '@wizard-ads/db';
-import type { EntityRow, Region, WorkerReportType } from '@wizard-ads/shared';
+import { BidRecommendationReadCounts, bidRecommendationTargetKey, type BidRecommendationCorridor, type BidRecommendationTarget, type AdsConnectionCredentialBinding, type EntityRow, type Region } from '@wizard-ads/shared';
 
 /** The profile routing information every Amazon call needs. */
 export interface AdsProfileContext {
@@ -31,11 +34,8 @@ export interface AdsProfileContext {
   timezone: string;
 }
 
-export interface CreateReportInput {
+export interface CreateReportInput extends ProviderCreateReportInput {
   profile: AdsProfileContext;
-  reportType: WorkerReportType;
-  startDate: string;
-  endDate: string;
 }
 
 export interface AdsReportStatus {
@@ -67,6 +67,8 @@ export interface EntityListFailure {
  * winners and records the losers rather than throwing everything away.
  */
 export interface EntityListing {
+  /** Unlisted kinds must be excluded from both mirror refresh and tombstoning. */
+  excludedEntityTypes?: Partial<Record<AdProductCode, readonly EntityRow['entityType'][]>>;
   rows: readonly EntityRow[];
   succeeded: readonly AdProductCode[];
   failures: readonly EntityListFailure[];
@@ -123,28 +125,15 @@ export type UnifiedReportRetrieveResult =
   | { kind: 'refused'; codes: readonly (string | null)[] };
 
 /** One target's Amazon suggested-bid corridor for the day (WP-27 read). */
-export interface SuggestedBidRead {
-  targetId: string;
-  low: number;
-  median: number;
-  high: number;
-}
+export type SuggestedBidRead = BidRecommendationCorridor;
 
-/** The SP keyword and product-target ids to read a suggested-bid corridor for. */
 export interface SuggestedBidRequest {
-  keywordIds: readonly string[];
-  targetIds: readonly string[];
+  targets: readonly BidRecommendationTarget[];
 }
 
-export interface SuggestedBidResult {
-  /** By Amazon target id, the corridor Amazon answered with. */
+export interface SuggestedBidResult extends BidRecommendationReadCounts {
+  /** Full campaign/ad-group/kind/id identity, not just the numeric target id. */
   byTarget: Map<string, SuggestedBidRead>;
-  /** Ids submitted across both endpoints. */
-  submitted: number;
-  /** Ids Amazon returned a corridor for. */
-  returned: number;
-  /** Ids Amazon returned an error for (still counted, just not corridors). */
-  errors: number;
 }
 
 /**
@@ -170,6 +159,9 @@ export interface SbVideoContractProbeClient {
 }
 
 export class AdsApiRetryableError extends Error {
+  readonly provider = 'amazon_ads';
+  readonly kind = 'retryable_job';
+  readonly retryable = true;
   constructor(message: string, readonly retryAfterSeconds?: number) {
     super(message);
     this.name = 'AdsApiRetryableError';
@@ -190,6 +182,10 @@ export class DownloadUrlExpiredError extends AdsApiRetryableError {
  * provider response can echo account-scoped request data.
  */
 export class ReportCreateOutcomeUnknownError extends Error {
+  readonly provider = 'amazon_ads';
+  readonly kind = 'ambiguous_outcome';
+  readonly retryable = false;
+  readonly retryAfterSeconds = undefined;
   override readonly name = 'ReportCreateOutcomeUnknownError';
 
   constructor(
@@ -229,25 +225,25 @@ export type UnderlyingClient = Pick<
   | 'getReport'
   | 'createUnifiedReports'
   | 'retrieveUnifiedReports'
-  // INTEGRATE (WP-28): the two WP-27 suggested-bid reads the bid-series sync
-  // drives. Added to the Pick so a unit test can mock only these without HTTP.
-  | 'getSpKeywordBidRecommendations'
-  | 'getSpTargetBidRecommendations'
+  | 'getSpBidRecommendations'
 > & Partial<Pick<
   UnderlyingAdsApiClient,
-  'probeSbAdsPage' | 'probeCreativeAssetsPage'
+  'probeSbAdsPage' | 'probeCreativeAssetsPage' | 'listSbKeywords'
 >>;
 
 /** The subset of `fetch` the report download needs. */
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface AdsApiAdapterDeps {
-  /** Amazon's connection id for one of our profile uuids, or null when it has none. */
-  resolveConnectionId(profileId: string): Promise<string | null>;
+  sbKeywordSyncEnabled?: boolean;
+  /** Match organization, profile, provider identity and region before credential access. */
+  resolveProfileBinding(profile: AdsProfileContext): Promise<AdsConnectionCredentialBinding | null>;
+  /** A fresh binding for health probes without a selected profile. */
+  resolveConnectionBinding(connectionId: string): Promise<AdsConnectionCredentialBinding | null>;
   /** Active, credentialed connections that own a profile in the region. */
   listConnectionIds(region: Region): Promise<readonly string[]>;
   /** The Vault-backed refresh token for a connection. Never logged. */
-  getRefreshToken(connectionId: string): Promise<string | null>;
+  getRefreshToken(binding: AdsConnectionCredentialBinding): Promise<string | null>;
   /** Build one region-scoped client for one connection's grant. */
   createClient(input: { connectionId: string; region: Region; refreshToken: string }): UnderlyingClient;
   /** Download transport. Defaults to the global `fetch`. */
@@ -266,10 +262,9 @@ const KNOWN_REPORT_STATUSES = new Set<AdsReportStatus['status']>([
  * The worker's `AdsApiClient`, backed by the real Amazon client.
  *
  * One underlying client per `(connection, region)` pair, built lazily: the
- * refresh token is read from Vault the first time a connection is touched and
- * the client cached, because minting an access token per job would refresh the
- * grant hundreds of times an hour. An auth failure evicts the cache entry so a
- * rotated credential is picked up on the next attempt rather than never.
+ * persisted credential generation is checked before each cache reuse. Rotation
+ * and revocation therefore reach every worker process without waiting for an
+ * old grant to fail. Only a changed generation needs another Vault read.
  *
  * Every Amazon error is narrowed to what the worker's retry policy can act on:
  * a 429 or 5xx (or a timeout) becomes `AdsApiRetryableError` so the job is
@@ -278,7 +273,9 @@ const KNOWN_REPORT_STATUSES = new Set<AdsReportStatus['status']>([
  * attempt counter to age out into the dead-letter.
  */
 export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, SuggestedBidClient, SbVideoContractProbeClient {
-  private readonly clients = new Map<string, UnderlyingClient>();
+  private readonly clients = new Map<string, {
+    orgId: string; generation: string; client: UnderlyingClient;
+  }>();
   private readonly fetch: FetchLike;
 
   constructor(private readonly deps: AdsApiAdapterDeps) {
@@ -307,7 +304,18 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
           () => client.listSpNegativeTargets(p),
         ],
       },
-      { product: 'SB', steps: [() => client.listSbCampaigns(p), () => client.listSbAdGroups(p)] },
+      { product: 'SB', steps: [
+        () => client.listSbCampaigns(p),
+        () => client.listSbAdGroups(p),
+        ...(this.deps.sbKeywordSyncEnabled === true ? [async () => {
+          if (!client.listSbKeywords) throw new Error('SB keyword listing capability is missing');
+          const listed = await client.listSbKeywords(p);
+          if (listed.truncated || listed.skipped.length !== 0 || listed.items.length !== listed.raw.length) {
+            throw new Error(`SB keywords: listed ${listed.raw.length}, mapped ${listed.items.length}, skipped ${listed.skipped.length}, truncated ${listed.truncated}`);
+          }
+          return listed;
+        }] : []),
+      ] },
       { product: 'SD', steps: [() => client.listSdCampaigns(p), () => client.listSdAdGroups(p)] },
     ];
 
@@ -337,7 +345,12 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
         failures.push({ adProduct: group.product, message: errorText(error), error });
       }
     }
-    return { rows, succeeded, failures };
+    return {
+      rows, succeeded, failures,
+      ...(this.deps.sbKeywordSyncEnabled === true ? {} : {
+        excludedEntityTypes: { SB: ['keyword'] as const },
+      }),
+    };
   }
 
   async createReport(input: CreateReportInput): Promise<{ reportId: string }> {
@@ -347,6 +360,10 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
         reportType: input.reportType,
         startDate: input.startDate,
         endDate: input.endDate,
+        ...(input.columns === undefined ? {} : { columns: input.columns }),
+        ...(input.filters === undefined ? {} : { filters: input.filters }),
+        ...(input.name === undefined ? {} : { name: input.name }),
+        ...(input.timeUnit === undefined ? {} : { timeUnit: input.timeUnit }),
       });
       return { reportId: meta.reportId };
     } catch (error) {
@@ -441,56 +458,54 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
     return toByteStream(body, signal);
   }
 
-  /**
-   * Read Amazon's daily suggested-bid corridor for a profile's SP keywords and
-   * product targets (WP-27 endpoints). A read, despite being a POST: the client
-   * marks it idempotent, so a transport failure retries safely.
-   *
-   * Errored ids are counted but not corridors — Amazon can answer some ids in a
-   * batch and error others, and the sync writes a corridor only where one came
-   * back. The two endpoints are hit sequentially for the same reason
-   * `listEntities` is: one profile must not fire simultaneous requests past the
-   * region concurrency cap the caller wraps this in.
-   */
+  /** Carry complete scope and expression identity through the theme-based read. */
   async getSpSuggestedBids(
     profile: AdsProfileContext,
-    ids: SuggestedBidRequest,
+    request: SuggestedBidRequest,
   ): Promise<SuggestedBidResult> {
+    if (request.targets.length === 0) return {
+      byTarget: new Map(), offered: 0, eligible: 0, requested: 0, returned: 0, refused: 0, unmatched: 0,
+    };
     const client = await this.clientForProfile(profile);
+    const result = await this.guard(profile.region, () =>
+      client.getSpBidRecommendations(profile.amazonProfileId, request.targets));
+    const counts = BidRecommendationReadCounts.parse(result);
     const byTarget = new Map<string, SuggestedBidRead>();
-    let submitted = 0;
-    let returned = 0;
-    let errors = 0;
-
-    const reads: Array<{ ids: readonly string[]; run: () => Promise<{ items: readonly { targetId: string; low: number; median: number; high: number }[]; errors: readonly unknown[] }> }> = [
-      { ids: ids.keywordIds, run: () => client.getSpKeywordBidRecommendations(profile.amazonProfileId, ids.keywordIds) },
-      { ids: ids.targetIds, run: () => client.getSpTargetBidRecommendations(profile.amazonProfileId, ids.targetIds) },
-    ];
-
-    for (const read of reads) {
-      if (read.ids.length === 0) continue;
-      submitted += read.ids.length;
-      const result = await this.guard(profile.region, read.run);
-      for (const item of result.items) {
-        byTarget.set(item.targetId, {
-          targetId: item.targetId,
-          low: item.low,
-          median: item.median,
-          high: item.high,
-        });
-        returned += 1;
+    const seen = new Set<number>();
+    for (const item of result.items) {
+      const expected = request.targets[item.index];
+      if (expected === undefined || seen.has(item.index)
+        || bidRecommendationTargetKey(expected) !== bidRecommendationTargetKey(item)
+        || expected.targetingExpression?.type !== item.targetingExpression?.type
+        || expected.targetingExpression?.value !== item.targetingExpression?.value) {
+        throw new AdsApiParseError('bid recommendations returned an unexpected or duplicate target');
       }
-      errors += result.errors.length;
+      seen.add(item.index);
+      byTarget.set(bidRecommendationTargetKey(item), item);
     }
-
-    return { byTarget, submitted, returned, errors };
+    for (const refusal of result.errors) {
+      const expected = request.targets[refusal.index];
+      if (expected === undefined || seen.has(refusal.index) || expected.targetId !== refusal.targetId
+        || expected.isKeyword !== (refusal.kind === 'keywords')) {
+        throw new AdsApiParseError('bid recommendations returned an unexpected or duplicate refusal');
+      }
+      seen.add(refusal.index);
+    }
+    if (counts.offered !== request.targets.length || byTarget.size !== counts.returned
+      || result.errors.length !== counts.refused || seen.size !== counts.requested) {
+      throw new AdsApiParseError('bid recommendation adapter counts do not reconcile');
+    }
+    return { ...counts, byTarget };
   }
 
   async listProfiles(region: Region): Promise<readonly string[]> {
     const connectionIds = await this.deps.listConnectionIds(region);
     const profileIds: string[] = [];
     for (const connectionId of connectionIds) {
-      const client = await this.clientFor(connectionId, region);
+      const binding = await this.deps.resolveConnectionBinding(connectionId);
+      if (binding === null) { this.clients.delete(`${connectionId}:${region}`); continue; }
+      if (binding.connectionId !== connectionId) throw new Error('Connection credential binding mismatch');
+      const client = await this.clientFor(binding, region);
       if (!client) continue;
       const profiles = await this.guard(region, () => client.getProfiles(), connectionId);
       for (const profile of profiles) profileIds.push(profile.profileId);
@@ -538,21 +553,24 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
   }
 
   private async clientForProfile(profile: AdsProfileContext): Promise<UnderlyingClient> {
-    const connectionId = await this.deps.resolveConnectionId(profile.id);
-    if (!connectionId) throw new Error(`profile ${profile.id} has no Amazon connection`);
-    const client = await this.clientFor(connectionId, profile.region);
-    if (!client) throw new Error(`connection ${connectionId} has no stored refresh token`);
+    const binding = await this.deps.resolveProfileBinding(profile);
+    if (binding === null) throw new Error(`profile ${profile.id} has no Amazon connection`);
+    if (binding.orgId !== profile.orgId) throw new Error('Profile credential binding mismatch');
+    const client = await this.clientFor(binding, profile.region);
+    if (!client) throw new Error(`connection ${binding.connectionId} has no stored refresh token`);
     return client;
   }
 
-  private async clientFor(connectionId: string, region: Region): Promise<UnderlyingClient | null> {
+  private async clientFor(binding: AdsConnectionCredentialBinding, region: Region): Promise<UnderlyingClient | null> {
+    const { connectionId, orgId, generation } = binding;
     const key = `${connectionId}:${region}`;
     const cached = this.clients.get(key);
-    if (cached) return cached;
-    const refreshToken = await this.deps.getRefreshToken(connectionId);
+    if (cached?.generation === generation && cached.orgId === orgId) return cached.client;
+    this.clients.delete(key);
+    const refreshToken = await this.deps.getRefreshToken(binding);
     if (!refreshToken) return null;
     const client = this.deps.createClient({ connectionId, region, refreshToken });
-    this.clients.set(key, client);
+    this.clients.set(key, { orgId, generation, client });
     return client;
   }
 
@@ -716,9 +734,13 @@ export function createAdsApiClientFromEnv(
   const userAgent = env['AMAZON_ADS_USER_AGENT'];
 
   return new DbAdsApiClient({
-    resolveConnectionId: (profileId) => getProfileConnectionId(handle, profileId),
+    sbKeywordSyncEnabled: sbKeywordSyncEnabledFromEnv(env),
+    resolveProfileBinding: (profile) => getProfileCredentialBinding(
+      handle, profile.orgId, profile.id, profile.amazonProfileId, profile.region,
+    ),
+    resolveConnectionBinding: (connectionId) => getConnectionCredentialBinding(handle, connectionId),
     listConnectionIds: (region) => listActiveConnectionIdsForRegion(handle, region),
-    getRefreshToken: (connectionId) => getAdsRefreshToken(handle, connectionId),
+    getRefreshToken: (binding) => getAdsRefreshTokenForGeneration(handle, binding),
     createClient: ({ region, refreshToken }) =>
       new UnderlyingAdsApiClient({
         region,

@@ -14,7 +14,7 @@
  * reference does the same thing (`test_profiles` prints the failure and
  * continues).
  */
-import type { Region } from '@wizard-ads/shared';
+import { AdsProfileDiscoveryResult, type AdsProfileRefusal, type DiscoveredAdsProfile, type Region } from '@wizard-ads/shared';
 import { TokenProvider } from './auth.js';
 import { createHttpContext, type EffectOptions } from './context.js';
 import { AdsApiParseError } from './errors.js';
@@ -26,22 +26,7 @@ import type { AdsCredentials } from './types.js';
 
 export type ProfileAccountType = 'seller' | 'vendor' | 'agency';
 
-export interface AdsProfile {
-  /** Amazon's profile id. A string here; it is a JSON number on the wire. */
-  profileId: string;
-  /** Which host answered. A profile is only addressable on this one. */
-  region: Region;
-  countryCode: string | null;
-  currencyCode: string | null;
-  /** The profile's own timezone. Every "day" in this product is a day here. */
-  timezone: string | null;
-  dailyBudget: number | null;
-  accountType: ProfileAccountType | null;
-  accountName: string | null;
-  /** Seller id or vendor code, as `accountInfo.id`. */
-  amazonAccountId: string | null;
-  marketplaceStringId: string | null;
-}
+export type AdsProfile = DiscoveredAdsProfile;
 
 function mapAccountType(value: string | null): ProfileAccountType | null {
   if (value === null) return null;
@@ -52,18 +37,40 @@ function mapAccountType(value: string | null): ProfileAccountType | null {
   return null;
 }
 
-/** Rows Amazon sends that carry no profile id are dropped, and counted. */
+/** Compatibility projection. New connection ingestion uses the counted result. */
 export function parseProfiles(raw: unknown, region: Region): AdsProfile[] {
+  return parseProfilesCounted(raw, region).profiles;
+}
+
+/** Every received position is accepted once or explicitly refused, without raw data. */
+export function parseProfilesCounted(raw: unknown, region: Region): AdsProfileDiscoveryResult {
   if (!Array.isArray(raw)) {
     throw new AdsApiParseError('GET /v2/profiles did not return a JSON array');
   }
-  const profiles: AdsProfile[] = [];
-  for (const entry of raw) {
-    if (!isRecord(entry)) continue;
+  const accepted = new Map<string, { index: number; profile: AdsProfile }>();
+  const duplicated = new Set<string>();
+  const rejected: AdsProfileRefusal[] = [];
+  for (const [index, entry] of raw.entries()) {
+    if (!isRecord(entry)) { rejected.push({ index, reason: 'invalid_row' }); continue; }
+    // JSON has already decoded the numeric value. String(...) cannot recover
+    // an unsafe integer's original digits; refuse it instead of linking another account.
+    if (typeof entry['profileId'] === 'number' && !Number.isSafeInteger(entry['profileId'])) {
+      rejected.push({ index, reason: 'unsafe_profile_id' }); continue;
+    }
     const profileId = readId(entry, 'profileId');
-    if (profileId === null) continue;
+    if (profileId === null) { rejected.push({ index, reason: 'invalid_profile_id' }); continue; }
+    const prior = accepted.get(profileId);
+    if (prior !== undefined || duplicated.has(profileId)) {
+      if (prior !== undefined) {
+        accepted.delete(profileId);
+        rejected.push({ index: prior.index, reason: 'duplicate_profile_id' });
+      }
+      duplicated.add(profileId);
+      rejected.push({ index, reason: 'duplicate_profile_id' });
+      continue;
+    }
     const accountInfo = readRecord(entry, 'accountInfo');
-    profiles.push({
+    accepted.set(profileId, { index, profile: {
       profileId,
       region,
       countryCode: readString(entry, 'countryCode'),
@@ -75,9 +82,12 @@ export function parseProfiles(raw: unknown, region: Region): AdsProfile[] {
       amazonAccountId: accountInfo === null ? null : readId(accountInfo, 'id'),
       marketplaceStringId:
         accountInfo === null ? null : readString(accountInfo, 'marketplaceStringId'),
-    });
+    } });
   }
-  return profiles;
+  return AdsProfileDiscoveryResult.parse({
+    region, received: raw.length, profiles: [...accepted.values()].map((row) => row.profile),
+    rejected: rejected.sort((left, right) => left.index - right.index),
+  });
 }
 
 /** Shared by the client method and the free function. */
@@ -85,9 +95,21 @@ export async function fetchProfiles(
   ctx: HttpContext,
   region: Region,
   clientId: string,
-  getAccessToken: (force: boolean) => Promise<string>,
+  getAccessToken: (force: boolean, signal?: AbortSignal) => Promise<string>,
   userAgent?: string,
+  signal?: AbortSignal,
 ): Promise<AdsProfile[]> {
+  return (await fetchProfilesCounted(ctx, region, clientId, getAccessToken, userAgent, signal)).profiles;
+}
+
+export async function fetchProfilesCounted(
+  ctx: HttpContext,
+  region: Region,
+  clientId: string,
+  getAccessToken: (force: boolean, signal?: AbortSignal) => Promise<string>,
+  userAgent?: string,
+  signal?: AbortSignal,
+): Promise<AdsProfileDiscoveryResult> {
   const result = await httpRequest(ctx, {
     method: 'GET',
     url: `${hostFor(region)}/v2/profiles`,
@@ -99,6 +121,10 @@ export async function fetchProfiles(
       ...(userAgent === undefined ? {} : { userAgent }),
     }),
     idempotent: true,
+    timeoutMs: 30_000,
+    maxResponseBytes: 16 * 1024 * 1024,
+    redirect: 'error',
+    ...(signal === undefined ? {} : { signal }),
   });
 
   let parsed: unknown;
@@ -107,7 +133,20 @@ export async function fetchProfiles(
   } catch (cause) {
     throw new AdsApiParseError('GET /v2/profiles returned a body that is not JSON', cause);
   }
-  return parseProfiles(parsed, region);
+  return parseProfilesCounted(parsed, region);
+}
+
+/** Worker connection ingestion receives full counts, including unusable input rows. */
+export async function listProfilesCounted(
+  credentials: AdsCredentials,
+  region: Region,
+  options: EffectOptions & { userAgent?: string } = {},
+): Promise<AdsProfileDiscoveryResult> {
+  const ctx = createHttpContext(region, options);
+  const tokens = new TokenProvider(credentials, options);
+  return fetchProfilesCounted(ctx, region, credentials.clientId,
+    (force, signal) => force ? tokens.forceRefresh(signal) : tokens.getAccessToken(signal),
+    options.userAgent, options.signal);
 }
 
 /** Every profile this grant can see in one region. */
@@ -122,8 +161,9 @@ export async function listProfiles(
     ctx,
     region,
     credentials.clientId,
-    (force) => (force ? tokens.forceRefresh() : tokens.getAccessToken()),
+    (force, signal) => (force ? tokens.forceRefresh(signal) : tokens.getAccessToken(signal)),
     options.userAgent,
+    options.signal,
   );
 }
 
@@ -152,8 +192,8 @@ export async function listProfilesAcrossRegions(
 ): Promise<CrossRegionProfiles> {
   const regions = [...(options.regions ?? ALL_REGIONS)];
   const tokens = new TokenProvider(credentials, options);
-  const getAccessToken = (force: boolean): Promise<string> =>
-    force ? tokens.forceRefresh() : tokens.getAccessToken();
+  const getAccessToken = (force: boolean, signal?: AbortSignal): Promise<string> =>
+    force ? tokens.forceRefresh(signal) : tokens.getAccessToken(signal);
 
   const profiles: AdsProfile[] = [];
   const failures: RegionFailure[] = [];
@@ -162,7 +202,7 @@ export async function listProfilesAcrossRegions(
     const ctx = createHttpContext(region, options);
     try {
       profiles.push(
-        ...(await fetchProfiles(ctx, region, credentials.clientId, getAccessToken, options.userAgent)),
+        ...(await fetchProfiles(ctx, region, credentials.clientId, getAccessToken, options.userAgent, options.signal)),
       );
     } catch (error) {
       failures.push({ region, error });

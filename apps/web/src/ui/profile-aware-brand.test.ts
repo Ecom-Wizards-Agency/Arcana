@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { RELEASE_ARTIFACT } from './artifact-markers';
 import { ProfileAwareBrand, profileAwareHomeHref } from './profile-aware-brand';
 
-describe('OpenSpell brand link', () => {
+describe('Arcana brand link', () => {
   it('keeps profile context without carrying page-local filters', () => {
     expect(profileAwareHomeHref('https://example.test/grid?profile=profile-1&from=2026-08-01'))
       .toBe('/?profile=profile-1');
@@ -22,7 +22,7 @@ describe('OpenSpell brand link', () => {
 
     expect(markup).toContain('class="wa-brand-mark"');
     expect(markup).toContain(`data-release-artifact="${RELEASE_ARTIFACT.brandMark}"`);
-    expect(markup).toContain('OpenSpell');
+    expect(markup).toContain('Arcana');
     expect(stylesheet).toMatch(
       /\.wa-brand-mark\s*\{[^}]*url\('\/brand\/wizards-ai-icon\.svg'\)/s,
     );

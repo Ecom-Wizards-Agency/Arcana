@@ -1,5 +1,6 @@
 /** Persistent optimization group and observation-loop contracts. */
 import { z } from 'zod';
+import { MethodAdmissionSnapshot, MethodSelection, CoordinatedMethodSettings } from './methods.js';
 import { ApplyEntityType, ApplyValue } from './apply.js';
 import { AmazonId, IsoDate, Uuid } from './primitives.js';
 
@@ -57,6 +58,8 @@ export type OptimizationReviewSchedule = z.infer<typeof OptimizationReviewSchedu
 
 /** Values are tenant data. This contract intentionally supplies no numeric defaults. */
 export const OptimizationGroupPolicy = z.object({
+  method: MethodSelection.optional(),
+  methodSettings: CoordinatedMethodSettings.partial().optional(),
   id: Uuid,
   orgId: Uuid,
   profileId: Uuid,
@@ -134,6 +137,7 @@ export const CampaignOptimizationAssignment = z.object({
 export type CampaignOptimizationAssignment = z.infer<typeof CampaignOptimizationAssignment>;
 
 export const OptimizationRunScheduleContext = z.object({
+  methodAdmission: MethodAdmissionSnapshot.optional(),
   version: z.literal(2),
   trigger: z.enum(['manual', 'scheduled']),
   profileTimezone: z.string().min(1),
@@ -181,7 +185,28 @@ export type RecommendationEvidenceState = z.infer<typeof RecommendationEvidenceS
 export const RecommendationEvidenceDecision = z.enum(['hold', 'continue', 'revert']);
 export type RecommendationEvidenceDecision = z.infer<typeof RecommendationEvidenceDecision>;
 
+export const ExecutionVerdict = z.enum(['applied_as_intended', 'not_synchronized', 'synchronization_conflict', 'not_attempted']);
+export type ExecutionVerdict = z.infer<typeof ExecutionVerdict>;
+export const ObjectiveVerdict = z.enum(['evidence_insufficient', 'supported_lift', 'complete_no_lift']);
+export type ObjectiveVerdict = z.infer<typeof ObjectiveVerdict>;
+export const RecommendationEvidenceClassification = z.enum([
+  'not_synchronized', 'synchronization_conflict', 'observation_incomplete',
+  'evidence_insufficient', 'supported_lift', 'complete_no_lift',
+]);
+export type RecommendationEvidenceClassification = z.infer<typeof RecommendationEvidenceClassification>;
+
+/** Maturity remains separate: the legacy enum distinguished pending from insufficient data. */
+export function deriveRecommendationEvidenceClassification(
+  execution: ExecutionVerdict, objective: ObjectiveVerdict, observationComplete = true,
+): RecommendationEvidenceClassification {
+  if (execution === 'not_attempted' || execution === 'not_synchronized') return 'not_synchronized';
+  if (execution === 'synchronization_conflict') return 'synchronization_conflict';
+  return observationComplete ? objective : 'observation_incomplete';
+}
+
 export const RecommendationObservation = z.object({
+  executionVerdict: ExecutionVerdict.optional(),
+  objectiveVerdict: ObjectiveVerdict.optional(),
   id: Uuid.optional(),
   recommendationId: Uuid,
   priorRecommendationId: Uuid.nullable(),
@@ -316,3 +341,25 @@ export const ReversionBatchPreview = z.object({
   }
 });
 export type ReversionBatchPreview = z.infer<typeof ReversionBatchPreview>;
+
+/** The existing context column also carries admission metadata for unscheduled runs. */
+export const RecommendationRunAdmissionContext = z.union([
+  OptimizationRunScheduleContext,
+  z.object({ methodAdmission: MethodAdmissionSnapshot }),
+]);
+export type RecommendationRunAdmissionContext = z.infer<typeof RecommendationRunAdmissionContext>;
+
+/** Missing reporting evidence stays null; measured zero remains a number. */
+export const OptimizationGroupPerformanceMetrics = z.object({
+  spend: z.number().nonnegative().nullable(), sales: z.number().nonnegative().nullable(),
+  orders: z.number().nonnegative().nullable(), acos: z.number().nonnegative().nullable(),
+});
+export type OptimizationGroupPerformanceMetrics = z.infer<typeof OptimizationGroupPerformanceMetrics>;
+export const OptimizationGroupPerformance = z.object({
+  groupId: Uuid, campaignIds: z.array(z.string().min(1)),
+  current: z.object({ start: IsoDate, end: IsoDate, metrics: OptimizationGroupPerformanceMetrics }),
+  previous: z.object({ start: IsoDate, end: IsoDate, metrics: OptimizationGroupPerformanceMetrics }),
+  days: z.array(OptimizationGroupPerformanceMetrics.extend({ date: IsoDate })),
+  reportingRows: z.number().int().nonnegative(), previousReportingRows: z.number().int().nonnegative(),
+});
+export type OptimizationGroupPerformance = z.infer<typeof OptimizationGroupPerformance>;

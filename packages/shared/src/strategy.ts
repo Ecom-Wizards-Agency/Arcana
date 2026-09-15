@@ -22,6 +22,7 @@
  * field to the engine that reads it.
  */
 import { z } from 'zod';
+import { MethodSelection } from './methods.js';
 import { IsoDate } from './primitives.js';
 
 const severity = z.enum(['warn', 'fail']);
@@ -76,6 +77,7 @@ export type BidBoundUnit = z.infer<typeof BidBoundUnit>;
  * group's CPC without the engine having to guess which.
  */
 export const OptGroupStrategy = z.object({
+  method: MethodSelection.optional(),
   target_acos: z.number().optional(),
   max_increase: z.number().optional(),
   /** Increase cap once the group is in steady state, where one differs from `max_increase`. */
@@ -205,6 +207,8 @@ export type SvBandStrategy = z.infer<typeof SvBandStrategy>;
 
 /** Caps are ceilings, never steps. The optimizer clamps to them, it never aims at them. */
 export const CapStrategy = z.object({
+  /** Hard compounded starting-bid exposure limit, in the profile currency. No default. */
+  campaign_exposure_ceiling: z.number().positive().optional(),
   halo_keywords_per_campaign: z.number().int().positive().optional(),
   pat_asins_per_campaign: z.number().int().positive().optional(),
   max_bid_increase: z.number().optional(),
@@ -274,6 +278,8 @@ export const RecommendationEvidencePolicy = z.object({
 export type RecommendationEvidencePolicy = z.infer<typeof RecommendationEvidencePolicy>;
 
 export const TenantStrategy = z.object({
+  /** Explicit organic-rank protection for manually staged bid decreases. */
+  rank_protection: z.object({ protection_rank: z.number().int().positive() }).strict().optional(),
   schema: z.literal('wizard-ads.tenant-strategy.v1'),
   refreshed_at: IsoDate.optional(),
   pacing: PacingStrategy,

@@ -51,7 +51,7 @@ async function exerciseEveryPreset({
 }: {
   page: Page;
   path: '/optimizer' | '/creative';
-  heading: 'Campaign Optimizer' | 'Creative Performance';
+  heading: 'Optimize Now' | 'Creatives';
   profileId: string;
   includeToday?: boolean;
 }): Promise<void> {
@@ -73,7 +73,7 @@ async function exerciseEveryPreset({
 
   const visited: string[] = [];
   for (const preset of expectedPresets(serverDate, includeToday)) {
-    const picker = page.locator('details.wa-date-range');
+    const picker = page.locator('.wa-topbar details.wa-date-range:not(.wa-shell-comparison)');
     await picker.locator('summary').click();
     await picker.getByRole('link', { name: preset.label, exact: true }).click();
     await page.waitForURL((url) => (
@@ -89,7 +89,7 @@ async function exerciseEveryPreset({
     expect(selected.searchParams.get('from')).toBe(preset.from);
     expect(selected.searchParams.get('to')).toBe(preset.to);
     await expect(
-      page.locator('details.wa-date-range > summary'),
+      page.locator('.wa-topbar details.wa-date-range:not(.wa-shell-comparison) > summary'),
     ).toHaveAttribute('aria-label', `Date range: ${preset.label}`);
     visited.push(preset.label);
   }
@@ -114,7 +114,7 @@ test('optimizer exposes all date presets and preserves canonical account scope',
   await exerciseEveryPreset({
     page,
     path: '/optimizer',
-    heading: 'Campaign Optimizer',
+    heading: 'Optimize Now',
     profileId: fixtureProfileId,
   });
 });
@@ -124,23 +124,24 @@ test('creative exposes all date presets and preserves canonical account scope', 
   await exerciseEveryPreset({
     page,
     path: '/creative',
-    heading: 'Creative Performance',
+    heading: 'Creatives',
     profileId: fixtureProfileId,
     includeToday: true,
   });
 });
 
-test('legacy strategy links land on the dashboard operating status', async ({ page }) => {
+test('legacy strategy links land on the method catalogue without the retired operating status block', async ({ page }) => {
   const { fixtureProfileId } = await readState();
   await page.goto(`/strategy?profile=${fixtureProfileId}`);
 
-  await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+  await expect(page.getByTestId('shell-title')).toBeVisible();
   await page.waitForURL((url) => (
-    url.pathname === '/dashboard'
+    url.pathname === '/settings/strategy'
       && url.searchParams.get('profile') === fixtureProfileId
-      && url.hash === '#operating-status'
+      && url.hash === ''
   ));
-  const destination = page.locator('#operating-status');
+  await expect(page.locator('#operating-status')).toHaveCount(0);
+  const destination = page.getByRole('heading', { name: 'Optimization methods', exact: true });
   await expect(destination).toBeVisible();
   await expect(destination).toBeInViewport();
 });

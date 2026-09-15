@@ -15,7 +15,7 @@
  */
 import type { Region } from '@wizard-ads/shared';
 import { createHttpContext, type EffectOptions } from './context.js';
-import { AdsApiParseError, AdsAuthError } from './errors.js';
+import { AdsApiHttpError, AdsApiParseError, AdsAuthError, AdsAuthorizationCodeError } from './errors.js';
 import { decodeText, httpRequest } from './http.js';
 import { LWA_AUTHORIZE_URL, LWA_TOKEN_URL } from './regions.js';
 import type { AdsCredentials } from './types.js';
@@ -77,6 +77,10 @@ async function postToken(
 ): Promise<LwaTokenSet> {
   // LWA is a single global endpoint; the region here only labels retry events.
   const ctx = createHttpContext('NA', options);
+  const singleUse = label === 'code-exchange';
+  // A consumed consent code cannot be minted again. This also disables the
+  // retry layer's independent throttle/auth retries, regardless of overrides.
+  if (singleUse) ctx.retry = { ...ctx.retry, maxAttempts: 1 };
   const result = await httpRequest(ctx, {
     method: 'POST',
     url: LWA_TOKEN_URL,
@@ -86,9 +90,8 @@ async function postToken(
       Accept: 'application/json',
     }),
     body: new URLSearchParams(form).toString(),
-    // A token mint has no side effect worth protecting: re-sending it costs a
-    // token, not a state change, and a 5xx here would otherwise fail a job.
-    idempotent: true,
+    idempotent: !singleUse,
+    ...(singleUse ? { timeoutMs: 30_000, maxResponseBytes: 65_536 } : {}),
     // LWA reports a dead grant as 400/401 with a machine-readable body. Read it
     // rather than throwing a bare "failed with 400" that hides the reason.
     expectedStatuses: [400, 401],
@@ -158,23 +161,32 @@ export async function exchangeAuthorizationCode(
   options: EffectOptions = {},
 ): Promise<LwaTokenSet & { refreshToken: string }> {
   const { clientId, clientSecret, code, redirectUri } = params;
-  const tokens = await postToken(
-    {
-      grant_type: 'authorization_code',
-      code,
-      client_id: clientId,
-      client_secret: clientSecret,
-      redirect_uri: redirectUri,
-    },
-    options,
-    'code-exchange',
-  );
-
-  const refresh = tokens.refreshToken;
-  if (refresh === null) {
-    throw new AdsAuthError('LWA code exchange returned no refresh_token', 200, '', 1);
+  try {
+    const tokens = await postToken(
+      {
+        grant_type: 'authorization_code',
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+      },
+      options,
+      'code-exchange',
+    );
+    const refresh = tokens.refreshToken;
+    if (refresh === null || refresh.length === 0 || tokens.accessToken.length === 0) {
+      throw new AdsAuthorizationCodeError('exchange_uncertain', 200);
+    }
+    return { ...tokens, refreshToken: refresh };
+  } catch (error) {
+    // Provider/network errors can echo the submitted code or returned tokens.
+    // Retain only a numeric HTTP status and fixed application outcome.
+    const status = error instanceof AdsApiHttpError ? error.status : 0;
+    throw new AdsAuthorizationCodeError(
+      status >= 400 && status < 500 ? 'exchange_refused' : 'exchange_uncertain',
+      status,
+    );
   }
-  return { ...tokens, refreshToken: refresh };
 }
 
 /** Exchange a stored refresh token for a fresh access token. */

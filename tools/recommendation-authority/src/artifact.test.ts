@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { chmod, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,6 +26,15 @@ describe('immutable authority bundle', () => {
     expect(await readFile(join(release, 'SOURCE_INPUTS'), 'utf8')).not.toMatch(/packages\/(db|ads-api)|apps\/worker/u);
     expect(await readFile(join(release, 'SOURCE_INPUTS'), 'utf8')).toContain('docs/deploy/openspell-recommendation-database-trust.mjs');
     expect(await readFile(join(release, 'SOURCE_INPUTS'), 'utf8')).toContain('docs/deploy/install-recommendation-database-ca.sh');
+    const patchHash = createHash('sha256').update(await readFile(new URL('../../../patches/postgres@3.4.9.patch', import.meta.url))).digest('hex');
+    const inputs = (await readFile(join(release, 'SOURCE_INPUTS'), 'utf8')).trimEnd().split('\n');
+    expect(inputs).toContain(`${patchHash}  patches/postgres@3.4.9.patch`);
+    expect(inputs.some((line) => line.endsWith('  pnpm-workspace.yaml'))).toBe(true);
+    const dependencies = inputs.filter((line) => line.slice(66).startsWith('node_modules/'));
+    expect(dependencies.length).toBeGreaterThan(0);
+    expect(dependencies.every((line) => line.slice(66).startsWith(
+      `node_modules/.pnpm/postgres@3.4.9_patch_hash=${patchHash}/node_modules/postgres/`,
+    ))).toBe(true);
   });
 
   it('refuses changed bytes, extra files, symlinks and writable code', async () => {

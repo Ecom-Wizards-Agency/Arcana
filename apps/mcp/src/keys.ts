@@ -18,6 +18,7 @@
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { DbHandle } from '@wizard-ads/db';
+import { OrgActor } from '@wizard-ads/shared';
 import { AuthError } from './errors.js';
 
 /** Every token starts with this, so a leaked string is identifiable on sight. */
@@ -50,6 +51,11 @@ export interface IssuedApiKey {
   record: ApiKeyRecord;
   /** The only time this value exists. Hand it to the operator and forget it. */
   token: string;
+}
+
+/** A verified key stays bound to the current membership of its issuing user. */
+export interface VerifiedApiKey extends ApiKeyRecord {
+  actor: OrgActor;
 }
 
 interface KeyRow {
@@ -104,7 +110,7 @@ export interface IssueApiKeyInput {
   profileIds: readonly string[];
   /** Required, future, and no more than 90 days from issuance. */
   expiresAt: Date;
-  createdBy?: string | null;
+  createdBy: string;
 }
 
 export async function issueApiKey(
@@ -138,8 +144,16 @@ export async function issueApiKey(
   if (expiresAtMs - now.getTime() > MAX_API_KEY_LIFETIME_DAYS * DAY_MS) {
     throw new Error(`API key expiry cannot exceed ${MAX_API_KEY_LIFETIME_DAYS} days.`);
   }
+  const actor = OrgActor.parse({ orgId: input.orgId, userId: input.createdBy });
 
   return handle.sql.begin(async (sql) => {
+    const [member] = await sql<{ role: string }[]>`
+      select role::text from public.org_members
+       where org_id = ${actor.orgId} and user_id = ${actor.userId} for share
+    `;
+    if (member?.role !== 'owner' && member?.role !== 'admin') {
+      throw new AuthError(403, 'Only a current organization owner or admin can issue a key.');
+    }
     // Keep the ownership proof and credential insert in one transaction. The
     // row locks prevent a profile from being removed between those two steps.
     const ownedProfiles = await sql<{ id: string }[]>`
@@ -165,7 +179,7 @@ export async function issueApiKey(
         ${scope},
         ${sql.array(profileIds)}::uuid[],
         ${input.expiresAt.toISOString()}::timestamptz,
-        ${input.createdBy ?? null}
+        ${actor.userId}
       )
       returning id, org_id, label, key_prefix, scope, profile_ids, expires_at,
                 revoked_at, last_used_at, created_at
@@ -206,14 +220,14 @@ export async function revokeApiKey(handle: DbHandle, keyId: string): Promise<boo
  * once real, and tells a legitimate operator nothing they cannot read off the
  * key list.
  */
-export async function verifyApiKey(handle: DbHandle, token: string): Promise<ApiKeyRecord> {
+export async function verifyApiKey(handle: DbHandle, token: string): Promise<VerifiedApiKey> {
   const unauthorized = new AuthError(401, 'invalid or revoked API key');
   if (!token.startsWith(TOKEN_PREFIX) || token.length < TOKEN_PREFIX.length + 20) {
     throw unauthorized;
   }
 
   const hash = hashToken(token);
-  const rows = await handle.sql<(KeyRow & { token_hash: string })[]>`
+  const rows = await handle.sql<(KeyRow & { token_hash: string; created_by: string })[]>`
     update mcp.api_keys
        set last_used_at = now()
      where token_hash = ${hash}
@@ -224,8 +238,14 @@ export async function verifyApiKey(handle: DbHandle, token: string): Promise<Api
        and expires_at is not null
        and expires_at > now()
        and expires_at <= created_at + make_interval(days => ${MAX_API_KEY_LIFETIME_DAYS})
+       and exists (
+         select 1 from public.org_members member
+          where member.org_id = mcp.api_keys.org_id
+            and member.user_id = mcp.api_keys.created_by
+            and member.created_at <= mcp.api_keys.created_at
+       )
     returning id, org_id, label, key_prefix, token_hash, scope, profile_ids,
-              expires_at, revoked_at, last_used_at, created_at
+              expires_at, revoked_at, last_used_at, created_at, created_by
   `;
 
   const row = rows[0];
@@ -235,7 +255,7 @@ export async function verifyApiKey(handle: DbHandle, token: string): Promise<Api
   if (!constantTimeEquals(row.token_hash, hash)) throw unauthorized;
   if (row.scope !== 'read') throw unauthorized;
 
-  return toRecord(row);
+  return { ...toRecord(row), actor: OrgActor.parse({ orgId: row.org_id, userId: row.created_by }) };
 }
 
 function constantTimeEquals(a: string, b: string): boolean {

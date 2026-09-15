@@ -35,7 +35,9 @@ declare
   v_report uuid;
   v_recommendation uuid;
   v_group uuid;
+  v_research_schedule uuid;
   v_creative_snapshot uuid;
+  v_sponsored_prompt uuid;
   v_unified_binding uuid;
   v_unified_run uuid := gen_random_uuid();
   v_unified_operation uuid := gen_random_uuid();
@@ -113,6 +115,10 @@ begin
   insert into public.profile_strategy (org_id, profile_id, schema_version, doc)
   values (v_org, null, 'wizard-ads.tenant-strategy.v1', v_strategy);
 
+  if to_regclass('public.market_position_settings') is not null then
+    insert into public.market_position_settings (org_id, profile_id) values (v_org, v_profile);
+  end if;
+
   -- Entity mirror
   insert into public.portfolios (org_id, profile_id, amazon_id, ad_product, name, state)
   values (v_org, v_profile, 'pf-1', 'SP', 'portfolio', 'enabled');
@@ -125,6 +131,10 @@ begin
   insert into public.product_ads
     (org_id, profile_id, amazon_id, ad_product, state, campaign_id, ad_group_id, asin)
   values (v_org, v_profile, 'pa-1', 'SP', 'enabled', 'c-1', 'ag-1', 'B0TEST0001');
+  if to_regclass('public.ad_group_product_assignments') is not null then
+    insert into public.ad_group_product_assignments(org_id,profile_id,ad_group_id,asin,assigned_by)
+    values(v_org,v_profile,'ag-1','B0TEST0001',p_user_id);
+  end if;
   insert into public.keywords
     (org_id, profile_id, amazon_id, ad_product, state, campaign_id, ad_group_id, keyword_text, match_type, bid)
   values (v_org, v_profile, 'kw-1', 'SP', 'enabled', 'c-1', 'ag-1', 'widget', 'exact', 0.90);
@@ -353,8 +363,11 @@ begin
           jsonb_build_object('campaignIds', jsonb_build_array('c-1'), 'targetIds', jsonb_build_array('kw-1')),
           'sales', now() - interval '7 days', 'running', p_user_id)
   returning id into v_experiment;
-  insert into public.experiment_events (experiment_id, org_id, from_status, to_status, note, actor_id)
-  values (v_experiment, v_org, null, 'running', 'Seeded by the tenant fixture.', p_user_id);
+  -- Older migration-window tests predate the automatic creation trail.
+  if not exists(select 1 from public.experiment_events where experiment_id=v_experiment) then
+    insert into public.experiment_events (experiment_id, org_id, from_status, to_status, note, actor_id)
+    values (v_experiment, v_org, null, 'running', 'Seeded by the tenant fixture.', p_user_id);
+  end if;
 
   -- Reserved seams
   insert into public.spapi_connections
@@ -732,6 +745,97 @@ begin
   values (v_org, v_profile, v_sp_intent, v_sp_result,
           md5(p_slug || ':sp-late') || md5(p_slug || ':sp-late:2'),
           now() - interval '2 minutes', 1, array[]::text[]);
+
+  if to_regclass('public.grid_views') is not null then
+    insert into public.grid_views(org_id, owner_id, id, name, view)
+    values (v_org, p_user_id, 'fixture-layout', 'Synthetic fixture layout',
+      '{"id":"fixture-layout","name":"Synthetic fixture layout","entity":"placements","columns":[],"pinned":[],"widths":{},"filter":{"groups":[]},"sort":[],"groupBy":[],"dateRange":null,"updatedAt":"2026-09-14"}'::jsonb);
+  end if;
+  if to_regclass('public.target_translations') is not null then
+    insert into public.target_translations(org_id,profile_id,original_text,language,request_id,requested_by,status,reason,completed_at)
+      values(v_org,v_profile,'Synthetic original','en',gen_random_uuid(),p_user_id,'unavailable','provider not configured',now());
+  end if;
+
+  if to_regclass('public.timeline_events') is not null then
+    insert into public.timeline_events(org_id,profile_id,name,kind,start_on,scope_text,note,created_by) values(v_org,v_profile,'Synthetic listing note','listing',p_date,'Recorded only','Fixture observation',p_user_id);
+  insert into public.timeline_evidence_settings(org_id,profile_id) values(v_org,v_profile);
+  end if;
+  if to_regclass('public.queued_changes') is not null then
+    insert into public.queued_changes(id,org_id,profile_id,target_id,created_by,context,request,checks)
+    values(v_batch,v_org,v_profile,'synthetic-queue-target',p_user_id,
+      jsonb_build_object('profileId',v_profile,'profileLabel','Synthetic queue profile','targetId','synthetic-queue-target',
+        'targetLabel','Synthetic queue target','campaignId','c-1','campaignLabel','Synthetic queue campaign',
+        'oldBid',jsonb_build_object('amount','5','currencyCode','USD'),'readAt','2026-08-01T00:00:00.000000Z',
+        'organicRank',null,'protectionRank',null,'suggestedLow',4,'suggestedMedian',8,'suggestedHigh',11,
+        'maxIncrease',1,'maxDecrease',0.5,'bidFloor',1,'bidCeiling',12,'campaignBudget',100,'targetAcos',0.3,
+        'placementModifiers',jsonb_build_object('topOfSearch',100,'restOfSearch',0,'productPages',0),'settingSource','Synthetic fixture'),
+      jsonb_build_object('requestId',v_batch,'profileId',v_profile,'targetId','synthetic-queue-target',
+        'expectedBid',jsonb_build_object('amount','5','currencyCode','USD'),'expectedReadAt','2026-08-01T00:00:00.000000Z',
+        'newBid',jsonb_build_object('amount','6','currencyCode','USD'),'overrideReason',null),
+      '[{"key":"rank_gate","passed":true,"reason":"No bid decrease.","source":"Synthetic fixture"},
+        {"key":"band_position","passed":true,"reason":"Within band.","source":"Synthetic fixture"},
+        {"key":"max_increase","passed":true,"reason":"Within increase cap.","source":"Synthetic fixture"},
+        {"key":"max_decrease","passed":true,"reason":"No decrease.","source":"Synthetic fixture"},
+        {"key":"campaign_limits","passed":true,"reason":"Within campaign bounds.","source":"Synthetic fixture"}]');
+    insert into public.queued_change_approvals(change_id,org_id,profile_id,approved_by)
+    values(v_batch,v_org,v_profile,p_user_id);
+  end if;
+
+  if to_regclass('public.sp_write_restore_proposals') is not null then
+    -- Inert ledger coverage only. The empty plan artifact cannot pass preview admission.
+    insert into public.sp_write_restore_proposals(plan_id,org_id,profile_id,source_batch_id,created_by)
+      values(v_sp_plan,v_org,v_profile,v_batch,p_user_id);
+    insert into public.sp_write_restore_reviews(plan_id,org_id,profile_id,reviewed_by)
+      values(v_sp_plan,v_org,v_profile,p_user_id);
+  end if;
+
+  if to_regclass('public.sponsored_prompts') is not null then
+    -- One inert imported interval covers all prompt tables for the RLS audit.
+    -- Guarded so the same fixture can rehearse migrations predating prompts.
+    insert into public.sponsored_prompts(org_id,profile_id,ad_product,campaign_id,ad_group_id,
+      prompt_text,normalized_prompt,first_seen_at,last_seen_at,current_status)
+    values(v_org,v_profile,'SP','c-1','ag-1','Synthetic fixture prompt','synthetic fixture prompt',
+      least(p_date::timestamptz,statement_timestamp()),least(p_date::timestamptz,statement_timestamp()),'live')
+    returning id into v_sponsored_prompt;
+    insert into public.sponsored_prompt_observations(org_id,profile_id,prompt_id,observed_at,status,
+      interval_start,interval_end,spend,clicks,sales,orders)
+    values(v_org,v_profile,v_sponsored_prompt,least(p_date::timestamptz,statement_timestamp()),'live',
+      least(p_date::timestamptz,statement_timestamp())-interval '1 day',least(p_date::timestamptz,statement_timestamp()),0,0,0,0);
+    insert into public.sponsored_prompt_visits(org_id,profile_id,user_id,last_visited_at)
+    values(v_org,v_profile,p_user_id,least(p_date::timestamptz,statement_timestamp()));
+  end if;
+  -- Inert WP-270 storage-policy rows. Application draft validation has separate
+  -- complete synthetic graphs; this placeholder cannot pass plan admission.
+  if to_regclass('public.campaign_drafts') is not null then
+    insert into public.campaign_drafts(org_id,profile_id,created_by,plan,recipe,rationale)
+      values(v_org,v_profile,p_user_id,jsonb_build_object('orgId',v_org,'profileId',v_profile),'{}','[]');
+    insert into public.naming_presets(org_id,name,naming,created_by)
+      values(v_org,'Synthetic fixture convention','{"variable_order":["Keyword"],"delimiter":" / "}',p_user_id);
+    insert into public.keyword_sets(org_id,profile_id,name,keywords)
+      values(v_org,v_profile,'Synthetic fixture keywords','["synthetic saved target"]');
+  end if;
+  if to_regclass('public.asset_library_snapshots') is not null then
+    with snapshot as (
+      insert into public.asset_library_snapshots(id,org_id,profile_id,observed_at,source_rows,persisted_rows)
+        values(gen_random_uuid(),v_org,v_profile,'2000-01-01T00:00:00Z',1,1) returning id
+    )
+    insert into public.asset_library_assets(org_id,profile_id,snapshot_id,amazon_asset_id,version,kind,name,used_in_campaign_ids,observation,observed_at)
+      select v_org,v_profile,id,'synthetic-fixture-asset','1','video','Synthetic fixture asset','{}',
+        '{"scope":{"region":"NA","amazonProfileId":"270"},"identity":{"assetId":"synthetic-fixture-asset","version":"1"},"observedAt":"2000-01-01T00:00:00Z","assetType":"video","name":"Synthetic fixture asset","processing":"unknown","specChecks":{"approvedPrograms":null,"failedSpecChecks":null}}'::jsonb,
+        '2000-01-01T00:00:00Z' from snapshot;
+  end if;
+
+  if to_regclass('public.brand_lens_overrides') is not null then
+    insert into public.brand_lens_overrides(org_id,profile_id,normalized_keyword,bucket,decision,decided_by)
+      values(v_org,v_profile,'synthetic fixture research component','generic','kept',p_user_id);
+  end if;
+  if to_regclass('public.dayparting_schedules') is not null then
+    insert into public.dayparting_schedules(org_id,profile_id,name,timezone,modifiers)
+      select v_org,v_profile,'Synthetic fixture schedule',timezone,to_jsonb(array_fill(0,array[7,24]))
+      from public.ad_profiles where id=v_profile returning id into v_research_schedule;
+    insert into public.dayparting_schedule_campaigns(org_id,profile_id,schedule_id,campaign_id)
+      values(v_org,v_profile,v_research_schedule,'c-1');
+  end if;
 
   return v_org;
 end;

@@ -10,6 +10,7 @@ import { createTestDatabase, databaseAvailable } from '../testing/harness.js';
 import type { TestDatabase } from '../testing/harness.js';
 import {
   CreativePersistenceError,
+  resolveCreativeKeyword,
   persistCreativePerformanceBatch,
   readLatestCreativeSyncJobState,
   readLatestCreativeSyncSnapshot,
@@ -128,6 +129,46 @@ describe.skipIf(!available)('WP-58 creative performance database', () => {
       impressions: 20,
       cost: 2,
     });
+  });
+
+  it('reads all three keyword tiers without multiplying facts or crossing profile scope', async () => {
+    const name = 'Rank | SB | Phrase | SKW | Widget | blue widget | EW';
+    for (const campaignId of ['campaign-one', 'campaign-two']) {
+      await database.sql`
+        insert into public.campaigns (org_id, profile_id, amazon_id, ad_product, name, state, budget_amount, budget_type)
+        values (${orgId}, ${profileId}, ${campaignId}, 'SB', ${name}, 'enabled', 1, 'daily')
+      `;
+    }
+    // Two match types for one keyword still identify exactly one keyword text.
+    for (const [id, match] of [['kw-one', 'exact'], ['kw-two', 'phrase']] as const) {
+      await database.sql`
+        insert into public.keywords
+          (org_id, profile_id, amazon_id, ad_product, campaign_id, ad_group_id, keyword_text, match_type, state)
+        values (${orgId}, ${profileId}, ${id}, 'SB', 'campaign-one', 'ad-group-one', 'red widget', ${match}, 'enabled')
+      `;
+    }
+    await database.sql`
+      insert into public.keywords
+        (org_id, profile_id, amazon_id, ad_product, campaign_id, ad_group_id, keyword_text, match_type, state)
+      values
+        (${otherOrgId}, ${otherProfileId}, 'kw-foreign', 'SB', 'campaign-two', 'ad-group-two', 'foreign widget', 'exact', 'enabled'),
+        (${orgId}, ${profileId}, 'kw-sp', 'SP', 'campaign-two', 'ad-group-two', 'sp widget', 'exact', 'enabled')
+    `;
+    const rows = await readCreativePerformance(database, { orgId, profileId, from: '2026-08-28', to: '2026-08-29' });
+    const details = rows.flatMap((row) => row.drilldown);
+    expect(details.find((row) => row.campaignId === 'campaign-one')).toMatchObject({
+      keywordText: 'red widget', keywordProvenance: 'synced',
+    });
+    expect(details.find((row) => row.campaignId === 'campaign-two')).toMatchObject({
+      keywordText: 'blue widget', keywordProvenance: 'from_campaign_name',
+    });
+    expect(details.find((row) => row.campaignId === 'campaign-three')).toMatchObject({
+      keywordText: null, keywordProvenance: 'unresolved',
+    });
+    expect(rows.find((row) => row.assetId === 'asset-one')).toMatchObject({
+      cost: 15, impressions: 300, clicks: 30, sales: 60,
+    });
+    expect(rows.find((row) => row.assetId === 'asset-one')?.drilldown).toHaveLength(2);
   });
 
   it('allows null content hashes without collapsing unrelated Amazon Asset IDs', async () => {
@@ -610,3 +651,25 @@ function mappingOnlyObservedBatch(
   batch.snapshot = { ...batch.snapshot!, status: 'mapping_only', factPromotionAllowed: false };
   return batch;
 }
+
+describe('campaign keyword provenance', () => {
+  const name = 'Rank | SB | Phrase | SKW | Widget | blue widget | EW';
+  it('prefers a single distinct synchronized keyword over the campaign name', () => {
+    expect(resolveCreativeKeyword(['red widget', 'red widget'], name)).toEqual({
+      keywordText: 'red widget', keywordProvenance: 'synced',
+    });
+  });
+  it('uses the unambiguous Keyword slot when synchronized rows are absent', () => {
+    expect(resolveCreativeKeyword([], name)).toEqual({
+      keywordText: 'blue widget', keywordProvenance: 'from_campaign_name',
+    });
+  });
+  it.each([null, '', 'unstructured campaign', 'Rank | SB | Unknown | SKW | Widget | blue widget | EW'])('leaves an unparseable name unresolved: %j', (campaignName) => {
+      expect(resolveCreativeKeyword([], campaignName)).toEqual({ keywordText: null, keywordProvenance: 'unresolved' });
+    });
+  it('does not use the name to hide conflicting or malformed synchronized keywords', () => {
+    for (const keywords of [['red widget', 'blue widget'], ['']]) {
+      expect(resolveCreativeKeyword(keywords, name)).toEqual({ keywordText: null, keywordProvenance: 'unresolved' });
+    }
+  });
+});

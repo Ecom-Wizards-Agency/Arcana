@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import DashboardLoading from './dashboard/loading';
+import DashboardLoading from './(home)/loading';
 import OptimizerLoading from './optimizer/loading';
 
 describe('slow operator route loading states', () => {

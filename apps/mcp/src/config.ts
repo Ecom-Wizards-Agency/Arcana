@@ -8,7 +8,7 @@
  */
 
 export interface McpConfig {
-  /** Service-role connection string. The MCP server bypasses RLS and scopes in the tool layer. */
+  /** Key verification/audit connection; tenant operations SET LOCAL ROLE authenticated. */
   connectionString: string;
   /** Port for the Streamable HTTP endpoint inside its dedicated runtime container. */
   port: number;

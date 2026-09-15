@@ -4,7 +4,7 @@
  * This module is available only through the explicit package subpath. It
  * describes exact provider calls, reads current state, and performs one
  * mutation attempt after a caller has durably recorded the shared intent. It
- * does not authorize, reserve, persist, retry, or observe a completed write.
+ * does not authorize, reserve, persist, or decide a completed write's outcome.
  */
 import {
   SpWriteProviderCallIntent,
@@ -26,9 +26,12 @@ import { decodeText, httpRequest, httpRequestOnce, type HttpContext } from './ht
 import { hostFor } from './regions.js';
 import {
   buildSpWriteObservationBody,
+  buildSpWritePostWriteObservationBody,
   parseSpWrite207,
   parseSpWriteObservationPage,
   parseSpWriteObservationRows,
+  parseSpWritePostWriteObservationPage,
+  parseSpWritePostWriteObservationRows,
   prepareSpWriteCalls,
   type SpWriteCompiledCall,
   type SpWriteProviderPositionDraft,
@@ -51,12 +54,18 @@ export type SpWriteAdapterOptions = Readonly<{
 }>;
 
 export interface SpWriteAdapter {
-  preparePlan(plan: SpWritePlan): readonly SpWritePreparedCall[];
+  preparePlan(plan: SpWritePlan, actionIds?: readonly string[]): readonly SpWritePreparedCall[];
 
   observeCurrent(
     input: { plan: SpWritePlan; call: SpWritePreparedCall },
     options?: SpWriteAdapterOptions,
   ): Promise<readonly SpWriteObservedAction[]>;
+
+  /** Complete targeted read, aligned to call.positions; null means confirmed absence. */
+  observeAfterWrite(
+    input: { plan: SpWritePlan; call: SpWritePreparedCall },
+    options?: SpWriteAdapterOptions,
+  ): Promise<readonly (SpWriteObservedAction | null)[]>;
 
   executeOneAttempt(
     input: {
@@ -251,19 +260,19 @@ class DefaultSpWriteAdapter implements SpWriteAdapter {
     this.now = dependencies.now ?? options.now ?? (() => Date.now());
   }
 
-  private compile(plan: SpWritePlan): readonly SpWriteCompiledCall[] {
+  private compile(plan: SpWritePlan, actionIds?: readonly string[]): readonly SpWriteCompiledCall[] {
     try {
       if (plan.providerScope.region !== this.options.region) {
         throw adapterRefusal('client_region_mismatch');
       }
-      return prepareSpWriteCalls(plan, this.dependencies.hasher);
+      return prepareSpWriteCalls(plan, this.dependencies.hasher, actionIds);
     } catch {
       throw adapterRefusal('invalid_plan_or_provider_scope');
     }
   }
 
-  preparePlan(plan: SpWritePlan): readonly SpWritePreparedCall[] {
-    return Object.freeze(this.compile(plan).map(publicCall));
+  preparePlan(plan: SpWritePlan, actionIds?: readonly string[]): readonly SpWritePreparedCall[] {
+    return Object.freeze(this.compile(plan, actionIds).map(publicCall));
   }
 
   async observeCurrent(
@@ -271,48 +280,75 @@ class DefaultSpWriteAdapter implements SpWriteAdapter {
     options: SpWriteAdapterOptions = {},
   ): Promise<readonly SpWriteObservedAction[]> {
     try {
-      const call = findCall(this.compile(input.plan), input.call);
-      const request = requestOptions(options);
-      const rows: Record<string, unknown>[] = [];
-      const seenTokens = new Set<string>();
-      let nextToken: string | null = null;
+      const { call, rows } = await this.readObservationRows(input, options, false);
+      return parseSpWriteObservationRows(call, rows);
+    } catch { throw adapterRefusal('observation_failed'); }
+  }
 
-      for (let pageNumber = 0; pageNumber < MAX_OBSERVATION_PAGES; pageNumber += 1) {
-        const body = jsonBody(buildSpWriteObservationBody(
-          call,
-          nextToken === null ? undefined : nextToken,
-        ));
-        const result = await httpRequest(this.ctx, {
-          method: 'POST',
-          url: `${hostFor(input.plan.providerScope.region)}${call.observation.path}`,
-          path: call.observation.path,
-          headers: headersFor(
-            (force, signal) => force
-              ? this.tokens.forceRefresh(signal)
-              : this.tokens.getAccessToken(signal),
-            this.options.credentials.clientId,
-            input.plan.providerScope.amazonProfileId,
-            call.observation.mediaType,
-            this.options.userAgent,
-          ),
-          body,
-          idempotent: true,
-          ...request,
-        });
-        if (result.status !== 200) throw adapterRefusal('unexpected_observation_status');
-        const page = parseSpWriteObservationPage(parseJson(result.body), call);
-        rows.push(...page.rows);
-        nextToken = page.nextToken;
-        if (nextToken === null) return parseSpWriteObservationRows(call, rows);
-        if (page.rows.length === 0 || seenTokens.has(nextToken)) {
-          throw adapterRefusal('observation_pagination_stalled');
-        }
-        seenTokens.add(nextToken);
+  async observeAfterWrite(
+    input: { plan: SpWritePlan; call: SpWritePreparedCall },
+    options: SpWriteAdapterOptions = {},
+  ): Promise<readonly (SpWriteObservedAction | null)[]> {
+    try {
+      const { call, rows } = await this.readObservationRows(input, options, true);
+      return parseSpWritePostWriteObservationRows(call, rows);
+    } catch { throw adapterRefusal('observation_failed'); }
+  }
+
+  private async readObservationRows(
+    input: { plan: SpWritePlan; call: SpWritePreparedCall }, options: SpWriteAdapterOptions,
+    afterWrite: boolean,
+  ): Promise<{ call: SpWriteCompiledCall; rows: readonly Record<string, unknown>[] }> {
+    const call = findCall(this.compile(input.plan, input.call.positions.map((row) => row.actionId)), input.call);
+    const request = requestOptions(options);
+    const rows: Record<string, unknown>[] = [];
+    const seenTokens = new Set<string>();
+    let nextToken: string | null = null;
+    let totalResults: number | null = null;
+
+    for (let pageNumber = 0; pageNumber < MAX_OBSERVATION_PAGES; pageNumber += 1) {
+      const body = jsonBody((afterWrite ? buildSpWritePostWriteObservationBody : buildSpWriteObservationBody)(
+        call,
+        nextToken === null ? undefined : nextToken,
+      ));
+      const result = await httpRequest(this.ctx, {
+        method: 'POST',
+        url: `${hostFor(input.plan.providerScope.region)}${call.observation.path}`,
+        path: call.observation.path,
+        headers: headersFor(
+          (force, signal) => force
+            ? this.tokens.forceRefresh(signal)
+            : this.tokens.getAccessToken(signal),
+          this.options.credentials.clientId,
+          input.plan.providerScope.amazonProfileId,
+          call.observation.mediaType,
+          this.options.userAgent,
+        ),
+        body,
+        idempotent: true,
+        ...request,
+      });
+      if (result.status !== 200) throw adapterRefusal('unexpected_observation_status');
+      const page = (afterWrite ? parseSpWritePostWriteObservationPage : parseSpWriteObservationPage)(parseJson(result.body), call);
+      if (page.totalResults !== null) {
+        if (totalResults !== null && totalResults !== page.totalResults) throw adapterRefusal('observation_total_changed');
+        totalResults = page.totalResults;
       }
-      throw adapterRefusal('observation_page_limit');
-    } catch {
-      throw adapterRefusal('observation_failed');
+      rows.push(...page.rows);
+      if (rows.length > call.positions.length || (totalResults !== null && rows.length > totalResults)) {
+        throw adapterRefusal('observation_count_mismatch');
+      }
+      nextToken = page.nextToken;
+      if (nextToken === null) {
+        if (totalResults !== null && rows.length !== totalResults) throw adapterRefusal('observation_count_mismatch');
+        return { call, rows };
+      }
+      if (page.rows.length === 0 || seenTokens.has(nextToken)) {
+        throw adapterRefusal('observation_pagination_stalled');
+      }
+      seenTokens.add(nextToken);
     }
+    throw adapterRefusal('observation_page_limit');
   }
 
   async executeOneAttempt(
@@ -323,7 +359,8 @@ class DefaultSpWriteAdapter implements SpWriteAdapter {
     },
     options: SpWriteAdapterOptions = {},
   ): Promise<SpWriteProviderResultType> {
-    const calls = this.compile(input.plan);
+    const parsedIntent = SpWriteProviderCallIntent.parse(input.intent);
+    const calls = this.compile(input.plan, parsedIntent.positions.map((row) => row.actionId));
     const { intent, call } = verifyIntent(
       input.intent,
       input.plan,

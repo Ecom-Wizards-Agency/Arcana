@@ -1,3 +1,4 @@
+import type { AuthenticatedEditorTransaction } from './authenticated-actor.js';
 /**
  * Tenant-scoped optimization-group workspace and atomic internal writes.
  *
@@ -9,12 +10,15 @@
 import { randomUUID } from 'node:crypto';
 import {
   ScheduledOptimizationGroup,
+  REFERENCE_METHOD,
   optimizationWeekdaysFromIso,
   optimizationWeekdaysToIso,
   type AdProduct,
+  type OrgActor,
   type ScheduledOptimizationGroup as OptimizationGroupValue,
 } from '@wizard-ads/shared';
-import type { DbHandle, QuerySql } from '../client.js';
+import type { DbHandle, QueryHandle, QuerySql } from '../client.js';
+import { lockPrivilegedOrgEditor } from './privileged-actor.js';
 
 export type OptimizationGroupSettings = Omit<
   OptimizationGroupValue,
@@ -72,6 +76,9 @@ export interface SaveOptimizationGroupResult {
 }
 
 interface GroupWireRow {
+  method_id: string | null;
+  method_version: string | null;
+  method_settings: unknown;
   id: string;
   org_id: string;
   profile_id: string;
@@ -120,12 +127,12 @@ export class OptimizationGroupPersistenceError extends Error {
 
 /** One bounded read for the settings screen and Strategy Overview. */
 export async function readOptimizationWorkspace(
-  handle: Pick<DbHandle, 'sql'>,
+  handle: QueryHandle,
   input: { orgId: string; profileId: string },
 ): Promise<OptimizationWorkspace> {
   const [groups, campaigns, profiles] = await Promise.all([
     handle.sql<GroupWireRow[]>`
-      select g.id, g.org_id, g.profile_id, g.name, g.role::text as role,
+      select g.id, g.org_id, g.profile_id, g.name, g.role::text as role, g.method_id, g.method_version, g.method_settings,
              g.target_acos, g.bid_floor, g.bid_ceiling,
              g.bid_increase_cap, g.bid_decrease_cap,
              g.placement_increase_cap, g.placement_decrease_cap,
@@ -212,20 +219,42 @@ export async function saveOptimizationGroup(
   handle: Pick<DbHandle, 'sql'>,
   input: SaveOptimizationGroupInput,
 ): Promise<SaveOptimizationGroupResult> {
+  return handle.sql.begin(prepareOptimizationGroupSave(input));
+}
+
+/**
+ * Complete human save: current editor authority and all domain locks/writes
+ * share one transaction. Domain SQL is privileged, with exact actor scope;
+ * authenticated mirror/audit grants deliberately remain unchanged.
+ */
+export async function saveOptimizationGroupForActor(
+  handle: Pick<DbHandle, 'sql'>,
+  rawActor: OrgActor,
+  input: Omit<SaveOptimizationGroupInput, 'orgId' | 'actorId'>,
+): Promise<SaveOptimizationGroupResult> {
+  return handle.sql.begin(async (sql) => {
+    const actor = await lockPrivilegedOrgEditor(sql, rawActor);
+    return prepareOptimizationGroupSave({ ...input, orgId: actor.orgId, actorId: actor.userId })(sql);
+  });
+}
+
+function prepareOptimizationGroupSave(
+  input: SaveOptimizationGroupInput,
+): (sql: QuerySql) => Promise<SaveOptimizationGroupResult> {
   const id = input.id ?? randomUUID();
   const group = ScheduledOptimizationGroup.parse({
+    ...input.settings,
     version: 2,
     id,
     orgId: input.orgId,
     profileId: input.profileId,
-    ...input.settings,
   });
   const campaignIds = uniqueNonempty(input.campaignIds);
   if (campaignIds.length !== input.campaignIds.length) {
     throw new OptimizationGroupPersistenceError('campaign assignments must be unique and nonempty');
   }
 
-  return handle.sql.begin(async (sql) => {
+  return async (sql) => {
     const [profile] = await sql<{ id: string; timezone: string; review_hour: number | string }[]>`
       select id, timezone, coalesce(preferred_sync_hour, 4) as review_hour
         from public.ad_profiles
@@ -262,13 +291,14 @@ export async function saveOptimizationGroup(
 
     const written = await sql<{ id: string }[]>`
       insert into public.optimization_groups (
-        id, org_id, profile_id, name, role, target_acos,
+        id, org_id, profile_id, name, role, target_acos, method_id, method_version, method_settings,
         bid_floor, bid_ceiling, bid_increase_cap, bid_decrease_cap,
         placement_increase_cap, placement_decrease_cap, exclusions,
         review_weekdays, cadence, prioritization, enabled, next_run_at
       ) values (
         ${group.id}, ${group.orgId}, ${group.profileId}, ${group.name},
         ${group.role}::public.optimization_group_role, ${group.targetAcos},
+        ${group.method?.id ?? null}, ${group.method?.version ?? null}, nullif(${JSON.stringify(group.methodSettings ?? null)}::text::jsonb, 'null'::jsonb),
         ${group.bidFloor}, ${group.bidCeiling}, ${group.bidIncreaseCap},
         ${group.bidDecreaseCap}, ${group.placementIncreaseCap},
         ${group.placementDecreaseCap}, ${group.exclusions},
@@ -279,6 +309,9 @@ export async function saveOptimizationGroup(
       )
       on conflict (id) do update set
         name = excluded.name,
+        method_id = case when ${group.method !== undefined} then excluded.method_id else public.optimization_groups.method_id end,
+        method_version = case when ${group.method !== undefined} then excluded.method_version else public.optimization_groups.method_version end,
+        method_settings = case when ${group.methodSettings !== undefined} then excluded.method_settings else public.optimization_groups.method_settings end,
         role = excluded.role,
         target_acos = excluded.target_acos,
         bid_floor = excluded.bid_floor,
@@ -381,7 +414,7 @@ export async function saveOptimizationGroup(
       movedCampaigns,
       removedCampaigns: removed.length,
     };
-  });
+  };
 }
 
 async function readGroupRecords(
@@ -389,7 +422,7 @@ async function readGroupRecords(
   input: { orgId: string; profileId: string; id: string },
 ): Promise<OptimizationGroupRecord[]> {
   const rows = await sql<GroupWireRow[]>`
-    select g.id, g.org_id, g.profile_id, g.name, g.role::text as role,
+    select g.id, g.org_id, g.profile_id, g.name, g.role::text as role, g.method_id, g.method_version, g.method_settings,
            g.target_acos, g.bid_floor, g.bid_ceiling,
            g.bid_increase_cap, g.bid_decrease_cap,
            g.placement_increase_cap, g.placement_decrease_cap,
@@ -431,6 +464,8 @@ function groupRecordFromWire(row: GroupWireRow): OptimizationGroupRecord {
     orgId: row.org_id,
     profileId: row.profile_id,
     name: row.name,
+    ...(row.method_id == null ? {} : { method: { id: row.method_id ?? REFERENCE_METHOD.id, version: row.method_version ?? REFERENCE_METHOD.version } }),
+    ...(row.method_settings == null ? {} : { methodSettings: row.method_settings }),
     role: row.role,
     targetAcos: Number(row.target_acos),
     bidFloor: numberOrNull(row.bid_floor),
@@ -477,4 +512,20 @@ function numberOrNull(value: string | number | null): number | null {
 
 function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+/** Change one membership atomically; never overwrite a concurrent exclusion edit. */
+export async function setCampaignOptimizationExclusion(
+  context: AuthenticatedEditorTransaction,
+  input: {profileId:string;campaignId:string;excluded:boolean},
+): Promise<{groupId:string;exclusions:string[]}> {
+  const [row] = await context.sql<{id:string;exclusions:string[]}[]>`update public.optimization_groups g set
+    exclusions=case when ${input.excluded} then array(select distinct unnest(g.exclusions || array[${input.campaignId}]::text[]) order by 1)
+      else array_remove(g.exclusions,${input.campaignId}) end, updated_at=now()
+    from public.campaign_optimization_assignments a where g.id=a.group_id and g.org_id=a.org_id and g.profile_id=a.profile_id
+    and a.org_id=${context.actor.orgId} and a.profile_id=${input.profileId} and a.campaign_id=${input.campaignId}
+    returning g.id,g.exclusions`;
+  if(!row) throw new Error('Assign to a group first');
+  if(row.exclusions.includes(input.campaignId)!==input.excluded) throw new Error('Exclusion readback mismatch');
+  return {groupId:row.id,exclusions:row.exclusions};
 }

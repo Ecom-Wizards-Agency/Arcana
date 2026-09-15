@@ -1,102 +1,38 @@
 'use client';
 
-import { useRef } from 'react';
 import type { ReactNode } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { DateRangePicker as SharedDateRangePicker, comparisonRange } from '@wizard-ads/ui';
 import type { Period } from '../../app/_lib/periods';
-import { dateRangeHref, dateRangePresets, selectedDateRangeLabel } from './date-range';
+import { dateRangeHref } from './date-range';
+import { useShellEvidence } from './shell-evidence';
 
-export function DateRangePicker({
-  path,
-  period,
-  today,
-  includeToday = false,
-  selectedPresetId,
-  preserved = {},
-}: {
+/** Route adapter; calendar, draft state and comparison controls live in packages/ui. */
+export function DateRangePicker({ path, trigger, period, today, comparison, includeToday = false, selectedPresetId, preserved = {} }: {
   path: string;
+  trigger?: ReactNode;
   period: Period;
   today: string;
+  comparison?: Period;
   includeToday?: boolean;
   selectedPresetId?: string;
   preserved?: Readonly<Record<string, string | undefined>>;
 }): ReactNode {
   const router = useRouter();
-  const root = useRef<HTMLDetailsElement | null>(null);
-  const presets = dateRangePresets(today, includeToday);
-  const latestSelectableDay = presets[0]?.period.end ?? today;
-  const selectedLabel = selectedDateRangeLabel(period, today, includeToday, selectedPresetId);
-  const hidden = Object.entries(preserved).filter(
-    ([key, value]) => value !== undefined && key !== 'from' && key !== 'to' && key !== 'preset',
-  ) as Array<[string, string]>;
-
-  return (
-    <details className="wa-date-range" ref={root}>
-      <summary className="wa-date-range__trigger" aria-label={`Date range: ${selectedLabel}`}>
-        <svg aria-hidden="true" viewBox="0 0 20 20" width="16" height="16">
-          <path d="M5 2.5v3m10-3v3M3.5 8h13M5 4h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
-        </svg>
-        <span>{selectedLabel}</span>
-        <svg aria-hidden="true" className="wa-date-range__chevron" viewBox="0 0 12 12" width="12" height="12">
-          <path d="m3 4.5 3 3 3-3" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" />
-        </svg>
-      </summary>
-
-      <div className="wa-date-range__popover">
-        <div className="wa-date-range__heading">
-          <strong>Date range</strong>
-          <span>{includeToday ? 'Includes today · still settling' : 'Complete days only'}</span>
-        </div>
-        <nav className="wa-date-range__presets" aria-label="Date range presets">
-          {presets.map((preset) => {
-            const active = preset.id === selectedPresetId
-              ? preset.period.start === period.start && preset.period.end === period.end
-              : selectedPresetId === undefined && preset.label === selectedLabel;
-            return (
-              <Link
-                aria-current={active ? 'date' : undefined}
-                href={dateRangeHref(path, preset.period, { ...preserved, preset: preset.id })}
-                prefetch={false}
-                onClick={() => root.current?.removeAttribute('open')}
-                key={preset.id}
-              >
-                <span>{preset.label}</span>
-                {active ? <span aria-hidden="true">✓</span> : null}
-              </Link>
-            );
-          })}
-        </nav>
-        <form
-          action={path}
-          method="get"
-          className="wa-date-range__custom"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const data = new FormData(event.currentTarget);
-            const parameters = new URLSearchParams();
-            for (const [name, value] of data.entries()) {
-              if (typeof value === 'string') parameters.append(name, value);
-            }
-            root.current?.removeAttribute('open');
-            router.push(`${path}?${parameters.toString()}`);
-          }}
-        >
-          {hidden.map(([name, value]) => <input key={name} type="hidden" name={name} value={value} />)}
-          <strong>Custom range</strong>
-          <div className="wa-date-range__fields">
-            <label>
-              <span>From</span>
-              <input className="wa-input wa-input--sm" name="from" type="date" defaultValue={period.start} required />
-            </label>
-            <label>
-              <span>To</span>
-              <input className="wa-input wa-input--sm" name="to" type="date" defaultValue={period.end} max={latestSelectableDay} required />
-            </label>
-          </div>
-          <button className="wa-btn wa-btn--primary wa-btn--sm" type="submit">Apply range</button>
-        </form>
-      </div>
-    </details>
-  );
+  const evidence = useShellEvidence();
+  const mode = preserved['comparison'] === 'none' ? 'none' : preserved['comparison'] === 'year' ? 'year'
+    : comparison !== undefined || preserved['compareFrom'] ? 'custom' : 'previous';
+  const custom = comparison ?? (preserved['compareFrom'] && preserved['compareTo']
+    ? { start: preserved['compareFrom'], end: preserved['compareTo'] }
+    : comparisonRange(period, 'previous', period)!);
+  return <SharedDateRangePicker period={period} comparison={custom} today={today} includeToday={includeToday} mode={mode}
+    hiddenFields={Object.fromEntries(Object.entries(preserved).filter(([name]) => !['from', 'to', 'preset'].includes(name)))}
+    trigger={trigger} {...(selectedPresetId === undefined ? {} : { selectedPresetId })}
+    factsThrough={evidence?.freshness?.coversThrough ?? null} factsComplete={evidence?.freshness?.tone === 'good'}
+    presetHref={(range, preset) => dateRangeHref(path, range, { ...preserved, preset })}
+    onApply={(selection) => router.push(dateRangeHref(path, selection.period, { ...preserved,
+      preset: selection.preset, comparison: selection.mode,
+      compareFrom: selection.mode === 'previous' ? undefined : selection.comparison?.start,
+      compareTo: selection.mode === 'previous' ? undefined : selection.comparison?.end,
+    }))} />;
 }

@@ -1,4 +1,9 @@
-export class MrpApiError extends Error {
+import type { ProviderFailure } from '@wizard-ads/shared';
+export class MrpApiError extends Error implements ProviderFailure {
+  readonly provider = 'mrp';
+  get kind(): string { return this.name; }
+  get retryable(): boolean { return false; }
+  get retryAfterSeconds(): number | undefined { return undefined; }
   override readonly name: string = 'MrpApiError';
 }
 
@@ -7,6 +12,7 @@ export class MrpConfigError extends MrpApiError {
 }
 
 export class MrpHttpError extends MrpApiError {
+  override get retryable(): boolean { return this.status === 429 || this.status === 408 || this.status === 425 || this.status >= 500; }
   override readonly name: string = 'MrpHttpError';
 
   constructor(
@@ -18,6 +24,7 @@ export class MrpHttpError extends MrpApiError {
 }
 
 export class MrpTransportError extends MrpApiError {
+  override get retryable(): boolean { return true; }
   override readonly name = 'MrpTransportError';
 }
 

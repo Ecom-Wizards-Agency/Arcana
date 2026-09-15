@@ -1,28 +1,17 @@
-import { exportAcceptedContextualNegatives, type RequestDatabase } from '@wizard-ads/db';
-import {
-  errorResponse,
-  openWebDatabase,
-  requestActor,
-} from '../../../../../src/server/request-context';
-import { requireCapability } from '../../../../../src/server/org-role';
+import { exportContextualNegativesForActor } from '@wizard-ads/db';
+import { authenticatedMutation } from '../../../../../src/server/authenticated-mutation';
 import { parseExportRequest, readBoundedReviewJson } from '../../../../../src/query-intelligence/review-http';
 import { contextualNegativeReviewErrorResponse } from '../../../../../src/query-intelligence/review-errors';
 
 export const runtime = 'nodejs';
 
 export async function POST(request: Request): Promise<Response> {
-  let database: RequestDatabase | null = null;
-  try {
-    database = openWebDatabase();
-    const actor = await requestActor(request.headers);
-    await requireCapability(database, actor, 'exportBatches');
+  return authenticatedMutation(request, async (database) => {
     const body = parseExportRequest(await readBoundedReviewJson(request));
-    const result = await exportAcceptedContextualNegatives(database, {
-      orgId: actor.orgId,
+    const result = await exportContextualNegativesForActor(database, {
       profileId: body.profileId,
       marketplaceId: body.marketplaceId,
       proposals: body.proposals,
-      actorId: actor.userId,
       note: body.note,
     });
     const base = `/api/query-intelligence/negatives/export/${result.exportId}`;
@@ -35,9 +24,5 @@ export async function POST(request: Request): Promise<Response> {
       },
       amazonUpdated: false,
     }, { status: 201 });
-  } catch (error) {
-    return contextualNegativeReviewErrorResponse(error) ?? errorResponse(error);
-  } finally {
-    await database?.close();
-  }
+  }, contextualNegativeReviewErrorResponse);
 }

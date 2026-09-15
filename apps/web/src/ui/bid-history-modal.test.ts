@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BidHistoryPayload } from '../../app/_lib/bid-corridor';
+import { targetFixture } from '../screens/targets/fixtures';
 import { BidHistoryModal } from './bid-history-modal';
 
 const payload: BidHistoryPayload = {
@@ -63,25 +64,25 @@ describe('BidHistoryModal', () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it('renders target identity, KPI tiles, empty corridor, and D/W/M controls', async () => {
+  it('renders target identity, the shared empty corridor, five tabs and full-page navigation', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
-        new Response(JSON.stringify(payload), {
+        new Response(JSON.stringify({ ...targetFixture, payload }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         }),
       ),
     );
-    renderModal();
+    await act(async () => { renderModal(); });
 
-    await vi.waitFor(() => expect(host.textContent).toContain('widget exact · exact'));
-    expect(host.textContent).toContain('SP | keyword | SP | Rank | Widget');
-    expect(host.textContent).toContain('Impressions');
+    await vi.waitFor(() => expect(host.querySelector('h1')?.textContent).toBe('widget exact'));
+    expect(host.textContent).toContain('SP | Rank | Widget');
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Close target');
+    expect(host.textContent).toContain('Daily spend');
     expect(host.textContent).toContain('ACOS');
     expect(host.textContent).toContain('No bid corridor has been synced for this target yet.');
-    expect(host.querySelector('button[aria-label="Daily"]')).not.toBeNull();
-    expect(host.querySelector('button[aria-label="Weekly"]')).not.toBeNull();
-    expect(host.querySelector('button[aria-label="Monthly"]')).not.toBeNull();
+    expect(host.querySelectorAll('[role="tab"]')).toHaveLength(5);
+    expect(host.querySelector('a[href^="/targets/"]')?.textContent).toContain('Open full');
   });
 });

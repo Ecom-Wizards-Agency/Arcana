@@ -18,7 +18,7 @@
  * bar rebuilds those lanes as a treegrid whenever the operator wants the
  * counts instead of the rows.
  *
- * The two trust-building interactions from the recon (`https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/04-optimizer.md`)
+ * The two trust-building interactions from the recon (`https://github.com/Ecom-Wizards-Agency/Arcana/blob/dd4f3887f626128250abee537f374712ca42717c/tools/recon/04-optimizer.md`)
  * are unchanged:
  *
  * - **Bulk action over a filtered set.** Narrow by reason, status, strategy or
@@ -1099,7 +1099,7 @@ export function ReviewWorkspace(props: ReviewWorkspaceProps): ReactNode {
                 ? `${int(acceptedSelected)} accepted proposal${acceptedSelected === 1 ? '' : 's'} among the selected loaded rows.`
                 : `Every accepted proposal in this run (${int(exportCount)}).`}
               {' '}
-              Creates review files only. OpenSpell does not update Amazon.
+              Creates review files only. Arcana does not update Amazon.
             </p>
           </div>
           <div className="wa-review__export-fields">
@@ -1347,6 +1347,13 @@ function EvidencePanel({
           ? ''
           : ` Target ACOS ${(proposal.strategy.targetAcos * 100).toFixed(0)}%.`}
       </p>
+      {proposal.dependencySet === undefined ? null : <section aria-label="Ordered control changes">
+        <p>One intervention · {proposal.dependencySet.changes.length} steps</p>
+        <ol>{proposal.dependencySet.changes.map((change, index) => <li key={index}>
+          {change.entityRef.name ?? change.entityRef.entityId}: {change.control === 'placement_adjustment' ? change.placementKey : change.control} {change.current} → {change.proposed} ({change.unit})
+          {proposal.dependencySet?.precedenceReasons[index] ? <p className="wa-hint">{proposal.dependencySet.precedenceReasons[index]}</p> : null}
+        </li>)}</ol>
+      </section>}
       <dl style={definitions}>
         {proposal.provenance.map((line) => (
           <div key={line.key} style={definitionRow} data-provenance={line.key}>
@@ -1369,8 +1376,9 @@ function EvidencePanel({
       )}
       {proposal.exportable ? null : (
         <p style={{ margin: '0.5rem 0 0' }}>
-          This proposal creates an entity rather than changing one, so it ships as a create
-          row in the workbook and is absent from the rows JSON.
+          {proposal.dependencySet === undefined
+            ? 'This proposal creates an entity, so it ships as a create row in the workbook and is absent from the rows JSON.'
+            : 'This draft method can be reviewed but cannot be approved for Amazon execution.'}
         </p>
       )}
     </div>

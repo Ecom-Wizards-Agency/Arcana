@@ -12,6 +12,7 @@
  * production build by design. Running the suite against `next start` would have
  * to disable that guard, which is the guard's whole point.
  */
+import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
@@ -32,6 +33,7 @@ import {
   STATE_KEY,
   USERS,
   WEB_ROOT,
+  readState,
   writeState,
 } from './support/fixture';
 
@@ -87,6 +89,9 @@ export async function runE2EGlobalSetup<Mock, Server>(
 }
 
 export default async function globalSetup(): Promise<void> {
+  // Brand lens ships behind its rollout flag (off in production). Set it for this process so the
+  // spec expectations (nav links from the registry) and the dev server (below) agree.
+  process.env['WIZARD_ADS_BRAND_LENS_ENABLED'] ??= '1';
   await runE2EGlobalSetup({
     installTeardown: (teardown) => {
       (globalThis as Record<string, unknown>)['__wizardAdsE2E'] = teardown;
@@ -108,9 +113,15 @@ export default async function globalSetup(): Promise<void> {
       });
       return { resource: mock, cleanup: () => mock.close() };
     },
-    acquireServer: (connectionString, mock) => {
-      const server = spawnWebServer(connectionString, mock);
-      return { resource: server, cleanup: () => stopProcess(server.child) };
+    acquireServer: async (connectionString, mock) => {
+      const worker = await spawnConnectionTestWorker(connectionString, mock.url);
+      try {
+        const { fixtureProfileId } = await readState();
+        const server = spawnWebServer(connectionString, mock, fixtureProfileId);
+        return { resource: server, cleanup: async () => {
+          try { await stopProcess(server.child); } finally { await stopProcess(worker); }
+        } };
+      } catch (error) { await stopProcess(worker); throw error; }
     },
     waitUntilReady: async (server) => {
       await waitForE2EServerOrFailure(
@@ -227,7 +238,7 @@ async function seed(connectionString: string): Promise<{
     let emailsWritten = 0;
     for (const [key, userId] of identities) {
       const rows = await handle.sql<{ id: string }[]>`
-        update auth.users set email = ${EMAILS[key]} where id = ${userId} returning id
+        update auth.users set email = ${EMAILS[key]},email_confirmed_at=now() where id = ${userId} returning id
       `;
       emailsWritten += rows.length;
     }
@@ -307,7 +318,28 @@ interface SpawnedWebServer {
   failedBeforeReady: Promise<never>;
 }
 
-function spawnWebServer(connectionString: string, amazon: AmazonMock): SpawnedWebServer {
+async function spawnConnectionTestWorker(connectionString: string, mockOrigin: string): Promise<ChildProcess> {
+  const worker = spawn(process.execPath, ['--import', 'tsx', resolve(REPO_ROOT, 'apps/worker/src/amazon-connections-e2e.ts')], {
+    cwd: REPO_ROOT, stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+    env: { PATH: process.env['PATH'], NODE_ENV: 'test', WIZARD_ADS_TEST_DATABASE_URL: connectionString,
+      OPENSPELL_TEST_AMAZON_ORIGIN: mockOrigin, OPENSPELL_TEST_APP_ORIGIN: BASE_URL },
+  });
+  try {
+    await new Promise<void>((resolveReady, reject) => {
+      const timer = setTimeout(() => reject(new Error('Connection test worker did not start')), 15_000);
+      worker.once('message', (value) => {
+        clearTimeout(timer);
+        if (typeof value === 'object' && value !== null && 'ready' in value && value.ready === true) resolveReady();
+        else reject(new Error('Unexpected connection test worker readiness'));
+      });
+      worker.once('error', () => { clearTimeout(timer); reject(new Error('Connection test worker could not start')); });
+      worker.once('exit', () => { clearTimeout(timer); reject(new Error('Connection test worker exited')); });
+    });
+    return worker;
+  } catch (error) { await stopProcess(worker); throw error; }
+}
+
+function spawnWebServer(connectionString: string, amazon: AmazonMock, fixtureProfileId: string): SpawnedWebServer {
   const child = spawn(
     resolve(WEB_ROOT, 'node_modules/.bin/next'),
     // `--webpack` for the reason next.config.ts documents: Turbopack cannot
@@ -318,26 +350,38 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock): SpawnedWe
       stdio: ['ignore', 'inherit', 'inherit'],
       env: {
         ...process.env,
-        // Each authenticated suite owns one bounded dev process. Retain the
-        // existing heap ceiling without allowing a development-memory restart
-        // to discard an in-process fixture.
+        // Each authenticated suite owns one bounded dev process. The signed-in
+        // guard suite compiles every route in that one process; with the full
+        // Targets column set the webpack module cache crossed 4 GB while
+        // compiling /grid/translation and the server died mid-suite; with the
+        // Optimize Now screens it crossed 6 GB too. The e2e config also enables
+        // Next's webpack memory optimisations. Keep a bounded ceiling (the
+        // runner has 16 GB) without allowing a
+        // development-memory restart to discard an in-process fixture.
         NODE_OPTIONS: appendNodeOption(
           process.env['NODE_OPTIONS'],
-          '--max-old-space-size=4096',
+          '--max-old-space-size=12288',
         ),
         NODE_ENV: 'development',
         DATABASE_URL: connectionString,
         WIZARD_ADS_APP_URL: BASE_URL,
         WIZARD_ADS_E2E_AUTH: '1',
+        // Brand lens ships behind its rollout flag (off in production); the suites exercise it.
+        WIZARD_ADS_BRAND_LENS_ENABLED: '1',
+        GOTO_LINK_SIGNING_SECRET: randomBytes(32).toString('hex'),
         AMAZON_LWA_CLIENT_ID: 'amzn1.application-oa2-client.e2e',
-        AMAZON_LWA_CLIENT_SECRET: 'synthetic-e2e-client-secret',
         AMAZON_OAUTH_REDIRECT_URI: `${BASE_URL}/api/amazon/oauth/callback`,
         AMAZON_OAUTH_STATE_KEY: STATE_KEY,
         AMAZON_LWA_AUTHORIZE_URL: amazon.authorizeUrl,
-        AMAZON_LWA_TOKEN_URL: amazon.tokenUrl,
-        AMAZON_ADS_HOST_NA: amazon.hosts.NA,
-        AMAZON_ADS_HOST_EU: amazon.hosts.EU,
-        AMAZON_ADS_HOST_FE: amazon.hosts.FE,
+        OPENSPELL_AMAZON_CONNECTIONS_ENABLED: '1',
+        // This process owns only the synthetic suite database. The creative
+        // producer allowlist is confined to its seeded profile; no cron runs.
+        ...(process.env['WIZARD_ADS_E2E_SUITE'] === 'route-acceptance' ? {
+          OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '1',
+          OPENSPELL_EVO_REPORT_LANE_READY: '1',
+          OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST: fixtureProfileId,
+          WIZARD_ADS_PROMPTS_ENABLED: '1',
+        } : {}),
       },
     },
   );

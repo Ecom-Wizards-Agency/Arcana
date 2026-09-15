@@ -13,8 +13,11 @@
  * being remembered at every call site.
  */
 import { revalidatePath } from 'next/cache';
+import { withAuthenticatedOrgEditor } from '@wizard-ads/db';
+import { Uuid } from '@wizard-ads/shared';
 import { authorize } from '../../../src/auth/roles';
 import { gateAction } from '../../../src/auth/guard';
+import { requireCapability } from '../../../src/server/org-role';
 import {
   setProfileSyncEnabled,
   setProfilesSyncEnabled,
@@ -23,27 +26,30 @@ import {
 } from '../../../src/data/profiles';
 
 export async function saveTargets(formData: FormData): Promise<void> {
-  const { handle, active } = await gateAction();
+  const { handle, active, userId } = await gateAction(Uuid.parse(formData.get('orgId')));
   authorize(active.role, 'editTargets');
 
   const profileId = requireId(formData.get('profileId'));
-  await updateProfileTargets(handle, active.orgId, profileId, {
+  await withAuthenticatedOrgEditor(handle, { orgId: active.orgId, userId }, (context) => updateProfileTargets(context, context.actor.orgId, profileId, {
     targetAcos: percentToFraction(formData.get('targetAcos')),
     targetTotalAcos: percentToFraction(formData.get('targetTotalAcos')),
     goalLens: text(formData.get('goalLens')),
     monthlyBudget: money(formData.get('monthlyBudget')),
-  });
+  }));
 
   revalidatePath('/settings/profiles');
 }
 
 export async function toggleSync(formData: FormData): Promise<void> {
-  const { handle, active } = await gateAction();
+  const { handle, active, userId } = await gateAction(Uuid.parse(formData.get('orgId')));
   authorize(active.role, 'toggleSync');
 
   const profileId = requireId(formData.get('profileId'));
   const enabled = formData.get('enabled') === '1';
-  await setProfileSyncEnabled(handle, active.orgId, profileId, enabled);
+  await withAuthenticatedOrgEditor(handle, { orgId: active.orgId, userId }, async (context) => {
+    await requireCapability(context, context.actor, 'toggleSync');
+    await setProfileSyncEnabled(context, context.actor.orgId, profileId, enabled);
+  });
 
   revalidatePath('/settings/profiles');
   revalidatePath('/sync-status');
@@ -58,7 +64,7 @@ export async function toggleSync(formData: FormData): Promise<void> {
  * than reporting a silent partial success.
  */
 export async function bulkSetSync(formData: FormData): Promise<void> {
-  const { handle, active } = await gateAction();
+  const { handle, active, userId } = await gateAction(Uuid.parse(formData.get('orgId')));
   authorize(active.role, 'toggleSync');
 
   const profileIds = formData
@@ -67,10 +73,11 @@ export async function bulkSetSync(formData: FormData): Promise<void> {
   if (profileIds.length === 0) throw new Error('no profiles selected');
   const enabled = formData.get('enabled') === '1';
 
-  const changed = await setProfilesSyncEnabled(handle, active.orgId, profileIds, enabled);
-  if (changed !== profileIds.length) {
-    throw new Error(`selected ${profileIds.length} profiles but changed ${changed}`);
-  }
+  await withAuthenticatedOrgEditor(handle, { orgId: active.orgId, userId }, async (context) => {
+    await requireCapability(context, context.actor, 'toggleSync');
+    const changed = await setProfilesSyncEnabled(context, context.actor.orgId, profileIds, enabled);
+    if (changed !== profileIds.length) throw new Error('Selected profile count did not match; no settings were changed');
+  });
 
   revalidatePath('/settings/profiles');
   revalidatePath('/sync-status');
@@ -84,13 +91,16 @@ export async function bulkSetSync(formData: FormData): Promise<void> {
  * profile's numbers land is an operations decision, not an analyst one.
  */
 export async function saveSchedule(formData: FormData): Promise<void> {
-  const { handle, active } = await gateAction();
+  const { handle, active, userId } = await gateAction(Uuid.parse(formData.get('orgId')));
   authorize(active.role, 'toggleSync');
 
   const profileId = requireId(formData.get('profileId'));
-  await updateProfileSchedule(handle, active.orgId, profileId, {
-    timezone: text(formData.get('timezone')),
-    preferredSyncHour: hour(formData.get('preferredSyncHour')),
+  await withAuthenticatedOrgEditor(handle, { orgId: active.orgId, userId }, async (context) => {
+    await requireCapability(context, context.actor, 'toggleSync');
+    await updateProfileSchedule(context, context.actor.orgId, profileId, {
+      timezone: text(formData.get('timezone')),
+      preferredSyncHour: hour(formData.get('preferredSyncHour')),
+    });
   });
 
   revalidatePath('/settings/profiles');

@@ -87,7 +87,7 @@ describe('optimization groups manager', () => {
     expect(markup).toContain('Target ACOS 23.0%');
     expect(markup).toContain('Assigned campaign');
     expect(markup).toContain('Unassigned campaign');
-    expect(markup).toContain('OpenSpell settings only');
+    expect(markup).toContain('Arcana settings only');
     expect(markup).toContain('does not update Amazon');
     expect(markup).toContain('Run group preview');
     expect(markup).toContain('Review schedule');
@@ -218,4 +218,24 @@ describe('optimization groups manager', () => {
     weekdayChecks = [...host.querySelectorAll<HTMLInputElement>('.wa-weekday-options input')];
     expect(weekdayChecks[0]?.checked).toBe(true);
   });
+});
+
+it('submits the coordinated method and detects a dropped method in server readback', async () => {
+  const fetchMock = vi.fn(async () => new Response(JSON.stringify({ record: workspace.groups[0], assignedCampaigns: 1 }), { status: 200 }));
+  vi.stubGlobal('fetch', fetchMock);
+  const host = document.createElement('div'); document.body.append(host);
+  const root = createRoot(host); mounted.push(root);
+  await act(async () => root.render(createElement(OptimizationGroupsManager, {
+    profileId: workspace.groups[0]!.group.profileId, initial: workspace, canManage: true, previewReady: true,
+  })));
+  const method = [...host.querySelectorAll('select')].find((select) => select.querySelector('option[value="sp.coordinated-efficiency"]'))!;
+  await act(async () => { method.value = 'sp.coordinated-efficiency'; method.dispatchEvent(new Event('change', { bubbles: true })); });
+  const inputFor = (label: string) => [...host.querySelectorAll('label')].find((element) => element.textContent?.startsWith(label))!.querySelector('input')!;
+  await act(async () => { setInputValue(inputFor('Exposure ceiling'), '1.5'); setInputValue(inputFor('Minimum clicks per placement'), '20'); });
+  await act(async () => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  const options = (fetchMock.mock.calls as unknown as Array<[string, RequestInit]>)[0]![1];
+  expect(JSON.parse(String(options.body))).toMatchObject({ method: { id: 'sp.coordinated-efficiency', version: 'candidate.1' },
+    methodSettings: { exposureCeiling: 1.5, minClicksPerPlacement: 20, placementEvidenceRequirements: 'single_target' } });
+  expect(host.textContent).toContain('The saved method does not match your selection');
 });

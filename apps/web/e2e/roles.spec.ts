@@ -97,6 +97,11 @@ test('a viewer sees the roster and can change nothing', async ({ page }) => {
   await expect(page.getByTestId('connect-integration-keepa')).toHaveCount(0);
   await expect(page.getByTestId('revoke-integration-keepa')).toHaveCount(0);
 
+  await page.goto('/connect-claude');
+  await expect(page.getByRole('heading', { name: 'Connect AI (MCP)', exact: true })).toBeVisible();
+  await expect(page.getByTestId('issue-forbidden')).toBeVisible();
+  await expect(page.getByTestId('issue-key')).toHaveCount(0);
+
   const response = await page.request.get('/api/amazon/oauth/start', { maxRedirects: 0 });
   expect(response.status()).toBe(403);
 });
@@ -216,7 +221,7 @@ test('an admin persists a schedule and bulk-syncs the exact selected synthetic r
   await expect(page.getByTestId('toggle-sync')).toHaveValue('0');
 });
 
-test('an admin stores an integration key once and can revoke it', async ({ page }) => {
+test('an admin manages a credential and sees a safe failed replacement without losing the prior value', async ({ page }) => {
   await signIn(page, 'admin');
   await page.goto('/settings/integrations');
 
@@ -245,6 +250,32 @@ test('an admin stores an integration key once and can revoke it', async ({ page 
   await expect(
     page.getByTestId('integration-row-datadive').filter({ hasText: 'E2E DataDive' }),
   ).toContainText('active');
+
+  const state = await readState();
+  const handle = createDb({ connectionString: state.connectionString, max: 1 });
+  try {
+    await handle.sql`create function public.e2e_refuse_integration_activation() returns trigger language plpgsql as $$
+      begin if new.label='E2E DataDive' and new.status='active' then
+        raise exception 'synthetic private storage detail'; end if; return new; end $$`;
+    await handle.sql`create trigger e2e_refuse_integration_activation before update on public.integration_connections
+      for each row execute function public.e2e_refuse_integration_activation()`;
+    await page.getByTestId('integration-label-datadive').fill('E2E DataDive');
+    await page.getByTestId('integration-secret-datadive').fill(`${INTEGRATION_VALUE}-refused`);
+    await page.getByTestId('submit-integration-datadive').click();
+    await expect(row).toContainText('Credential storage failed. Ask your installation operator');
+    await expect(page.getByTestId('integration-secret-datadive')).toHaveValue('');
+    await expect(page.locator('body')).not.toContainText(INTEGRATION_VALUE);
+    await expect(page.locator('body')).not.toContainText('synthetic private storage detail');
+    const results = await handle.sql<{ value: string; audit_count: number }[]>`
+      select public.get_integration_secret(c.id) as value,
+        (select count(*)::int from public.audit_log a where a.target_id=c.id::text) as audit_count
+      from public.integration_connections c where c.org_id=${state.orgId} and c.label='E2E DataDive'`;
+    expect(results).toEqual([{ value: `${INTEGRATION_VALUE}-rotated`, audit_count: 4 }]);
+  } finally {
+    await handle.sql`drop trigger if exists e2e_refuse_integration_activation on public.integration_connections`;
+    await handle.sql`drop function if exists public.e2e_refuse_integration_activation()`;
+    await handle.close();
+  }
 });
 
 test('the analyst edit persisted for every role that can read it', async ({ page }) => {
@@ -295,4 +326,42 @@ test('sync status renders the ledgers', async ({ page }) => {
   ]);
   await expect(page.getByTestId('report-row')).toHaveCount(1);
   await expect(page.getByTestId('report-row').first()).toContainText('yes');
+});
+
+test('an admin issues one scoped MCP key, loses the plaintext on reload and revokes it', async ({ page }) => {
+  await signIn(page, 'admin');
+  const state = await readState();
+  const handle = createDb({ connectionString: state.connectionString, max: 1 });
+  try {
+    const [before] = await handle.sql<{ n: number }[]>`select count(*)::int as n from mcp.api_keys where org_id=${state.orgId}`;
+    await page.goto('/connect-claude');
+    await page.getByTestId('key-label-input').fill('Synthetic browser key');
+    await page.getByTestId(`profile-option-${state.fixtureProfileId}`).check();
+    await page.getByTestId('key-expiry-select').selectOption('7');
+    const issuedResponse = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/mcp-keys' && response.request().method() === 'POST');
+    await page.getByTestId('issue-key').click();
+    const response = await issuedResponse;
+    expect(response.status()).toBe(201);
+    expect(response.headers()['cache-control']).toBe('no-store, max-age=0');
+    await expect(page.getByTestId('issued-token')).toBeVisible();
+    const row = page.getByTestId('key-row').filter({ hasText: 'Synthetic browser key' });
+    await expect(row).toBeVisible();
+    const id = await row.getAttribute('data-key-id');
+    expect(id).toBeTruthy();
+    const keys = await handle.sql<{ id: string; profile_ids: string[]; scope: string }[]>`
+      select id,profile_ids,scope::text from mcp.api_keys where org_id=${state.orgId} and id=${id}`;
+    expect(keys).toEqual([{ id, profile_ids: [state.fixtureProfileId], scope: 'read' }]);
+    const [after] = await handle.sql<{ n: number }[]>`select count(*)::int as n from mcp.api_keys where org_id=${state.orgId}`;
+    expect(after!.n - before!.n).toBe(1);
+    await page.reload();
+    await expect(page.getByTestId('issued-token')).toHaveCount(0);
+    await expect(row).toBeVisible();
+    await page.getByTestId(`revoke-key-${id}`).click();
+    await expect(row).toContainText('revoked');
+    await page.reload();
+    await expect(row).toContainText('revoked');
+    const audits = await handle.sql<{ action: string }[]>`select action from public.audit_log
+      where org_id=${state.orgId} and target_id=${id} order by created_at,id`;
+    expect(audits.map((audit) => audit.action)).toEqual(['mcp_key.issued', 'mcp_key.revoked']);
+  } finally { await handle.close(); }
 });

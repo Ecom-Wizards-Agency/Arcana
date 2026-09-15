@@ -1,7 +1,7 @@
 /**
  * Key management for an operator: `pnpm --filter @wizard-ads/mcp keys <command>`.
  *
- *   keys issue --org <slug> --label "crosscheck QA" --profiles <id,id> [--days 30]
+ *   keys issue --org <slug> --owner <user id> --label "crosscheck QA" --profiles <id,id> [--days 30]
  *   keys list  --org <slug>
  *   keys revoke --id <key id>
  *
@@ -35,9 +35,10 @@ async function main(argv: readonly string[]): Promise<void> {
       const slug = flag(argv, 'org');
       const label = flag(argv, 'label');
       const profiles = flag(argv, 'profiles');
-      if (!slug || !label || !profiles) {
+      const owner = flag(argv, 'owner');
+      if (!slug || !label || !profiles || !owner) {
         throw new Error(
-          'usage: keys issue --org <slug> --label <label> --profiles <id,id> [--days 30]',
+          'usage: keys issue --org <slug> --owner <user id> --label <label> --profiles <id,id> [--days 30]',
         );
       }
 
@@ -56,6 +57,7 @@ async function main(argv: readonly string[]): Promise<void> {
       const issued = await issueApiKey(handle, {
         orgId: org.id,
         label,
+        createdBy: owner,
         profileIds: profiles.split(',').map((value) => value.trim()),
         expiresAt: new Date(Date.now() + days * DAY_MS),
       });

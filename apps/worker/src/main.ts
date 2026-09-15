@@ -1,5 +1,15 @@
-import { createDb } from '@wizard-ads/db';
+import { registerAssetLibrarySource } from './asset-library.js';
+import { registerTargetTranslation } from './translation/register.js';
+import { ProviderConnectionLoop } from './provider-connection-loop.js';
+import { runSpApiConnectionPass } from './spapi-connections.js';
+import { registerIntegrationSources } from './integration-sources.js';
+import { createKeywordMirrorCapability, createSpWriteWorker } from './sp-write-outbox/composition.js';
+import { startSpWritePolling } from './sp-write-outbox/polling.js';
+import { spWritePolicyFromEnv } from './sp-write-outbox/policy.js';
+import { createDb, loadReportHealth } from '@wizard-ads/db';
 import { createAdsApiClientFromEnv } from './ads-api.js';
+import { AmazonConnectionLoop } from './amazon-connections.js';
+import { createAmazonConnectionProvider, createAmazonConnectionStore } from './amazon-connection-adapters.js';
 import { configFromEnv } from './config.js';
 import { createCrosscheckIngest } from './crosscheck.js';
 import { createDataDiveRankSyncHandler } from './datadive.js';
@@ -42,6 +52,7 @@ import type { JobType } from '@wizard-ads/shared';
 
 const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
   'entity.sync',
+  'asset-library.search',
   'report.request',
   'report.poll',
   'report.fetch',
@@ -50,10 +61,19 @@ const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
 ]);
 
 const config = configFromEnv();
+const reportStaleHours = Number(process.env['WORKER_REPORT_STALE_HOURS'] ?? 6);
+if (!Number.isFinite(reportStaleHours) || reportStaleHours <= 0) {
+  throw new Error('WORKER_REPORT_STALE_HOURS must be positive');
+}
 const handle = createDb({ connectionString: config.databaseUrl, max: config.maxConcurrentJobs + 2 });
 const store = new PostgresWorkerStore(handle, undefined, {
   claimProtocol: config.claimProtocol,
+  ...((config.spWrites.dispatchEnabled || config.spWrites.reconcileEnabled)
+    ? { keywordMirror: createKeywordMirrorCapability(handle) } : {}),
 });
+const spWriteLoop = config.startsBackgroundPasses && (config.spWrites.dispatchEnabled || config.spWrites.reconcileEnabled)
+  ? createSpWriteWorker(store, { claimantId: `${config.workerId}:sp-writes`, policy: () => spWritePolicyFromEnv(process.env) })
+  : undefined;
 const marketingStream = config.startsBackgroundPasses && config.marketingStreamQueueUrl
   ? createMarketingStreamSqsConsumer({
       handle,
@@ -74,6 +94,17 @@ const runsAmazonJobs = config.jobTypes === undefined
   || config.jobTypes.some((jobType) => AMAZON_JOB_TYPES.has(jobType));
 // One client instance serves both the queue worker and bid-corridor sync.
 const adsApi = runsAmazonJobs ? createAdsApiClientFromEnv(handle) : undefined;
+const amazonConnections = config.amazonConnectionsEnabled
+  ? new AmazonConnectionLoop(createAmazonConnectionStore(handle), createAmazonConnectionProvider(handle))
+  : undefined;
+const spApiConnections = config.spApiConnectionsEnabled
+  ? new ProviderConnectionLoop((signal) => runSpApiConnectionPass({
+      handle,
+      enabled: () => process.env['OPENSPELL_SPAPI_CONNECTIONS_ENABLED'] === '1',
+      accepts: (installation) => installation.clientId === config.spApiClientId
+        && config.spApiConnectionRedirects.includes(installation.redirectUri),
+    }, signal))
+  : undefined;
 const unifiedReporting = adsApi && config.unifiedReporting.enabled
   ? new WorkerUnifiedDualRun({
       policy: config.unifiedReporting,
@@ -104,6 +135,13 @@ const sqpRequest = runsSqpJobs && config.spApiClientId && config.spApiClientSecr
 const sqpSchedules = sqpRequest
   ? new PostgresWeeklySqpScheduler(handle, store)
   : undefined;
+const integrations = {
+    economicsSync: createMrpEconomicsSync(handle),
+    rankSync: createDataDiveRankSyncHandler({ handle }),
+    keepaSync: createKeepaSyncHandler(handle),
+    ...(sqpRequest === undefined ? {} : { sqpRequest }),
+    marketingStreamNormalize: createMarketingStreamNormalizeHandler({ handle, queue: store }),
+  };
 const worker = new SyncWorker({
   workerId: config.workerId,
   store,
@@ -113,19 +151,18 @@ const worker = new SyncWorker({
   recommendationsRun: createRecommendationsRunner(recommendationRuns),
   sbVideo,
   unifiedReporting,
-  integrations: {
-    economicsSync: createMrpEconomicsSync(handle),
-    rankSync: createDataDiveRankSyncHandler({ handle }),
-    keepaSync: createKeepaSyncHandler(handle),
-    ...(sqpRequest === undefined ? {} : { sqpRequest }),
-    marketingStreamNormalize: createMarketingStreamNormalizeHandler({ handle, queue: store }),
-  },
+  integrations: { marketingStreamNormalize: integrations.marketingStreamNormalize },
+  sources: (registry) => { if (adsApi) registerAssetLibrarySource(registry, handle, adsApi); registerIntegrationSources(registry, integrations); registerTargetTranslation(registry, handle); },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,
   pollIntervalMs: config.pollIntervalMs,
 });
+const spWritePolling = spWriteLoop ? startSpWritePolling(spWriteLoop, config.pollIntervalMs) : undefined;
 marketingStream?.start();
+amazonConnections?.start();
+spApiConnections?.start();
 const health = await startHealthServer(worker, config.port, {
+  reports: () => loadReportHealth(handle, reportStaleHours),
   deployment: {
     revision: config.revision,
     role: config.deploymentRole,
@@ -133,6 +170,7 @@ const health = await startHealthServer(worker, config.port, {
     jobTypes: config.jobTypes ?? 'all',
   },
   marketingStream,
+  amazonConnections,
 }, config.healthHost);
 const authHealth = config.startsBackgroundPasses && adsApi
   ? new AuthHealthMonitor(worker, config.authHealthcheckIntervalMs)
@@ -175,7 +213,10 @@ async function performShutdown(): Promise<WorkerShutdownEvidence> {
   provisioner?.stop();
   bidSeries?.stop();
   recommendationObserver?.stop();
+  await spWritePolling?.stop();
   await marketingStream?.stop();
+  await amazonConnections?.stop();
+  await spApiConnections?.stop();
   const evidence = await worker.shutdown();
   await closeServer(health);
   await handle.close();

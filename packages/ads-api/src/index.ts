@@ -7,9 +7,8 @@
  *
  * A pure client. It never touches the database, never schedules anything, and
  * never waits for a report — Reporting v3 takes up to three hours, so polling
- * belongs to `apps/worker`, which is also the only place allowed to import
- * this package (`apps/web` may import the LWA code exchange and profile fetch
- * for its OAuth callback, and nothing else; eslint enforces it).
+ * belongs to `apps/worker`, which owns every Amazon call, including consent
+ * code exchange and profile discovery before a profile exists.
  *
  * Ported from `amazon-agent`'s `SPAdsApiDataSource` and `exchange_token.py`,
  * which are read-only ground truth: their live-verified behaviour is
@@ -22,7 +21,7 @@ export const PACKAGE_NAME = '@wizard-ads/ads-api' as const;
 export { AdsApiClient, amazonAdProduct } from './client.js';
 export type { MappedListResult, ReportDownload, ExportDownload } from './client.js';
 
-// Auth: the surface WP-04's OAuth callback consumes.
+// Worker-owned authorization and refresh.
 export {
   ADS_SCOPE,
   TOKEN_REFRESH_MARGIN_SECONDS,
@@ -36,9 +35,12 @@ export type { AuthorizationUrlParams, CodeExchangeParams, LwaTokenSet } from './
 // Profiles
 export {
   fetchProfiles,
+  fetchProfilesCounted,
   listProfiles,
+  listProfilesCounted,
   listProfilesAcrossRegions,
   parseProfiles,
+  parseProfilesCounted,
 } from './profiles.js';
 export type {
   AdsProfile,
@@ -297,6 +299,7 @@ export {
   AdsApiParseError,
   AdsApiTimeoutError,
   AdsAuthError,
+  AdsAuthorizationCodeError,
   AdsThrottleError,
   DuplicateReportError,
   UnifiedReportCreateAmbiguousError,

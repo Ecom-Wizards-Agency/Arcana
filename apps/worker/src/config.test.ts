@@ -40,6 +40,7 @@ describe('worker deployment role', () => {
       revision: 'unknown',
       jobTypes: undefined,
       startsBackgroundPasses: true,
+      amazonConnectionsEnabled: false,
       unifiedReporting: { enabled: false, profileIds: [] },
     });
   });
@@ -85,6 +86,17 @@ describe('worker deployment role', () => {
       WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
       ...(jobTypes === undefined ? {} : { WORKER_JOB_TYPES: jobTypes }),
     })).toThrow(/WORKER_JOB_TYPES must exactly match/);
+  });
+});
+
+describe('worker-owned Amazon connection activation', () => {
+  const base = { DATABASE_URL: 'postgres://synthetic.invalid/db', OPENSPELL_AMAZON_CONNECTIONS_ENABLED: '1' };
+  it('enables only on a general worker able to synchronize entities', () => {
+    expect(configFromEnv(base).amazonConnectionsEnabled).toBe(true);
+    expect(configFromEnv({ ...base, WORKER_JOB_TYPES: 'entity.sync' }).amazonConnectionsEnabled).toBe(true);
+    expect(() => configFromEnv({ ...base, WORKER_JOB_TYPES: 'rank.sync' })).toThrow(/general worker/);
+    expect(() => configFromEnv({ ...base, WORKER_DEPLOYMENT_ROLE: 'evo-report-lane',
+      WORKER_JOB_TYPES: 'report.fetch,creative.sync,report.request,report.poll' })).toThrow(/general worker/);
   });
 });
 
@@ -163,5 +175,12 @@ describe('SP-API configuration', () => {
     expect(config.spApiClientId).toBe(appId);
     expect(config.spApiClientSecret).toBe(appKey);
     expect(config.spApiReportMinIntervalMs).toBe(2_500);
+  });
+});
+
+describe('SB keyword configuration', () => {
+  it.each([undefined, '', '0', 'false', 'true', '1'])('enables only the explicit value 1: %j', (value) => {
+    expect(configFromEnv({ DATABASE_URL: 'postgres://synthetic.invalid/db',
+      OPENSPELL_SB_KEYWORD_SYNC_ENABLED: value }).sbKeywordSyncEnabled).toBe(value === '1');
   });
 });

@@ -1,3 +1,4 @@
+import { spWritePolicyFromEnv, type SpWriteWorkerPolicy } from './sp-write-outbox/policy.js';
 import { connectionStringFromEnv } from '@wizard-ads/db';
 import { JobType, type JobType as JobTypeValue } from '@wizard-ads/shared';
 import { isIP } from 'node:net';
@@ -10,6 +11,7 @@ import {
 } from './deployment-role.js';
 
 export interface WorkerConfig {
+  spWrites: SpWriteWorkerPolicy;
   databaseUrl: string;
   workerId: string;
   port: number;
@@ -28,6 +30,11 @@ export interface WorkerConfig {
   revision: string;
   /** Whether this process hosts timers and independent background consumers. */
   startsBackgroundPasses: boolean;
+  /** Default off until the connection schema and this worker are installed. */
+  amazonConnectionsEnabled: boolean;
+  spApiConnectionsEnabled: boolean;
+  spApiConnectionRedirects: readonly string[];
+  sbKeywordSyncEnabled: boolean;
   /** Default-off WP-181 cohort. Account bindings remain database-owned. */
   unifiedReporting: UnifiedReportingDualRunPolicy;
   /**
@@ -47,6 +54,11 @@ export interface WorkerConfig {
   spApiClientSecret: string | undefined;
   /** Serial floor between Reports API operations; provider 429s still control retries. */
   spApiReportMinIntervalMs: number;
+}
+
+/** Only an explicit 1 enables the unverified SB keyword dialect. */
+export function sbKeywordSyncEnabledFromEnv(env: NodeJS.ProcessEnv): boolean {
+  return env['OPENSPELL_SB_KEYWORD_SYNC_ENABLED'] === '1';
 }
 
 export function workerRevisionFromEnv(env: NodeJS.ProcessEnv): string {
@@ -103,7 +115,22 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     unifiedReady,
   );
   const unifiedReporting = resolveUnifiedReportingDualRunPolicy(env, deployment);
+  const spWrites = spWritePolicyFromEnv(env);
+  if ((spWrites.dispatchEnabled || spWrites.reconcileEnabled) && deployment.role !== 'general') {
+    throw new Error('SP writes require the general worker lane');
+  }
+  const amazonConnectionsEnabled = env['OPENSPELL_AMAZON_CONNECTIONS_ENABLED'] === '1';
+  const spApiConnectionsEnabled = env['OPENSPELL_SPAPI_CONNECTIONS_ENABLED'] === '1';
+  const spApiConnectionRedirects = (env['SP_API_OAUTH_ALLOWED_REDIRECT_URIS'] ?? '').split(',').map((value) => value.trim()).filter(Boolean);
+  if (spApiConnectionsEnabled && (deployment.role !== 'general' || !spApiClientId || !spApiClientSecret || spApiConnectionRedirects.length === 0)) {
+    throw new Error('SP-API connections require a general worker, application credentials and allowed callbacks');
+  }
+  if (amazonConnectionsEnabled && (deployment.role !== 'general'
+    || (deployment.jobTypes !== undefined && !deployment.jobTypes.includes('entity.sync')))) {
+    throw new Error('Amazon connections require a general worker with entity synchronization');
+  }
   return {
+    spWrites,
     databaseUrl: connectionStringFromEnv(env),
     workerId: env['WORKER_ID'] ?? `worker-${process.pid}`,
     port: positiveInteger(env['PORT'], 3000, 'PORT'),
@@ -116,6 +143,10 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     claimProtocol: deployment.claimProtocol,
     revision: workerRevisionFromEnv(env),
     startsBackgroundPasses: deployment.startsBackgroundPasses,
+    amazonConnectionsEnabled,
+    spApiConnectionsEnabled,
+    spApiConnectionRedirects,
+    sbKeywordSyncEnabled: sbKeywordSyncEnabledFromEnv(env),
     unifiedReporting,
     crosscheckInboxDir: env['CROSSCHECK_INBOX_DIR'] || undefined,
     authHealthcheckIntervalMs:

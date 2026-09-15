@@ -9,6 +9,12 @@
  *    the repository authority in AGENTS.md.
  */
 export * from './primitives.js';
+export * from './agency.js';
+export * from './mcp-key-metadata.js';
+export * from './amazon-connections.js';
+export * from './integrations.js';
+export * from './feedback.js';
+export * from './experiments.js';
 export * from './entities.js';
 export * from './facts.js';
 export * from './recommendations.js';
@@ -25,3 +31,19 @@ export * from './dayparting.js';
 export * from './campaign-creation.js';
 export * from './tags.js';
 export * from './recommendation-preview.js';
+
+export * from './methods.js';
+export * from './provider-failure.js';
+export * from './ingestion.js';
+export * from './provider-connections.js';
+export * from './grid-views.js';
+export { SpPlacementChange, SpCompleteCampaignBiddingState } from './sp-writes.js';
+export * from './sp-marketplace-capabilities.js';
+export * from './translation.js';
+export * from './queued-changes.js';
+export * from './time-machine.js';
+export * from './market-position.js';
+export * from './timeline-events.js';
+export * from './sponsored-prompts.js';
+export * from './campaign-builder.js';
+export * from './brand-lens.js';

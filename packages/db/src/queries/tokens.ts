@@ -10,6 +10,7 @@
  * These calls fail with a permission error under any client that is not the
  * service role. That is the intended behaviour, and `vault.test.ts` asserts it.
  */
+import { AdsConnectionCredentialBinding } from '@wizard-ads/shared';
 import type { DbHandle } from '../client.js';
 
 /**
@@ -49,4 +50,19 @@ export async function revokeAdsRefreshToken(
     select public.revoke_ads_refresh_token(${connectionId})
   `;
   return rows[0]?.revoke_ads_refresh_token ?? false;
+}
+
+/** A reconnect between the routing read and Vault read invalidates the old binding. */
+export async function getAdsRefreshTokenForGeneration(
+  handle: Pick<DbHandle, 'sql'>,
+  rawBinding: AdsConnectionCredentialBinding,
+): Promise<string | null> {
+  const binding = AdsConnectionCredentialBinding.parse(rawBinding);
+  const rows = await handle.sql<{ value: string | null }[]>`
+    select public.get_ads_refresh_token_for_generation(
+      ${binding.orgId}, ${binding.connectionId}, ${binding.generation}::bigint
+    ) as value
+  `;
+  if (rows.length !== 1) throw new Error('Credential read response count mismatch');
+  return rows[0]!.value;
 }

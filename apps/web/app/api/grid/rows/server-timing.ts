@@ -49,13 +49,11 @@ export class GridServerTiming {
   }
 }
 
-/** Await database teardown before exposing the complete client-visible success timing. */
-export async function finalizeTimedGridResponse(
+/** Stamp success only after the request owner has awaited transaction and pool teardown. */
+export function finalizeTimedGridResponse(
   response: Response,
   timing: GridServerTiming,
-  close: () => Promise<void>,
-): Promise<void> {
-  await close();
+): void {
   timing.mark('close');
   response.headers.set('Server-Timing', timing.header());
 }

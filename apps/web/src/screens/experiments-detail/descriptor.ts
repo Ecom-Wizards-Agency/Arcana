@@ -1,0 +1,19 @@
+import type { ScreenDescriptor } from '../types';
+import type { load } from './load';
+import type ScreenView from './view';
+
+export const descriptor = {
+  id: "experiments-detail",
+  title: "Experiment",
+  path: "/experiments/[experimentId]",
+  route: "page",
+  nav: null,
+  guard: null,
+  prefetch: "cheap",
+  rollout: { "enabled": true },
+  states: ["loading", "error", "empty", "not-measured"],
+  entry: "request-message",
+  specs: [],
+  load: (actor, params) => import('./load').then((module) => module.load(actor, params)),
+  client: (): Promise<typeof ScreenView> => import('./view').then((module) => module.default),
+} satisfies ScreenDescriptor<Awaited<ReturnType<typeof load>>>;

@@ -406,13 +406,13 @@ function authenticatedFixture(options: {
     urls.push(new URL(url.href));
     await Promise.resolve();
     try {
-      if (url.pathname === '/') {
+      if (url.pathname === '/dashboard') {
         return response(url, '', {
           status: 307,
           rawLocation: new URL(
             options.generic === 'wrong-final-route'
               ? `/optimizer?profile=${PROFILE}`
-              : `/dashboard?profile=${PROFILE}`,
+              : `/?profile=${PROFILE}`,
             CANDIDATE,
           ).href,
           mediaType: 'text/html',
@@ -458,6 +458,7 @@ function authenticatedFixture(options: {
 
 function headingFor(pathname: string): string {
   const headings: Record<string, string> = {
+    '/': 'Dashboard',
     '/dashboard': 'Dashboard',
     '/optimizer': 'Campaign Optimizer',
     '/optimizer/groups': 'Optimization Groups',

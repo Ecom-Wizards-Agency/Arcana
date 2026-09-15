@@ -1,3 +1,4 @@
+import { e2eTestMatch } from './src/e2e-suite-registry';
 /**
  * Isolated authenticated Grid performance proof.
  *
@@ -7,13 +8,14 @@
  * every unrelated route and role test that follows.
  */
 import { defineConfig, devices } from '@playwright/test';
+import { withE2ESummaryReporter } from './e2e/e2e-count-reporter';
 import authConfig from './playwright.auth.config';
 
 export default defineConfig({
   ...authConfig,
-  testMatch: /grid-performance\.spec\.ts$/,
+  testMatch: e2eTestMatch('grid-performance'),
   outputDir: './node_modules/.cache/playwright/grid-performance',
-  reporter: process.env['CI']
+  reporter: withE2ESummaryReporter(process.env['CI']
     ? [
         ['list'],
         [
@@ -24,6 +26,6 @@ export default defineConfig({
           },
         ],
       ]
-    : [['list']],
+    : [['list']]),
   projects: [{ name: 'grid-performance', use: { ...devices['Desktop Chrome'] } }],
 });

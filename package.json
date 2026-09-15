@@ -15,7 +15,9 @@
     "hygiene": "tsx tools/hygiene-lint/src/cli.ts",
     "migration:bundle": "tsx tools/hosted-migration-bundle/src/cli.ts",
     "skill-lint": "node tools/skill-lint/index.mjs",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run hygiene && pnpm run skill-lint"
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run hygiene && pnpm run skill-lint",
+    "tokens:generate": "pnpm --filter @wizard-ads/ui tokens:generate",
+    "tokens:figma": "python3 tools/figma-tokens/resolve.py"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

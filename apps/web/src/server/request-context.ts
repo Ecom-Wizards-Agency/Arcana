@@ -32,13 +32,11 @@
  * having a real auth provider rather than by how it was compiled.
  */
 import { timingSafeEqual } from 'node:crypto';
-import { createRequestDatabase } from '@wizard-ads/db';
+import { AgencyAccessDenied, createRequestDatabase } from '@wizard-ads/db';
 import type { RequestDatabase } from '@wizard-ads/db';
+import type { OrgActor } from '@wizard-ads/shared';
 
-export interface RequestActor {
-  userId: string;
-  orgId: string;
-}
+export type RequestActor = OrgActor;
 
 export type RequestAuthCode =
   | 'authentication_required'
@@ -214,6 +212,9 @@ export async function requireOrgMembership(
 }
 
 export function errorResponse(error: unknown): Response {
+  if (error instanceof AgencyAccessDenied) {
+    return Response.json({ error: 'Resource not found' }, { status: 403 });
+  }
   if (error instanceof RequestAuthError) {
     return Response.json(
       {

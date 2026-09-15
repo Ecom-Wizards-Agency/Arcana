@@ -11,12 +11,12 @@ import { signIn } from './support/auth';
 import { readState } from './support/fixture';
 
 const ACCOUNT_SURFACES = [
-  { route: '/dashboard', heading: 'Dashboard' },
+  { route: '/', heading: 'Home' },
   { route: '/grid?entity=campaigns', heading: 'Campaigns' },
-  { route: '/optimizer', heading: 'Campaign Optimizer' },
-  { route: '/creative', heading: 'Creative Performance' },
+  { route: '/optimizer', heading: 'Optimize Now' },
+  { route: '/creative', heading: 'Creatives' },
   { route: '/recommendations', heading: 'Recommendations' },
-  { route: '/campaigns', heading: 'Campaign Builder' },
+  { route: '/campaigns', heading: 'Create campaigns' },
   { route: '/optimizer/groups', heading: 'Optimization Groups' },
 ] as const;
 
@@ -32,7 +32,7 @@ test(
 
     for (const surface of ACCOUNT_SURFACES) {
       await page.goto(surface.route);
-      await expect(page.getByRole('heading', { name: surface.heading, exact: true })).toBeVisible();
+      await expect(surface.route === '/' ? page.getByTestId('shell-title') : surface.route === '/creative' ? page.getByTestId('creative-screen') : page.getByRole('heading', { name: surface.heading, exact: true })).toBeVisible();
 
       const url = new URL(page.url());
       expect(url.searchParams.get('profile')).toBe(fixtureProfileId);
@@ -41,9 +41,16 @@ test(
       const switcher = page.getByTestId('profile-switcher');
       await expect(switcher).toBeVisible();
       await expect(switcher).not.toContainText('All profiles');
-      const activeAccount = (await switcher.innerText()).split(' · ')[0]?.trim() ?? '';
+      const activeAccount = (await switcher.locator('strong').innerText()).trim();
       expect(activeAccount).not.toBe('');
-      await expect(page.locator('#wa-main')).toContainText(activeAccount);
+      if (surface.route === '/') await expect(page.locator('main.wa-home[data-profile-id]')).toHaveAttribute('data-profile-id', fixtureProfileId);
+      // Streaming can briefly retain the loading fallback beside the ready main.
+      if (surface.route === '/') await expect(page.locator('main.wa-home:not([aria-busy="true"])')).toHaveAttribute('data-profile-id', fixtureProfileId);
+      else if (surface.route === '/creative') {
+        await expect(page.getByTestId('creative-screen')).toHaveAttribute('data-profile-id', fixtureProfileId);
+        await expect(page.getByTestId('creative-screen')).toHaveAttribute('data-profile-label', activeAccount);
+      }
+      else await expect(page.locator('#wa-main')).toContainText(activeAccount);
       verified.push(url.pathname);
     }
 
@@ -59,21 +66,22 @@ test('an inaccessible profile id is replaced by the org-scoped active profile', 
   const inaccessible = '00000000-0000-4000-8000-000000000099';
 
   await page.goto(`/creative?profile=${inaccessible}`);
-  await expect(page.getByRole('heading', { name: 'Creative Performance', exact: true })).toBeVisible();
+  await expect(page.getByTestId('creative-screen')).toBeVisible();
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
 
   const switcher = page.getByTestId('profile-switcher');
-  const activeAccount = (await switcher.innerText()).split(' · ')[0]?.trim() ?? '';
+  const activeAccount = (await switcher.locator('strong').innerText()).trim();
   expect(activeAccount).not.toBe('');
-  await expect(page.locator('#wa-main')).toContainText(activeAccount);
+  await expect(page.getByTestId('creative-screen')).toHaveAttribute('data-profile-id', fixtureProfileId);
+  await expect(page.getByTestId('creative-screen')).toHaveAttribute('data-profile-label', activeAccount);
 });
 
 test('sidebar, date, entity, back and forward stay in one document and retain the profile', async ({ page }) => {
   test.setTimeout(120_000);
   await signIn(page, 'admin');
   const { fixtureProfileId } = await readState();
-  await page.goto(`/dashboard?profile=${fixtureProfileId}`);
-  await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+  await page.goto(`/?profile=${fixtureProfileId}`);
+  await expect(page.getByTestId('shell-title')).toBeVisible();
 
   await page.evaluate(() => {
     (window as Window & { __openspellDocumentMarker?: string }).__openspellDocumentMarker = 'same-document';
@@ -83,19 +91,20 @@ test('sidebar, date, entity, back and forward stay in one document and retain th
     if (request.resourceType() === 'document') documentRequests.push(request.url());
   });
 
-  const picker = page.locator('details.wa-date-range');
+  const picker = page.locator('.wa-topbar details.wa-date-range:not(.wa-shell-comparison)');
   await picker.locator('summary').click();
   await picker.getByRole('link', { name: 'Previous month', exact: true }).click();
-  await expect(page).toHaveURL(/\/dashboard\?.*profile=/);
+  await expect(page).toHaveURL(/\/\?.*profile=/);
   await expect(picker).not.toHaveAttribute('open', '');
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
 
-  await page.locator('details.wa-navgroup').filter({ hasText: 'Analyze' }).locator('summary').click();
-  await page.getByRole('link', { name: 'Data Grid', exact: true }).click();
+  const performance = page.locator('details.wa-navgroup').filter({ hasText: 'PERFORMANCE' });
+  if (!(await performance.evaluate((element) => (element as HTMLDetailsElement).open))) await performance.locator('summary').click();
+  await page.getByRole('link', { name: 'Search terms', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Search terms', exact: true })).toBeVisible();
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
 
-  await page.getByRole('tab', { name: 'Campaigns', exact: true }).click();
+  await page.getByRole('link', { name: 'Campaigns', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Campaigns', exact: true })).toBeVisible();
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
 
@@ -103,7 +112,7 @@ test('sidebar, date, entity, back and forward stay in one document and retain th
   await expect(page.getByRole('heading', { name: 'Search terms', exact: true })).toBeVisible();
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
   await page.goBack();
-  await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+  await expect(page.getByTestId('shell-title')).toBeVisible();
   expect(new URL(page.url()).searchParams.get('profile')).toBe(fixtureProfileId);
   await page.goForward();
   await expect(page.getByRole('heading', { name: 'Search terms', exact: true })).toBeVisible();

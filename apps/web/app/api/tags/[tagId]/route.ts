@@ -1,57 +1,38 @@
-import { requestActor, errorResponse, openWebDatabase, requireOrgMembership } from '../../../../src/server/request-context';
-import { deleteTag, updateTag } from '@wizard-ads/db';
+import { deleteTagInTransaction, updateTag } from '@wizard-ads/db';
 import type { DeleteTagMode } from '@wizard-ads/db';
 import { parseTagColorPatch } from '../color-input';
+import { authenticatedMutation, mutationBody, MutationInputError, mutationUuid } from '../../../../src/server/authenticated-mutation';
 
 export const runtime = 'nodejs';
 type RouteContext = { params: Promise<{ tagId: string }> };
 
-export async function PATCH(request: Request, context: RouteContext): Promise<Response> {
-  const database = openWebDatabase();
-  try {
-    const actor = await requestActor(request.headers);
-    await requireOrgMembership(database, actor);
-    const { tagId } = await context.params;
-    const body = (await request.json()) as {
-      name?: unknown;
-      parentId?: unknown;
-      color?: unknown;
-    };
-    const tag = await updateTag(database, {
-      orgId: actor.orgId,
+export async function PATCH(request: Request, route: RouteContext): Promise<Response> {
+  return authenticatedMutation(request, async (context) => {
+    const tagId = mutationUuid((await route.params).tagId, 'tagId');
+    const body = await mutationBody(request);
+    if (body['name'] !== undefined && typeof body['name'] !== 'string') throw new MutationInputError('name must be text');
+    const tag = await updateTag(context, {
+      orgId: context.actor.orgId,
       tagId,
-      ...(typeof body.name === 'string' ? { name: body.name } : {}),
-      ...(body.parentId === null || typeof body.parentId === 'string'
-        ? { parentId: body.parentId }
-        : {}),
-      ...parseTagColorPatch(body.color),
+      ...(typeof body['name'] === 'string' ? { name: body['name'] } : {}),
+      ...(body['parentId'] === undefined ? {} : { parentId: body['parentId'] === null ? null : mutationUuid(body['parentId'], 'parentId') }),
+      ...parseTagColorPatch(body['color']),
     });
     return Response.json({ tag });
-  } catch (error) {
-    return errorResponse(error);
-  } finally {
-    await database.close();
-  }
+  });
 }
 
-export async function DELETE(request: Request, context: RouteContext): Promise<Response> {
-  const database = openWebDatabase();
-  try {
-    const actor = await requestActor(request.headers);
-    await requireOrgMembership(database, actor);
-    const { tagId } = await context.params;
-    const body = (await request.json()) as { mode?: unknown; targetTagId?: unknown };
+export async function DELETE(request: Request, route: RouteContext): Promise<Response> {
+  return authenticatedMutation(request, async (context) => {
+    const tagId = mutationUuid((await route.params).tagId, 'tagId');
+    const body = await mutationBody(request);
     let disposition: DeleteTagMode;
-    if (body.mode === 'detach') disposition = { mode: 'detach' };
-    else if (body.mode === 'reassign' && typeof body.targetTagId === 'string') {
-      disposition = { mode: 'reassign', targetTagId: body.targetTagId };
+    if (body['mode'] === 'detach') disposition = { mode: 'detach' };
+    else if (body['mode'] === 'reassign') {
+      disposition = { mode: 'reassign', targetTagId: mutationUuid(body['targetTagId'], 'targetTagId') };
     } else {
-      throw new Error('Delete requires detach or a reassignment target');
+      throw new MutationInputError('Delete requires detach or a reassignment target');
     }
-    return Response.json({ result: await deleteTag(database, { orgId: actor.orgId, tagId, disposition }) });
-  } catch (error) {
-    return errorResponse(error);
-  } finally {
-    await database.close();
-  }
+    return Response.json({ result: await deleteTagInTransaction(context, { tagId, disposition }) });
+  });
 }

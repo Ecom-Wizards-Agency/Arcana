@@ -1,3 +1,4 @@
+import { SP_MARKETPLACE_MONEY_RULES } from '@wizard-ads/shared';
 /**
  * Runner orchestration tests. The bid engine's arithmetic belongs to
  * packages/core; these cases assert assembly, lifecycle, mapping and writes.
@@ -7,9 +8,13 @@ import type { ClaimRef, ClaimedJob, ClaimToken } from '@wizard-ads/db';
 import { createTestDatabase, databaseAvailable, migrationFiles } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import type { RecommendationWorkerDatabase } from '@wizard-ads/db/recommendation-worker';
-import type { ScheduledOptimizationGroup, TenantStrategy } from '@wizard-ads/shared';
+import { spCoordinatedCapabilities } from '@wizard-ads/core';
+import { CalculationTrace, REFERENCE_METHOD, COORDINATED_METHOD, type MethodAdmissionSnapshot, type MethodExperiment, type ScheduledOptimizationGroup, type TenantStrategy } from '@wizard-ads/shared';
 import {
   BID_REASON_TO_DATABASE,
+  freezeRecommendationSnapshot,
+  recommendationSnapshotFingerprint,
+  experimentLockFor,
   RecommendationExecutionCustodyError,
   RecommendationScopeIntegrityError,
   batchScopeFingerprint,
@@ -52,6 +57,8 @@ const STRATEGY: TenantStrategy = {
   opt_groups: {
     Profit: {
       target_acos: 0.3,
+      bid_floor_unit: 'absolute', bid_floor_value: 0.07,
+      bid_ceiling_unit: 'absolute', bid_ceiling_value: 3.7,
       max_increase: 0.25,
       max_decrease: 0.5,
       goal_lens: 'profit-maintain',
@@ -167,7 +174,7 @@ class FakeStore implements RecommendationRunStore {
     this.expectedGroupIds.push(expectedGroupId);
     this.expectedJobIds.push('claim' in execution ? execution.claim.jobId : execution.jobId);
     if (this.startError !== null) throw this.startError;
-    return this.startResult;
+    return { ...this.startResult, methodAdmission: this.startResult.methodAdmission ?? METHOD_ADMISSION };
   }
 
   async loadProfile(): Promise<RecommendationProfile> {
@@ -218,7 +225,7 @@ const EXECUTION = { jobId: '91919191-9191-4919-8919-919191919191' };
 
 describe('explicit one-time RPC runner', () => {
   const configuration = {
-    version: 1 as const, method: 'rpc' as const, targetAcos: 0.37,
+    version: 1 as const, method: 'sp.reference-efficiency' as const, targetAcos: 0.37,
     bidFloor: 0.13, bidCeiling: 4.7, bidIncreaseCap: 0.23, bidDecreaseCap: 0.71,
     window: { start: '2026-08-01', end: '2026-08-26' },
   };
@@ -251,12 +258,12 @@ describe('explicit one-time RPC runner', () => {
     expect(store.completed[0]?.proposals[0]?.proposedValue).toBe(0.55);
   });
 
-  it('retains group observation holds while ignoring its saved numeric policy', async () => {
+  it('retains group observation holds and uses its saved numeric policy', async () => {
     const store = explicitStore();
     const group: ScheduledOptimizationGroup = {
       version: 2, id: GROUP_ID, orgId: ORG_ID, profileId: PROFILE_ID,
-      name: 'Synthetic group', role: 'rank', targetAcos: 0.91,
-      bidFloor: 5, bidCeiling: 9, bidIncreaseCap: 0, bidDecreaseCap: 0,
+      name: 'Synthetic group', role: 'rank', targetAcos: 0.43,
+      bidFloor: 0.23, bidCeiling: 3.7, bidIncreaseCap: 0.17, bidDecreaseCap: 0.63,
       placementIncreaseCap: 0, placementDecreaseCap: 0, exclusions: [],
       prioritization: 'growth_first', enabled: true,
       reviewSchedule: { version: 2, weekdays: ['thursday'] },
@@ -266,11 +273,88 @@ describe('explicit one-time RPC runner', () => {
     expect(store.loadedGroupIds).toEqual([]);
     expect(store.loadedOneTimeScopes).toEqual([{ orgId: ORG_ID, profileId: PROFILE_ID, runId: RUN_ID }]);
     expect(store.completed[0]?.proposals[0]?.proposedValue).toBe(0.55);
+    const saved = store.completed[0]?.proposals[0]?.inputs;
+    expect(saved).toMatchObject({ methodId: 'sp.reference-efficiency', methodVersion: 'reference.1' });
+    for (const field of ['targetAcos', 'bidFloor', 'bidCeiling', 'bidIncreaseCap', 'bidDecreaseCap'] as const) {
+      expect(saved?.settingSources?.[field]).toEqual({ value: group[field], source: 'group', sourceLabel: group.name });
+    }
+    expect(saved?.trace?.steps.map((step) => step.label)).toEqual([
+      'Inputs', 'RPC', 'Target ACOS', 'Raw bid', 'Ceiling: suggested_bid', 'Rounding: initial',
+    ]);
     store.completed = [];
     store.groupSafety = { ...store.groupSafety, mayPropose: false, incompleteObservations: 1, reason: 'Observation incomplete.' };
     await runRecommendations(store, { ...job, groupId: GROUP_ID }, EXECUTION);
     expect(store.completed[0]?.proposals).toHaveLength(0);
     expect(store.completed[0]?.narrative.groupSafety?.mayPropose).toBe(false);
+    expect(store.completed[0]?.narrative.targetOutcomes).toMatchObject([{ outcome: 'blocked', reasonCode: 'GUARDRAIL_BLOCKED' }]);
+  });
+
+  it('uses the per-campaign method before the group method while preserving group ACOS', async () => {
+    const store = explicitStore();
+    const group: ScheduledOptimizationGroup = { version: 2, id: GROUP_ID, orgId: ORG_ID, profileId: PROFILE_ID,
+      name: 'Synthetic method group', role: 'profit', method: COORDINATED_METHOD,
+      targetAcos: 0.43, bidFloor: 0.23, bidCeiling: 3.7, bidIncreaseCap: 0.17, bidDecreaseCap: 0.63,
+      placementIncreaseCap: 0, placementDecreaseCap: 0, exclusions: [], prioritization: 'efficiency_first', enabled: true,
+      reviewSchedule: { version: 2, weekdays: ['thursday'] } };
+    store.startResult.groupRun = { group, dueAt: snapshot.admittedAt, scheduleContext: null };
+    store.startResult.methodAdmission = { ...METHOD_ADMISSION, campaignMethods: { 'c-1': REFERENCE_METHOD } };
+    await runRecommendations(store, { ...job, groupId: GROUP_ID }, EXECUTION);
+    const proposal = store.completed[0]?.proposals[0];
+    expect(proposal?.inputs.methodId).toBe(REFERENCE_METHOD.id);
+    expect(proposal?.inputs.settingSources?.['method']).toMatchObject({ source: 'run', value: 'sp.reference-efficiency@reference.1' });
+    expect(proposal?.inputs.settingSources?.['targetAcos']).toEqual({ value: group.targetAcos, source: 'group', sourceLabel: group.name });
+    expect(store.completed[0]?.narrative.targetOutcomes).toMatchObject([{ method: REFERENCE_METHOD, outcome: 'suggestion' }]);
+  });
+
+  it('uses a group method before the one-time default method', async () => {
+    const store = explicitStore();
+    store.startResult.groupRun = { dueAt: snapshot.admittedAt, scheduleContext: null, group: {
+      version: 2, id: GROUP_ID, orgId: ORG_ID, profileId: PROFILE_ID, name: 'Synthetic selected group', role: 'profit',
+      method: COORDINATED_METHOD, targetAcos: 0.43, bidFloor: 0.23, bidCeiling: 3.7, bidIncreaseCap: 0.17, bidDecreaseCap: 0.63,
+      placementIncreaseCap: 0, placementDecreaseCap: 0, exclusions: [], prioritization: 'efficiency_first', enabled: true,
+      reviewSchedule: { version: 2, weekdays: ['thursday'] } } };
+    await runRecommendations(store, { ...job, groupId: GROUP_ID }, EXECUTION);
+    expect(store.completed[0]?.proposals).toHaveLength(0);
+    expect(store.completed[0]?.narrative.targetOutcomes).toMatchObject([{ method: COORDINATED_METHOD,
+      outcome: 'blocked', reasonCode: 'MISSING_SETTING' }]);
+  });
+
+  it('records one exact outcome for suggestions, unchanged targets and blocked targets', async () => {
+    const store = explicitStore();
+    const suggestion = store.inputs.targets[0]!;
+    const unchanged = structuredClone(suggestion);
+    unchanged.entityRef.entityId = 'synthetic-unchanged';
+    unchanged.currentBid = 0.55;
+    const blocked = structuredClone(suggestion);
+    blocked.entityRef.entityId = 'synthetic-inactive';
+    blocked.entityState = 'paused';
+    store.inputs.targets = [suggestion, unchanged, blocked];
+    await runRecommendations(store, job, EXECUTION);
+    const outcomes = store.completed[0]?.narrative.targetOutcomes ?? [];
+    expect(outcomes).toHaveLength(3);
+    expect(outcomes.map((outcome) => [outcome.entityRef.entityId, outcome.outcome, outcome.reasonCode])).toEqual([
+      ['kw-1', 'suggestion', 'high_acos'], ['synthetic-unchanged', 'unchanged', 'no_change'],
+      ['synthetic-inactive', 'blocked', 'ENTITY_INACTIVE'],
+    ]);
+    expect(store.completed[0]?.narrative.diagnostics.targetsRead).toBe(outcomes.length);
+    expect(store.completed[0]?.narrative.holds).toHaveLength(2);
+  });
+
+  it('excludes one campaign from proposals while its sibling remains eligible', async () => {
+    const store=explicitStore();
+    const original=store.inputs.targets[0]!;
+    store.inputs.targets.push({...original,entityRef:{...original.entityRef,entityId:'synthetic-sibling-target',campaignId:'synthetic-sibling-campaign'}});
+    store.inputs.campaigns.push({...store.inputs.campaigns[0]!,campaignId:'synthetic-sibling-campaign'});
+    const group:ScheduledOptimizationGroup={version:2,id:GROUP_ID,orgId:ORG_ID,profileId:PROFILE_ID,name:'Synthetic exclusion group',
+      role:'profit',
+      targetAcos:0.43,bidFloor:0.23,bidCeiling:3.7,bidIncreaseCap:0.17,bidDecreaseCap:0.63,placementIncreaseCap:0,placementDecreaseCap:0,
+      exclusions:[original.entityRef.campaignId!],prioritization:'efficiency_first',
+      enabled:true,reviewSchedule:{version:2,weekdays:['thursday']}};
+    store.startResult.groupRun={group,dueAt:snapshot.admittedAt,scheduleContext:null};
+    await runRecommendations(store,{...job,groupId:GROUP_ID},EXECUTION);
+    const proposals=store.completed[0]!.proposals;
+    expect(proposals.filter(p=>p.entityRef.campaignId===original.entityRef.campaignId)).toHaveLength(0);
+    expect(proposals.filter(p=>p.entityRef.campaignId==='synthetic-sibling-campaign')).toHaveLength(1);
   });
 
   it('refuses altered snapshot custody and stale profile timezone', async () => {
@@ -303,6 +387,7 @@ describe('explicit one-time RPC runner', () => {
       await runRecommendations(store, job, EXECUTION);
       expect(store.completed[0]?.proposals).toHaveLength(0);
       expect(store.completed[0]?.narrative.diagnostics[protection === 'stock' ? 'blockedOutOfStock' : 'suppressed']).toBe(1);
+      expect(store.completed[0]?.narrative.targetOutcomes?.[0]?.outcome).toBe(protection === 'stock' ? 'blocked' : 'unchanged');
     }
   });
 });
@@ -488,6 +573,8 @@ describe('recommendations runner', () => {
         },
       },
     });
+    const adjustedProposal = store.completed[0]?.proposals[0];
+    expect(adjustedProposal?.inputs.trace?.finalResult).toBe(adjustedProposal?.proposedValue);
   });
 
   it('holds every group proposal while an exported recommendation is awaiting evidence', async () => {
@@ -684,7 +771,7 @@ describe('fenced recommendation run store', () => {
           groupRole: null,
           groupSnapshot: null,
           dueAt: null,
-          scheduleContext: null,
+          scheduleContext: { methodAdmission: METHOD_ADMISSION },
           strategySnapshot: STRATEGY,
           strategyGoal: 'profit-maintain',
         },
@@ -720,6 +807,25 @@ describe('fenced recommendation run store', () => {
     }
   }
 
+  it('normalizes historical fenced snapshots without losing their saved digest', async () => {
+    const snapshot = freezeOneTimeRpcSnapshot({
+      version: 1, method: 'sp.reference-efficiency', targetAcos: 0.37,
+      bidFloor: 0.11, bidCeiling: 4.3, bidIncreaseCap: 0.23, bidDecreaseCap: 0.41,
+      window: { start: '2026-08-01', end: '2026-08-26' },
+    }, 'UTC', new Date('2026-08-27T12:00:00Z'));
+    const historical = { ...snapshot, configuration: { ...snapshot.configuration, method: 'rpc' } };
+    const fixture = await new FakeFencedDatabase().start(claim, scope);
+    const database = { start: async () => ({ ...fixture, runData: {
+      ...fixture.runData, scopeVersion: 2, strategySnapshot: null, strategyGoal: null,
+      executionSnapshot: historical,
+    } }) };
+    const store = new FencedRecommendationRunStore(database as unknown as RecommendationWorkerDatabase);
+    const started = await store.startRun(scope, undefined, { claim });
+    expect(started.executionSnapshot).toEqual(snapshot);
+    expect(started.executionSnapshotFingerprint).toBe(oneTimeRpcSnapshotFingerprint(historical));
+    expect(started.executionSnapshotFingerprint).not.toBe(oneTimeRpcSnapshotFingerprint(snapshot));
+  });
+
   it('presents the exact immutable claim on every start, read, and success RPC', async () => {
     const database = new FakeFencedDatabase();
     const store = new FencedRecommendationRunStore(
@@ -730,6 +836,7 @@ describe('fenced recommendation run store', () => {
       alreadySucceeded: false,
       proposalsCount: 0,
       strategyGoal: 'profit-maintain',
+      methodAdmission: METHOD_ADMISSION,
     });
     await expect(store.loadProfile(scope, execution)).resolves.toEqual(PROFILE);
     await expect(store.loadInputs(
@@ -761,6 +868,22 @@ describe('fenced recommendation run store', () => {
     ]);
     await expect(store.loadProfile(scope, execution))
       .rejects.toBeInstanceOf(RecommendationExecutionCustodyError);
+  });
+
+  it.each(['valid', 'missing', 'country', 'currency', 'region'] as const)('resolves fenced profile marketplace evidence without defaults: %s', async (fault) => {
+    const database = new FakeFencedDatabase();
+    const read = database.readInputs.bind(database);
+    database.readInputs = async (...args) => ({ ...await read(...args), inputs: { targets: [], campaigns: [], profileFacts: [],
+      marketplaceProfile: fault === 'missing' ? null : { countryCode: fault === 'country' ? 'XX' : 'US',
+        currencyCode: fault === 'currency' ? 'XXX' : marketplaceScope.currencyCode,
+        region: fault === 'region' ? 'EU' : marketplaceScope.region },
+    } });
+    const store = new FencedRecommendationRunStore(database as unknown as RecommendationWorkerDatabase);
+    await store.startRun(scope, undefined, { claim });
+    const inputs = await store.loadInputs(scope, { start: '2026-08-20', end: '2026-08-26' }, { claim });
+    if (fault === 'valid') expect(inputs.marketplace).toEqual(marketplaceScope);
+    expect(spCoordinatedCapabilities(inputs.marketplace).marketplace)
+      .toEqual(fault === 'valid' ? spCoordinatedCapabilities(marketplaceScope).marketplace : null);
   });
 
   it('rejects a substituted claim locally and maps database custody refusal', async () => {
@@ -1068,6 +1191,28 @@ describe.skipIf(!databaseAvailableForLegacyStore)('legacy-mode preview enqueue o
     await database?.drop();
   });
 
+  it('binds every coordinated snapshot field with the same TypeScript and PostgreSQL fingerprint', async () => {
+    const configuration = { version: 2 as const, method: 'sp.coordinated-efficiency' as const,
+      targetAcos: 0.3, bidFloor: 0.1, bidCeiling: 1, bidIncreaseCap: 0.5, bidDecreaseCap: 0.6,
+      exposureCeiling: 1.5, minClicksPerPlacement: 20, placementEvidenceRequirements: 'single_target' as const,
+      window: { start: '2026-08-01', end: '2026-08-28' } };
+    const original = freezeRecommendationSnapshot(configuration, 'UTC', new Date('2026-09-10T12:00:00Z'));
+    const hashes: string[] = [];
+    for (const patch of [{}, { exposureCeiling: 1.6 }, { minClicksPerPlacement: 21 }]) {
+      const snapshot = freezeRecommendationSnapshot({ ...configuration, ...patch }, 'UTC', new Date('2026-09-10T12:00:00Z'));
+      const hash = recommendationSnapshotFingerprint(snapshot);
+      const [sql] = await database.sql<{ valid: boolean; hash: string }[]>`select
+        app.one_time_rpc_snapshot_valid(${JSON.stringify(snapshot)}::jsonb) as valid,
+        app.one_time_rpc_snapshot_fingerprint(${JSON.stringify(snapshot)}::jsonb) as hash`;
+      expect(sql).toEqual({ valid: true, hash }); hashes.push(hash);
+    }
+    expect(new Set(hashes).size).toBe(3);
+    expect(() => recommendationSnapshotFingerprint({ ...original, methodVersion: 'reference.1' })).toThrow();
+    const [invalid] = await database.sql<{ valid: boolean }[]>`select app.one_time_rpc_snapshot_valid(
+      ${JSON.stringify({ ...original, methodVersion: 'reference.1' })}::jsonb) as valid`;
+    expect(invalid?.valid).toBe(false);
+  });
+
   it('creates the run row and recommendations.run job in one transaction and the admission trigger accepts it', async () => {
     const store = new PostgresRecommendationRunStore(database);
     const before = await counts(batchScope.orgId);
@@ -1185,4 +1330,139 @@ describe.skipIf(!databaseAvailableForLegacyStore)('legacy-mode preview enqueue o
     }
     expect(await counts(batchScope.orgId)).toEqual(before);
   });
+});
+
+
+const METHOD_ADMISSION: MethodAdmissionSnapshot = {
+  version: 1, admittedAt: '2026-08-27T12:00:00Z', methodId: REFERENCE_METHOD.id, methodVersion: REFERENCE_METHOD.version,
+  strategyProvenance: { 'opt_groups.Profit.target_acos': 'profile', 'opt_groups.Profit.max_increase': 'tenant' }, experiments: [],
+};
+const METHOD_EXPERIMENT: MethodExperiment = {
+  id: '77777777-7777-4777-8777-777777777777', status: 'running', startAt: '2026-08-20T00:00:00Z', endAt: null,
+  scope: { campaignIds: [' c-1 '] },
+};
+
+describe('method worker evidence', () => {
+  it('holds an intersecting active experiment and proposes for an unrelated scope', async () => {
+    for (const intersecting of [true, false]) {
+      const store = new FakeStore();
+      store.startResult.methodAdmission = { ...METHOD_ADMISSION, experiments: [{ ...METHOD_EXPERIMENT,
+        scope: { campaignIds: [intersecting ? ' c-1 ' : 'unrelated-campaign'] } }] };
+      await runRecommendations(store, JOB, EXECUTION, new Date('2026-08-27T12:00:00Z'));
+      const completion = store.completed[0]!;
+      expect(completion.proposals).toHaveLength(intersecting ? 0 : 1);
+      expect(completion.narrative.holds).toHaveLength(intersecting ? 1 : 0);
+      if (intersecting) expect(completion.narrative.holds?.[0]).toMatchObject({ reason: 'EXPERIMENT_LOCK', affectedScope: [store.inputs.targets[0]!.entityRef] });
+    }
+  });
+  it('matches normalized campaign, ad group, target, and advertised-product scopes with active time bounds', () => {
+    const target = fixtureInputs().targets[0]!;
+    for (const scope of [{ campaignIds: [' c-1 '] }, { adGroupIds: ['ag-1'] }, { targetIds: ['kw-1'] }, { asins: ['B0TEST5101'] }, {}]) {
+      expect(experimentLockFor(target, [{ ...METHOD_EXPERIMENT, scope }], METHOD_ADMISSION.admittedAt)?.reason).toBe('EXPERIMENT_LOCK');
+    }
+    for (const experiment of [
+      { ...METHOD_EXPERIMENT, status: 'ended' as const },
+      { ...METHOD_EXPERIMENT, startAt: '2026-08-28T00:00:00Z' },
+      { ...METHOD_EXPERIMENT, endAt: METHOD_ADMISSION.admittedAt },
+      { ...METHOD_EXPERIMENT, scope: { targetIds: ['another-target'], campaignIds: ['another-campaign'] } },
+    ]) expect(experimentLockFor(target, [experiment], METHOD_ADMISSION.admittedAt)).toBeNull();
+  });
+  it('carries merge provenance and complete replay input into the stored narrative', async () => {
+    const store = new FakeStore();
+    store.startResult.methodAdmission = METHOD_ADMISSION;
+    await runRecommendations(store, JOB, EXECUTION, new Date('2026-08-27T12:00:00Z'));
+    const completion = store.completed[0]!;
+    expect(completion.narrative.strategyProvenance).toEqual(METHOD_ADMISSION.strategyProvenance);
+    expect(completion.narrative.calculationSnapshots).toHaveLength(1);
+    const proposal = completion.proposals[0]!;
+    expect(proposal.inputs).toMatchObject({ methodId: REFERENCE_METHOD.id, methodVersion: REFERENCE_METHOD.version,
+      settingSources: { targetAcos: { value: 0.3, source: 'tenant_strategy', sourceLabel: 'profile: opt_groups.Profit.target_acos' } } });
+    const trace = CalculationTrace.parse(proposal.inputs.trace);
+    expect(trace.finalResult).toBe(proposal.proposedValue);
+    expect(trace.steps.map((step) => step.label)).toEqual(['Inputs', 'RPC', 'Target ACOS', 'Raw bid', 'Ceiling: suggested_bid', 'Rounding: initial']);
+  });
+  it('holds a historical queued run whose experiment evidence was never captured', async () => {
+    const store = new FakeStore();
+    store.startRun = async () => ({ ...store.startResult, methodAdmission: undefined });
+    await runRecommendations(store, JOB, EXECUTION);
+    expect(store.completed[0]?.proposals).toHaveLength(0);
+    expect(store.completed[0]?.narrative.holds).toMatchObject([{ reason: 'INSUFFICIENT_EVIDENCE' }]);
+  });
+  it('retains a MISSING_SETTING hold when neither the group nor run supplies a required bound', async () => {
+    const store = new FakeStore();
+    store.startResult.strategySnapshot = { ...STRATEGY, opt_groups: { Profit: { target_acos: 0.3, max_increase: 0.25, max_decrease: 0.5 } } };
+    await runRecommendations(store, JOB, EXECUTION);
+    expect(store.completed[0]?.proposals).toHaveLength(0);
+    expect(store.completed[0]?.narrative.holds).toMatchObject([{ reason: 'MISSING_SETTING' }]);
+  });
+});
+
+const [marketplaceId, moneyRule] = Object.entries(SP_MARKETPLACE_MONEY_RULES).find(([, rule]) => rule.currencyCode === 'USD')!;
+const marketplaceScope = { marketplaceId, region: moneyRule.region, currencyCode: moneyRule.currencyCode };
+
+it.each([true, false])('stores one ordered coordinated recommendation or a truthful missing-controls hold (complete: %s)', async (completeControls) => {
+  const inputs = fixtureInputs();
+  const target = inputs.targets[0]!;
+  target.currentBid = 0.6;
+  target.stock = { status: 'in_stock', asins: [] };
+  target.metrics = { impressions: 1000, clicks: 100, cost: 90, orders: 10, sales: 260 };
+  inputs.marketplace = marketplaceScope;
+  inputs.campaignControlEvidence = [{ campaignId: 'c-1', costType: 'cpc', targetCount: 1, complete: true, attributionMature: true,
+    homogeneousProxyValidation: null, capabilities: spCoordinatedCapabilities(marketplaceScope),
+    currentControls: { strategy: 'manual', placements: { topOfSearch: 100, restOfSearch: 0, productPages: 0, amazonBusiness: null }, shopperCohorts: [], offAmazonBudgetControlStrategy: null },
+    placementFacts: [
+      { campaignId: 'c-1', placement: 'top_of_search', clicks: 40, sales: 160, clickShare: 0.4 },
+      { campaignId: 'c-1', placement: 'rest_of_search', clicks: 40, sales: 80, clickShare: 0.4 },
+      { campaignId: 'c-1', placement: 'product_pages', clicks: 20, sales: 20, clickShare: 0.2 },
+    ],
+  }];
+  if (!completeControls) {
+    inputs.placementFacts = inputs.campaignControlEvidence[0]!.placementFacts;
+    delete inputs.campaignControlEvidence;
+  }
+  const store = new FakeStore(PROFILE, inputs);
+  store.startResult.groupRun = { dueAt: METHOD_ADMISSION.admittedAt, scheduleContext: null, group: {
+    version: 2, id: GROUP_ID, orgId: ORG_ID, profileId: PROFILE_ID, name: 'Synthetic coordinated group', role: 'profit',
+    method: COORDINATED_METHOD, methodSettings: { exposureCeiling: 1.5, minClicksPerPlacement: 20, placementEvidenceRequirements: 'single_target' },
+    targetAcos: 0.3, bidFloor: 0.1, bidCeiling: 1, bidIncreaseCap: 0.5, bidDecreaseCap: 0.6,
+    placementIncreaseCap: 0, placementDecreaseCap: 0, exclusions: [], prioritization: 'efficiency_first', enabled: true,
+    reviewSchedule: { version: 2, weekdays: ['thursday'] },
+  } };
+  const outcome = await runRecommendations(store, { ...JOB, groupId: GROUP_ID }, EXECUTION, new Date('2026-08-27T12:00:00Z'));
+  expect(store.completed[0]?.narrative.calculationSnapshots).toMatchObject([{ campaignEvidence: {
+    capabilities: spCoordinatedCapabilities(inputs.marketplace),
+  } }]);
+  if (!completeControls) {
+    expect(outcome.proposals).toBe(0);
+    expect(store.completed).toHaveLength(1);
+    expect(store.completed[0]?.proposals).toHaveLength(0);
+    expect(store.completed[0]?.narrative.holds).toMatchObject([{ reason: 'INSUFFICIENT_EVIDENCE',
+      prose: 'A complete synchronized campaign control snapshot is missing.' }]);
+    expect(store.completed[0]?.narrative.calculationSnapshots).toMatchObject([{ campaignEvidence: {
+      complete: false, currentControls: null, placementFacts: inputs.placementFacts,
+    } }]);
+    return;
+  }
+  expect(outcome.proposals).toBe(1);
+  expect(store.completed).toHaveLength(1);
+  expect(store.completed[0]?.proposals).toHaveLength(1);
+  const proposal = store.completed[0]!.proposals[0]!;
+  expect(proposal.inputs.methodId).toBe(COORDINATED_METHOD.id);
+  expect(proposal.inputs.dependencySet?.changes.map((change) => change.proposed)).toEqual([0.3, 300, 100]);
+  expect(proposal.inputs.dependencySet?.precedenceReasons).toHaveLength(2);
+});
+
+it.each([true, false])('counts a coordinated campaign hold once regardless of inactive target order (%s)', async (inactiveFirst) => {
+  const inputs = fixtureInputs(); const active = inputs.targets[0]!;
+  const inactive = structuredClone(active); inactive.entityRef.entityId = 'inactive-target'; inactive.entityState = 'paused';
+  inputs.targets = inactiveFirst ? [inactive, active] : [active, inactive];
+  const store = new FakeStore(PROFILE, inputs);
+  store.startResult.methodAdmission = { ...METHOD_ADMISSION, methodId: COORDINATED_METHOD.id, methodVersion: COORDINATED_METHOD.version };
+  const result = await runRecommendations(store, JOB, EXECUTION, new Date('2026-08-27T12:00:00Z'));
+  expect(result.proposals).toBe(0);
+  expect(store.completed).toHaveLength(1);
+  expect(store.completed[0]?.narrative.holds).toHaveLength(1);
+  expect(store.completed[0]?.narrative.holds?.[0]?.affectedScope).toHaveLength(2);
+  expect(store.completed[0]?.narrative.targetOutcomes).toHaveLength(2);
+  expect(store.completed[0]?.narrative.targetOutcomes?.every((outcome) => outcome.outcome === 'blocked')).toBe(true);
 });

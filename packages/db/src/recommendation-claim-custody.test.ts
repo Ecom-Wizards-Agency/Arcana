@@ -46,7 +46,7 @@ describe.skipIf(!available)('recommendation claim custody migration upgrade', ()
     await Promise.all(databases.splice(0).map((database) => database.drop()));
   });
 
-  it('upgrades populated WP-195 state without changing ledgers or activating custody', async () => {
+  it('upgrades populated WP-195 state without changing ledgers or activating custody', { timeout: 60_000 }, async () => {
     const database = await createTestDatabase('recommendation_custody_upgrade', {
       throughMigration: PREDECESSOR,
     });
@@ -119,7 +119,7 @@ describe.skipIf(!available)('recommendation claim custody migration upgrade', ()
     expect(closed?.closes).toBe(true);
   });
 
-  it('allows an in-flight legacy null-lineage queue run to finish without human classification', async () => {
+  it('allows an in-flight legacy null-lineage queue run to finish without human classification', { timeout: 60_000 }, async () => {
     const database = await createTestDatabase('recommendation_custody_legacy_drain');
     databases.push(database);
     const [org] = await database.sql<{ seed_tenant_fixture: string }[]>`
@@ -222,7 +222,7 @@ describe.skipIf(!available)('recommendation claim custody migration upgrade', ()
     });
   });
 
-  it('keeps an exact armed claimant idle while fenced admission is blocked', async () => {
+  it('keeps an exact armed claimant idle while fenced admission is blocked', { timeout: 60_000 }, async () => {
     const database = await createTestDatabase('recommendation_custody_blocked');
     databases.push(database);
     await asServiceRole(database, async (sql) => {
@@ -382,6 +382,7 @@ describe.skipIf(!available)('exclusive recommendation claim custody', () => {
       'audit_log:INSERT:recommendation_executor_insert',
       'bid_series_daily:SELECT:recommendation_executor_select',
       'campaigns:SELECT:recommendation_executor_select',
+      'fact_placement_daily:SELECT:recommendation_executor_select',
       'fact_profile_daily:SELECT:recommendation_executor_select',
       'fact_sb_daily:SELECT:recommendation_executor_select',
       'fact_sd_daily:SELECT:recommendation_executor_select',

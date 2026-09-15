@@ -245,7 +245,9 @@ describe('stateful recommendation evidence', () => {
     expect(Object.keys(result).sort()).toEqual([
       'classification',
       'context',
+      'executionVerdict',
       'mayCompound',
+      'objectiveVerdict',
       'observation',
       'provenance',
       'revertToValue',

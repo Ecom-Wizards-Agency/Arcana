@@ -28,6 +28,7 @@ export type EntityKind =
   | 'sp.productAds'
   | 'sb.campaigns'
   | 'sb.adGroups'
+  | 'sb.keywords'
   | 'sd.campaigns'
   | 'sd.adGroups';
 
@@ -53,6 +54,7 @@ export interface SpWriteEndpoint {
 }
 
 export interface ListEndpoint {
+  verificationStatus?: 'unverified' | 'verified';
   method: 'POST' | 'GET';
   path: string;
   /** Sent as both `Content-Type` and `Accept`; Amazon versions on both. */
@@ -175,6 +177,18 @@ export const LIST_ENDPOINTS: Readonly<Record<EntityKind, ListEndpoint>> = {
     paging: 'token',
     // SB v4 list rejects maxResults > 100 (live-verified 2026-08-14).
     maxPageSize: SB_LIST_MAX_PAGE_SIZE,
+    filters: spFilters,
+  },
+  // Candidate contract only. No vendored specification or live evidence yet.
+  // Keep worker sync off until the sb-keywords smoke confirms all three fields.
+  'sb.keywords': {
+    verificationStatus: 'unverified',
+    method: 'POST',
+    path: '/sb/keywords/list',
+    mediaType: 'application/vnd.sbkeywordresource.v3+json',
+    responseKey: 'keywords',
+    paging: 'token',
+    maxPageSize: 100,
     filters: spFilters,
   },
   'sd.campaigns': {

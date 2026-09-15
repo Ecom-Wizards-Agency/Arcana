@@ -23,6 +23,23 @@ describe('worker health readiness', () => {
   };
   afterEach(async () => Promise.all(servers.splice(0).map(closeServer)));
 
+  it('reports unavailable connection processing after repeated custody failures', async () => {
+    const worker = {
+      status: () => ({ workerId: 'synthetic', stopping: false, running: 0, claimLoop: readyClaimLoop }),
+    } as SyncWorker;
+    const server = await startHealthServer(worker, 0, { deployment, amazonConnections: {
+      status: () => ({ enabled: true, running: true, stopping: false, inFlight: 0,
+        consecutiveFailures: 3, lastSuccessAt: null }),
+    } });
+    servers.push(server);
+    const { port } = server.address() as AddressInfo;
+    const response = await fetch(`http://127.0.0.1:${port}/healthz`);
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({ components: { amazonConnections: {
+      enabled: true, consecutiveFailures: 3, inFlight: 0,
+    } } });
+  });
+
   it('degrades readiness when enabled Marketing Stream ingestion is not running', async () => {
     const worker = {
       status: () => ({ workerId: 'synthetic', stopping: false, running: 0, claimLoop: readyClaimLoop }),
@@ -166,4 +183,57 @@ describe('worker health readiness', () => {
       });
     },
   );
+});
+
+describe('report lifecycle health signals', () => {
+  it('returns the four aggregate fields without degrading an otherwise healthy worker', async () => {
+    const reports = {
+      deadJobsByType: { 'report.request': 2, 'report.fetch': 1 },
+      staleRequests: 4, quarantinedRequests: 2,
+      newestCompletedReportDateByType: { spCampaigns: '2026-08-29' },
+    };
+    const worker = { status: () => ({ stopping: false, running: 0, claimLoop: readyClaimLoop }) } as SyncWorker;
+    const server = await startHealthServer(worker, 0, {
+      deployment: { revision: 'abcdef123', role: 'general', claimProtocol: 'legacy', jobTypes: 'all' },
+      reports: async () => reports,
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/healthz`);
+      expect(response.status).toBe(200);
+      const body = await response.json() as { reports: unknown; reportsAvailable: boolean };
+      expect(body.reports).toEqual(reports);
+      expect(body.reportsAvailable).toBe(true);
+    } finally { await closeServer(server); }
+  });
+
+  it('bounds a stalled diagnostics read and shares it across concurrent probes', async () => {
+    let reads = 0;
+    const worker = { status: () => ({ stopping: false, running: 0, claimLoop: readyClaimLoop }) } as SyncWorker;
+    const server = await startHealthServer(worker, 0, {
+      deployment: { revision: 'abcdef123', role: 'general', claimProtocol: 'legacy', jobTypes: 'all' },
+      reports: () => { reads++; return new Promise(() => {}); },
+    });
+    try {
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/healthz`;
+      const responses = await Promise.all([fetch(url), fetch(url)]);
+      expect(reads).toBe(1);
+      expect(responses.map((response) => response.status)).toEqual([200, 200]);
+      for (const response of responses) {
+        expect(await response.json()).toMatchObject({ reports: null, reportsAvailable: false });
+      }
+    } finally { await closeServer(server); }
+  });
+
+  it('reports unavailable diagnostics as null, preserving the existing readiness policy', async () => {
+    const worker = { status: () => ({ stopping: false, running: 0, claimLoop: readyClaimLoop }) } as SyncWorker;
+    const server = await startHealthServer(worker, 0, {
+      deployment: { revision: 'abcdef123', role: 'general', claimProtocol: 'legacy', jobTypes: 'all' },
+      reports: async () => { throw new Error('synthetic private failure'); },
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/healthz`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ reports: null, reportsAvailable: false });
+    } finally { await closeServer(server); }
+  });
 });

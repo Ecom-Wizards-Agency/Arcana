@@ -83,7 +83,7 @@ export async function beginTotpEnrollment(): Promise<TotpEnrollmentResult> {
   const { data, error } = await supabase.auth.mfa.enroll({
     factorType: 'totp',
     friendlyName: 'Authenticator app',
-    issuer: 'OpenSpell',
+    issuer: 'Arcana',
   });
   if (error || !data || data.type !== 'totp') {
     return { status: 'error', message: 'Authenticator setup could not start.' };

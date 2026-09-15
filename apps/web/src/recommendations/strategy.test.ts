@@ -4,7 +4,7 @@
  * The point of these tests is the cascade's *first* step: an assignment map
  * that is empty today and populated when per-campaign strategy assignment
  * ships. If the assignment case works now, adding assignment later is a data
- * change, which is exactly what `https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/docs/DECISIONS.md` asks WP-07 to guarantee.
+ * change, which is exactly what `https://github.com/Ecom-Wizards-Agency/Arcana/blob/dd4f3887f626128250abee537f374712ca42717c/docs/DECISIONS.md` asks WP-07 to guarantee.
  *
  * No doctrine value appears here. The snapshots below are shapes with
  * obviously-synthetic numbers.
@@ -114,4 +114,14 @@ describe('resolveExportCaps', () => {
       maxDecrease: null,
     });
   });
+});
+
+it('uses the saved per-row method for the objective and review label', () => {
+  const result = resolveProposalStrategy({ campaignId: 'c-1', campaignName: 'Synthetic', strategySnapshot: SNAPSHOT,
+    methodId: 'sp.coordinated-efficiency', executionSnapshot: { version: 1,
+      configuration: { version: 1, method: 'sp.reference-efficiency', targetAcos: 0.3, bidFloor: 0.1, bidCeiling: 1,
+        bidIncreaseCap: 0.5, bidDecreaseCap: 0.6, window: { start: '2026-08-01', end: '2026-08-28' } },
+      profileTimezone: 'UTC', admittedAt: '2026-09-10T00:00:00Z', profileToday: '2026-09-10' } });
+  expect(result.objective).toBe('coordinated-efficiency');
+  expect(strategyLabel(result)).toBe('Coordinated efficiency (draft)');
 });

@@ -1,10 +1,9 @@
 import { and, desc, eq, getTableColumns, inArray, isNull, ne } from 'drizzle-orm';
-import type { DbHandle } from '../client.js';
+import type { DbHandle, QueryHandle } from '../client.js';
 import { insights } from '../schema/analysis.js';
 import { productAds } from '../schema/entities.js';
 import { integrationConnections } from '../schema/integrations.js';
 import {
-  competitorLinks,
   competitorPriceEvents,
   keepaBsrObservations,
 } from '../schema/seams.js';
@@ -202,7 +201,7 @@ export async function latestKeepaObservations(
 }
 
 export async function listCompetitorLinks(
-  handle: DbHandle,
+  handle: QueryHandle,
   orgId: string,
   profileId?: string,
 ): Promise<CompetitorLinkRecord[]> {
@@ -245,7 +244,7 @@ export async function listCompetitorLinks(
 }
 
 export async function createCompetitorLink(
-  handle: DbHandle,
+  handle: QueryHandle,
   input: { orgId: string; profileId: string; ourAsin: string; competitorAsin: string },
 ): Promise<CompetitorLinkRecord> {
   const ourAsin = normalizeAsin(input.ourAsin);
@@ -269,13 +268,11 @@ export async function createCompetitorLink(
 }
 
 export async function removeCompetitorLink(
-  handle: DbHandle,
+  handle: QueryHandle,
   input: { orgId: string; id: string },
 ): Promise<void> {
-  const rows = await handle.db
-    .delete(competitorLinks)
-    .where(and(eq(competitorLinks.orgId, input.orgId), eq(competitorLinks.id, input.id)))
-    .returning({ id: competitorLinks.id });
+  const rows = await handle.sql`delete from public.competitor_links
+    where org_id=${input.orgId} and id=${input.id} returning id`;
   if (rows.length !== 1) throw new Error('Competitor link not found');
 }
 
@@ -336,4 +333,57 @@ function normalizeAsin(value: string): string {
   const asin = value.trim().toUpperCase();
   if (!/^[A-Z0-9]{10}$/.test(asin)) throw new Error(`Invalid ASIN ${JSON.stringify(value)}`);
   return asin;
+}
+
+
+/** Both Keepa and analyst writers publish here; source is evidence, not a filter. */
+export async function listHomeInsights(handle: QueryHandle, scope: {
+  orgId: string; profileId: string; start: string; end: string;
+}) {
+  const rows = await handle.sql<{
+    id: string; date: string; kind: string; title: string; body: string; source: string;
+  }[]>`
+    select id, date::text, kind, title, body, source
+    from public.insights
+    where org_id = ${scope.orgId} and profile_id = ${scope.profileId}
+      and date between ${scope.start}::date and ${scope.end}::date
+    order by date desc, created_at desc, id
+  `;
+  return [...rows];
+}
+
+
+/** Compare ranks only within the same category and observation day. */
+export async function listHomeMarketGaps(handle: QueryHandle, scope: {
+  orgId: string; profileId: string; asOf: string;
+}) {
+  const rows = await handle.sql<{
+    ourAsin: string; competitorAsin: string; category: string;
+    ourRank: number; competitorRank: number; gap: number; observedOn: string;
+  }[]>`
+    with pairs as (
+      select l.our_asin, l.competitor_asin, ours.category,
+        ours.bsr as our_rank, rival.bsr as competitor_rank,
+        ours.observed_at::date as observed_on,
+        row_number() over (partition by l.our_asin, l.competitor_asin, ours.category
+          order by ours.observed_at desc, rival.observed_at desc, ours.id desc, rival.id desc) as observation
+      from public.competitor_links l
+      join public.keepa_bsr_observations ours on ours.org_id = l.org_id and ours.asin = l.our_asin
+      join public.keepa_bsr_observations rival on rival.org_id = l.org_id and rival.asin = l.competitor_asin
+        and rival.category = ours.category and rival.observed_at::date = ours.observed_at::date
+      where l.org_id = ${scope.orgId} and l.profile_id = ${scope.profileId} and l.enabled
+        and ours.category <> ''
+        and ours.observed_at < ${scope.asOf}::date + interval '1 day'
+        and rival.observed_at < ${scope.asOf}::date + interval '1 day'
+    ), nearest as (
+      select *, row_number() over (partition by our_asin, category
+        order by abs(our_rank - competitor_rank), competitor_asin) as proximity
+      from pairs where observation = 1 and our_rank > 0 and competitor_rank > 0
+    )
+    select our_asin as "ourAsin", competitor_asin as "competitorAsin", category,
+      our_rank as "ourRank", competitor_rank as "competitorRank",
+      our_rank - competitor_rank as gap, observed_on::text as "observedOn"
+    from nearest where proximity = 1 order by abs(our_rank - competitor_rank), our_asin, category
+  `;
+  return [...rows];
 }

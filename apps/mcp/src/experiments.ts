@@ -22,11 +22,12 @@ import {
 } from '@wizard-ads/db';
 import type { ExperimentRecord, ExperimentStatus } from '@wizard-ads/db';
 import { ToolError } from './errors.js';
-import type { ServerContext, ToolOutcome } from './server.js';
+import type { ToolOutcome } from './server.js';
+import type { OperationContext } from './operation.js';
 
 export const LIST_EXPERIMENTS_TITLE = 'List experiments';
 export const LIST_EXPERIMENTS_DESCRIPTION =
-  'Deliberate tests recorded in OpenSpell — bid pushes, creative and price changes — with their ' +
+  'Deliberate tests recorded in Arcana — bid pushes, creative and price changes — with their ' +
   'windows, scope and status. Read this before concluding a metric moved on its own: a shaded ' +
   'window here is a change somebody chose to make. Filter by profile or status.';
 
@@ -49,7 +50,7 @@ export const getExperimentInputSchema = {
 };
 
 /** The internal profile id for an Amazon or internal id, honouring the key scope. */
-async function resolveScopedProfileId(context: ServerContext, profileRef: string): Promise<string> {
+async function resolveScopedProfileId(context: OperationContext, profileRef: string): Promise<string> {
   const { handle, scope } = context;
   const rows = await handle.sql<{ id: string }[]>`
     select id from public.ad_profiles
@@ -63,7 +64,7 @@ async function resolveScopedProfileId(context: ServerContext, profileRef: string
   return id;
 }
 
-function withinScope(context: ServerContext, profileId: string): boolean {
+function withinScope(context: OperationContext, profileId: string): boolean {
   return context.scope.profileIds === null || context.scope.profileIds.includes(profileId);
 }
 
@@ -80,7 +81,7 @@ const summarize = (experiment: ExperimentRecord) => ({
 });
 
 export async function listExperimentsTool(
-  context: ServerContext,
+  context: OperationContext,
   args: { profile_id?: string; status?: ExperimentStatus },
 ): Promise<ToolOutcome> {
   const { handle, scope } = context;
@@ -109,7 +110,7 @@ export async function listExperimentsTool(
 }
 
 export async function getExperimentTool(
-  context: ServerContext,
+  context: OperationContext,
   args: { experiment_id: string },
 ): Promise<ToolOutcome> {
   const { handle, scope } = context;

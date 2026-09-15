@@ -1,5 +1,7 @@
+import { deriveRecommendationEvidenceClassification } from '@wizard-ads/shared';
 import type {
   IsoDate,
+  ExecutionVerdict, ObjectiveVerdict, RecommendationEvidenceClassification,
   OptimizationRunContext,
   RecommendationEvidencePolicy,
   RecommendationObservation,
@@ -46,17 +48,13 @@ export interface EvaluateRecommendationEvidenceRequest {
   policy: RecommendationEvidencePolicy;
 }
 
-export type RecommendationEvidenceClassification =
-  | 'not_synchronized'
-  | 'synchronization_conflict'
-  | 'observation_incomplete'
-  | 'evidence_insufficient'
-  | 'supported_lift'
-  | 'complete_no_lift';
+export type { RecommendationEvidenceClassification } from '@wizard-ads/shared';
 
 /** Structured work shown alongside the persisted evidence note. */
 export interface RecommendationEvidenceProvenance {
   classification: RecommendationEvidenceClassification;
+  executionVerdict: ExecutionVerdict;
+  objectiveVerdict: ObjectiveVerdict;
   suppliedPairCount: number;
   evaluatedPairCount: number;
   /** @deprecated Prefer evaluatedPairCount; retained as a readable alias. */
@@ -72,6 +70,8 @@ export interface RecommendationEvidenceEvaluation {
   /** Immutable snapshot tying the decision back to its optimization group. */
   context: OptimizationRunContext;
   classification: RecommendationEvidenceClassification;
+  executionVerdict: ExecutionVerdict;
+  objectiveVerdict: ObjectiveVerdict;
   observation: RecommendationObservation;
   provenance: RecommendationEvidenceProvenance;
   /** True only after a complete matched window has supported lift. */
@@ -223,9 +223,12 @@ function noteFor(
 
 function buildEvaluation(
   request: EvaluateRecommendationEvidenceRequest,
-  classification: RecommendationEvidenceClassification,
+  executionVerdict: ExecutionVerdict,
+  objectiveVerdict: ObjectiveVerdict,
+  observationComplete: boolean,
   totals: MatchedTotals | null,
 ): RecommendationEvidenceEvaluation {
+  const classification = deriveRecommendationEvidenceClassification(executionVerdict, objectiveVerdict, observationComplete);
   const { context, seed, policy } = request;
   const complete = classification === 'supported_lift' || classification === 'complete_no_lift';
   const evidenceState: RecommendationObservation['evidenceState'] =
@@ -249,6 +252,7 @@ function buildEvaluation(
 
   const observation: RecommendationObservation = {
     ...seed,
+    executionVerdict, objectiveVerdict,
     evidenceState,
     decision,
     preIncrementalVolume: exposeTotals && totals !== null ? totals.pre : null,
@@ -259,9 +263,11 @@ function buildEvaluation(
   return {
     context,
     classification,
+    executionVerdict, objectiveVerdict,
     observation,
     provenance: {
       classification,
+      executionVerdict, objectiveVerdict,
       suppliedPairCount: request.matchedPairs.length,
       evaluatedPairCount: totals?.count ?? 0,
       matchedPairCount: totals?.count ?? 0,
@@ -287,18 +293,18 @@ export function evaluateRecommendationEvidence(
   const { seed, policy } = request;
 
   if (seed.synchronizedValue === null || seed.synchronizedAt === null) {
-    return buildEvaluation(request, 'not_synchronized', null);
+    return buildEvaluation(request, 'not_synchronized', 'evidence_insufficient', false, null);
   }
   if (
     Math.abs(seed.synchronizedValue - seed.expectedValue) > policy.synchronizationTolerance
   ) {
-    return buildEvaluation(request, 'synchronization_conflict', null);
+    return buildEvaluation(request, 'synchronization_conflict', 'evidence_insufficient', false, null);
   }
   if (
     request.settledThrough === null ||
     request.settledThrough < seed.observationWindowEnd
   ) {
-    return buildEvaluation(request, 'observation_incomplete', null);
+    return buildEvaluation(request, 'applied_as_intended', 'evidence_insufficient', false, null);
   }
 
   const totals = matchedTotals(request.matchedPairs);
@@ -307,7 +313,7 @@ export function evaluateRecommendationEvidence(
     totals.count < policy.minimumMatchedPairs ||
     combinedVolume < policy.minimumCombinedIncrementalVolume
   ) {
-    return buildEvaluation(request, 'evidence_insufficient', totals);
+    return buildEvaluation(request, 'applied_as_intended', 'evidence_insufficient', true, totals);
   }
 
   const relativeLiftSupported =
@@ -321,7 +327,9 @@ export function evaluateRecommendationEvidence(
 
   return buildEvaluation(
     request,
+    'applied_as_intended',
     liftSupported ? 'supported_lift' : 'complete_no_lift',
+    true,
     totals,
   );
 }

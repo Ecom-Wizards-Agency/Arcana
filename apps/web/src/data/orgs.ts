@@ -12,6 +12,7 @@
 import { cookies } from 'next/headers';
 import { cache } from 'react';
 import type { DbHandle } from '@wizard-ads/db';
+import { withAuthenticatedIdentity } from '@wizard-ads/db';
 import { isOrgRole } from '../auth/roles';
 import type { OrgRole } from '../auth/roles';
 import type { SessionUser } from '../auth/session';
@@ -34,23 +35,25 @@ export interface OrgContext {
 }
 
 export async function listMemberships(handle: DbHandle, userId: string): Promise<Membership[]> {
-  const rows = await handle.sql<
-    { org_id: string; slug: string; name: string; role: string }[]
-  >`
-    select o.id as org_id, o.slug, o.name, m.role::text as role
-    from public.org_members m
-    join public.orgs o on o.id = m.org_id
-    where m.user_id = ${userId}
-    -- Display names are not unique. The id tie-break keeps the page shell and
-    -- the Grid request receipt on one canonical fallback membership.
-    order by o.name, o.id
-  `;
-  return rows.map((row) => ({
-    orgId: row.org_id,
-    slug: row.slug,
-    name: row.name,
-    role: isOrgRole(row.role) ? row.role : 'viewer',
-  }));
+  return withAuthenticatedIdentity(handle, { userId }, async (sql) => {
+    const rows = await sql<
+      { org_id: string; slug: string; name: string; role: string }[]
+    >`
+      select o.id as org_id, o.slug, o.name, m.role::text as role
+      from public.org_members m
+      join public.orgs o on o.id = m.org_id
+      where m.user_id = ${userId}
+      -- Display names are not unique. The id tie-break keeps the page shell and
+      -- the Grid request receipt on one canonical fallback membership.
+      order by o.name, o.id
+    `;
+    return rows.map((row) => ({
+      orgId: row.org_id,
+      slug: row.slug,
+      name: row.name,
+      role: isOrgRole(row.role) ? row.role : 'viewer',
+    }));
+  });
 }
 
 /**
@@ -66,7 +69,15 @@ async function readOrgContext(
   preferredOrgId?: string | null,
 ): Promise<OrgContext> {
   const memberships = await listMemberships(handle, user.id);
-  const cookieOrg = preferredOrgId ?? (await cookies()).get(ORG_COOKIE)?.value ?? null;
+  // Explicit operation scope must never redirect work into a different agency.
+  // Only navigation without an explicit selection may use the cookie/default.
+  if (preferredOrgId !== undefined && preferredOrgId !== null) {
+    return {
+      user, memberships,
+      active: memberships.find((membership) => membership.orgId === preferredOrgId) ?? null,
+    };
+  }
+  const cookieOrg = (await cookies()).get(ORG_COOKIE)?.value ?? null;
   const active =
     memberships.find((membership) => membership.orgId === cookieOrg) ?? memberships[0] ?? null;
   return { user, memberships, active };

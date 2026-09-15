@@ -350,6 +350,7 @@ describe.skipIf(!available)('recommendation routes', () => {
   it('serves a caps document carrying the run\'s own thresholds', async () => {
     const response = await download('caps');
     expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('private, no-store, max-age=0');
     const config = (await response.json()) as { validateCommand: string; targetAcos: number };
     expect(config.targetAcos).toBe(0.4);
     expect(config.validateCommand).toContain('--max-increase 0.2');
@@ -360,6 +361,7 @@ describe.skipIf(!available)('recommendation routes', () => {
   it('serves a workbook whose campaign row keeps its portfolio', async () => {
     const response = await download('xlsx');
     expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('private, no-store, max-age=0');
     expect(response.headers.get('content-disposition')).toContain('-bulk.xlsx');
     expect(response.headers.get('x-wizard-ads-skipped-rows')).toBe('0');
     const { readWorkbook } = await import('@wizard-ads/campaigns');

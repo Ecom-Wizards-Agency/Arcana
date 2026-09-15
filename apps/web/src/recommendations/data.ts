@@ -1,17 +1,12 @@
 /**
- * Profile lookups for the review and explorer screens.
- *
- * These screens run on the request handle (`openWebDatabase`) rather than the
- * Drizzle handle the dashboard uses, because they also write: deciding and
- * exporting go through the same connection and the same explicit `org_id`
- * predicate as every other statement in the request. Duplicating the profile
- * read here rather than reaching for `app/_lib/profiles.ts` keeps that one
- * boundary rather than mixing two handles in one request.
+ * Profile lookups shared by review pages and command admission. Readers accept
+ * the page's authenticated transaction and explicitly filter its selected org.
+ * Commands remain responsible for their own current authorization checks.
  */
-import type { RequestDatabase } from '@wizard-ads/db';
+import type { QueryHandle } from '@wizard-ads/db';
 import { orderActiveProfiles, resolveActiveProfile } from '../data/active-profile';
 
-export type ProfileQueryHandle = Pick<RequestDatabase, 'sql'>;
+export type ProfileQueryHandle = QueryHandle;
 
 export interface OrgProfile {
   id: string;

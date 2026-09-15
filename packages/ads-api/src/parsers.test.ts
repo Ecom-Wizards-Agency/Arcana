@@ -33,6 +33,24 @@ describe('spTargeting to the target-grain fact', () => {
     expect(parsed.rows.length + parsed.skipped.length).toBe(parsed.input);
   });
 
+  it('preserves target impression share and keeps withheld values null', () => {
+    const base = {
+      date: '2026-08-10', campaignId: 'synthetic-campaign',
+      adGroupId: 'synthetic-ad-group', keywordId: 'synthetic-keyword', matchType: 'EXACT',
+    };
+    const rows = [
+      { ...base, topOfSearchImpressionShare: 28.4 },
+      { ...base, topOfSearchImpressionShare: 0.284 },
+      { ...base, topOfSearchImpressionShare: 0 },
+      { ...base },
+    ];
+    const result = parseSpTargetingReport(rows);
+    expect(result.input).toBe(rows.length);
+    expect(result.rows).toHaveLength(rows.length);
+    expect(result.skipped).toEqual([]);
+    expect(result.rows.map((row) => row.topOfSearchImpressionShare)).toEqual([0.284, 0.284, 0, null]);
+  });
+
   it('maps a keyword row into every attribution window', () => {
     expect(parsed.rows[0]).toEqual({
       date: '2026-08-10',

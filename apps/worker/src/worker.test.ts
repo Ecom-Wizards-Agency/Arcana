@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import type { CrosscheckIngestResult } from '@wizard-ads/crosscheck-cli';
 import { SpApiAuthError } from '@wizard-ads/sp-api';
 import {
+  AdsApiRetryableError,
   DownloadUrlExpiredError,
   ReportCreateOutcomeUnknownError,
   type AdsApiClient,
@@ -64,7 +65,7 @@ describe('parent parsed-report heap bound', () => {
 });
 
 describe('fetch handler count assertion', () => {
-  it('fails and requeues when the fact sink reports fewer loaded rows than parsed rows', async () => {
+  it.each([false, true])('settles the first fetch attempt correctly (transient=%s)', async (transient) => {
     const payload: Extract<JobPayload, { type: 'report.fetch' }> = {
       type: 'report.fetch', orgId, profileId, reportRequestId,
       amazonReportId: 'amazon-report', downloadUrl: 'https://reports.invalid/report',
@@ -76,6 +77,9 @@ describe('fetch handler count assertion', () => {
     let claimed = false;
     let outcome: JobOutcome | undefined;
     let completedCounts: { parsed: number; loaded: number } | undefined;
+    const dead: string[] = [];
+    const terminal: string[] = [];
+    let retryIn: string | undefined;
     const report: ReportRequestState = {
       id: reportRequestId, orgId, profileId, reportType: 'sbCampaigns',
       startDate: '2026-08-14', endDate: '2026-08-14', source: 'amazon_api',
@@ -85,9 +89,14 @@ describe('fetch handler count assertion', () => {
     const store: WorkerStore = {
       ...stubStore(),
       claim: async () => claimed ? [] : (claimed = true, [job]),
-      finish: async (_id, nextOutcome) => { outcome = nextOutcome; },
+      finish: async (_id, nextOutcome, options) => { outcome = nextOutcome; retryIn = options?.retryIn; },
+      deadLetter: async (_id, error) => { dead.push(error); },
+      failTerminalReport: async (_scope, error) => { terminal.push(error); return true; },
       getReportRequest: async () => report,
-      loadFacts: async (_batch: ParsedFactBatch) => 0,
+      loadFacts: async (_batch: ParsedFactBatch) => {
+        if (transient) throw new AdsApiRetryableError('provider temporarily unavailable', 30);
+        return 0;
+      },
       completeReport: async (_id, counts) => {
         completedCounts = counts;
         if (counts.parsed !== counts.loaded) throw new ParsedLoadedMismatch(counts.parsed, counts.loaded);
@@ -99,8 +108,20 @@ describe('fetch handler count assertion', () => {
     });
 
     expect(await worker.drainOnce()).toBe(1);
-    expect(completedCounts).toMatchObject({ parsed: 1, loaded: 0 });
-    expect(outcome).toBe('failed');
+    expect(await worker.drainOnce()).toBe(0);
+    expect(job.attempts).toBe(1);
+    if (transient) {
+      expect(outcome).toBe('failed');
+      expect(retryIn).toBe('30 seconds');
+      expect(dead).toEqual([]);
+      expect(terminal).toEqual([]);
+    } else {
+      expect(completedCounts).toMatchObject({ parsed: 1, loaded: 0 });
+      expect(dead).toEqual(['report parsed 1 rows but loaded 0']);
+      expect(terminal).toEqual(dead);
+      expect(outcome).toBeUndefined();
+      expect(retryIn).toBeUndefined();
+    }
   });
 });
 
@@ -868,10 +889,11 @@ describe('integration handler wiring', () => {
     { type: 'marketing_stream.normalize', orgId, profileId, messageIds: ['message-one'] },
   ];
 
-  it('delegates every queue payload only through an explicitly bound handler', async () => {
+  it('delegates implemented payloads and permanently rejects the three unimplemented types', async () => {
     let claimed = false;
     const called: string[] = [];
     const sqpJobIds: string[] = [];
+    const dead: string[] = [];
     const results: unknown[] = [];
     const jobs = payloads.map((payload, index): ClaimedJob => ({
       id: `${index + 1}`.repeat(8) + '-1111-4111-8111-111111111111',
@@ -889,6 +911,7 @@ describe('integration handler wiring', () => {
       store: {
         ...stubStore(),
         claim: async () => claimed ? [] : (claimed = true, jobs),
+        deadLetter: async (_id, error) => { dead.push(error); },
         finish: async (_id, outcome, options) => {
           expect(outcome).toBe('succeeded');
           results.push(options?.result);
@@ -898,13 +921,10 @@ describe('integration handler wiring', () => {
         keepaSync: async (payload) => (called.push(payload.type), { provider: 'keepa' }),
         rankSync: async (payload) => (called.push(payload.type), { provider: 'datadive' }),
         economicsSync: async (payload) => (called.push(payload.type), { provider: 'mrp' }),
-        sqpCategorize: async (payload) => (called.push(payload.type), { weekStart: payload.weekStart }),
         creativeSync: async (payload) => (called.push(payload.type), { rows: 1 }),
         sqpRequest: async (payload, context) => (
           called.push(payload.type), sqpJobIds.push(context.jobId), { asins: payload.asins.length }
         ),
-        historyBootstrap: async (payload) => (called.push(payload.type), { source: payload.source }),
-        reportPromote: async (payload) => (called.push(payload.type), { date: payload.date }),
         marketingStreamNormalize: async (payload) => (
           called.push(payload.type), { messages: payload.messageIds.length }
         ),
@@ -913,8 +933,10 @@ describe('integration handler wiring', () => {
     });
 
     expect(await worker.drainOnce()).toBe(payloads.length);
-    expect(called).toEqual(payloads.map((payload) => payload.type));
-    expect(results).toHaveLength(payloads.length);
+    const unimplemented = ['sqp.categorize', 'history.bootstrap', 'report.promote'];
+    expect(called).toEqual(payloads.map((payload) => payload.type).filter((type) => !unimplemented.includes(type)));
+    expect(results).toHaveLength(payloads.length - unimplemented.length);
+    expect(dead).toEqual(unimplemented.map((type) => `${type} is declared but unimplemented`));
     expect(sqpJobIds).toEqual([jobs[5]?.id]);
   });
 
@@ -1195,8 +1217,10 @@ describe('Reporting v3 create ambiguity', () => {
     };
     let claimed = false;
     const mutations: string[] = [];
+    const recorded: unknown[] = [];
     const store: WorkerStore = {
       ...stubStore(),
+      quarantineReportCreate: async (request, evidence) => { recorded.push({ jobId: request.id, ...evidence }); },
       claim: async () => claimed ? [] : (claimed = true, [job]),
       ensureReportRequest: async () => ({
         id: jobId, orgId, profileId, reportType: payload.reportType,
@@ -1224,6 +1248,7 @@ describe('Reporting v3 create ambiguity', () => {
     });
     expect(worker.status().settlementFailure).toBe('custody_quarantined');
     expect(mutations).toEqual([]);
+    expect(recorded).toEqual([{ jobId, phase: 'provider-id-persistence', status: null, amazonReportId: 'unused' }]);
     const evidence = await worker.shutdown();
     expect(evidence).toEqual({ released: 0, unresolved: 1 });
     expect(shutdownExitCode(evidence, worker.status().settlementFailure)).toBe(78);
@@ -1252,9 +1277,11 @@ describe('fenced report download limits', () => {
     };
     let claimed = false;
     const mutations: string[] = [];
+    const recorded: unknown[] = [];
     const api = new LimitDownloadApi(kind);
     const store: WorkerStore = {
       ...stubStore(),
+      quarantineReportCreate: async (request, evidence) => { recorded.push({ jobId: request.id, ...evidence }); },
       claim: async () => claimed ? [] : (claimed = true, [job]),
       getReportRequest: async () => ({
         id: reportRequestId, orgId, profileId, reportType: 'spCampaigns',
@@ -1279,6 +1306,7 @@ describe('fenced report download limits', () => {
     expect(api.signal?.aborted).toBe(true);
     expect(api.returnCalls).toBe(returnCalls);
     expect(mutations).toEqual([]);
+    expect(recorded).toEqual([]);
     expect(worker.status().settlementFailure).toBe('custody_quarantined');
     const evidence = await worker.shutdown();
     expect(evidence).toEqual({ released: 0, unresolved: 1 });
@@ -1799,6 +1827,7 @@ function stubStore(): WorkerStore {
     claim: async () => [],
     finish: async () => {},
     deadLetter: async () => {},
+    quarantineReportCreate: async () => {},
     release: async () => 0,
     requeueStale: async () => 0,
     profile: async () => profile(),

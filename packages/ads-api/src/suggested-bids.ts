@@ -1,218 +1,189 @@
-/**
- * Sponsored Products suggested-bid reads.
- *
- * Amazon exposes keyword and product-target recommendations as separate read
- * resources even though both are POSTs. They are described as reads here (and
- * sent with `idempotent: true` by the client): fetching a daily corridor must
- * be safe to retry on a transport failure or 5xx.
- *
- * The target route is the current Ads API route documented by Amazon's manual
- * Sponsored Products workflow. Keeping both routes and media types in this
- * table prevents the v2 camel-case spelling from leaking back into callers.
- */
-import type { AmazonId } from '@wizard-ads/shared';
+/** Theme-based Sponsored Products v3 recommendation reads (no Amazon mutations). */
+import {
+  BidRecommendationExpression,
+  BidRecommendationReadCounts,
+  bidRecommendationTargetKey,
+  type BidRecommendationCorridor,
+  type BidRecommendationTarget,
+} from '@wizard-ads/shared';
 import { AdsApiParseError } from './errors.js';
-import { isRecord, readId, readNumber, readRecord, readRecordArray, readString } from './read.js';
+import { isRecord, readNumber } from './read.js';
 
 export type SpBidRecommendationKind = 'keywords' | 'targets';
+export interface SpBidRecommendationEndpoint { path: string; mediaType: string }
 
-export interface SpBidRecommendationEndpoint {
-  path: string;
-  mediaType: string;
-  requestKey: 'keywordIds' | 'targetIds';
-  idKey: 'keywordId' | 'targetId';
-}
-
-export const SP_BID_RECOMMENDATION_ENDPOINTS: Readonly<
-  Record<SpBidRecommendationKind, SpBidRecommendationEndpoint>
-> = {
-  keywords: {
-    path: '/sp/keywords/bid/recommendations',
-    mediaType: 'application/vnd.spKeywordBidRecommendation.v3+json',
-    requestKey: 'keywordIds',
-    idKey: 'keywordId',
-  },
-  targets: {
-    path: '/sp/targets/bid/recommendations',
-    mediaType: 'application/vnd.spTargetingClauseBidRecommendation.v3+json',
-    requestKey: 'targetIds',
-    idKey: 'targetId',
-  },
+const endpoint: SpBidRecommendationEndpoint = {
+  path: '/sp/targets/bid/recommendations',
+  mediaType: 'application/vnd.spthemebasedbidrecommendation.v3+json',
 };
-
-/** Amazon caps the recommendation reads at the same 100-item batch size as SP writes. */
+/** Legacy method names share this route. There is no separate keyword route. */
+export const SP_BID_RECOMMENDATION_ENDPOINTS = { keywords: endpoint, targets: endpoint } as const;
 export const SP_BID_RECOMMENDATION_BATCH_SIZE = 100;
 
-export interface SpSuggestedBid {
+export interface SpSuggestedBid extends BidRecommendationCorridor {
   kind: SpBidRecommendationKind;
-  /** Zero-based index in the caller's entire submitted id array. */
+  /** Index in the original offered target array, including ineligible rows. */
   index: number;
-  targetId: AmazonId;
-  /** Low edge of Amazon's currently suggested corridor. */
-  low: number;
-  /** The 50th-percentile point, retained separately from Amazon's chosen suggestion. */
-  median: number;
-  /** High edge of Amazon's currently suggested corridor. */
-  high: number;
-  suggestedBid: number;
+  /** v3 has no independent chosen suggestion; this is the middle slot, if present. */
+  suggestedBid: number | null;
   raw: Record<string, unknown>;
 }
-
 export interface SpBidRecommendationError {
   kind: SpBidRecommendationKind;
-  /** Zero-based index in the caller's entire submitted id array. */
   index: number;
-  targetId: AmazonId;
-  code: string | null;
+  targetId: string;
+  code: string;
   details: string | null;
   raw: Record<string, unknown>;
 }
-
-export interface SpBidRecommendationResult {
+export interface SpBidRecommendationResult extends BidRecommendationReadCounts {
   items: SpSuggestedBid[];
   errors: SpBidRecommendationError[];
+  /** Compatibility alias for requested. */
   submitted: number;
   batches: number;
 }
+export interface IndexedBidRecommendationTarget {
+  target: BidRecommendationTarget;
+  index: number;
+}
 
-export function batchSpBidRecommendationIds(ids: readonly AmazonId[]): AmazonId[][] {
-  const batches: AmazonId[][] = [];
-  for (let index = 0; index < ids.length; index += SP_BID_RECOMMENDATION_BATCH_SIZE) {
-    batches.push(ids.slice(index, index + SP_BID_RECOMMENDATION_BATCH_SIZE));
+function expressionKey(expression: { type: string; value?: string }): string {
+  return JSON.stringify([expression.type, expression.value ?? null]);
+}
+
+/** The same strict builder is used by production and the raw operator probe. */
+export function buildSpBidRecommendationBody(input: unknown): {
+  recommendationType: 'BIDS_FOR_EXISTING_AD_GROUP';
+  campaignId: string;
+  adGroupId: string;
+  targetingExpressions: BidRecommendationExpression[];
+} {
+  if (!isRecord(input) || typeof input['campaignId'] !== 'string' || !input['campaignId'].trim()
+    || typeof input['adGroupId'] !== 'string' || !input['adGroupId'].trim()) {
+    throw new AdsApiParseError('bid recommendations require campaignId and adGroupId');
+  }
+  const expressions = input['targetingExpressions'];
+  if (!Array.isArray(expressions) || expressions.length < 1 || expressions.length > SP_BID_RECOMMENDATION_BATCH_SIZE) {
+    throw new AdsApiParseError('bid recommendations require 1..100 targeting expressions');
+  }
+  const seen = new Set<string>();
+  const targetingExpressions = expressions.map((value: unknown) => {
+    const parsed = BidRecommendationExpression.safeParse(value);
+    if (!parsed.success || (parsed.data.type.startsWith('KEYWORD_') && !parsed.data.value?.trim())) {
+      throw new AdsApiParseError('unsupported or incomplete v3 targeting expression');
+    }
+    const key = expressionKey(parsed.data);
+    if (seen.has(key)) throw new AdsApiParseError('ambiguous duplicate requested expression');
+    seen.add(key);
+    return parsed.data;
+  });
+  return {
+    recommendationType: 'BIDS_FOR_EXISTING_AD_GROUP',
+    campaignId: input['campaignId'], adGroupId: input['adGroupId'], targetingExpressions,
+  };
+}
+
+/** Legacy export name; flat IDs are rejected. Batches retain scope and original indexes. */
+export function batchSpBidRecommendationIds(targets: readonly BidRecommendationTarget[]): IndexedBidRecommendationTarget[][] {
+  const groups = new Map<string, IndexedBidRecommendationTarget[]>();
+  const identities = new Set<string>();
+  targets.forEach((target, index) => {
+    if (!isRecord(target)) throw new AdsApiParseError('scoped targets are required; flat IDs are unsupported');
+    const identity = bidRecommendationTargetKey(target);
+    if (identities.has(identity)) throw new AdsApiParseError('duplicate offered target identity');
+    identities.add(identity);
+    const expression = BidRecommendationExpression.safeParse(target.targetingExpression);
+    if (!target.targetId?.trim() || !target.campaignId?.trim() || !target.adGroupId?.trim()
+      || !expression.success || target.isKeyword !== expression.data.type.startsWith('KEYWORD_')
+      || (target.isKeyword && !expression.data.value?.trim())) return;
+    const key = JSON.stringify([target.campaignId, target.adGroupId]);
+    const group = groups.get(key) ?? [];
+    group.push({ target: { ...target, targetingExpression: expression.data }, index });
+    groups.set(key, group);
+  });
+  const batches: IndexedBidRecommendationTarget[][] = [];
+  for (const group of groups.values()) {
+    // Check across the entire ad group, including duplicates split across batches.
+    const expressions = new Set<string>();
+    for (const { target } of group) {
+      const key = expressionKey(target.targetingExpression!);
+      if (expressions.has(key)) throw new AdsApiParseError('ambiguous duplicate requested expression');
+      expressions.add(key);
+    }
+    for (let index = 0; index < group.length; index += SP_BID_RECOMMENDATION_BATCH_SIZE) {
+      batches.push(group.slice(index, index + SP_BID_RECOMMENDATION_BATCH_SIZE));
+    }
   }
   return batches;
 }
 
-export function buildSpBidRecommendationBody(
-  endpoint: SpBidRecommendationEndpoint,
-  ids: readonly AmazonId[],
-): Record<string, unknown> {
-  return { [endpoint.requestKey]: [...ids] };
-}
-
-function firstNumber(
-  sources: readonly (Record<string, unknown> | null)[],
-  keys: readonly string[],
-): number | null {
-  for (const source of sources) {
-    if (source === null) continue;
-    for (const key of keys) {
-      const value = readNumber(source, key);
-      if (value !== null) return value;
-    }
-  }
-  return null;
-}
-
-function localIndex(row: Record<string, unknown>, fallback: number): number {
-  const index = readNumber(row, 'index');
-  return index === null ? fallback : index;
-}
-
-function responseRows(parsed: Record<string, unknown>): {
-  success: Record<string, unknown>[];
-  errors: Record<string, unknown>[];
-} {
-  const envelope = readRecord(parsed, 'bidRecommendations');
-  if (envelope !== null) {
-    const success = readRecordArray(envelope, 'success');
-    const singular = readRecordArray(envelope, 'error');
-    return {
-      success,
-      errors: singular.length === 0 ? readRecordArray(envelope, 'errors') : singular,
-    };
-  }
-
-  // Some regions return an unwrapped recommendation array. It contains only
-  // successes; failures use the indexed multi-status envelope above.
-  return { success: readRecordArray(parsed, 'bidRecommendations'), errors: [] };
-}
-
-/** Parse one batch and prove Amazon accounted for each submitted id exactly once. */
+/** Reconcile the base theme by exact expression, never response order or invented IDs. */
 export function parseSpBidRecommendationResponse(
   parsed: unknown,
-  kind: SpBidRecommendationKind,
-  endpoint: SpBidRecommendationEndpoint,
-  submittedIds: readonly AmazonId[],
-  indexOffset = 0,
+  batch: readonly IndexedBidRecommendationTarget[],
 ): SpBidRecommendationResult {
-  if (!isRecord(parsed)) {
-    throw new AdsApiParseError(`${endpoint.path} response is not an object`);
+  if (!isRecord(parsed) || !Array.isArray(parsed['bidRecommendations'])) {
+    throw new AdsApiParseError('bid recommendations response has no theme array');
   }
-  const rows = responseRows(parsed);
-  const seen = new Set<number>();
-  const what = `${endpoint.path} response`;
-
-  const items = rows.success.map((row, fallbackIndex): SpSuggestedBid => {
-    const index = localIndex(row, fallbackIndex);
-    if (!Number.isInteger(index) || index < 0 || index >= submittedIds.length || seen.has(index)) {
-      throw new AdsApiParseError(`${what} repeats or exceeds submitted index ${index}`);
-    }
-    seen.add(index);
-    const expectedId = submittedIds[index];
-    if (expectedId === undefined) throw new AdsApiParseError(`${what} has no submitted id at index ${index}`);
-    const id = readId(row, endpoint.idKey) ?? readId(row, 'targetingClauseId') ?? readId(row, 'id');
-    if (id !== null && id !== expectedId) {
-      throw new AdsApiParseError(`${what} returned ${id} for submitted id ${expectedId}`);
-    }
-
-    const suggestion = readRecord(row, 'suggestedBid');
-    const range =
-      readRecord(row, 'bidRange') ??
-      readRecord(row, 'range') ??
-      (suggestion === null ? null : readRecord(suggestion, 'range'));
-    const sources = [row, suggestion, range] as const;
-    const low = firstNumber(sources, ['low', 'rangeStart', 'lowerBound', 'start']);
-    const median = firstNumber(sources, ['median', 'rangeMedian', 'percentile50', 'mid']);
-    const high = firstNumber(sources, ['high', 'rangeEnd', 'upperBound', 'end']);
-    const suggestedBid = firstNumber(sources, ['suggestedBid', 'recommendedBid', 'recommended', 'value']);
-    if (low === null || high === null || suggestedBid === null) {
-      throw new AdsApiParseError(`${what} success index ${index} is missing low, high, or suggested bid`);
-    }
-    const resolvedMedian = median ?? suggestedBid;
-    if (low < 0 || resolvedMedian < 0 || high < 0 || suggestedBid < 0 || low > high) {
-      throw new AdsApiParseError(`${what} success index ${index} has an invalid bid corridor`);
-    }
-    return {
-      kind,
-      index: indexOffset + index,
-      targetId: expectedId,
-      low,
-      median: resolvedMedian,
-      high,
-      suggestedBid,
-      raw: row,
-    };
-  });
-
-  const errors = rows.errors.map((row, errorIndex): SpBidRecommendationError => {
-    const index = localIndex(row, items.length + errorIndex);
-    if (!Number.isInteger(index) || index < 0 || index >= submittedIds.length || seen.has(index)) {
-      throw new AdsApiParseError(`${what} repeats or exceeds submitted index ${index}`);
-    }
-    seen.add(index);
-    const targetId = submittedIds[index];
-    if (targetId === undefined) throw new AdsApiParseError(`${what} has no submitted id at index ${index}`);
-    return {
-      kind,
-      index: indexOffset + index,
-      targetId,
-      code: readString(row, 'code') ?? readString(row, 'errorType'),
-      details: readString(row, 'details') ?? readString(row, 'message'),
-      raw: row,
-    };
-  });
-
-  if (items.length + errors.length !== submittedIds.length || seen.size !== submittedIds.length) {
-    throw new AdsApiParseError(
-      `${what} accounted for ${items.length + errors.length} of ${submittedIds.length} submitted ids`,
-    );
+  const themes = parsed['bidRecommendations'];
+  if (themes.some((theme: unknown) => !isRecord(theme) || typeof theme['theme'] !== 'string')) {
+    throw new AdsApiParseError('malformed bid recommendation theme');
   }
-
-  return {
-    items,
-    errors,
-    submitted: submittedIds.length,
-    batches: submittedIds.length === 0 ? 0 : 1,
-  };
+  const base = themes.filter((theme: Record<string, unknown>) => theme['theme'] === 'CONVERSION_OPPORTUNITIES');
+  if (base.length > 1 || (themes.length > 0 && base.length === 0)) {
+    throw new AdsApiParseError('bid recommendations require one unambiguous base theme');
+  }
+  const rows: unknown = base.length === 0 ? [] : base[0]?.['bidRecommendationsForTargetingExpressions'];
+  if (!Array.isArray(rows)) throw new AdsApiParseError('bid recommendation theme has no expression array');
+  const requested = new Map(batch.map((item) => [expressionKey(item.target.targetingExpression!), item]));
+  const seen = new Set<string>();
+  const items: SpSuggestedBid[] = [];
+  const errors: SpBidRecommendationError[] = [];
+  let unmatched = 0;
+  for (const row of rows as unknown[]) {
+    if (!isRecord(row) || !isRecord(row['targetingExpression'])) {
+      throw new AdsApiParseError('malformed returned targeting expression');
+    }
+    const expression = row['targetingExpression'];
+    if (typeof expression['type'] !== 'string'
+      || (expression['value'] !== undefined && typeof expression['value'] !== 'string')) {
+      throw new AdsApiParseError('malformed returned targeting expression identity');
+    }
+    const key = expressionKey({ type: expression['type'], ...(expression['value'] === undefined ? {} : { value: expression['value'] }) });
+    const match = requested.get(key);
+    if (match === undefined) { unmatched += 1; continue; }
+    if (seen.has(key)) throw new AdsApiParseError('duplicate returned targeting expression');
+    seen.add(key);
+    const values = row['bidValues'];
+    if (!Array.isArray(values) || values.length > 3) throw new AdsApiParseError('invalid bidValues array');
+    const points = [0, 1, 2].map((index) => {
+      const slot: unknown = values[index];
+      if (slot === undefined || slot === null) return null;
+      if (!isRecord(slot)) throw new AdsApiParseError('invalid bid value');
+      if (slot['suggestedBid'] === undefined || slot['suggestedBid'] === null) return null;
+      const point = readNumber(slot, 'suggestedBid');
+      if (point === null || point < 0) throw new AdsApiParseError('invalid suggested bid');
+      return point;
+    });
+    const available = points.filter((point): point is number => point !== null);
+    if (available.some((point, index) => index > 0 && point < available[index - 1]!)) {
+      throw new AdsApiParseError('unordered bid corridor');
+    }
+    const kind = match.target.isKeyword ? 'keywords' : 'targets';
+    if (available.length === 0) {
+      errors.push({ kind, index: match.index, targetId: match.target.targetId, code: 'NO_BID_VALUES', details: null, raw: row });
+    } else {
+      items.push({ ...match.target, kind, index: match.index,
+        low: points[0] ?? null, median: points[1] ?? null, high: points[2] ?? null,
+        suggestedBid: points[1] ?? null, raw: row });
+    }
+  }
+  for (const [key, { target, index }] of requested) {
+    if (!seen.has(key)) errors.push({ kind: target.isKeyword ? 'keywords' : 'targets', index,
+      targetId: target.targetId, code: 'MISSING_RECOMMENDATION', details: null, raw: {} });
+  }
+  const counts = BidRecommendationReadCounts.parse({ offered: batch.length, eligible: batch.length,
+    requested: batch.length, returned: items.length, refused: errors.length, unmatched });
+  return { ...counts, items, errors, submitted: batch.length, batches: batch.length > 0 ? 1 : 0 };
 }

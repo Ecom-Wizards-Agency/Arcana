@@ -1,3 +1,5 @@
+import { buildNgramNegativeReview, ngramCalculationTrace } from '@wizard-ads/core';
+import { loadSearchTermRows } from '../../../../src/ngrams/data';
 /**
  * "Propose as negative" from the n-gram explorer.
  *
@@ -11,14 +13,9 @@
  * in the review surface with its work shown like every other proposal rather
  * than as an assertion.
  */
-import { createNegativeProposals } from '@wizard-ads/db';
+import { createNegativeProposalsForActor } from '@wizard-ads/db';
 import type { NegativeProposalInput } from '@wizard-ads/db';
-import {
-  errorResponse,
-  openWebDatabase,
-  requestActor,
-} from '../../../../src/server/request-context';
-import { requireCapability } from '../../../../src/server/org-role';
+import { authenticatedMutation, mutationBody, MutationInputError } from '../../../../src/server/authenticated-mutation';
 
 export const runtime = 'nodejs';
 
@@ -35,17 +32,16 @@ interface IncomingProposal {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  const database = openWebDatabase();
-  try {
-    const actor = await requestActor(request.headers);
-    await requireCapability(database, actor, 'editTargets');
+  return authenticatedMutation(request, async (database) => {
+    const actor = database.actor;
 
-    const body = (await request.json()) as {
+    const body = (await mutationBody(request)) as {
       profileId?: unknown;
       window?: unknown;
       proposals?: unknown;
+      gram?: unknown; n?: unknown; selectedTerms?: unknown;
     };
-    if (typeof body.profileId !== 'string') throw new Error('profileId is required');
+    if (typeof body.profileId !== 'string') throw new MutationInputError('profileId is required');
     const incomingWindow = body.window as { start?: unknown; end?: unknown } | undefined;
     if (
       incomingWindow === undefined ||
@@ -54,14 +50,14 @@ export async function POST(request: Request): Promise<Response> {
       !ISO_DATE.test(incomingWindow.start) ||
       !ISO_DATE.test(incomingWindow.end)
     ) {
-      throw new Error('window must carry ISO start and end dates');
+      throw new MutationInputError('window must carry ISO start and end dates');
     }
     const window: { start: string; end: string } = {
       start: incomingWindow.start,
       end: incomingWindow.end,
     };
     if (!Array.isArray(body.proposals) || body.proposals.length === 0) {
-      throw new Error('proposals must be a non-empty array');
+      throw new MutationInputError('proposals must be a non-empty array');
     }
 
     // The profile has to belong to the caller's org. `ad_profiles` carries the
@@ -72,15 +68,46 @@ export async function POST(request: Request): Promise<Response> {
          where id = ${body.profileId} and org_id = ${actor.orgId}
       ) as exists
     `;
-    if (!owned[0]?.exists) throw new Error('Not found');
+    if (!owned[0]?.exists) throw new MutationInputError('Not found', 404);
+
+    if (typeof body.gram === 'string') {
+      if (![1,2,3].includes(Number(body.n))) throw new MutationInputError('Invalid gram size');
+      const payload = await loadSearchTermRows(database,{orgId:actor.orgId,profileId:body.profileId,period:window});
+      if(payload.truncated) throw new MutationInputError('Narrow the period before proposing negatives');
+      const [profile] = await database.sql<{target_acos:number|null}[]>`select target_acos::float8 as target_acos from public.ad_profiles where id=${body.profileId} and org_id=${actor.orgId}`;
+      const orders=payload.rows.reduce((n,r)=>n+r.purchases7d,0),sales=payload.rows.reduce((n,r)=>n+r.sales7d,0);
+      if(!profile?.target_acos||orders<=0)throw new MutationInputError('Target ACOS and average order value are required');
+      if(!Array.isArray(body.selectedTerms)||body.selectedTerms.some(id=>typeof id!=='string'))throw new MutationInputError('Selected term identities are required');
+      const selected=new Set(body.selectedTerms as string[]);
+      const selectedRows=payload.rows.filter(r=>selected.has(`${r.campaignId??''}|${r.adGroupId??''}|${r.searchTerm}`));
+      if(selectedRows.length!==selected.size)throw new MutationInputError('Search-term evidence changed. Reload before reviewing.');
+      const review=buildNgramNegativeReview(selectedRows,body.gram,Number(body.n),{targetAcos:profile.target_acos,aov:sales/orders});
+      if(!review||review.rows.length!==body.proposals.length)throw new MutationInputError('Negative evidence changed. Reload before reviewing.');
+      const proposals:NegativeProposalInput[]=review.rows.map(row=>{
+        const matches=(body.proposals as Record<string,unknown>[]).filter(p=>p['campaignId']===row.campaignId&&p['adGroupId']===row.adGroupId);
+        const incoming=matches[0];
+        if(matches.length!==1||!incoming
+          ||incoming['searchTerm']!==review.gram
+          ||!MATCH_TYPES.includes(String(incoming['matchType']))
+          ||incoming['spend']!==row.spend
+          ||incoming['clicks']!==row.clicks
+          ||incoming['searchTerms']!==row.searchTerms)throw new MutationInputError('Reviewed rows changed. Reload before reviewing.');
+        const expected={...review.options,spend:review.candidate.cost,sales:review.candidate.sales,orders:review.candidate.purchases,reason:review.candidate.reason};
+        if(JSON.stringify(incoming['gramInputs'])!==JSON.stringify(expected))throw new MutationInputError('Engine inputs changed. Review the new calculation.');
+        return {searchTerm:review.gram,campaignId:row.campaignId,adGroupId:row.adGroupId,matchType:incoming['matchType'] as NegativeProposalInput['matchType'],inputs:{
+          rpc:row.clicks>0?row.sales/row.clicks:null,clicks:row.clicks,cvrSourceLevel:'keyword',ceilingApplied:null,capClamped:false,window,trace:ngramCalculationTrace(review)}};
+      });
+      const result=await createNegativeProposalsForActor(database,{profileId:body.profileId,window,lookbackDays:Math.round((Date.parse(window.end)-Date.parse(window.start))/86400000)+1,proposals});
+      return Response.json({...result,offered:proposals.length},{status:201});
+    }
 
     const proposals: NegativeProposalInput[] = (body.proposals as IncomingProposal[]).map(
       (proposal, index) => {
         if (typeof proposal.searchTerm !== 'string' || proposal.searchTerm.trim().length === 0) {
-          throw new Error(`proposal ${index} needs a search term`);
+          throw new MutationInputError(`proposal ${index} needs a search term`);
         }
         if (typeof proposal.campaignId !== 'string') {
-          throw new Error(`proposal ${index} needs a campaign id`);
+          throw new MutationInputError(`proposal ${index} needs a campaign id`);
         }
         const matchType =
           typeof proposal.matchType === 'string' && MATCH_TYPES.includes(proposal.matchType)
@@ -118,19 +145,13 @@ export async function POST(request: Request): Promise<Response> {
           86_400_000,
       ) + 1;
 
-    const result = await createNegativeProposals(database, {
-      orgId: actor.orgId,
+    const result = await createNegativeProposalsForActor(database, {
       profileId: body.profileId,
       window: { start: window.start, end: window.end },
       lookbackDays,
       proposals,
-      actorId: actor.userId,
     });
 
     return Response.json({ ...result, offered: proposals.length }, { status: 201 });
-  } catch (error) {
-    return errorResponse(error);
-  } finally {
-    await database.close();
-  }
+  });
 }

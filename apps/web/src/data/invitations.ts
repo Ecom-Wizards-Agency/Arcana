@@ -8,7 +8,9 @@
  * mutation carries the row's org id explicitly.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import type { Sql } from '@wizard-ads/db';
+import { withAuthenticatedActor } from '@wizard-ads/db';
+import type { Sql, QuerySql } from '@wizard-ads/db';
+import { TeamInvitationIssue, type OrgActor } from '@wizard-ads/shared';
 import { isOrgRole } from '../auth/roles';
 import type { OrgRole } from '../auth/roles';
 
@@ -20,7 +22,6 @@ export type InvitationRole = Exclude<OrgRole, 'owner'>;
 export type InvitationStatus = 'pending' | 'expired' | 'revoked' | 'accepted';
 
 const STORED_PREFIX_LENGTH = 12;
-const INVITATION_LIFETIME_DAYS = 7;
 
 export interface InvitationRecord {
   id: string;
@@ -108,7 +109,7 @@ function toInvitation(row: InvitationRow, now: Date = new Date()): InvitationRec
   return invitation;
 }
 
-const invitationColumns = (sql: Sql) => sql`
+const invitationColumns = (sql: QuerySql) => sql`
   i.id, i.org_id, o.name as org_name, i.email, i.role::text as role,
   i.token_prefix, i.invited_by, i.expires_at::text as expires_at,
   i.accepted_at::text as accepted_at, i.accepted_by,
@@ -132,65 +133,25 @@ export async function createInvitation(
   const tokenHash = hashInviteToken(token);
   const tokenPrefix = token.slice(0, STORED_PREFIX_LENGTH);
 
-  const invitation = await handle.sql.begin(async (sql) => {
-    // Serialise create checks per org/email so two tabs cannot both pass the
-    // "no live invitation" read before either inserts.
-    // PostgreSQL text cannot carry a NUL byte. JSON keeps the two key parts
-    // unambiguous while remaining valid text for hashtextextended.
-    const lockKey = JSON.stringify([input.orgId, email]);
-    await sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
-
-    const members = await sql<{ exists: boolean }[]>`
-      select exists (
-        select 1
-          from public.org_members m
-          join auth.users u on u.id = m.user_id
-         where m.org_id = ${input.orgId}
-           and lower(u.email) = ${email}
-      ) as exists
-    `;
-    if (members[0]?.exists === true) throw new Error('That address is already a member.');
-
-    const pending = await sql<{ exists: boolean }[]>`
-      select exists (
-        select 1 from public.org_invitations
-         where org_id = ${input.orgId}
-           and email = ${email}
-           and accepted_at is null
-           and revoked_at is null
-           and expires_at > now()
-      ) as exists
-    `;
-    if (pending[0]?.exists === true) {
-      throw new Error('That address already has a pending invitation.');
-    }
-
-    const rows = await sql<InvitationRow[]>`
-      with inserted as (
-        insert into public.org_invitations
-          (org_id, email, role, token_prefix, token_hash, invited_by, expires_at)
-        values
-          (${input.orgId}, ${email}, ${input.role}, ${tokenPrefix}, ${tokenHash},
-           ${input.invitedBy}, now() + (${INVITATION_LIFETIME_DAYS} * interval '1 day'))
-        returning *
-      )
-      select ${invitationColumns(handle.sql)}
-        from inserted i
-        join public.orgs o on o.id = i.org_id
-    `;
-    const row = rows[0];
-    if (row === undefined) throw new Error('The invitation could not be stored.');
-
-    await sql`
-      insert into public.audit_log
-        (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
-      values
-        (${input.orgId}, 'user', ${input.invitedBy}, 'invitation.created',
-         'org_invitation', ${row.id},
-         jsonb_build_object('email', ${email}::text, 'role', ${input.role}::text), 'web')
-    `;
-    return toInvitation(row);
-  });
+  const command = TeamInvitationIssue.parse({ email, role: input.role, tokenHash, tokenPrefix });
+  const invitation = await withAuthenticatedActor(
+    handle, { orgId: input.orgId, userId: input.invitedBy }, async (sql) => {
+      const [issued] = await sql<{ id: string }[]>`
+        select app.issue_team_invitation(
+          ${input.orgId}::uuid, ${command.email}, ${command.role}::public.org_role,
+          ${command.tokenHash}, ${command.tokenPrefix}
+        ) as id
+      `;
+      if (!issued?.id) throw new Error('The invitation could not be stored.');
+      const rows = await sql<InvitationRow[]>`
+        select ${invitationColumns(sql)}
+          from public.org_invitations i join public.orgs o on o.id = i.org_id
+         where i.org_id = ${input.orgId} and i.id = ${issued.id}
+      `;
+      if (rows.length !== 1) throw new Error('The invitation could not be stored.');
+      return toInvitation(rows[0]!);
+    },
+  );
 
   return { invitation, token };
 }
@@ -198,108 +159,34 @@ export async function createInvitation(
 /** Every currently usable invitation in an org, newest first. */
 export async function listPendingInvitations(
   handle: SqlHandle,
-  orgId: string,
+  actor: OrgActor,
 ): Promise<InvitationRecord[]> {
-  const rows = await handle.sql<InvitationRow[]>`
-    select ${invitationColumns(handle.sql)}
-      from public.org_invitations i
-      join public.orgs o on o.id = i.org_id
-     where i.org_id = ${orgId}
-       and i.accepted_at is null
-       and i.revoked_at is null
-       and i.expires_at > now()
-     order by i.created_at desc
-  `;
-  return rows.map((row) => toInvitation(row));
+  return withAuthenticatedActor(handle, actor, async (sql) => {
+    const rows = await sql<InvitationRow[]>`
+      select ${invitationColumns(sql)}
+        from public.org_invitations i
+        join public.orgs o on o.id = i.org_id
+       where i.org_id = ${actor.orgId}
+         and i.accepted_at is null and i.revoked_at is null and i.expires_at > now()
+       order by i.created_at desc
+    `;
+    return rows.map((row) => toInvitation(row));
+  });
 }
 
-/** Revoke an open invitation. Returns whether one row changed. */
+/** Revoke an open invitation with current manager authority and atomic audit. */
 export async function revokeInvitation(
   handle: SqlHandle,
   orgId: string,
   invitationId: string,
   revokedBy: string,
 ): Promise<boolean> {
-  return handle.sql.begin(async (sql) => {
-    const rows = await sql<{ id: string }[]>`
-      update public.org_invitations
-         set revoked_at = now()
-       where id = ${invitationId}
-         and org_id = ${orgId}
-         and accepted_at is null
-         and revoked_at is null
-         and expires_at > now()
-      returning id
+  return withAuthenticatedActor(handle, { orgId, userId: revokedBy }, async (sql) => {
+    const [row] = await sql<{ revoked: boolean }[]>`
+      select app.revoke_team_invitation(${orgId}::uuid, ${invitationId}::uuid) as revoked
     `;
-    const row = rows[0];
-    if (row === undefined) return false;
-    await sql`
-      insert into public.audit_log
-        (org_id, actor_type, actor_id, action, target_type, target_id, source)
-      values
-        (${orgId}, 'user', ${revokedBy}, 'invitation.revoked',
-         'org_invitation', ${row.id}, 'web')
-    `;
-    return true;
+    if (typeof row?.revoked !== 'boolean') throw new Error('The invitation could not be reconciled.');
+    return row.revoked;
   });
 }
 
-/** Public, unscoped lookup. Callers must take org/email/role only from this row. */
-export async function findInvitationByTokenHash(
-  handle: SqlHandle,
-  tokenHash: string,
-): Promise<InvitationRecord | null> {
-  const rows = await handle.sql<InvitationRow[]>`
-    select ${invitationColumns(handle.sql)}
-      from public.org_invitations i
-      join public.orgs o on o.id = i.org_id
-     where i.token_hash = ${tokenHash}
-     limit 1
-  `;
-  return rows[0] === undefined ? null : toInvitation(rows[0]);
-}
-
-/**
- * Atomically claim an invitation once. A null `acceptedBy` is the provisional
- * new-user claim made before Supabase Auth has assigned the user's id.
- */
-export async function claimInvitation(
-  handle: SqlHandle,
-  tokenHash: string,
-  acceptedBy: string | null = null,
-): Promise<InvitationRecord | null> {
-  const rows = await handle.sql<InvitationRow[]>`
-    with claimed as (
-      update public.org_invitations
-         set accepted_at = now(), accepted_by = ${acceptedBy}
-       where token_hash = ${tokenHash}
-         and accepted_at is null
-         and revoked_at is null
-         and expires_at > now()
-      returning *
-    )
-    select ${invitationColumns(handle.sql)}
-      from claimed i
-      join public.orgs o on o.id = i.org_id
-  `;
-  return rows[0] === undefined ? null : toInvitation(rows[0]);
-}
-
-/** Reopen only a provisional claim; completed/user-bound claims cannot be undone. */
-export async function unclaimInvitation(
-  handle: SqlHandle,
-  orgId: string,
-  invitationId: string,
-  acceptedBy: string | null = null,
-): Promise<boolean> {
-  const rows = await handle.sql<{ id: string }[]>`
-    update public.org_invitations
-       set accepted_at = null, accepted_by = null
-     where id = ${invitationId}
-       and org_id = ${orgId}
-       and accepted_at is not null
-       and accepted_by is not distinct from ${acceptedBy}
-    returning id
-  `;
-  return rows.length === 1;
-}

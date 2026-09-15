@@ -110,6 +110,12 @@ export function resolvePacingThresholds(
   return merged;
 }
 
+/** Unspent monthly allocation; overspend remains negative and unknown inputs stay null. */
+export function remainingBudget(monthlyBudget: number | null | undefined, mtdSpend: number | null | undefined): number | null {
+  if (monthlyBudget == null || mtdSpend == null || !Number.isFinite(monthlyBudget) || !Number.isFinite(mtdSpend)) return null;
+  return monthlyBudget - mtdSpend;
+}
+
 /**
  * Month-to-date pace as of `asOf` inclusive. `null` when no monthly budget is
  * known: pacing simply does not apply, which the report states rather than

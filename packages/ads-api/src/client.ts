@@ -15,6 +15,7 @@
  * Ported from `SPAdsApiDataSource` (amazon-agent), whose live-verified parts
  * are marked at each method.
  */
+import { BidRecommendationReadCounts, type BidRecommendationTarget } from '@wizard-ads/shared';
 import type {
   AdGroupRow,
   AdProduct,
@@ -130,7 +131,6 @@ import {
   batchSpBidRecommendationIds,
   buildSpBidRecommendationBody,
   parseSpBidRecommendationResponse,
-  type SpBidRecommendationKind,
   type SpBidRecommendationResult,
 } from './suggested-bids.js';
 import type { AdsApiClientOptions, ListOptions, ListResult, ThrottleState } from './types.js';
@@ -348,6 +348,11 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
       pages += 1;
 
       const parsed = this.json(result, `${endpoint.method} ${endpoint.path}`);
+      if (kind === 'sb.keywords' && (!isRecord(parsed)
+        || !Array.isArray(parsed[endpoint.responseKey])
+        || (parsed[endpoint.responseKey] as unknown[]).some((row) => !isRecord(row)))) {
+        throw new AdsApiParseError('SB keyword response must contain the configured array of objects');
+      }
       const page = this.readPage(parsed, endpoint.responseKey, endpoint.path);
       items.push(...page.rows);
 
@@ -358,6 +363,9 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
       }
 
       nextToken = page.nextToken;
+      if (kind === 'sb.keywords' && nextToken !== null && page.rows.length === 0) {
+        throw new AdsApiParseError('SB keywords returned an empty page with a continuation token');
+      }
       if (nextToken === null || page.rows.length === 0) {
         return { items, pages, truncated: false, nextToken: null };
       }
@@ -470,6 +478,36 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
 
   listSbAdGroups(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<AdGroupRow>>> {
     return this.listMapped(profileId, 'sb.adGroups', options, (raw) => mapAdGroups('SB', raw));
+  }
+
+  /** Unverified SB keyword dialect; worker admission is default-off. */
+  listSbKeywords(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<KeywordRow>>> {
+    return this.listMapped(profileId, 'sb.keywords', options, (raw) => mapKeywords(raw, 'SB'));
+  }
+
+  /** One read page, before response-key interpretation. Never returns entity values. */
+  async probeSbKeywordsPage(profileId: string): Promise<{
+    responseKeys: string[];
+    arrayCounts: Record<string, number>;
+    expectedKeyIsArray: boolean;
+  }> {
+    const endpoint = LIST_ENDPOINTS['sb.keywords'];
+    const response = await httpRequest(this.ctx, {
+      method: endpoint.method,
+      url: `${hostFor(this.region)}${endpoint.path}`,
+      path: endpoint.path,
+      headers: this.headers({ profileId, contentType: endpoint.mediaType, accept: endpoint.mediaType }),
+      body: JSON.stringify({ maxResults: 1 }),
+      idempotent: true,
+    });
+    const parsed = this.json(response, endpoint.path);
+    if (!isRecord(parsed)) throw new AdsApiParseError('SB keyword probe expected an object response');
+    return {
+      responseKeys: Object.keys(parsed).sort(),
+      arrayCounts: Object.fromEntries(Object.entries(parsed)
+        .filter(([, value]) => Array.isArray(value)).map(([key, value]) => [key, (value as unknown[]).length])),
+      expectedKeyIsArray: Array.isArray(parsed[endpoint.responseKey]),
+    };
   }
 
   listSdCampaigns(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<CampaignRow>>> {
@@ -705,71 +743,52 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
 
   // -- Sponsored Products suggested bids ------------------------------
 
-  private async getSpBidRecommendations(
+  async getSpBidRecommendations(
     profileId: string,
-    kind: SpBidRecommendationKind,
-    ids: readonly AmazonId[],
+    targets: readonly BidRecommendationTarget[],
   ): Promise<SpBidRecommendationResult> {
-    const endpoint = SP_BID_RECOMMENDATION_ENDPOINTS[kind];
+    const endpoint = SP_BID_RECOMMENDATION_ENDPOINTS.targets;
     const items: SpBidRecommendationResult['items'] = [];
     const errors: SpBidRecommendationResult['errors'] = [];
-    const batches = batchSpBidRecommendationIds(ids);
-    let indexOffset = 0;
-
+    const batches = batchSpBidRecommendationIds(targets);
+    let requested = 0;
+    let unmatched = 0;
     for (const batch of batches) {
+      const scope = batch[0]!.target;
+      const body = buildSpBidRecommendationBody({
+        campaignId: scope.campaignId, adGroupId: scope.adGroupId,
+        targetingExpressions: batch.map(({ target }) => target.targetingExpression),
+      });
       const result = await httpRequest(this.ctx, {
         method: 'POST',
         url: `${hostFor(this.region)}${endpoint.path}`,
         path: endpoint.path,
-        headers: this.headers({
-          profileId,
-          contentType: endpoint.mediaType,
-          accept: endpoint.mediaType,
-        }),
-        body: JSON.stringify(buildSpBidRecommendationBody(endpoint, batch)),
-        // This POST only reads Amazon's current daily recommendation.
+        headers: this.headers({ profileId, contentType: endpoint.mediaType, accept: endpoint.mediaType }),
+        body: JSON.stringify(body),
         idempotent: true,
       });
-      const parsed = parseSpBidRecommendationResponse(
-        this.json(result, `POST ${endpoint.path}`),
-        kind,
-        endpoint,
-        batch,
-        indexOffset,
-      );
+      const parsed = parseSpBidRecommendationResponse(this.json(result, `POST ${endpoint.path}`), batch);
       items.push(...parsed.items);
       errors.push(...parsed.errors);
-      indexOffset += batch.length;
+      requested += batch.length;
+      unmatched += parsed.unmatched;
     }
-
-    if (items.length + errors.length !== ids.length) {
-      throw new AdsApiParseError(
-        `${endpoint.path} accounted for ${items.length + errors.length} of ${ids.length} submitted ids`,
-      );
-    }
-    return { items, errors, submitted: ids.length, batches: batches.length };
+    const counts = BidRecommendationReadCounts.parse({ offered: targets.length, eligible: requested,
+      requested, returned: items.length, refused: errors.length, unmatched });
+    return { ...counts, items, errors, submitted: requested, batches: batches.length };
   }
 
-  getSpKeywordBidRecommendations(
-    profileId: string,
-    keywordIds: readonly AmazonId[],
-  ): Promise<SpBidRecommendationResult> {
-    return this.getSpBidRecommendations(profileId, 'keywords', keywordIds);
+  /** Compatibility names now require scoped expressions and use the same theme route. */
+  getSpKeywordBidRecommendations(profileId: string, targets: readonly BidRecommendationTarget[]): Promise<SpBidRecommendationResult> {
+    return this.getSpBidRecommendations(profileId, targets);
   }
 
-  getSpProductTargetBidRecommendations(
-    profileId: string,
-    targetIds: readonly AmazonId[],
-  ): Promise<SpBidRecommendationResult> {
-    return this.getSpBidRecommendations(profileId, 'targets', targetIds);
+  getSpProductTargetBidRecommendations(profileId: string, targets: readonly BidRecommendationTarget[]): Promise<SpBidRecommendationResult> {
+    return this.getSpBidRecommendations(profileId, targets);
   }
 
-  /** Short alias for callers whose SP target mirror already implies product targeting. */
-  getSpTargetBidRecommendations(
-    profileId: string,
-    targetIds: readonly AmazonId[],
-  ): Promise<SpBidRecommendationResult> {
-    return this.getSpProductTargetBidRecommendations(profileId, targetIds);
+  getSpTargetBidRecommendations(profileId: string, targets: readonly BidRecommendationTarget[]): Promise<SpBidRecommendationResult> {
+    return this.getSpBidRecommendations(profileId, targets);
   }
 
   // -- Sponsored Brands v4 media/creative -----------------------------

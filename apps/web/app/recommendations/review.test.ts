@@ -18,6 +18,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProposalView } from '../../src/recommendations/view';
 import { ReviewWorkspace } from './review';
+import { provenanceLines } from '../../src/recommendations/provenance';
 
 const VIEWPORT = { width: 1400, height: 600 };
 
@@ -43,7 +44,8 @@ Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
   configurable: true,
   value(this: HTMLElement, options: ScrollToOptions | number) {
     this.scrollTop = typeof options === 'number' ? options : options.top ?? 0;
-    setTimeout(() => this.dispatchEvent(new Event('scroll')), 0);
+    // Browser-owned timers are cancelled when jsdom closes its window.
+    window.setTimeout(() => this.dispatchEvent(new Event('scroll')), 0);
   },
 });
 
@@ -205,8 +207,9 @@ function cleanupMounted(): void {
   document.body.replaceChildren();
 }
 
-afterEach(() => {
-  cleanupMounted();
+afterEach(async () => {
+  // Drain React work before Vitest tears down the browser environment.
+  await act(async () => cleanupMounted());
   navigation.refresh.mockReset();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -687,4 +690,21 @@ describe('ReviewWorkspace operator queue', () => {
     // an export with no selection is executed server-side over the whole run.
     expect(button(host, 'Prepare export · 15')).toBeInstanceOf(HTMLButtonElement);
   });
+});
+
+it('renders method setting sources and ordered trace steps in the open evidence panel', () => {
+  const steps = ['Inputs', 'RPC', 'Target ACOS', 'Raw bid', 'Rounding'].map((label, index) => ({
+    index, label, formula: 'saved calculation', inputs: [], intermediateValue: 0.817, boundApplied: null, result: 0.82,
+  }));
+  const provenance = provenanceLines({ rpc: 2, clicks: 10, cvrSourceLevel: 'keyword', ceilingApplied: null, capClamped: false,
+    methodId: 'sp.reference-efficiency', methodVersion: 'reference.1',
+    settingSources: { targetAcos: { value: 0.41, source: 'group', sourceLabel: 'Synthetic group' } },
+    trace: { steps, finalResult: 0.82, roundingStep: steps[4]! },
+  });
+  const { host } = mount({ proposals: [proposal('trace', 'proposed', 'high_acos', { provenance })] });
+  act(() => host.querySelector<HTMLElement>('[data-testid="evidence-toggle-trace"]')!.click());
+  expect(host.querySelector('[data-provenance="setting:targetAcos"]')?.textContent).toContain('0.41 · group: Synthetic group');
+  expect([...host.querySelectorAll('[data-provenance^="trace:"] dt')].map((element) => element.textContent)).toEqual(
+    steps.map((step) => `${step.index + 1}. ${step.label}`),
+  );
 });

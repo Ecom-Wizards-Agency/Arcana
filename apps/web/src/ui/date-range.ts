@@ -1,4 +1,5 @@
-import { addDays, type Period } from '../../app/_lib/periods';
+import { rangeDays, rangePresets } from '@wizard-ads/ui';
+import { type Period } from '../../app/_lib/periods';
 
 export type DateRangePresetId =
   | 'last_7'
@@ -17,24 +18,7 @@ export interface DateRangePreset {
 
 /** Presets end on the last complete day unless the surface observes current-day evidence. */
 export function dateRangePresets(today: string, includeToday = false): DateRangePreset[] {
-  const rangeEnd = includeToday ? today : addDays(today, -1);
-  const monthStart = `${rangeEnd.slice(0, 8)}01`;
-  const previousMonthEnd = addDays(monthStart, -1);
-  const previousMonthStart = `${previousMonthEnd.slice(0, 8)}01`;
-  const rolling = (days: number): Period => ({
-    start: addDays(rangeEnd, -(days - 1)),
-    end: rangeEnd,
-  });
-
-  return [
-    { id: 'last_7', label: 'Last 7 days', period: rolling(7) },
-    { id: 'last_14', label: 'Last 14 days', period: rolling(14) },
-    { id: 'last_30', label: 'Last 30 days', period: rolling(30) },
-    { id: 'last_60', label: 'Last 60 days', period: rolling(60) },
-    { id: 'last_90', label: 'Last 90 days', period: rolling(90) },
-    { id: 'month_to_date', label: 'Month to date', period: { start: monthStart, end: rangeEnd } },
-    { id: 'previous_month', label: 'Previous month', period: { start: previousMonthStart, end: previousMonthEnd } },
-  ];
+  return rangePresets(today, includeToday).map(({ id, label, range }) => ({ id: id as DateRangePresetId, label, period: range }));
 }
 
 export function selectedDateRangeLabel(
@@ -77,4 +61,13 @@ function shortDate(value: string): string {
     timeZone: 'UTC',
     year: 'numeric',
   }).format(new Date(Date.UTC(year, month - 1, day)));
+}
+
+/** Inclusive windows; callers can provide a comparison independent of presets. */
+export function comparisonLengthState(period: Period, comparison: Period): {
+  currentDays: number; comparisonDays: number; mismatch: boolean;
+} {
+  const currentDays = rangeDays(period);
+  const comparisonDays = rangeDays(comparison);
+  return { currentDays, comparisonDays, mismatch: currentDays !== comparisonDays };
 }

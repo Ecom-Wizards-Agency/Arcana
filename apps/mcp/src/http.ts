@@ -21,7 +21,6 @@ import { verifyApiKey } from './keys.js';
 import {
   createMcpServer,
   PRODUCT_NAME,
-  SERVER_NAME,
   SERVER_VERSION,
 } from './server.js';
 import type { McpConfig } from './config.js';
@@ -115,14 +114,12 @@ export async function startHttpServer(options: StartOptions): Promise<RunningSer
     }
 
     const body = await readBody(req);
-    const orgSlug = await readOrgSlug(handle, key.orgId);
 
     const server = createMcpServer({
       handle,
       config,
-      scope: { orgId: key.orgId, profileIds: key.profileIds },
+      actor: key.actor,
       keyId: key.id,
-      orgSlug,
     });
 
     const transport = new StreamableHTTPServerTransport({
@@ -155,7 +152,8 @@ export async function startHttpServer(options: StartOptions): Promise<RunningSer
 function healthPayload(config: McpConfig, status: 'ready' | 'not_ready') {
   return {
     status,
-    service: SERVER_NAME,
+    // Deployment health checks retain their identity until the hosted migration.
+    service: 'openspell',
     product: PRODUCT_NAME,
     version: SERVER_VERSION,
     revision: publicRevision(config.revision),
@@ -172,11 +170,6 @@ function bearerToken(req: IncomingMessage): string {
   const value = Array.isArray(header) ? header[0] : header;
   if (!value || !/^Bearer /i.test(value)) throw new AuthError(401, 'missing bearer token');
   return value.slice('Bearer '.length).trim();
-}
-
-async function readOrgSlug(handle: DbHandle, orgId: string): Promise<string> {
-  const rows = await handle.sql<{ slug: string }[]>`select slug from public.orgs where id = ${orgId}`;
-  return rows[0]?.slug ?? 'unknown-org';
 }
 
 async function readBody(req: IncomingMessage): Promise<unknown> {

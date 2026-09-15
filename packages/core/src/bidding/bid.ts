@@ -16,7 +16,7 @@
  * And every proposal carries the numbers that produced it: a recommendation
  * nobody can audit is a black box with better manners.
  */
-import type { CvrSourceLevel, Recommendation, RecommendationInputs, RecommendationReason } from '@wizard-ads/shared';
+import type { CalculationStep, CalculationTrace, SettingSources, ReferenceBidOutcome, CvrSourceLevel, Recommendation, RecommendationInputs, RecommendationReason } from '@wizard-ads/shared';
 import { safeDiv } from '../num.js';
 import { CATEGORY_RANK } from '../types.js';
 import {
@@ -41,31 +41,10 @@ import {
 } from './types.js';
 
 /** Why the engine declined, when it declined. */
-export type NoProposalReason =
-  | 'on_target'
-  | 'no_clicks'
-  | 'no_benchmark_data'
-  | 'no_change'
-  | 'below_minimum';
+export type BidOutcome = ReferenceBidOutcome;
+export type NoProposalReason = Extract<BidOutcome, { kind: 'none' }>['reason'];
 
-export type BidOutcome =
-  | {
-      kind: 'proposal';
-      recommendation: Recommendation;
-      notes: BidPreconditionNote[];
-      confidence: ResolvedConfidence;
-    }
-  | {
-      kind: 'suppressed';
-      recommendation: Recommendation;
-      suppressedReason: string;
-      notes: BidPreconditionNote[];
-      confidence: ResolvedConfidence;
-    }
-  | { kind: 'blocked'; blockedReason: 'out_of_stock'; note: string }
-  | { kind: 'none'; reason: NoProposalReason };
-
-function resolveSettings(request: BidRequest): BidSettings {
+export function resolveReferenceBidSettings(request: BidRequest): BidSettings {
   const merged: BidSettings = { ...DEFAULT_BID_SETTINGS, ...(request.settings ?? {}) };
   const condition = stepCondition(request);
   if (condition && !request.settings?.lowAcosStepPct) {
@@ -214,7 +193,23 @@ function improvingRankProtection(request: BidRequest): string | null {
  * operator can see what the formula wanted and decide. No tenant setting may
  * override that doctrine precondition.
  */
+type RecordStep = (step: Omit<CalculationStep, 'index'>) => void;
+
 export function proposeBid(request: BidRequest): BidOutcome {
+  return calculateBid(request);
+}
+
+/** Record arithmetic at its execution site; the original API returns the exact same outcome. */
+export function evaluateBidWithTrace(request: BidRequest, sources: SettingSources): { outcome: BidOutcome; trace: CalculationTrace | null } {
+  const steps: CalculationStep[] = [];
+  const outcome = calculateBid(request, (step) => steps.push({ index: steps.length, ...step }), sources);
+  const roundingStep = steps.findLast((step) => step.label.startsWith('Rounding'));
+  return { outcome, trace: roundingStep === undefined ? null : {
+    steps, finalResult: steps.at(-1)?.result ?? null, roundingStep,
+  } };
+}
+
+function calculateBid(request: BidRequest, record?: RecordStep, sources: SettingSources = {}): BidOutcome {
   if (request.stock?.status === 'out_of_stock') {
     return {
       kind: 'blocked',
@@ -225,13 +220,42 @@ export function proposeBid(request: BidRequest): BidOutcome {
     };
   }
 
-  const settings = resolveSettings(request);
+  const settings = resolveReferenceBidSettings(request);
   const confidence = resolveConfidence(request.levels, settings.minOrdersForConfidence);
   const entityRpc = safeDiv(request.metrics.sales, request.metrics.clicks);
   const entityAcos = safeDiv(request.metrics.cost ?? null, request.metrics.sales);
 
+  record?.({ label: 'Inputs', formula: 'observed target totals', inputs: [
+    { name: 'clicks', value: request.metrics.clicks, unit: 'clicks' },
+    { name: 'sales', value: request.metrics.sales, unit: 'currency' },
+    { name: 'cost', value: request.metrics.cost ?? null, unit: 'currency' },
+    { name: 'orders', value: request.metrics.orders, unit: 'orders' },
+    { name: 'currentBid', value: request.currentBid, unit: 'currency/click' },
+  ], intermediateValue: null, boundApplied: null, result: null });
+  record?.({ label: 'RPC', formula: 'sales / clicks', inputs: [
+    { name: 'sales', value: request.metrics.sales, unit: 'currency' },
+    { name: 'clicks', value: request.metrics.clicks, unit: 'clicks' },
+  ], intermediateValue: entityRpc, boundApplied: null, result: entityRpc });
+  record?.({ label: 'Target ACOS', formula: 'resolved target ACOS', inputs: [
+    { name: 'targetAcos', value: request.targetAcos, unit: 'ratio' },
+    { name: 'source', value: sources['targetAcos']?.source ?? 'run', unit: 'source' },
+    { name: 'sourceLabel', value: sources['targetAcos']?.sourceLabel ?? 'Reference request', unit: 'label' },
+  ], intermediateValue: request.targetAcos, boundApplied: null, result: request.targetAcos });
   const selected = selectFormula(request, settings, confidence, entityAcos, entityRpc);
   if ('none' in selected) return { kind: 'none', reason: selected.none };
+  const formula = selected.reason === 'high_spend_no_sales'
+    ? settings.nonConvertingModel === 'simple' ? '(benchmark AOV / clicks) * target ACOS' : 'target ACOS * (benchmark AOV / (clicks + benchmark clicks-to-conversion))'
+    : selected.reason === 'low_visibility' ? 'current bid * (1 + low visibility step)'
+      : selected.reason === 'low_acos' && request.currentBid !== null && request.currentBid > 0
+        ? 'current bid * (1 + low ACOS step)' : 'RPC * target ACOS';
+  record?.({ label: 'Raw bid', formula, inputs: [
+    { name: 'branch', value: selected.reason, unit: 'branch' },
+    { name: 'benchmark AOV', value: confidence.aov, unit: 'currency/order' },
+    { name: 'benchmark clicks-to-conversion', value: confidence.clicksToConversion, unit: 'clicks/order' },
+    { name: 'benchmark level', value: confidence.level, unit: 'grain' },
+    { name: 'low ACOS step', value: settings.lowAcosStepPct, unit: 'ratio' },
+    { name: 'low visibility step', value: settings.lowVisibilityStepPct, unit: 'ratio' },
+  ], intermediateValue: selected.value, boundApplied: null, result: selected.value });
 
   const candidates = ceilingCandidates({
     targetAcos: request.targetAcos,
@@ -241,7 +265,19 @@ export function proposeBid(request: BidRequest): BidOutcome {
     config: request.ceilings,
   });
   const ceiling = applyCeilings(selected.value, candidates);
+  if (ceiling.ceilingApplied !== null) record?.({
+    label: `Ceiling: ${ceiling.ceilingApplied}`, formula: 'min(raw bid, applicable ceilings)',
+    inputs: candidates.map((candidate) => ({ name: candidate.name, value: candidate.value, unit: 'currency/click' })),
+    intermediateValue: selected.value,
+    boundApplied: { name: ceiling.ceilingApplied, value: ceiling.value, before: selected.value, after: ceiling.value }, result: ceiling.value,
+  });
   const capped = applyChangeCap(request.currentBid, ceiling.value, request.caps);
+  if (capped.capClamped) record?.({
+    label: 'Change cap', formula: 'clamp(bid, current * (1 - decrease cap), current * (1 + increase cap))',
+    inputs: [{ name: 'increase cap', value: request.caps.maxIncrease, unit: 'ratio' }, { name: 'decrease cap', value: request.caps.maxDecrease, unit: 'ratio' }],
+    intermediateValue: ceiling.value,
+    boundApplied: { name: capped.value > ceiling.value ? 'max_decrease' : 'max_increase', value: capped.value, before: ceiling.value, after: capped.value }, result: capped.value,
+  });
   // A bound value rounds down, so a cent of rounding can never carry a bid back
   // over the ceiling or the cap that just held it.
   const bound = ceiling.ceilingApplied !== null || capped.capClamped;
@@ -258,9 +294,21 @@ export function proposeBid(request: BidRequest): BidOutcome {
     confidence,
     config: request.floors,
   });
+  record?.({ label: 'Rounding: initial', formula: bound ? 'floor to currency precision' : 'round to currency precision',
+    inputs: [{ name: 'precision', value: settings.bidPrecision, unit: 'decimal places' }],
+    intermediateValue: capped.value, boundApplied: null, result: rounded });
   const floored = applyFloors(rounded, floors);
+  if (floored.floorApplied !== null) record?.({ label: `Floor: ${floored.floorApplied}`, formula: 'max(rounded bid, applicable floors)',
+    inputs: floors.map((candidate) => ({ name: candidate.name, value: candidate.value, unit: 'currency/click' })),
+    intermediateValue: rounded,
+    boundApplied: { name: floored.floorApplied, value: floored.value, before: rounded, after: floored.value }, result: floored.value,
+  });
   const proposed =
     floored.floorApplied !== null ? ceilToPrecision(floored.value, settings.bidPrecision) : floored.value;
+
+  if (floored.floorApplied !== null) record?.({ label: 'Rounding: floor', formula: 'ceil to currency precision',
+    inputs: [{ name: 'precision', value: settings.bidPrecision, unit: 'decimal places' }],
+    intermediateValue: floored.value, boundApplied: null, result: proposed });
 
   if (request.currentBid !== null && proposed === roundBid(request.currentBid, settings.bidPrecision)) {
     return { kind: 'none', reason: 'no_change' };

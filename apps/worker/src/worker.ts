@@ -1,3 +1,6 @@
+import { IngestionRegistry, ReportCoverageCompletion } from './ingestion-registry.js';
+import { ingestionSource } from './ingestion-sources.js';
+import { ControlMirrorMergeCounts, KeywordMirrorMergeCounts } from '@wizard-ads/shared/sp-write-mirror';
 import { Buffer } from 'node:buffer';
 import {
   parseSbAdsReportProbe,
@@ -11,20 +14,19 @@ import {
 } from '@wizard-ads/db';
 import {
   JobPayload,
+  isProviderFailure,
+  isPermanentProviderFailure,
   type EconomicsSyncJob,
   type CreativeSyncJob,
-  type HistoryBootstrapJob,
   type JobType,
   type KeepaSyncJob,
   type MarketingStreamNormalizeJob,
   type RankSyncJob,
   type Region,
   type ReportType,
-  type ReportPromoteJob,
   type SqpRequestJob,
-  type SqpCategorizeJob,
 } from '@wizard-ads/shared';
-import { SpApiAuthError, SpApiError, SpApiParseError } from '@wizard-ads/sp-api';
+import { SpApiAmbiguousOutcome } from '@wizard-ads/sp-api';
 import { isPermanentCrosscheckError, type CrosscheckIngest } from './crosscheck.js';
 import {
   AdsApiRetryableError,
@@ -37,8 +39,6 @@ import {
 } from './ads-api.js';
 import { runBidSeriesSync, type BidSeriesSyncDeps } from './bid-series.js';
 import {
-  RecommendationExecutionCustodyError,
-  RecommendationScopeIntegrityError,
   type RecommendationsRun,
   type RecommendationScheduleStore,
 } from './recommendations-run.js';
@@ -72,7 +72,6 @@ import {
 import type { SbVideoIngestionRuntime } from './sb-video-ingestion.js';
 import {
   SqpWorkflowPendingError,
-  SqpWorkflowPermanentError,
   type SqpQueuedJobContext,
 } from './sqp.js';
 import type { WeeklySqpScheduleProducer } from './sqp-scheduler.js';
@@ -97,16 +96,14 @@ type LongLivedClaimPass =
   | { kind: 'rpc_success'; jobs: readonly ClaimedJob[] }
   | { kind: 'rpc_failure'; error: unknown };
 
-/** A failure retrying cannot fix. Goes straight to `dead` with its attempts unspent. */
-export class PermanentJobError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'PermanentJobError';
-  }
-}
+export { PermanentJobError } from './permanent-job-error.js';
+import { PermanentJobError } from './permanent-job-error.js';
 
 /** A provider failure that should return to the queue after a known delay. */
 export class RetryableJobError extends Error {
+  readonly provider = 'worker';
+  readonly kind = 'retryable_job';
+  readonly retryable = true;
   constructor(message: string, readonly retryAfterSeconds?: number) {
     super(message);
     this.name = 'RetryableJobError';
@@ -153,14 +150,11 @@ export interface IntegrationHandlers {
   keepaSync?: (payload: KeepaSyncJob) => Promise<Record<string, unknown>>;
   rankSync?: (payload: RankSyncJob) => Promise<Record<string, unknown>>;
   economicsSync?: (payload: EconomicsSyncJob) => Promise<Record<string, unknown>>;
-  sqpCategorize?: (payload: SqpCategorizeJob) => Promise<Record<string, unknown>>;
   creativeSync?: (payload: CreativeSyncJob) => Promise<Record<string, unknown>>;
   sqpRequest?: (
     payload: SqpRequestJob,
     context: SqpQueuedJobContext,
   ) => Promise<Record<string, unknown>>;
-  historyBootstrap?: (payload: HistoryBootstrapJob) => Promise<Record<string, unknown>>;
-  reportPromote?: (payload: ReportPromoteJob) => Promise<Record<string, unknown>>;
   marketingStreamNormalize?: (payload: MarketingStreamNormalizeJob) => Promise<Record<string, unknown>>;
 }
 
@@ -178,6 +172,8 @@ export interface SyncWorkerOptions {
   jobTypes?: readonly JobType[];
   /** Provider handlers deployed in this runtime. Missing handlers dead-letter. */
   integrations?: IntegrationHandlers;
+  /** New ingestions register here without extending IntegrationHandlers or the dispatcher. */
+  sources?: (registry: Pick<IngestionRegistry, 'register'>) => void;
   /** WP-10's handler, bound to a database handle. Absent, the job dead-letters. */
   crosscheckIngest?: CrosscheckIngest;
   /** WP-33's preview-only recommendations runner. Absent, the job dead-letters. */
@@ -198,6 +194,7 @@ export interface SyncWorkerOptions {
 
 export class SyncWorker {
   readonly workerId: string;
+  private readonly registry: IngestionRegistry;
   private readonly store: WorkerStore;
   private readonly adsApi: AdsApiClient | undefined;
   private readonly jobTypes: readonly JobType[] | undefined;
@@ -239,6 +236,12 @@ export class SyncWorker {
     this.logger = options.logger ?? consoleLogger;
     this.reportDownloadLimits = options.reportDownloadLimits ?? DEFAULT_REPORT_DOWNLOAD_LIMITS;
     this.claimLoop = new ClaimLoopController(this.pollIntervalMs, this.now);
+    this.registry = new IngestionRegistry((observation, loaded) => {
+      if (!this.store.recordCoverage) throw new Error('Worker store lacks the ingestion coverage producer');
+      return this.store.recordCoverage(observation, loaded);
+    }, () => new ReportCoverageCompletion(this.store));
+    options.sources?.(this.registry);
+    this.registerBuiltins();
   }
 
   status(): {
@@ -464,10 +467,11 @@ export class SyncWorker {
       job.claim !== null
       && (
         error instanceof ReportCreateOutcomeUnknownError
+        || error instanceof SpApiAmbiguousOutcome
         || error instanceof ReportDownloadLimitError
       )
     ) {
-      const category = error instanceof ReportCreateOutcomeUnknownError
+      const category = error instanceof ReportCreateOutcomeUnknownError || error instanceof SpApiAmbiguousOutcome
         ? 'report_create'
         : 'report_download_limit';
       this.logger.error('fenced sync job retained for attended reconciliation', {
@@ -504,7 +508,7 @@ export class SyncWorker {
     if (isPermanentJobFailure(error)) {
       const terminalDetail = error instanceof ReportCreateOutcomeUnknownError
         ? 'report create outcome unknown; attended reconciliation required'
-        : 'report lifecycle stopped after a non-retryable failure';
+        : errorMessage(error).slice(0, 4_000);
       await this.failTerminalReportIfPresent(
         job,
         terminalDetail,
@@ -523,7 +527,7 @@ export class SyncWorker {
       });
       return;
     }
-    const explicitRetry = error instanceof AdsApiRetryableError || error instanceof RetryableJobError
+    const explicitRetry = isProviderFailure(error)
       ? error.retryAfterSeconds
       : undefined;
     const retrySeconds = explicitRetry !== undefined
@@ -595,63 +599,43 @@ export class SyncWorker {
     const profile = await this.store.profile(payload.profileId);
     if (profile.orgId !== payload.orgId) throw new Error(`job ${job.id} profile belongs to another org`);
 
-    switch (payload.type) {
-      case 'entity.sync':
-        return this.syncEntities(profile, payload);
-      case 'report.request':
-        return this.requestReport(job, profile, payload);
-      case 'report.poll':
-        return this.pollReport(profile, payload);
-      case 'report.fetch':
-        return this.fetchReport(profile, payload);
-      case 'report.unified.advance':
-        if (!this.unifiedReporting) {
-          throw new PermanentJobError('Unified Reporting sidecar is not configured on this worker');
-        }
-        return this.unifiedReporting.advance({
-          jobId: job.id,
-          attempts: job.attempts,
-          profile,
-          payload,
-        });
-      case 'recommendations.run':
-        if (!this.recommendationsRun) {
-          throw new PermanentJobError('recommendations runner is not configured on this worker');
-        }
-        return { ...(await this.recommendationsRun(payload, { jobId: job.id })) };
-      case 'crosscheck.ingest':
-        return this.ingestCrosscheck(payload);
-      case 'keepa.sync':
-        return this.runIntegration(payload.type, this.integrations.keepaSync, payload);
-      case 'rank.sync':
-        return this.runIntegration(payload.type, this.integrations.rankSync, payload);
-      case 'economics.sync':
-        return this.runIntegration(payload.type, this.integrations.economicsSync, payload);
-      case 'sqp.categorize':
-        return this.runIntegration(payload.type, this.integrations.sqpCategorize, payload);
-      case 'creative.sync': {
-        const sbVideo = this.sbVideo;
-        if (sbVideo) {
-          return this.buckets.run(profile.region, () => sbVideo.syncSnapshot({
-            jobId: job.id,
-            profile,
-            payload,
-          }));
-        }
-        return this.runIntegration(payload.type, this.integrations.creativeSync, payload);
-      }
-      case 'sqp.request':
-        if (!this.integrations.sqpRequest) {
-          throw new PermanentJobError(`${payload.type} handler not deployed in this runtime`);
-        }
-        return this.integrations.sqpRequest(payload, { jobId: job.id });
-      case 'history.bootstrap':
-        return this.runIntegration(payload.type, this.integrations.historyBootstrap, payload);
-      case 'report.promote':
-        return this.runIntegration(payload.type, this.integrations.reportPromote, payload);
-      case 'marketing_stream.normalize':
-        return this.runIntegration(payload.type, this.integrations.marketingStreamNormalize, payload);
-    }
+    return this.registry.dispatch({ job, payload, profile });
+  }
+
+  private registerBuiltins(): void {
+    const registry = this.registry;
+    registry.installBuiltin('entity.sync', ({ profile, payload }) => this.syncEntities(profile, payload));
+    registry.installBuiltin('report.request', ({ job, profile, payload }) => this.requestReport(job, profile, payload));
+    registry.installBuiltin('report.poll', ({ profile, payload }) => this.pollReport(profile, payload));
+    registry.registerTransactionalSource({
+      source: { ...ingestionSource('report.fetch'), jobType: 'report.fetch' },
+      plan: (context, completion) => ({ context, completion }),
+      execute: ({ context: { profile, payload }, completion }) => this.fetchReport(profile, payload, completion),
+      counts: (_result, { completion }) => completion.accounting(),
+      coverage: { kind: 'report-ledger' },
+    });
+    registry.installBuiltin('report.unified.advance', ({ job, profile, payload }) => {
+      if (!this.unifiedReporting) throw new PermanentJobError('Unified Reporting sidecar is not configured on this worker');
+      return this.unifiedReporting.advance({ jobId: job.id, attempts: job.attempts, profile, payload });
+    });
+    registry.installBuiltin('recommendations.run', async ({ job, payload }) => {
+      if (!this.recommendationsRun) throw new PermanentJobError('recommendations runner is not configured on this worker');
+      return { ...(await this.recommendationsRun(payload, { jobId: job.id })) };
+    });
+    registry.installBuiltin('crosscheck.ingest', ({ payload }) => this.ingestCrosscheck(payload));
+    registry.installBuiltin('keepa.sync', ({ payload }) => this.runIntegration(payload.type, this.integrations.keepaSync, payload));
+    registry.installBuiltin('rank.sync', ({ payload }) => this.runIntegration(payload.type, this.integrations.rankSync, payload));
+    registry.installBuiltin('economics.sync', ({ payload }) => this.runIntegration(payload.type, this.integrations.economicsSync, payload));
+    registry.installBuiltin('creative.sync', ({ job, profile, payload }) => {
+      const sbVideo = this.sbVideo;
+      if (sbVideo) return this.buckets.run(profile.region, () => sbVideo.syncSnapshot({ jobId: job.id, profile, payload }));
+      return this.runIntegration(payload.type, this.integrations.creativeSync, payload);
+    });
+    registry.installBuiltin('sqp.request', ({ job, payload }) => {
+      if (!this.integrations.sqpRequest) throw new PermanentJobError(`${payload.type} handler not deployed in this runtime`);
+      return this.integrations.sqpRequest(payload, { jobId: job.id });
+    });
+    registry.installBuiltin('marketing_stream.normalize', ({ payload }) => this.runIntegration(payload.type, this.integrations.marketingStreamNormalize, payload));
   }
 
   private async runIntegration<TPayload extends JobPayload>(
@@ -686,6 +670,7 @@ export class SyncWorker {
     payload: Extract<JobPayload, { type: 'entity.sync' }>,
   ): Promise<Record<string, unknown>> {
     const adsApi = this.requireAdsApi();
+    const readStartedAt = await this.store.beginEntityRead?.();
     const listing = await this.buckets.run(profile.region, () => adsApi.listEntities(profile, payload.full));
 
     // A product-scoped job cares only about its own product; an unscoped job
@@ -700,11 +685,20 @@ export class SyncWorker {
     // the retry policy see the real error type.
     if (succeeded.length === 0) {
       const worst = mostRetryable(failures);
-      if (worst) throw worst.error instanceof Error ? worst.error : new Error(worst.message);
+      if (worst) {
+        // Entity-list failures historically consume the queue retry budget, including
+        // a provider 4xx. Preserve that mirror policy at its owning adapter.
+        if (isProviderFailure(worst.error) && worst.error.provider === 'amazon_ads') {
+          throw new RetryableJobError(errorMessage(worst.error), worst.error.retryAfterSeconds);
+        }
+        throw worst.error instanceof Error ? worst.error : new Error(worst.message);
+      }
       throw new Error(`entity sync listed nothing for ${requested.join(', ')}`);
     }
 
     const totals = { listed: 0, upserted: 0, duplicates: 0, changes: 0, tombstoned: 0 };
+    let keywordMirror: KeywordMirrorMergeCounts | undefined;
+    const controlMirrors: Partial<Record<'campaign' | 'target', ControlMirrorMergeCounts>> = {};
     for (const product of succeeded) {
       const productRows = listing.rows.filter((row) => row.adProduct === product);
       // Scope the mirror to this product so tombstoning stays within it and a
@@ -712,6 +706,10 @@ export class SyncWorker {
       const counts = await this.store.syncEntities(profile, productRows, {
         adProduct: product,
         full: payload.full,
+        ...(readStartedAt === undefined ? {} : { readStartedAt }),
+        ...(listing.excludedEntityTypes?.[product] === undefined ? {} : {
+          excludedEntityTypes: listing.excludedEntityTypes[product],
+        }),
       });
       // Program rule 4: the artifact, not the exit code. A listing that
       // upserted fewer rows than it listed lost some — unless the shortfall is
@@ -727,6 +725,25 @@ export class SyncWorker {
       totals.duplicates += counts.duplicates;
       totals.changes += counts.changes;
       totals.tombstoned += counts.tombstoned;
+      for (const kind of ['campaign', 'target'] as const) {
+        const controlCounts = counts.controlMirrors?.[kind];
+        if (controlCounts === undefined) continue;
+        const incoming = ControlMirrorMergeCounts.parse(controlCounts);
+        const prior = controlMirrors[kind];
+        if (prior === undefined) controlMirrors[kind] = incoming;
+        else {
+          for (const key of Object.keys(incoming) as Array<keyof ControlMirrorMergeCounts>) prior[key] += incoming[key];
+          ControlMirrorMergeCounts.parse(prior);
+        }
+      }
+      if (counts.keywordMirror !== undefined) {
+        const incoming = KeywordMirrorMergeCounts.parse(counts.keywordMirror);
+        if (keywordMirror === undefined) keywordMirror = incoming;
+        else {
+          for (const key of Object.keys(incoming) as Array<keyof KeywordMirrorMergeCounts>) keywordMirror[key] += incoming[key];
+          KeywordMirrorMergeCounts.parse(keywordMirror);
+        }
+      }
     }
 
     const failureSummary = failures.map((failure) => ({ adProduct: failure.adProduct, error: failure.message }));
@@ -742,7 +759,8 @@ export class SyncWorker {
       throw partialSyncError(succeeded, failures);
     }
     this.logger.info('entity sync', { profileId: profile.id, succeeded, ...totals });
-    return { ...totals, succeeded, failures: failureSummary };
+    return { ...totals, succeeded, failures: failureSummary, ...(keywordMirror === undefined ? {} : { keywordMirror }),
+      ...(Object.keys(controlMirrors).length === 0 ? {} : { controlMirrors }) };
   }
 
   /**
@@ -758,7 +776,12 @@ export class SyncWorker {
     if (!this.crosscheckIngest) {
       throw new PermanentJobError('crosscheck ingest is not configured on this worker');
     }
-    const result = await this.crosscheckIngest(payload);
+    let result;
+    try { result = await this.crosscheckIngest(payload); }
+    catch (error) {
+      if (isPermanentCrosscheckError(error)) throw new PermanentJobError(errorMessage(error));
+      throw error;
+    }
     // Program rule 4: rows offered against rows kept, verdicts against rows
     // written. `rowsParsed > rowsKept` is normal — the incumbent's export
     // carries every profile the team can see.
@@ -797,35 +820,48 @@ export class SyncWorker {
     const ledger = await this.store.ensureReportRequest(job.id, payload);
     let amazonReportId = ledger.amazonReportId;
     if (!amazonReportId) {
-      const created = await this.buckets.run(profile.region, () => adsApi.createReport({
-        profile,
-        reportType: payload.reportType,
-        startDate: payload.startDate,
-        endDate: payload.endDate,
-      }));
-      amazonReportId = created.reportId;
-      const persistence = {
-        reportRequestId: ledger.id,
-        orgId: payload.orgId,
-        profileId: payload.profileId,
-        amazonReportId,
-        nextPollAt: addMinutes(this.now(), 5),
-        claim: job.claim,
-      };
       try {
-        await this.store.setReportCreated(persistence);
-      } catch {
-        // A commit followed by a lost database reply is recoverable only by an
-        // exact tenant/provider-id/claim readback below.
-      }
-      let confirmed = false;
-      try {
-        confirmed = await this.store.confirmReportCreated(persistence);
-      } catch {
-        // Readback unavailability is an unknown provider-effect outcome too.
-      }
-      if (!confirmed) {
-        throw new ReportCreateOutcomeUnknownError('provider-id-persistence', null);
+        const created = await this.buckets.run(profile.region, () => adsApi.createReport({
+          profile,
+          reportType: payload.reportType,
+          startDate: payload.startDate,
+          endDate: payload.endDate,
+        }));
+        amazonReportId = created.reportId;
+        const persistence = {
+          reportRequestId: ledger.id,
+          orgId: payload.orgId,
+          profileId: payload.profileId,
+          amazonReportId,
+          nextPollAt: addMinutes(this.now(), 5),
+          claim: job.claim,
+        };
+        try {
+          await this.store.setReportCreated(persistence);
+        } catch {
+          // A commit followed by a lost database reply is recoverable only by an
+          // exact tenant/provider-id/claim readback below.
+        }
+        let confirmed = false;
+        try {
+          confirmed = await this.store.confirmReportCreated(persistence);
+        } catch {
+          // Readback unavailability is an unknown provider-effect outcome too.
+        }
+        if (!confirmed) {
+          throw new ReportCreateOutcomeUnknownError('provider-id-persistence', null);
+        }
+      } catch (error) {
+        if (error instanceof ReportCreateOutcomeUnknownError) {
+          try {
+            await this.store.quarantineReportCreate(job, {
+              phase: error.phase, status: error.status, amazonReportId,
+            });
+          } catch {
+            this.logger.error('ambiguous report evidence persistence unavailable', { jobId: job.id });
+          }
+        }
+        throw error;
       }
     }
     const pollPayload: Extract<JobPayload, { type: 'report.poll' }> = {
@@ -905,6 +941,7 @@ export class SyncWorker {
   private async fetchReport(
     profile: AdsProfileContext,
     payload: Extract<JobPayload, { type: 'report.fetch' }>,
+    coverage: ReportCoverageCompletion,
   ): Promise<Record<string, unknown>> {
     const adsApi = this.requireAdsApi();
     const ledger = await this.store.getReportRequest(
@@ -956,12 +993,12 @@ export class SyncWorker {
       if (ledger.reportType === 'sbAds') {
         sbReport ??= parseSbAdsReportProbe([]);
         if (sbReport.sourceRows !== downloaded.rowsParsed) {
-          throw new Error('sbAds parser chunk accounting did not match the downloaded rows');
+          throw new PermanentJobError('sbAds parser chunk accounting did not match the downloaded rows');
         }
       } else {
         parsedBatch ??= parseReportRows(ledger.reportType, [], profile, ledger.id);
         if (parsedBatch.sourceRows !== downloaded.rowsParsed) {
-          throw new Error('report parser chunk accounting did not match the downloaded rows');
+          throw new PermanentJobError('report parser chunk accounting did not match the downloaded rows');
         }
       }
       return await this.finishFetchedReport(
@@ -971,6 +1008,7 @@ export class SyncWorker {
         parsedBatch,
         sbReport,
         [...sourceDateCounts.values()],
+        coverage,
       );
     } catch (error) {
       if (error instanceof ReportDownloadLimitError) {
@@ -998,6 +1036,7 @@ export class SyncWorker {
         this.now(),
         `report.repoll:${ledger.id}:${attempt}`,
       );
+      coverage.deferDownload();
       return { downloadExpired: true, repollEnqueued: enqueued };
     } finally {
       clearTimeout(downloadTimer);
@@ -1011,6 +1050,7 @@ export class SyncWorker {
     parsedBatch: ParsedFactBatch | undefined,
     sbReport: SbAdsReportProbeParseResult | undefined,
     sourceDateCounts: readonly ReportDateSourceCounts[],
+    coverage: ReportCoverageCompletion,
   ): Promise<Record<string, unknown>> {
     if (ledger.reportType === 'sbAds') {
       if (!this.sbVideo) {
@@ -1039,16 +1079,18 @@ export class SyncWorker {
       };
       if (result.blocked) {
         const detail = `sbAds promotion blocked: ${result.reasons.join(', ') || 'contract incomplete'}`;
-        await this.store.finishAttributedReport(ledger.id, accounting, {
+        await coverage.attributed(ledger.id, accounting, {
           status: 'failed',
           bytesDownloaded,
           error: detail,
         });
         throw new PermanentJobError(detail);
       }
-      await this.store.finishAttributedReport(ledger.id, accounting, {
+      await coverage.attributed(ledger.id, accounting, {
         status: 'completed',
         bytesDownloaded,
+        coverage: { sourceRows: result.reportSourceRows, parsedRows: result.reportParsedRows,
+          refusedRows: result.reportRefusedRows, observedAt: this.now().toISOString(), settledThrough: null },
       });
       this.logger.info('Sponsored Brands Video report ingested', {
         reportRequestId: ledger.id,
@@ -1066,6 +1108,7 @@ export class SyncWorker {
         sourceDateCounts,
         bytesDownloaded,
         batch,
+        coverage,
       );
     }
     const parsed = batch.rows.length;
@@ -1077,7 +1120,7 @@ export class SyncWorker {
     // profile grain by design, so the identity does not hold there.
     const accounted = batch.kind === 'sp_target' || batch.kind === 'search_term';
     if (accounted && batch.sourceRows !== parsed + skipped) {
-      throw new Error(
+      throw new PermanentJobError(
         `report ${ledger.id}: ${batch.sourceRows} source rows but ${parsed} parsed + ${skipped} skipped`,
       );
     }
@@ -1093,7 +1136,12 @@ export class SyncWorker {
     const loaded = await this.store.loadFacts(batch);
     // Program rule 4 again: `completeReport` throws on a mismatch, so a fetch
     // that silently dropped rows fails the job instead of reporting success.
-    await this.store.completeReport(ledger.id, { parsed, loaded, bytesDownloaded });
+    await coverage.complete(ledger.id, { parsed, loaded, bytesDownloaded,
+      coverage: {
+        sourceRows: batch.sourceRows, parsedRows: batch.sourceRows - skipped, refusedRows: skipped,
+        observedAt: this.now().toISOString(), settledThrough: null,
+      },
+    });
     this.logger.info('report fetched', {
       reportRequestId: ledger.id, reportType: ledger.reportType,
       reportRows: batch.sourceRows, parsed, loaded, skipped, skipReasons: reasons,
@@ -1110,6 +1158,7 @@ export class SyncWorker {
     sourceDateCounts: readonly ReportDateSourceCounts[],
     bytesDownloaded: number,
     batch: ReturnType<typeof parseReportRows>,
+    coverage: ReportCoverageCompletion,
   ): Promise<Record<string, unknown>> {
     const skipped = batch.skipped.length;
     const reasons = skipReasons(batch.skipped);
@@ -1163,7 +1212,7 @@ export class SyncWorker {
     const refusedRows = staged.reduce((total, date) => total + date.refusedRows, 0);
     const factRows = staged.reduce((total, date) => total + date.promotedRows, 0);
     if (sourceRows !== batch.sourceRows || sourceRows !== parsedSourceRows + refusedRows) {
-      throw new Error(
+      throw new PermanentJobError(
         `report ${ledger.id} source accounting drifted: ${sourceRows} source, ` +
         `${parsedSourceRows} parsed, ${refusedRows} refused`,
       );
@@ -1203,21 +1252,30 @@ export class SyncWorker {
     }
 
     if (staged.length !== promotedDates + alreadyPromotedDates + supersededDates) {
-      throw new Error('report date outcomes do not reconcile');
+      throw new PermanentJobError('report date outcomes do not reconcile');
     }
     if (factRows !== acceptedFactRows + supersededFactRows) {
-      throw new Error('report fact outcomes do not reconcile');
+      throw new PermanentJobError('report fact outcomes do not reconcile');
     }
     if (acceptedFactRows !== canonicalRows) {
-      throw new Error(
+      throw new PermanentJobError(
         `accepted ${acceptedFactRows} fact rows but verified ${canonicalRows} canonical rows`,
       );
     }
 
-    await this.store.completeReport(ledger.id, {
+    await coverage.complete(ledger.id, {
       parsed: acceptedFactRows,
       loaded: canonicalRows,
       bytesDownloaded,
+      // A superseded request must not refresh the observation of a newer report.
+      coverage: supersededDates > 0 ? null : {
+        sourceRows, parsedRows: parsedSourceRows, refusedRows,
+        observedAt: observedAt.toISOString(),
+        settledThrough: staged.filter((date) =>
+          date.attribution.eventDateAgeDays >= date.attribution.attributionWindowDays)
+          .reduce<string | null>((latest, date) => latest === null || date.reportDate > latest
+            ? date.reportDate : latest, null),
+      },
     });
     const result = {
       reportRows: sourceRows,
@@ -1593,16 +1651,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isPermanentJobFailure(error: unknown): boolean {
-  return error instanceof PermanentJobError ||
-    error instanceof RecommendationExecutionCustodyError ||
-    error instanceof RecommendationScopeIntegrityError ||
-    error instanceof ReportCreateOutcomeUnknownError ||
-    (error instanceof ReportDownloadLimitError &&
-      (error.kind === 'compressed_bytes' || error.kind === 'decompressed_bytes')) ||
-    error instanceof SqpWorkflowPermanentError ||
-    error instanceof SpApiParseError ||
-    (error instanceof SpApiAuthError && !error.retryable) ||
-    (error instanceof SpApiError && !error.retryable) ||
-    isPermanentCrosscheckError(error);
+export function isPermanentJobFailure(error: unknown): boolean {
+  return isPermanentProviderFailure(error);
 }

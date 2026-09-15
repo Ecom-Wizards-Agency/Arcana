@@ -90,6 +90,10 @@ describe.skipIf(!available)('Time Machine reversion route', () => {
       source: 'sync',
     }]);
 
+    // Restore evidence must use a mirror read at or after the linked application observation.
+    await database.sql`update public.keywords set synced_at=clock_timestamp()
+      where org_id=${orgId} and profile_id=${profileId} and amazon_id='kw-route'`;
+
     process.env['DATABASE_URL'] = database.connectionString;
     process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET'] = BRIDGE;
     process.env['WIZARD_ADS_E2E_AUTH_BRIDGE'] = '1';

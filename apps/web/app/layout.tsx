@@ -1,8 +1,10 @@
+import { SCREEN_REGISTRY } from '../src/screens/registry-metadata';
+import { ShellEvidenceActionProvider, type ShellEvidence } from '../src/ui/shell-evidence';
 import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
 import { Suspense, type ReactNode } from 'react';
 import '../src/ui/theme.css';
-import { AppNav, NavBar } from '../src/ui/nav';
+import { AppNav, NavFallback } from '../src/ui/nav';
 import { BugWidget } from '../src/ui/bug-widget';
 import { ToastProvider } from '../src/ui/toast';
 import { THEME_SCRIPT } from '../src/ui/theme-script';
@@ -46,9 +48,9 @@ const metadataBase = socialOrigin();
  */
 export const metadata: Metadata = {
   ...(metadataBase === undefined ? {} : { metadataBase }),
-  title: 'OpenSpell',
+  title: 'Arcana',
   description: 'Amazon Advertising operator workspace',
-  applicationName: 'OpenSpell',
+  applicationName: 'Arcana',
   icons: {
     icon: [
       { url: '/icon.png', type: 'image/png', sizes: '512x512' },
@@ -58,13 +60,13 @@ export const metadata: Metadata = {
   },
   openGraph: {
     type: 'website',
-    siteName: 'OpenSpell',
-    title: 'OpenSpell',
+    siteName: 'Arcana',
+    title: 'Arcana',
     description: 'Amazon Advertising operator workspace',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'OpenSpell',
+    title: 'Arcana',
     description: 'Amazon Advertising operator workspace',
   },
 };
@@ -105,6 +107,14 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     }
   }
 
+  // Layouts persist across query navigation. The client supplies the current profile;
+  // this read-only server function rechecks identity, membership and roster every time.
+  async function readShellEvidence(requested: string | null): Promise<ShellEvidence | null> {
+    'use server';
+    const { readShellEvidence: read } = await import('../src/ui/shell-evidence-server');
+    return read(requested);
+  }
+
   return (
     // The theme stamp below rewrites `data-theme` before React sees the
     // document, which is exactly the mismatch this attribute exists for.
@@ -116,16 +126,20 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
           have an apology.
         */}
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
+        {/* Parser-blocking: track page requests before any client island hydrates. */}
+        {user !== null ? <script src={new URL('../src/ui/shell-fetch-bootstrap.js', import.meta.url).pathname} /> : null}
       </head>
       <body>
         <ToastProvider>
+          <ShellEvidenceActionProvider key={user?.id ?? 'anonymous'} read={readShellEvidence} enabled={user !== null}
+            paths={SCREEN_REGISTRY.filter((screen) => screen.route === 'page').map((screen) => screen.path)}>
           {/*
             The layout reads the session once for the frame. Anonymous screens
             get a quiet public header and no unreachable operator navigation;
             authenticated screens get the complete operator frame. Every route
             remains dynamic, which is correct for a per-tenant tool.
           */}
-          <Suspense fallback={<NavBar user={user} />}>
+          <Suspense fallback={<NavFallback user={user} />}>
             <AppNav user={user} />
           </Suspense>
           <div
@@ -147,6 +161,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
           {feedbackEnabled ? (
             <BugWidget appVersion={process.env['WIZARD_ADS_APP_VERSION'] ?? null} />
           ) : null}
+        </ShellEvidenceActionProvider>
         </ToastProvider>
       </body>
     </html>

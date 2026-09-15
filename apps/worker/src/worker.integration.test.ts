@@ -1,3 +1,4 @@
+import { CalculationTrace, RecommendationInputs } from '@wizard-ads/shared';
 /**
  * The worker against a real, migrated Postgres.
  *
@@ -22,6 +23,8 @@ import {
 } from '@wizard-ads/db/testing';
 import {
   createDb,
+  transitionExperiment,
+  listExperimentEvents,
   enqueueDueSchedules,
   readOptimizationWorkspace,
   revokeIntegrationSecret,
@@ -77,6 +80,7 @@ const quietLogger: WorkerLogger = process.env['WORKER_TEST_VERBOSE']
 
 class FakeAdsApi implements AdsApiClient {
   entities: EntityRow[] = [];
+  excludedEntityTypes?: EntityListing['excludedEntityTypes'];
   /** Ad products whose listing should fail; their rows are still in `entities`. */
   listFailures: EntityListFailure[] = [];
   reportRows: Record<string, unknown>[] = [];
@@ -92,7 +96,7 @@ class FakeAdsApi implements AdsApiClient {
     // A failed product contributes no rows, exactly as the real adapter drops a
     // product it could not fully list.
     const rows = this.entities.filter((entity) => !failed.has(entity.adProduct as AdProductCode));
-    return { rows, succeeded, failures: this.listFailures };
+    return { rows, succeeded, failures: this.listFailures, excludedEntityTypes: this.excludedEntityTypes };
   }
   async createReport(_input: CreateReportInput): Promise<{ reportId: string }> {
     this.createCalls += 1;
@@ -290,6 +294,8 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       opt_groups: {
         Profit: {
           target_acos: 0.3,
+          bid_floor_unit: 'absolute', bid_floor_value: 0.07,
+          bid_ceiling_unit: 'absolute', bid_ceiling_value: 3.7,
           max_increase: 0.25,
           max_decrease: 0.5,
           goal_lens: 'profit-maintain',
@@ -340,6 +346,29 @@ describe.skipIf(!available)('worker + real Postgres', () => {
                     sales_7d = excluded.sales_7d
     `;
 
+    await database.sql`
+      update public.optimization_groups set bid_floor = 0.07, bid_ceiling = 3.7
+       where org_id = ${orgId} and profile_id = ${profileId}
+    `;
+
+    // Fixture setup represents a completed background job. Close the experiment
+    // before admitting the recommendation snapshot, which must retain its locks.
+    const [completionJob] = await database.sql<{id:string}[]>`insert into public.sync_jobs
+      (org_id,profile_id,job_type,payload,status,claimed_by,started_at,finished_at)
+      values(${orgId},${profileId},'entity.sync',jsonb_build_object('type','entity.sync','orgId',${orgId}::text,'profileId',${profileId}::text),
+        'succeeded','synthetic-worker',now(),now()) returning id`;
+    const experiments = await database.sql<{ id: string }[]>`select id from public.experiments
+      where org_id=${orgId} and profile_id=${profileId} and status='running'`;
+    expect(experiments).toHaveLength(1);
+    for (const experiment of experiments) {
+      await transitionExperiment(database, { orgId, experimentId: experiment.id, to: 'ended', systemJobId: completionJob!.id });
+      const trail = await listExperimentEvents(database, { orgId, experimentId: experiment.id });
+      expect(trail).toHaveLength(2);
+      expect(trail[1]).toMatchObject({ actorId: null, fromStatus: 'running', toStatus: 'ended',
+        systemActor: { role: 'service_role', jobId: completionJob!.id, jobType: 'entity.sync' } });
+    }
+
+
     const recommendationStore = new PostgresRecommendationRunStore(database);
     const accepted = await recommendationStore.enqueueRecommendationPreviewBatch({
       orgId,
@@ -368,7 +397,11 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       select status::text as status, result from public.sync_jobs where id = ${queued.jobId}
     `;
     expect(job?.status).toBe('succeeded');
-    expect(job?.result).toMatchObject({ runId: queued.runId, proposals: 1 });
+    const [methodEvidence] = await database.sql<{ narrative: unknown }[]>`
+      select payload -> 'narrative' as narrative from public.audit_log
+       where action = 'recommendation.run.succeeded' and target_id = ${queued.runId}
+    `;
+    expect(job?.result, JSON.stringify(methodEvidence?.narrative)).toMatchObject({ runId: queued.runId, proposals: 1 });
 
     const [run] = await database.sql<{
       status: string;
@@ -397,8 +430,9 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       field: string;
       status: string;
       inputs: Record<string, unknown>;
+      proposed_value: number;
     }[]>`
-      select reason::text as reason, entity_id, field, status::text as status, inputs
+      select reason::text as reason, entity_id, field, status::text as status, inputs, proposed_value
         from public.recommendations where run_id = ${queued.runId}
     `;
     expect(proposals).toHaveLength(1);
@@ -407,8 +441,17 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       entity_id: 'kw-1',
       field: 'bid',
       status: 'proposed',
-      inputs: { clicks: 10, cvrSourceLevel: 'keyword' },
+      inputs: { clicks: 10, cvrSourceLevel: 'keyword', methodId: 'sp.reference-efficiency', methodVersion: 'reference.1',
+        settingSources: { targetAcos: { source: 'group' } } },
     });
+
+    const savedInputs = RecommendationInputs.parse(proposals[0]!.inputs);
+    const savedTrace = CalculationTrace.parse(savedInputs.trace);
+    expect(savedTrace.steps.slice(0, 4).map((step) => step.label)).toEqual(['Inputs', 'RPC', 'Target ACOS', 'Raw bid']);
+    expect(savedTrace.roundingStep.label).toContain('Rounding');
+    expect(savedTrace.finalResult).toBe(proposals[0]?.proposed_value);
+    expect(savedInputs.settingSources).toHaveProperty('bidFloor');
+    expect(savedInputs.settingSources).toHaveProperty('bidCeiling');
 
     const [preconditionNote] = await database.sql<{ payload: { note?: string; codes?: string[] } }[]>`
       select payload from public.audit_log
@@ -1537,6 +1580,85 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     expect(job?.last_error ?? '').toContain('SP exploded');
   });
 
+  it.each([false, true])('preserves disabled SB keywords through the full worker/store path: enabled=%s', async (enabled) => {
+    const messages: string[] = [];
+    const store = new PostgresWorkerStore(database, { info: (message) => messages.push(message) });
+    const profile = await store.profile(profileId);
+    const liveCampaign: EntityRow = { ...campaign(profileId, 'Synthetic SB campaign'),
+      amazonId: 'wp246-sb-live', adProduct: 'SB' };
+    const keyword = (amazonId: string, adProduct: 'SP' | 'SB' = 'SB'): EntityRow => ({
+      entityType: 'keyword', profileId, amazonId, adProduct, state: 'enabled',
+      name: 'blue widget', campaignId: 'wp246-sb-live', adGroupId: 'wp246-group',
+      keywordText: 'blue widget', matchType: 'exact', bid: 1,
+    });
+    try {
+      const initialReadStartedAt = await store.beginEntityRead();
+      expect(await store.syncEntities(profile, [liveCampaign,
+        { ...liveCampaign, amazonId: 'wp246-sb-missing' },
+        keyword('wp246-keyword-live'), keyword('wp246-keyword-missing'),
+      ], { adProduct: 'SB', readStartedAt: initialReadStartedAt! })).toMatchObject({ listed: 4, upserted: 4 });
+      const spReadStartedAt = await store.beginEntityRead();
+      await store.syncEntities(profile, [keyword('wp246-sp-keyword', 'SP')], { adProduct: 'SP', readStartedAt: spReadStartedAt! });
+      await database.sql`
+        update public.keywords set synced_at = '2026-01-01'::timestamptz
+         where profile_id = ${profileId} and amazon_id like 'wp246-%'
+      `;
+      const readKeywords = () => database.sql<{ row: Record<string, unknown> }[]>`
+        select to_jsonb(k) as row from public.keywords k
+         where profile_id = ${profileId} and amazon_id like 'wp246-%'
+         order by amazon_id
+      `;
+      const before = await readKeywords();
+      expect(before).toHaveLength(3);
+      const api = new FakeAdsApi();
+      api.entities = [{ ...liveCampaign, budgetAmount: 20 } as EntityRow,
+        ...(enabled ? [{ ...keyword('wp246-keyword-live'), bid: 2 } as EntityRow] : [])];
+      api.excludedEntityTypes = enabled ? undefined : { SB: ['keyword'] };
+      const worker = makeWorker('wp246-keyword-scope', store, api);
+      for (let round = 0; round < 2; round++) {
+        const key = `wp246-scope-${enabled}-${round}`;
+        await store.enqueue({ type: 'entity.sync', orgId, profileId, adProduct: 'SB', full: true }, new Date(), key);
+        expect(await worker.drainOnce()).toBe(1);
+        const [job] = await database.sql<{ status: string; result: { listed: number; upserted: number } }[]>`
+          select status::text as status, result from public.sync_jobs where dedupe_key = ${key}
+        `;
+        expect(job?.status).toBe('succeeded');
+        expect(job?.result).toMatchObject({ listed: enabled ? 2 : 1, upserted: enabled ? 2 : 1 });
+      }
+      const after = await readKeywords();
+      expect(after).toHaveLength(3);
+      if (!enabled) expect(after).toEqual(before);
+      else {
+        expect(after.find(({ row }) => row['amazon_id'] === 'wp246-keyword-live')?.row)
+          .toMatchObject({ bid: 2, deleted_at: null });
+        expect(after.find(({ row }) => row['amazon_id'] === 'wp246-keyword-missing')?.row['deleted_at']).not.toBeNull();
+      }
+      expect(after.find(({ row }) => row['amazon_id'] === 'wp246-sp-keyword'))
+        .toEqual(before.find(({ row }) => row['amazon_id'] === 'wp246-sp-keyword'));
+      const [missingCampaign] = await database.sql<{ deleted_at: string | null }[]>`
+        select deleted_at from public.campaigns
+         where profile_id = ${profileId} and amazon_id = 'wp246-sb-missing'
+      `;
+      expect(missingCampaign?.deleted_at).not.toBeNull();
+      expect(messages.filter((message) => message === 'SB keywords are present but sync is disabled'))
+        .toHaveLength(enabled ? 0 : 1);
+    } finally {
+      await database.sql`delete from public.keywords where profile_id = ${profileId} and amazon_id like 'wp246-%'`;
+      await database.sql`delete from public.campaigns where profile_id = ${profileId} and amazon_id like 'wp246-%'`;
+    }
+  });
+
+  it('refuses an ordinary sync without a provider read-start on the guarded schema', async () => {
+    const store = new PostgresWorkerStore(database, quietLogger);
+    const profile = await store.profile(profileId);
+    const current = () => database.sql<{ row: unknown }[]>`select to_jsonb(c) as row from public.campaigns c
+      where profile_id=${profileId} order by amazon_id`;
+    const before = await current();
+    await expect(store.syncEntities(profile, [campaign(profileId, 'unfenced source')]))
+      .rejects.toThrow('control mirror requires the provider read-start time');
+    expect(await current()).toEqual(before);
+  });
+
   it('tombstones missing entities only on a full pass', async () => {
     const api = new FakeAdsApi();
     api.entities = [campaign(profileId, 'still here')];
@@ -1545,7 +1667,8 @@ describe.skipIf(!available)('worker + real Postgres', () => {
 
     // A delta pass lists campaigns and nothing else. Sweeping on it would
     // tombstone every keyword and ad group the pass never claimed to cover.
-    const delta = await store.syncEntities(profile, api.entities, { full: false });
+    const deltaReadStartedAt = await store.beginEntityRead();
+    const delta = await store.syncEntities(profile, api.entities, { full: false, readStartedAt: deltaReadStartedAt! });
     expect(delta.tombstoned).toBe(0);
     const [afterDelta] = await database.sql<{ live: string }[]>`
       select count(*) as live from public.keywords where profile_id = ${profileId} and deleted_at is null
@@ -1553,16 +1676,20 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     expect(Number(afterDelta?.live)).toBeGreaterThan(0);
 
     // A full pass re-listed everything, so an id it omits really is gone.
-    const full = await store.syncEntities(profile, api.entities, { full: true });
+    const fullReadStartedAt = await store.beginEntityRead();
+    const full = await store.syncEntities(profile, api.entities, { full: true, readStartedAt: fullReadStartedAt! });
     expect(full.tombstoned).toBeGreaterThan(0);
     const [afterFull] = await database.sql<{ live: string }[]>`
       select count(*) as live from public.keywords where profile_id = ${profileId} and deleted_at is null
     `;
     expect(Number(afterFull?.live)).toBe(0);
 
-    await database.sql`
-      update public.keywords set deleted_at = null where profile_id = ${profileId}
-    `;
+    const restoredAt = await store.beginEntityRead();
+    await database.sql.begin(async (sql) => {
+      await sql`select set_config('app.keyword_bid_read_started_at',${restoredAt!},true)`;
+      await sql`update public.keywords set deleted_at=null,bid_observed_at=${restoredAt!}::timestamptz
+        where profile_id=${profileId}`;
+    });
   });
 
   /**
@@ -1576,10 +1703,11 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     const store = new PostgresWorkerStore(database, quietLogger);
     const profile = await store.profile(profileId);
 
+    const readStartedAt = await store.beginEntityRead();
     const counts = await store.syncEntities(
       profile,
       [negative(profileId, 'neg-dup', 'ad_group'), negative(profileId, 'neg-dup', 'campaign')],
-      { adProduct: 'SP', full: false },
+      { adProduct: 'SP', full: false, readStartedAt: readStartedAt! },
     );
 
     // Listed rows are still listed rows: the collision is counted, not hidden.
@@ -2384,7 +2512,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
                (${orgId}, 'mrp', 'schedule-test-mrp', 'active')
       `;
       const store = new PostgresWorkerStore(database);
-      expect(await store.ensureIntegrationSchedules()).toBe(4);
+      expect(await store.ensureIntegrationSchedules()).toBe(3);
       expect(await store.ensureIntegrationSchedules()).toBe(0);
 
       const schedules = await database.sql<{
@@ -2409,8 +2537,21 @@ describe.skipIf(!available)('worker + real Postgres', () => {
         { type: 'economics.sync', cadence: '1 day', reportType: null, enabled: true },
         { type: 'keepa.sync', cadence: '1 day', reportType: null, enabled: true },
         { type: 'rank.sync', cadence: '1 day', reportType: null, enabled: true },
-        { type: 'sqp.categorize', cadence: '7 days', reportType: null, enabled: true },
       ]);
+      // Repair a schedule left by an older deployment even with DataDive active.
+      await database.sql`
+        insert into public.sync_schedules
+          (org_id, profile_id, job_type, variant, cadence, payload, enabled)
+        values (${orgId}, ${profileId}, 'sqp.categorize', 'integration', interval '7 days', '{}'::jsonb, true)
+      `;
+      expect(await store.ensureIntegrationSchedules()).toBe(1);
+      expect(await store.ensureIntegrationSchedules()).toBe(0);
+      const unsupported = await database.sql<{ enabled: boolean }[]>`
+        select enabled from public.sync_schedules
+         where profile_id = ${profileId}
+           and job_type in ('sqp.categorize', 'history.bootstrap', 'report.promote')
+      `;
+      expect(unsupported).toEqual([{ enabled: false }]);
       expect(schedules.find((row) => row.job_type === 'keepa.sync')?.payload).toEqual({
         includeCompetitors: true,
       });
@@ -2568,12 +2709,15 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       const profile = await new PostgresWorkerStore(database).profile(profileId);
       // An earlier `full` pass in this file tombstones the mirror; this case is
       // about state, not tombstones, so start from the fixture's live rows.
-      await database.sql`
-        update public.keywords set deleted_at = null, state = 'enabled' where profile_id = ${profileId}
-      `;
-      await database.sql`
-        update public.targets set deleted_at = null, state = 'enabled' where profile_id = ${profileId}
-      `;
+      const restoredAt = await new PostgresWorkerStore(database).beginEntityRead();
+      await database.sql.begin(async (sql) => {
+        await sql`select set_config('app.keyword_bid_read_started_at',${restoredAt!},true)`;
+        await sql`update public.keywords set deleted_at=null,state='enabled',bid_observed_at=${restoredAt!}::timestamptz
+          where profile_id=${profileId}`;
+        await sql`select set_config('app.target_bid_read_started_at',${restoredAt!},true)`;
+        await sql`update public.targets set deleted_at=null,state='enabled',bid_observed_at=${restoredAt!}::timestamptz
+          where profile_id=${profileId}`;
+      });
       const [yesterdayRow] = await database.sql<{ d: string }[]>`
         select (current_date - 1)::text as d
       `;

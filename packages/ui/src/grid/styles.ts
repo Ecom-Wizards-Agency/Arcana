@@ -8,7 +8,7 @@
  * the helpers only fold a column's width, alignment and pinning into a style.
  */
 import type { CSSProperties } from 'react';
-import type { GridColumn } from '../columns.js';
+import { minimumColumnWidth, type GridColumn } from '../columns.js';
 import type { GridDensity } from '../density.js';
 import { tokens } from '../theme.js';
 
@@ -252,6 +252,8 @@ export function headerCellStyle(
   return {
     ...headerCell,
     width,
+    flexShrink: 0,
+    ...(definition === undefined ? {} : { minWidth: minimumColumnWidth(definition) }),
     // A control header does not sort, so it must not offer a sort cursor.
     ...(definition?.kind === 'control' ? { cursor: 'default' } : {}),
     justifyContent: definition?.align === 'right' ? 'flex-end' : 'flex-start',
@@ -277,7 +279,11 @@ export function totalsCellStyle(
 ): CSSProperties {
   return {
     ...bodyCell,
+    ...(definition?.scale !== 'text' || definition?.cell === 'numeric'
+      ? { overflow: 'auto', textOverflow: 'unset' } : {}),
     width,
+    flexShrink: 0,
+    ...(definition === undefined ? {} : { minWidth: minimumColumnWidth(definition) }),
     textAlign: definition?.align ?? 'left',
     fontWeight: 600,
     ...sticky(pinned, 2, tokens.color.surfaceAlt),
@@ -292,8 +298,12 @@ export function bodyCellStyle(
 ): CSSProperties {
   return {
     ...bodyCell,
+    ...(definition?.scale !== 'text' || definition?.cell === 'numeric'
+      ? { overflow: 'auto', textOverflow: 'unset' } : {}),
     padding: CELL_PADDING[density],
     width,
+    flexShrink: 0,
+    ...(definition === undefined ? {} : { minWidth: minimumColumnWidth(definition) }),
     textAlign: definition?.align ?? 'left',
     ...sticky(pinned, 1, 'inherit'),
   };
@@ -315,19 +325,17 @@ export interface BodyRowState {
  * zebra striping. A top-level group also draws a stronger rule above it.
  */
 export function bodyRowStyle(state: BodyRowState): CSSProperties {
+  // Composite the translucent tint onto the surface before pinned cells inherit it.
+  // Otherwise numeric cells scrolling underneath remain visible through the pin.
+  const tint = state.selected || state.group?.depth === 0 ? tokens.color.indigoSoft
+    : state.group !== null || state.index % 2 !== 0 ? tokens.color.surfaceAlt : tokens.color.surface;
   return {
     ...bodyRow,
     height: state.height,
     cursor: state.clickable ? 'pointer' : 'default',
     outline: state.focused ? `2px solid ${tokens.color.indigo}` : 'none',
     outlineOffset: -2,
-    background: state.selected
-      ? tokens.color.indigoSoft
-      : state.group !== null && !state.group.isLeaf
-        ? tokens.color.surfaceAlt
-        : state.index % 2 === 0
-          ? tokens.color.surface
-          : tokens.color.surfaceAlt,
+    background: `linear-gradient(${tint}, ${tint}), ${tokens.color.surface}`,
     ...(state.group?.depth === 0 ? { borderTop: `1px solid ${tokens.color.borderStrong}` } : {}),
   };
 }

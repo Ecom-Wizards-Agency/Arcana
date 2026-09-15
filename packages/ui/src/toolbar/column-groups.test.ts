@@ -3,26 +3,17 @@ import { columnsFor } from '../columns.js';
 import { groupColumns, searchColumns } from './column-groups.js';
 
 describe('column picker groups', () => {
-  it('splits a level into attributes and the four metric families, losing nothing', () => {
+  it('groups the full catalogue by subject and preserves all four metric variants', () => {
     const available = columnsFor('targets');
     const groups = groupColumns(available);
-    expect(groups.map((group) => group.id)).toEqual([
-      'dimensions',
-      'metrics',
-      'comparison',
-      'delta_absolute',
-      'delta_percent',
-    ]);
+    expect(groups.map((group) => group.id)).toEqual(['Identity', 'RANK & ORGANIC', 'SPONSORED PRODUCTS', 'SQP', 'BRAND ANALYTICS']);
     const regrouped = groups.flatMap((group) => group.columns.map((column) => column.id));
     expect(regrouped).toHaveLength(available.length);
     expect(new Set(regrouped).size).toBe(available.length);
-    expect(groups[0]?.columns.every((column) => column.kind === 'dimension')).toBe(true);
-    expect(groups[1]?.columns.map((column) => column.id)).toContain('acos');
-    expect(groups[2]?.columns.map((column) => column.id)).toContain('acos_comparison');
-    expect(groups[3]?.columns.map((column) => column.id)).toContain('acos_delta_absolute');
-    expect(groups[4]?.columns.map((column) => column.id)).toContain('acos_delta_percent');
-    // Every metric family is the same size: four columns per metric.
-    expect(new Set(groups.slice(1).map((group) => group.columns.length)).size).toBe(1);
+    const sponsored = groups.find((group) => group.id === 'SPONSORED PRODUCTS')!;
+    expect(sponsored.columns.map((column) => column.id)).toEqual(expect.arrayContaining(['acos', 'acos_comparison', 'acos_delta_absolute', 'acos_delta_percent']));
+    expect(groups.find((group) => group.id === 'RANK & ORGANIC')?.columns.map((column) => column.id)).toContain('rank_grid');
+
   });
 
   it('matches every query word against header, id and description', () => {

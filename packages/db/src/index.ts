@@ -19,6 +19,10 @@
 export const PACKAGE_NAME = '@wizard-ads/db' as const;
 
 export * from './client.js';
+export * from './queries/authenticated-actor.js';
+export * from './queries/agency-bootstrap.js';
+export * from './queries/amazon-connection-operations.js';
+export * from './queries/team-invitation-acceptance.js';
 export * from './schema/index.js';
 export * from './queries/chunk.js';
 export * from './queries/campaign-update.js';
@@ -37,6 +41,9 @@ export * from './queries/feedback.js';
 export * from './queries/goto.js';
 export {
   IntegrationSecretStoreError,
+  IntegrationCredentialCommandError,
+  connectIntegrationCredentialForActor,
+  revokeIntegrationCredentialForActor,
   createIntegrationConnection,
   listIntegrationConnections,
   revokeIntegrationSecret,
@@ -66,3 +73,33 @@ export * from './queries/time-machine.js';
 export * from './queries/apply-state.js';
 export * from './queries/tokens.js';
 export * from './queries/request-client.js';
+
+export * from './queries/mcp-key-metadata.js';
+export * from './queries/mcp-key-commands.js';
+
+export * from './queries/report-lifecycle.js';
+export * from './queries/report-reconciliation.js';
+export * from './queries/recommendations-authority.js';
+export * from './queries/query-intelligence-authority.js';
+export { readProfileFreshness } from './queries/freshness.js';
+export { upsertReportCoverage, recordReportCoverage, backfillReportCoverage } from './queries/report-coverage.js';
+export * from './queries/grid-views.js';
+export * from './queries/queued-changes.js';
+export { buildRestoreProposal, readRestoreProposal, reviewRestoreProposal } from './queries/sp-write-restore-preview.js';
+export * from './queries/market-position.js';
+export * from './queries/translation.js';
+export * from './queries/timeline.js';
+export * from './queries/optimization-group-performance.js';
+export * from './queries/creative-workspace.js';
+export * from './queries/ad-group-products.js';
+export * from './queries/brand-lens.js';
+export * from './queries/optimizer-run.js';
+export * from './queries/creative-change-history.js';
+export * from './queries/dayparting-schedules.js';
+export * from './queries/optimizer-export.js';
+export * from './queries/sponsored-prompts.js';
+export { prepareOptimizerRetry, readOptimizerRetryExclusions } from './queries/sp-write-application-optimizer.js';
+export * from './queries/campaign-drafts.js';
+export * from './queries/naming-presets.js';
+export * from './queries/keyword-sets.js';
+export * from './queries/asset-library.js';

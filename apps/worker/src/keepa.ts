@@ -145,7 +145,13 @@ export async function runKeepaSync(
   }
   await deps.markSynced(connection.id, syncedAt);
 
+  // Freshness follows persisted provider observations, including identity-load replays.
+  const observationTimes = observationRows.map((row) => row.observedAt.getTime());
+  const earliestObservedAt = new Date(observationTimes.length > 0 ? Math.min(...observationTimes) : syncedAt.getTime());
+  const latestObservedAt = new Date(observationTimes.length > 0 ? Math.max(...observationTimes) : syncedAt.getTime());
   return {
+    earliestObservedAt: earliestObservedAt.toISOString(),
+    observedAt: latestObservedAt.toISOString(),
     requested: fetched.requested,
     returned: fetched.returned,
     missing: fetched.missing,

@@ -26,23 +26,31 @@
  * and unless every proposal it touched actually changed status.
  */
 import { createHash } from 'node:crypto';
+import { RecommendationDecisionResult, RecommendationRevisionRequest, recommendationBidNumber, type RecommendationRevisionSelection } from '@wizard-ads/shared/recommendation-revisions';
+import { withAuthenticatedActor } from './authenticated-actor.js';
+import { recommendationRevisionSelection, RecommendationRevisionError } from './recommendation-revisions.js';
 import {
-  OptimizationRunScheduleContext,
+  RecommendationRunAdmissionContext,
   OneTimeRpcSnapshot,
+  RecommendationPopulation,
   normalizeOptimizationGroupSnapshot,
   serializeApplyRows,
+  DependencySet,
 } from '@wizard-ads/shared';
 import type {
   ApplyRow,
+  OptimizationRunScheduleContext,
   OptimizationGroupSnapshot,
   RecommendationInputs,
 } from '@wizard-ads/shared';
-import type { DbHandle } from '../client.js';
+import type { QueryHandle, QuerySql } from '../client.js';
 import { lockCurrentApplyStates, resolveCurrentApplyStates } from './apply-state.js';
 import type { JsonValue } from './goto.js';
 import { toDate, toDateOrNull } from './pg-time.js';
 
-export type RecommendationQueryHandle = Pick<DbHandle, 'sql'>;
+export class RecommendationReviewError extends Error {}
+
+export type RecommendationQueryHandle = QueryHandle;
 
 export const RECOMMENDATION_STATUSES = [
   'proposed',
@@ -73,9 +81,6 @@ export type RecommendationReasonName = (typeof RECOMMENDATION_REASONS)[number];
 export const RECOMMENDATION_DECISIONS = ['accepted', 'dismissed', 'proposed'] as const;
 export type RecommendationDecision = (typeof RECOMMENDATION_DECISIONS)[number];
 
-/** Statuses a decision may move *from*. Everything else refuses. */
-const DECIDABLE_FROM: readonly string[] = ['proposed', 'accepted', 'dismissed'];
-
 export interface RecommendationRecord {
   id: string;
   runId: string;
@@ -102,6 +107,8 @@ export interface RecommendationRecord {
   field: string;
   currentValue: JsonValue;
   proposedValue: JsonValue;
+  /** Original engine proposals have no revision. */
+  proposalRevisionId?: string | null;
   inputs: RecommendationInputs;
   status: RecommendationStatusName;
   decidedBy: string | null;
@@ -164,6 +171,7 @@ interface RecommendationRow {
   field: string;
   current_value: JsonValue;
   proposed_value: JsonValue;
+  proposal_revision_id: string | null;
   inputs: RecommendationInputs;
   status: string;
   decided_by: string | null;
@@ -194,6 +202,7 @@ function toRecord(row: RecommendationRow): RecommendationRecord {
     field: row.field,
     currentValue: row.current_value,
     proposedValue: row.proposed_value,
+    proposalRevisionId: row.proposal_revision_id,
     inputs: row.inputs,
     status: row.status as RecommendationStatusName,
     decidedBy: row.decided_by,
@@ -261,9 +270,8 @@ function toRunSummary(row: RunRow): RecommendationRunSummary {
   const groupSnapshot = row.group_snapshot === null
     ? null
     : normalizeOptimizationGroupSnapshot(row.group_snapshot).group;
-  const scheduleContext = row.schedule_context === null
-    ? null
-    : OptimizationRunScheduleContext.parse(row.schedule_context);
+  const admissionContext = row.schedule_context == null ? null : RecommendationRunAdmissionContext.parse(row.schedule_context);
+  const scheduleContext = admissionContext !== null && 'version' in admissionContext ? admissionContext : null;
   if (groupSnapshot !== null && 'version' in groupSnapshot && scheduleContext === null) {
     throw new Error('weekday recommendation run is missing immutable schedule context');
   }
@@ -271,7 +279,7 @@ function toRunSummary(row: RunRow): RecommendationRunSummary {
     throw new Error('recommendation run group snapshot does not match group_id');
   }
   return {
-    ...(row.execution_snapshot == null ? {} : { executionSnapshot: OneTimeRpcSnapshot.parse(row.execution_snapshot) }),
+    ...(row.execution_snapshot == null ? {} : { executionSnapshot: { ...OneTimeRpcSnapshot.parse(row.execution_snapshot), ...(admissionContext?.methodAdmission === undefined ? {} : { methodId: admissionContext.methodAdmission.methodId, methodVersion: admissionContext.methodAdmission.methodVersion }) } }),
     id: row.id,
     orgId: row.org_id,
     profileId: row.profile_id,
@@ -297,7 +305,7 @@ function toRunSummary(row: RunRow): RecommendationRunSummary {
  * it is the cross-profile view the incumbent does not have.
  */
 export async function listRecommendationRuns(
-  handle: RecommendationQueryHandle,
+  handle: QueryHandle,
   options: { orgId: string; profileId?: string | null; limit?: number },
 ): Promise<RecommendationRunSummary[]> {
   const limit = options.limit ?? 20;
@@ -312,7 +320,10 @@ export async function listRecommendationRuns(
                from (
                  select status::text as status, count(*)::int as count
                    from public.recommendations c
-                  where c.run_id = r.id
+      left join public.recommendation_proposal_revisions revision
+        on revision.org_id = c.org_id and revision.profile_id = c.profile_id
+       and revision.recommendation_id = c.id and revision.id = c.proposal_revision_id
+                  where c.org_id = r.org_id and c.profile_id = r.profile_id and c.run_id = r.id
                   group by status
                ) s
            ) as counts
@@ -327,7 +338,7 @@ export async function listRecommendationRuns(
 
 /** One run plus the doctrine snapshot it was computed under. */
 export async function getRecommendationRun(
-  handle: RecommendationQueryHandle,
+  handle: QueryHandle,
   options: { orgId: string; runId: string },
 ): Promise<RecommendationRunDetail | null> {
   const rows = await handle.sql<(RunRow & { strategy_snapshot: JsonValue | null })[]>`
@@ -342,7 +353,10 @@ export async function getRecommendationRun(
                from (
                  select status::text as status, count(*)::int as count
                    from public.recommendations c
-                  where c.run_id = r.id
+      left join public.recommendation_proposal_revisions revision
+        on revision.org_id = c.org_id and revision.profile_id = c.profile_id
+       and revision.recommendation_id = c.id and revision.id = c.proposal_revision_id
+                  where c.org_id = r.org_id and c.profile_id = r.profile_id and c.run_id = r.id
                   group by status
                ) s
            ) as counts
@@ -363,9 +377,7 @@ export async function getRecommendationRun(
  * set by spend and scanning it. `limit` exists as a safety valve, not as a page
  * size.
  */
-export async function listRecommendations(
-  handle: RecommendationQueryHandle,
-  options: {
+interface RecommendationListOptions {
     orgId: string;
     runId?: string | null;
     profileId?: string | null;
@@ -374,7 +386,20 @@ export async function listRecommendations(
     /** Only the proposals stamped with this export batch. */
     exportBatchId?: string | null;
     limit?: number;
-  },
+}
+
+export async function listRecommendations(
+  handle: QueryHandle,
+  options: RecommendationListOptions,
+): Promise<RecommendationRecord[]> {
+  return readRecommendations(handle, options, options.limit ?? 20000);
+}
+
+/** Saved artifact reads must include the whole batch, independently of UI limits. */
+async function readRecommendations(
+  handle: QueryHandle,
+  options: RecommendationListOptions,
+  limit: number | null,
 ): Promise<RecommendationRecord[]> {
   const statuses = options.statuses && options.statuses.length > 0 ? [...options.statuses] : null;
   const reasons = options.reasons && options.reasons.length > 0 ? [...options.reasons] : null;
@@ -385,23 +410,29 @@ export async function listRecommendations(
            camp.name as campaign_name, ag.name as ad_group_name,
            camp.portfolio_amazon_id as campaign_portfolio_id,
            (camp.id is not null) as campaign_known,
-           c.field, c.current_value, c.proposed_value, c.inputs, c.status::text as status,
+           c.field, c.current_value,
+           case when c.proposal_revision_id is null then c.proposed_value
+                else revision.receipt -> 'proposedValue' end as proposed_value,
+           c.proposal_revision_id, c.inputs, c.status::text as status,
            c.decided_by, c.decided_at, c.export_batch_id, batch.tag as export_batch_tag,
            note.payload ->> 'note' as decision_note,
            c.created_at
       from public.recommendations c
+      left join public.recommendation_proposal_revisions revision
+        on revision.org_id = c.org_id and revision.profile_id = c.profile_id
+       and revision.recommendation_id = c.id and revision.id = c.proposal_revision_id
       -- A campaign-level proposal may carry its id only in entity_id, so resolve
       -- through both rather than leaving the campaign unknown and refusing the
       -- export row later for a reason that is not true.
       left join public.campaigns camp
-        on camp.profile_id = c.profile_id
+        on camp.org_id = c.org_id and camp.profile_id = c.profile_id
        and camp.amazon_id = coalesce(
              c.campaign_id,
              case when c.entity_type = 'campaign' then c.entity_id end
            )
       left join public.ad_groups ag
-        on ag.profile_id = c.profile_id and ag.amazon_id = c.ad_group_id
-      left join public.apply_batches batch on batch.id = c.export_batch_id
+        on ag.org_id = c.org_id and ag.profile_id = c.profile_id and ag.amazon_id = c.ad_group_id
+      left join public.apply_batches batch on batch.org_id = c.org_id and batch.profile_id = c.profile_id and batch.id = c.export_batch_id
       left join lateral (
         select a.payload
           from public.audit_log a
@@ -420,9 +451,19 @@ export async function listRecommendations(
        and (${statuses}::text[] is null or c.status::text = any (${statuses}::text[]))
        and (${reasons}::text[] is null or c.reason::text = any (${reasons}::text[]))
      order by c.created_at, c.id
-     limit ${options.limit ?? 20000}
+     limit ${limit}
   `;
   return rows.map(toRecord);
+}
+
+/** One SQL statement returns the filtered population and window under the caller's snapshot. */
+export async function listRecommendationWindow(handle: QueryHandle, options: RecommendationListOptions) {
+  const limit = options.limit ?? 20_000;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20_000) throw new Error('Invalid recommendation window');
+  const rows = await readRecommendations(handle, options, null);
+  return { rows: rows.slice(0, limit), population: RecommendationPopulation.parse({
+    loaded: Math.min(rows.length, limit), total: rows.length, limit, truncated: rows.length > limit,
+  }) };
 }
 
 export interface DecisionResult {
@@ -446,53 +487,34 @@ export async function decideRecommendations(
     decision: RecommendationDecision;
     actorId?: string | null;
     note?: string | null;
+    expectedRevisions?: RecommendationRevisionSelection;
   },
 ): Promise<DecisionResult> {
   const note = (options.note ?? '').trim();
   if (options.decision === 'dismissed' && note.length === 0) {
     throw new Error('A dismissal needs a note: record why this proposal is not being taken.');
   }
-  const ids = [...new Set(options.ids)];
+  const { ids, refs } = recommendationRevisionSelection(options.expectedRevisions === undefined ? [...new Set(options.ids)] : options.ids, options.expectedRevisions);
   if (ids.length === 0) return { updated: 0, refused: [] };
-
-  const decided = options.decision === 'proposed' ? null : new Date().toISOString();
-  const updated = await handle.sql<{ id: string }[]>`
-    update public.recommendations
-       set status = ${options.decision}::public.recommendation_status,
-           decided_by = ${options.actorId ?? null}::uuid,
-           decided_at = ${decided}::timestamptz
-     where org_id = ${options.orgId}
-       and id = any (${ids}::uuid[])
-       and status::text = any (${[...DECIDABLE_FROM]}::text[])
-     returning id
-  `;
-
-  const changed = new Set(updated.map((row) => row.id));
-  const refusedRows =
-    changed.size === ids.length
-      ? []
-      : await handle.sql<{ id: string; status: string }[]>`
-          select id, status::text as status
-            from public.recommendations
-           where org_id = ${options.orgId}
-             and id = any (${ids.filter((id) => !changed.has(id))}::uuid[])
-        `;
-
-  // One statement, not one per row: a bulk decision over a filtered preview is
-  // the interaction this surface exists for, and four thousand round trips is
-  // not an audit trail, it is a timeout.
-  if (updated.length > 0) {
-    await handle.sql`
-      insert into public.audit_log
-        (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
-      select ${options.orgId}, 'user', ${options.actorId ?? null},
-             ${`recommendation.${options.decision}`}, 'recommendation', target,
-             ${serializeJson({ note })}::text::jsonb, 'web'
-        from unnest(${updated.map((row) => row.id)}::text[]) as target
+  if (!options.actorId) throw new RecommendationRevisionError('forbidden');
+  const decide = async (sql: QuerySql) => {
+    const rows = await sql<{ result: unknown }[]>`
+      select app.decide_recommendations_v1(${options.orgId}::uuid, ${ids}::uuid[],
+        ${options.decision}::text, ${note}::text, ${refs === null ? null : JSON.stringify(refs)}::text) as result
     `;
-  }
-
-  return { updated: updated.length, refused: refusedRows.map((row) => ({ id: row.id, status: row.status })) };
+    if (rows.length !== 1) throw new Error('recommendation decision response count mismatch');
+    const result = RecommendationDecisionResult.parse(rows[0]!.result);
+    if (result.updated + result.refused.length !== ids.length
+      || new Set(result.refused.map((row) => row.id)).size !== result.refused.length
+      || result.refused.some((row) => !ids.includes(row.id))) {
+      throw new Error('recommendation decision response does not reconcile');
+    }
+    return result;
+  };
+  // The actor-bound command supplies identity; the root compatibility API starts its own boundary.
+  if ('begin' in handle.sql) return withAuthenticatedActor({ sql: handle.sql },
+    { orgId: options.orgId, userId: options.actorId }, decide);
+  return decide(handle.sql);
 }
 
 /**
@@ -569,6 +591,7 @@ export async function exportAcceptedRecommendations(
     runId: string;
     /** Restrict to these proposals; omit for every accepted proposal in the run. */
     ids?: readonly string[] | null;
+    expectedRevisions?: RecommendationRevisionSelection;
     tag: string;
     optGroup: string;
     lever: string;
@@ -583,15 +606,29 @@ export async function exportAcceptedRecommendations(
   const tag = options.tag.trim();
   if (tag.length === 0) throw new Error('An export needs a batch tag.');
 
-  return await handle.sql.begin(async (sql) => {
+  return await inTransaction(handle, async (sql) => {
+    if ('actor' in handle) await sql`select app.lock_review_recommendations(
+      ${options.orgId}::uuid,${options.profileId}::uuid,${options.runId}::uuid)`;
     const runs = await sql<{ scope_version: number | null }[]>`
       select scope_version from public.recommendation_runs
        where org_id = ${options.orgId} and profile_id = ${options.profileId} and id = ${options.runId}
-       for share
+       ${'actor' in handle ? sql`` : sql`for share`}
     `;
     if (runs.length !== 1) throw new Error('Recommendation run not found.');
     if (runs[0]?.scope_version === 2) throw new Error('One-time preview export awaits observation support.');
-    const ids = options.ids && options.ids.length > 0 ? [...new Set(options.ids)] : null;
+    const selection = options.ids == null ? null : recommendationRevisionSelection(options.ids, options.expectedRevisions);
+    if (selection === null && options.expectedRevisions !== undefined) throw new RecommendationRevisionError('invalid_request');
+    const ids = selection?.ids ?? null;
+    if (ids?.length === 0) throw new Error('No accepted proposals to export.');
+    // Lock in the same UUID order as review and preview. Render the held population afterward.
+    const held = await sql<{ id: string }[]>`select id from public.recommendations
+      where org_id = ${options.orgId}::uuid and profile_id = ${options.profileId}::uuid
+        and run_id = ${options.runId}::uuid and status = 'accepted'
+        and (${ids}::uuid[] is null or id = any(${ids}::uuid[]))
+      order by id limit 20001 ${'actor' in handle ? sql`` : sql`for update`}`;
+    if (held.length > 20_000 || (ids !== null && held.length !== ids.length)) {
+      throw new RecommendationReviewError('The exact accepted selection is unavailable; refresh before exporting.');
+    }
     const candidates = await sql<
       {
         id: string;
@@ -602,19 +639,39 @@ export async function exportAcceptedRecommendations(
         current_value: JsonValue;
         proposed_value: JsonValue;
         inputs: RecommendationInputs;
+        proposal_revision_id: string | null;
+        current_text: string | null;
       }[]
     >`
-      select id, entity_type::text as entity_type, entity_id, entity_name, field,
-             current_value, proposed_value, inputs
-        from public.recommendations
-       where org_id = ${options.orgId}
-         and profile_id = ${options.profileId}
-         and run_id = ${options.runId}
-         and status = 'accepted'
-         and (${ids}::uuid[] is null or id = any (${ids}::uuid[]))
-       order by created_at, id
+      select rec.id, rec.entity_type::text as entity_type, rec.entity_id, rec.entity_name, rec.field,
+             rec.current_value, rec.current_value #>> '{}' as current_text,
+             case when rec.proposal_revision_id is null then rec.proposed_value
+                  else revision.receipt -> 'proposedValue' end as proposed_value,
+             rec.proposal_revision_id, rec.inputs
+        from public.recommendations rec
+        left join public.recommendation_proposal_revisions revision
+          on revision.org_id = rec.org_id and revision.profile_id = rec.profile_id
+         and revision.recommendation_id = rec.id and revision.id = rec.proposal_revision_id
+       where rec.org_id = ${options.orgId}
+         and rec.profile_id = ${options.profileId}
+         and rec.run_id = ${options.runId}
+         and rec.status = 'accepted'
+         and rec.id = any (${held.map((row) => row.id)}::uuid[])
+       order by rec.created_at, rec.id
+
     `;
 
+    const heldIds = new Set(held.map((row) => row.id));
+    if (candidates.length !== held.length || new Set(candidates.map((row) => row.id)).size !== held.length
+      || candidates.some((row) => !heldIds.has(row.id))
+      || candidates.length > 20_000 || (ids !== null && candidates.length !== ids.length)) {
+      throw new RecommendationReviewError('The exact accepted selection is unavailable; refresh before exporting.');
+    }
+    const revisions = new Map(selection?.refs?.map((ref) => [ref.recommendationId, ref.revisionId]));
+    if (candidates.some((row) => revisions.has(row.id)
+      ? revisions.get(row.id) !== row.proposal_revision_id : row.proposal_revision_id !== null)) {
+      throw new RecommendationRevisionError('conflict');
+    }
     const [acceptedRow] = await sql<{ count: number }[]>`
       select count(*)::int as count
         from public.recommendations
@@ -622,18 +679,57 @@ export async function exportAcceptedRecommendations(
     `;
     const accepted = acceptedRow?.count ?? 0;
 
+    const revisionById = new Map(candidates.map((row) => [row.id, row.proposal_revision_id]));
+    const dependencyRows = new Map<string, { setId: string; rows: ApplyRow[] }>();
+    for (const candidate of candidates) {
+      if (candidate.inputs.dependencySet === undefined) continue;
+      const set = DependencySet.parse(candidate.inputs.dependencySet);
+      if (candidate.field !== 'control_set' || candidate.entity_type !== 'campaign'
+        || candidate.entity_id !== set.campaignId || candidate.proposal_revision_id !== null
+        || set.id !== `${options.runId}:${set.campaignId}`
+        || set.changes.some((step) => step.entityRef.profileId !== options.profileId)) {
+        throw new RecommendationReviewError('The dependency set differs from its accepted recommendation.');
+      }
+      dependencyRows.set(candidate.id, { setId: set.id, rows: set.changes.map((step): ApplyRow => {
+        if (step.control === 'target_bid'
+          && (step.entityRef.entityType === 'keyword' || step.entityRef.entityType === 'target')) {
+          return { entityType: step.entityRef.entityType, entityId: step.entityRef.entityId,
+            field: 'bid', old: step.current, new: step.proposed };
+        }
+        if (step.control === 'placement_adjustment' && step.placementKey !== 'amazon_business') {
+          return { entityType: 'campaign', entityId: set.campaignId,
+            field: { top_of_search: 'tos_modifier', rest_of_search: 'ros_modifier', product_pages: 'pp_modifier' }[step.placementKey],
+            old: step.current, new: step.proposed };
+        }
+        throw new RecommendationReviewError('The dependency set contains an unsupported control.');
+      }) });
+    }
+    if (dependencyRows.size > 0 && dependencyRows.size !== candidates.length) {
+      throw new RecommendationReviewError('Export dependency sets separately from individual recommendations.');
+    }
+    if ([...dependencyRows.values()].reduce((count, set) => count + set.rows.length, 0) > 500) {
+      throw new RecommendationReviewError('Select dependency sets with at most 500 control changes per preview.');
+    }
     const rows: ApplyRow[] = [];
     const rowRecommendationIds: string[] = [];
+    const rowDependencyIds: (string | null)[] = [];
+    const rowDependencySteps: (number | null)[] = [];
     const exportedIds: string[] = [];
     const skipped: ExportSkip[] = [];
 
     const applyStateTargets = candidates.flatMap((candidate) => {
+      const dependent = dependencyRows.get(candidate.id);
+      if (dependent !== undefined) return dependent.rows.map((row, index) => ({
+        key: `${candidate.id}:${index}`, entityType: row.entityType, entityId: row.entityId, field: row.field,
+      }));
       const entityType = applyEntityTypeFor(candidate.entity_type);
       return entityType === null
         ? []
         : [{ key: candidate.id, entityType, entityId: candidate.entity_id, field: candidate.field }];
     });
-    await lockCurrentApplyStates({ sql }, {
+    if ('actor' in handle) await sql`select app.lock_review_export_rows(
+      ${options.orgId}::uuid,${options.profileId}::uuid,null,${serializeJson(applyStateTargets)}::text::jsonb)`;
+    else await lockCurrentApplyStates({ sql }, {
       orgId: options.orgId,
       profileId: options.profileId,
       targets: applyStateTargets,
@@ -648,6 +744,21 @@ export async function exportAcceptedRecommendations(
     );
 
     for (const candidate of candidates) {
+      const dependent = dependencyRows.get(candidate.id);
+      if (dependent !== undefined) {
+        for (const [index, row] of dependent.rows.entries()) {
+          const current = currentStateByRecommendation.get(`${candidate.id}:${index}`);
+          if (current?.supported !== true || !current.present || !sameApplyValue(current.currentValue, row.old)) {
+            throw new RecommendationReviewError('A dependency step no longer matches the synchronized value. Refresh recommendations first.');
+          }
+          rows.push(row);
+          rowRecommendationIds.push(candidate.id);
+          rowDependencyIds.push(dependent.setId);
+          rowDependencySteps.push(index);
+        }
+        exportedIds.push(candidate.id);
+        continue;
+      }
       const entityType = applyEntityTypeFor(candidate.entity_type);
       if (entityType === null) {
         // Still exported — it leaves the tool in this batch and ships as a
@@ -677,8 +788,14 @@ export async function exportAcceptedRecommendations(
             'the entity is missing or deleted in the synchronized mirror.',
         );
       }
-      const expectedCurrent = applyValue(candidate.current_value);
-      if (!sameApplyValue(currentState.currentValue, expectedCurrent)) {
+      const revised = candidate.proposal_revision_id !== null;
+      const exactBid = (value: unknown) => RecommendationRevisionRequest.shape.proposedValue.parse(value);
+      const expectedCurrent = revised
+        ? recommendationBidNumber(exactBid(candidate.current_text)) : applyValue(candidate.current_value);
+      const currentMatches = revised
+        ? exactBid(currentState.currentValueText) === exactBid(candidate.current_text)
+        : sameApplyValue(currentState.currentValue, expectedCurrent);
+      if (!currentMatches) {
         throw new Error(
           `Cannot export ${candidate.entity_type}:${candidate.entity_id}.${candidate.field}: ` +
             'the synchronized value changed after this recommendation was calculated. Refresh recommendations first.',
@@ -688,8 +805,8 @@ export async function exportAcceptedRecommendations(
         entityType,
         entityId: candidate.entity_id,
         field: candidate.field,
-        old: applyValue(candidate.current_value),
-        new: applyValue(candidate.proposed_value),
+        old: expectedCurrent,
+        new: revised ? recommendationBidNumber(exactBid(candidate.proposed_value)) : applyValue(candidate.proposed_value),
       };
       if (candidate.entity_name !== null) row.name = candidate.entity_name;
       const clicks = toNumberOrUndefined(candidate.inputs?.clicks);
@@ -700,10 +817,12 @@ export async function exportAcceptedRecommendations(
       if (rpc !== undefined && clicks !== undefined) row.revenue = Number((rpc * clicks).toFixed(4));
       rows.push(row);
       rowRecommendationIds.push(candidate.id);
+      rowDependencyIds.push(null);
+      rowDependencySteps.push(null);
       exportedIds.push(candidate.id);
     }
 
-    if (exportedIds.length === 0) throw new Error('No accepted proposals to export.');
+    if (exportedIds.length === 0) throw new RecommendationReviewError('No accepted proposals to export.');
 
     const artifactSha256 = createHash('sha256')
       .update(serializeApplyRows(rows))
@@ -711,10 +830,12 @@ export async function exportAcceptedRecommendations(
     const [batch] = await sql<{ id: string }[]>`
       insert into public.apply_batches
         (org_id, profile_id, tag, opt_group, lever, note, status, created_by,
-         exported_at, artifact_sha256, exported_proposals, reversible_rows, unsupported_rows)
+         exported_at, artifact_sha256, exported_proposals, reversible_rows, unsupported_rows
+         ${dependencyRows.size === 0 ? sql`` : sql`, dependency_sets_count`})
       values (${options.orgId}, ${options.profileId}, ${tag}, ${options.optGroup},
               ${options.lever}, ${note}, 'staged', ${options.actorId ?? null}::uuid,
-              now(), ${artifactSha256}, ${exportedIds.length}, ${rows.length}, ${skipped.length})
+              now(), ${artifactSha256}, ${exportedIds.length}, ${rows.length}, ${skipped.length}
+              ${dependencyRows.size === 0 ? sql`` : sql`, ${dependencyRows.size}`})
       returning id
     `;
     const batchId = batch?.id;
@@ -727,14 +848,17 @@ export async function exportAcceptedRecommendations(
         ? []
         : await sql<{ id: string }[]>`
             insert into public.apply_rows
-              (batch_id, org_id, profile_id, recommendation_id, entity_type, entity_id,
-               entity_name, field, old_value, new_value, lever, clicks, revenue)
+              (batch_id, org_id, profile_id, recommendation_id, proposal_revision_id, entity_type, entity_id,
+               entity_name, field, old_value, new_value, lever, clicks, revenue
+               ${dependencyRows.size === 0 ? sql`` : sql`, dependency_set_id, dependency_step_index`})
             select ${batchId}, ${options.orgId}, ${options.profileId}, r.recommendation_id::uuid,
-                   r.entity_type::public.apply_entity_type, r.entity_id, r.entity_name,
+                   r.proposal_revision_id::uuid, r.entity_type::public.apply_entity_type, r.entity_id, r.entity_name,
                    r.field, r.old_value::jsonb, r.new_value::jsonb,
                    ${options.lever}, r.clicks::bigint, r.revenue::numeric
+                   ${dependencyRows.size === 0 ? sql`` : sql`, r.dependency_set_id, r.dependency_step_index::integer`}
               from unnest(
                      ${rowRecommendationIds}::text[],
+                     ${rowRecommendationIds.map((id) => revisionById.get(id) ?? null)}::text[],
                      ${rows.map((row) => row.entityType)}::text[],
                      ${rows.map((row) => row.entityId)}::text[],
                      ${rows.map((row) => row.name ?? null)}::text[],
@@ -743,8 +867,10 @@ export async function exportAcceptedRecommendations(
                      ${rows.map((row) => serializeJson(row.new))}::text[],
                      ${rows.map((row) => (row.clicks === undefined ? null : String(row.clicks)))}::text[],
                      ${rows.map((row) => (row.revenue === undefined ? null : String(row.revenue)))}::text[]
-                   ) as r(recommendation_id, entity_type, entity_id, entity_name, field,
-                          old_value, new_value, clicks, revenue)
+                     ${dependencyRows.size === 0 ? sql`` : sql`, ${rowDependencyIds}::text[], ${rowDependencySteps}::integer[]`}
+                   ) as r(recommendation_id, proposal_revision_id, entity_type, entity_id, entity_name, field,
+                          old_value, new_value, clicks, revenue
+                          ${dependencyRows.size === 0 ? sql`` : sql`, dependency_set_id, dependency_step_index`})
             returning id
           `;
     // Program rule 4: count outputs against inputs rather than trusting the
@@ -753,7 +879,11 @@ export async function exportAcceptedRecommendations(
       throw new Error(`Offered ${rows.length} apply rows, wrote ${inserted.length}`);
     }
 
-    const stamped = await sql<{ id: string }[]>`
+    const stamped = 'actor' in handle
+      ? await sql<{ id: string }[]>`select id from app.stamp_review_export(
+          ${options.orgId}::uuid, ${options.profileId}::uuid, ${options.runId}::uuid,
+          ${batchId}::uuid, ${exportedIds}::uuid[]) id`
+      : await sql<{ id: string }[]>`
       update public.recommendations
          set status = 'exported', export_batch_id = ${batchId}
        where org_id = ${options.orgId}
@@ -765,21 +895,28 @@ export async function exportAcceptedRecommendations(
       throw new Error(`Exported ${exportedIds.length} proposals, stamped ${stamped.length}`);
     }
 
-    await sql`
-      insert into public.audit_log
-        (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
-      values (${options.orgId}, 'user', ${options.actorId ?? null}, 'recommendation.exported',
-              'apply_batch', ${batchId},
-              ${serializeJson({
-                note,
-                tag,
-                lever: options.lever,
-                optGroup: options.optGroup,
-                runId: options.runId,
-                rows: rows.length,
-                skipped: skipped.length,
-              })}::text::jsonb, 'web')
-    `;
+    if ('actor' in handle) {
+      const [audit] = await sql<{ count: number }[]>`select app.record_recommendation_review_audit(
+        ${options.orgId}::uuid,'recommendation.exported','apply_batch',${[batchId]}::text[],
+        ${serializeJson({ note, tag, lever: options.lever, optGroup: options.optGroup, runId: options.runId, rows: rows.length, skipped: skipped.length })}::text::jsonb) as count`;
+      if (audit?.count !== 1) throw new Error('Export audit count mismatch');
+    } else {
+      await sql`
+        insert into public.audit_log
+          (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
+        values (${options.orgId}, 'user', ${options.actorId ?? null}, 'recommendation.exported',
+                'apply_batch', ${batchId},
+                ${serializeJson({
+                  note,
+                  tag,
+                  lever: options.lever,
+                  optGroup: options.optGroup,
+                  runId: options.runId,
+                  rows: rows.length,
+                  skipped: skipped.length,
+                })}::text::jsonb, 'web')
+      `;
+    }
 
     return { batchId, tag, exported: stamped.length, accepted, rows, skipped };
   });
@@ -802,7 +939,7 @@ export interface ExportBatchRecord {
 
 /** Re-read a batch so its files can be produced again without re-deciding. */
 export async function getExportBatch(
-  handle: RecommendationQueryHandle,
+  handle: QueryHandle,
   options: { orgId: string; batchId: string },
 ): Promise<ExportBatchRecord | null> {
   const batches = await handle.sql<
@@ -820,7 +957,7 @@ export async function getExportBatch(
   >`
     select id, org_id, profile_id, tag, opt_group, lever, note, status::text as status, created_at
       from public.apply_batches
-     where org_id = ${options.orgId} and id = ${options.batchId}
+     where org_id = ${options.orgId} and id = ${options.batchId} and source_kind = 'legacy_export'
   `;
   const batch = batches[0];
   if (!batch) return null;
@@ -837,11 +974,16 @@ export async function getExportBatch(
       revenue: string | number | null;
     }[]
   >`
-    select entity_type::text as entity_type, entity_id, entity_name, field,
-           old_value, new_value, clicks, revenue
-      from public.apply_rows
-     where org_id = ${options.orgId} and batch_id = ${options.batchId}
-     order by created_at, id
+    select a.entity_type::text as entity_type, a.entity_id, a.entity_name, a.field,
+           a.old_value, a.new_value, a.clicks, a.revenue
+      from public.apply_rows a
+      left join public.recommendations r on r.org_id=a.org_id and r.profile_id=a.profile_id and r.id=a.recommendation_id
+     where a.org_id = ${options.orgId} and a.batch_id = ${options.batchId}
+       and a.profile_id = ${batch.profile_id}
+     order by a.created_at,
+       case when to_jsonb(a)->>'dependency_set_id' is not null then r.created_at end,
+       case when to_jsonb(a)->>'dependency_set_id' is not null then r.id end,
+       (to_jsonb(a)->>'dependency_step_index')::integer, a.id
   `;
 
   const rows: ApplyRow[] = rowRecords.map((row) => {
@@ -858,10 +1000,19 @@ export async function getExportBatch(
     return out;
   });
 
-  const proposals = await listRecommendations(handle, {
+  const [expected] = await handle.sql<{ count: number }[]>`
+    select count(*)::int as count from public.recommendations
+     where org_id = ${options.orgId} and profile_id = ${batch.profile_id}
+       and export_batch_id = ${options.batchId}
+  `;
+  const proposals = await readRecommendations(handle, {
     orgId: options.orgId,
+    profileId: batch.profile_id,
     exportBatchId: options.batchId,
-  });
+  }, null);
+  if (expected === undefined || proposals.length !== expected.count) {
+    throw new Error('The saved recommendation batch changed while reading. Refresh and try again.');
+  }
 
   return {
     id: batch.id,
@@ -919,7 +1070,7 @@ export async function createNegativeProposals(
 ): Promise<NegativeProposalResult> {
   if (options.proposals.length === 0) throw new Error('No negative proposals supplied.');
 
-  return await handle.sql.begin(async (sql) => {
+  return await inTransaction(handle, async (sql) => {
     const [run] = await sql<{ id: string }[]>`
       insert into public.recommendation_runs
         (org_id, profile_id, status, lookback_days, window_start, window_end, engine_version,
@@ -967,4 +1118,11 @@ export async function createNegativeProposals(
 
     return { runId, created };
   });
+}
+
+/** Reuse an admitted transaction; legacy worker callers still own one commit. */
+async function inTransaction<T>(handle: QueryHandle, operation: (sql: QuerySql) => Promise<T>): Promise<T> {
+  if (!('begin' in handle.sql)) return operation(handle.sql);
+  const result = await handle.sql.begin(async (sql) => ({ value: await operation(sql) }));
+  return result.value;
 }

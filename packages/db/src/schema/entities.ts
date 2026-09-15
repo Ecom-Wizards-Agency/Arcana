@@ -11,6 +11,7 @@
  */
 import {
   bigint,
+  check,
   date,
   index,
   jsonb,
@@ -20,7 +21,8 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import type { TargetExpression } from '@wizard-ads/shared';
+import type { TargetExpression, CreativeChangeCertainty } from '@wizard-ads/shared';
+import type { SpCompleteCampaignBiddingState } from '@wizard-ads/shared/sp-writes';
 import { money, ts } from './columns.js';
 import {
   adProduct,
@@ -33,7 +35,7 @@ import {
   negativeScope,
   targetingType,
 } from './enums.js';
-import { adProfiles, orgs } from './tenancy.js';
+import { adProfiles, orgs, authUsers } from './tenancy.js';
 
 /** Placement uplift percentages exactly as Amazon stores them. */
 export interface PlacementBiddingJson {
@@ -79,6 +81,8 @@ export const campaigns = pgTable(
     targetingType: targetingType('targeting_type'),
     biddingStrategy: biddingStrategy('bidding_strategy'),
     placementBidding: jsonb('placement_bidding').$type<PlacementBiddingJson>(),
+    biddingControlState: jsonb('bidding_control_state').$type<SpCompleteCampaignBiddingState>(),
+    biddingObservedAt: ts('bidding_observed_at'),
     startDate: date('start_date'),
     endDate: date('end_date'),
   },
@@ -125,6 +129,8 @@ export const keywords = pgTable(
     keywordText: text('keyword_text').notNull(),
     matchType: matchType('match_type').notNull(),
     bid: money('bid', 12, 4),
+    /** Freshness of this field; observing a bid does not refresh the whole entity. */
+    bidObservedAt: ts('bid_observed_at'),
   },
   (t) => [
     uniqueIndex('keywords_profile_id_amazon_id_key').on(t.profileId, t.amazonId),
@@ -141,6 +147,7 @@ export const targets = pgTable(
     expression: jsonb('expression').$type<TargetExpression[]>().notNull().default([]),
     resolvedExpression: text('resolved_expression'),
     bid: money('bid', 12, 4),
+    bidObservedAt: ts('bid_observed_at'),
   },
   (t) => [
     uniqueIndex('targets_profile_id_amazon_id_key').on(t.profileId, t.amazonId),
@@ -187,10 +194,17 @@ export const entityChanges = pgTable(
     applyBatchId: uuid('apply_batch_id'),
     /** Exact immutable export row this synchronization event uniquely proves. */
     applyRowId: uuid('apply_row_id'),
+    acknowledgedAt: ts('acknowledged_at'),
+    acknowledgedBy: uuid('acknowledged_by').references(() => authUsers.id),
     observedAt: ts('observed_at').notNull().defaultNow(),
+    /** Supplied by the insert trigger and immutable thereafter. */
+    certainty: jsonb('certainty').$type<CreativeChangeCertainty>().notNull().default(sql`'{}'::jsonb`),
   },
   (t) => [
+    check('entity_changes_ack_pair', sql`(${t.acknowledgedAt} is null) = (${t.acknowledgedBy} is null)`),
+    index('entity_changes_unacknowledged').on(t.orgId, t.profileId).where(sql`${t.acknowledgedAt} is null and ${t.source} = 'sync'`),
     index('entity_changes_profile_time_idx').on(t.profileId, t.observedAt),
+    uniqueIndex('entity_changes_tenant_identity_key').on(t.orgId, t.profileId, t.id),
     uniqueIndex('entity_changes_apply_row_once_key')
       .on(t.applyRowId)
       .where(sql`${t.applyRowId} is not null`),

@@ -14,11 +14,13 @@
 import { pgEnum } from 'drizzle-orm/pg-core';
 import {
   AdProduct,
+  ApplyBatchSourceKind,
   CreativeAttributionState,
   EntityState,
   EntityType,
   HistoricalBootstrapStatus,
   HourSettlingState,
+  INTEGRATION_PROVIDERS,
   JobType,
   MarketingStreamDataset,
   MatchType,
@@ -40,7 +42,7 @@ import {
   WorkerReportType,
 } from '@wizard-ads/shared';
 import {
-  SpWriteApprovalMode,
+  SpWriteExecutionApprovalMode,
   SpWriteObservationOutcome,
   SpWriteProviderPositionOutcome,
   SpWriteRefusalReason,
@@ -57,6 +59,7 @@ const tuple = <T extends string>(values: readonly T[]): [T, ...T[]] => {
   return [first, ...rest];
 };
 
+export const applyBatchSourceKind = pgEnum('apply_batch_source_kind', tuple(ApplyBatchSourceKind.options));
 export const orgRole = pgEnum('org_role', ['owner', 'admin', 'analyst', 'viewer']);
 export const connectionStatus = pgEnum('connection_status', [
   'pending',
@@ -64,7 +67,7 @@ export const connectionStatus = pgEnum('connection_status', [
   'error',
   'revoked',
 ]);
-export const INTEGRATION_PROVIDERS = ['keepa', 'datadive', 'mrp'] as const;
+export { INTEGRATION_PROVIDERS } from '@wizard-ads/shared';
 export const integrationProvider = pgEnum('integration_provider', INTEGRATION_PROVIDERS);
 
 export const adsRegion = pgEnum('ads_region', tuple(Region.options));
@@ -229,7 +232,7 @@ export const spWritePlanDirection = pgEnum('sp_write_plan_direction', [
 ]);
 export const spWriteApprovalMode = pgEnum(
   'sp_write_approval_mode',
-  tuple(SpWriteApprovalMode.options),
+  tuple(SpWriteExecutionApprovalMode.options),
 );
 export const spWriteActionResolutionKind = pgEnum(
   'sp_write_action_resolution_kind',

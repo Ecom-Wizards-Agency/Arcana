@@ -9,6 +9,8 @@
  * audit is a black box with better manners.
  */
 import { z } from 'zod';
+import { CalculationTrace, DependencySet, Hold, MethodEvaluatorInput, MethodId, MethodSelection, MethodVersion, MethodMetrics, SettingSources } from './methods.js';
+import { RecommendationPreviewDiagnostics } from './recommendation-preview.js';
 import { EntityRef, IsoDate, Uuid } from './primitives.js';
 import { DirectionalAdjustmentProvenance } from './optimization.js';
 
@@ -43,6 +45,11 @@ export type RecommendationStatus = z.infer<typeof RecommendationStatus>;
 
 /** Provenance. Every field here answers "why is this number what it is". */
 export const RecommendationInputs = z.object({
+  dependencySet: DependencySet.optional(),
+  methodId: MethodId.optional(),
+  methodVersion: MethodVersion.optional(),
+  settingSources: SettingSources.optional(),
+  trace: CalculationTrace.optional(),
   /** Revenue per click over the window, or null when there were no clicks. */
   rpc: z.number().nullable(),
   clicks: z.number().int().nonnegative(),
@@ -94,3 +101,67 @@ export const Recommendation = z.object({
   createdAt: z.iso.datetime().optional(),
 });
 export type Recommendation = z.infer<typeof Recommendation>;
+
+/** Compatibility evidence for the preserved reference evaluator. */
+export const ReferenceBidNote = z.object({ code: z.enum(['stock_unknown', 'rank_unknown']), message: z.string() });
+export const ReferenceConfidence = z.object({
+  level: CvrSourceLevel, metrics: MethodMetrics, cvr: z.number().nullable(), aov: z.number().nullable(),
+  rpc: z.number().nullable(), clicksToConversion: z.number().nullable(),
+});
+export const ReferenceNoProposalReason = z.enum(['on_target', 'no_clicks', 'no_benchmark_data', 'no_change', 'below_minimum']);
+export const ReferenceBidOutcome = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('proposal'), recommendation: Recommendation, notes: z.array(ReferenceBidNote), confidence: ReferenceConfidence }),
+  z.object({ kind: z.literal('suppressed'), recommendation: Recommendation, suppressedReason: z.string(), notes: z.array(ReferenceBidNote), confidence: ReferenceConfidence }),
+  z.object({ kind: z.literal('blocked'), blockedReason: z.literal('out_of_stock'), note: z.string() }),
+  z.object({ kind: z.literal('none'), reason: ReferenceNoProposalReason }),
+]);
+export type ReferenceBidOutcome = z.infer<typeof ReferenceBidOutcome>;
+export const MethodEvaluatorOutput = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('proposal'), changes: z.array(Recommendation).min(1), trace: CalculationTrace,
+    dependencySet: DependencySet.optional(),
+    dependencies: z.array(EntityRef), referenceOutcome: ReferenceBidOutcome.optional(),
+  }),
+  z.object({ kind: z.literal('hold'), hold: Hold, trace: CalculationTrace.optional(), referenceOutcome: ReferenceBidOutcome.optional() }),
+]);
+export type MethodEvaluatorOutput = z.infer<typeof MethodEvaluatorOutput>;
+
+/** Exact population of one database-filtered recommendation window. */
+export const RecommendationPopulation = z.object({
+  loaded: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  limit: z.number().int().min(1).max(20_000),
+  truncated: z.boolean(),
+}).strict().superRefine((value, context) => {
+  if (value.loaded !== Math.min(value.total, value.limit)
+    || value.truncated !== (value.loaded < value.total)) {
+    context.addIssue({ code: 'custom', message: 'recommendation window counts do not reconcile' });
+  }
+});
+export type RecommendationPopulation = z.infer<typeof RecommendationPopulation>;
+
+export const OptimizerReviewIdentity = z.object({ orgId: Uuid, profileId: Uuid, batchId: Uuid }).strict();
+export type OptimizerReviewIdentity = z.infer<typeof OptimizerReviewIdentity>;
+
+/** One saved evaluator outcome per target, including unchanged bids and holds. */
+export const OptimizerTargetOutcome = z.object({
+  entityRef: EntityRef,
+  currentBid: z.number().nonnegative().nullable(),
+  method: MethodSelection,
+  outcome: z.enum(['suggestion', 'unchanged', 'blocked']),
+  reasonCode: z.string().min(1),
+  reason: z.string().min(1),
+  hold: Hold.optional(),
+}).strict();
+export type OptimizerTargetOutcome = z.infer<typeof OptimizerTargetOutcome>;
+
+/** Readable historical run evidence; absent optional fields remain unavailable. */
+export const OptimizerRunNarrative = z.object({
+  diagnostics: RecommendationPreviewDiagnostics.extend({
+    examples: z.array(z.object({ entity: z.string(), outcome: z.string(), detail: z.string() })).optional(),
+  }).optional(),
+  holds: z.array(Hold).optional(),
+  calculationSnapshots: z.array(MethodEvaluatorInput).optional(),
+  targetOutcomes: z.array(OptimizerTargetOutcome).optional(),
+});
+export type OptimizerRunNarrative = z.infer<typeof OptimizerRunNarrative>;

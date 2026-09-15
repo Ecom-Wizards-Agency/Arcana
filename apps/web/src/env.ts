@@ -3,18 +3,18 @@
  *
  * Two rules this file exists to keep:
  *
- *  - **Secrets are server-only.** The LWA client secret, the state signing key
+ *  - **Secrets are server-only.** The state signing key
  *    and the database URL are read here and nowhere a bundle can reach. Only
  *    `NEXT_PUBLIC_*` values cross to the browser, and the two that do are the
  *    Supabase URL and anon key, which are public by design.
  *  - **A missing variable names itself.** A driver error six frames deep costs
- *    an hour; `AMAZON_LWA_CLIENT_SECRET is not set` costs a minute.
+ *    an hour; naming the missing variable costs a minute.
  *
  * The Amazon endpoints are configurable with real defaults. That is not
  * indirection for its own sake: the end-to-end test points them at a local
  * mock, which is the only way to exercise the callback without a live grant.
  */
-import { Region } from '@wizard-ads/shared';
+import { AmazonConnectionInstallation } from '@wizard-ads/shared';
 
 export function required(name: string, env: NodeJS.ProcessEnv = process.env): string {
   const value = env[name];
@@ -54,41 +54,31 @@ export function mcpEndpoint(env: NodeJS.ProcessEnv = process.env): string | null
   }
 }
 
-/** Amazon's LWA endpoints, and the hosts the profile fetch talks to. */
-export interface AmazonOAuthConfig {
-  clientId: string;
-  clientSecret: string;
-  redirectUri: string;
-  scope: string;
+/** Web only constructs the consent redirect; token exchange belongs to the worker. */
+export interface AmazonOAuthConfig extends AmazonConnectionInstallation {
   authorizeUrl: string;
-  tokenUrl: string;
-  hosts: Record<Region, string>;
 }
 
-export const DEFAULT_ADS_HOSTS: Record<Region, string> = {
-  NA: 'https://advertising-api.amazon.com',
-  EU: 'https://advertising-api-eu.amazon.com',
-  FE: 'https://advertising-api-fe.amazon.com',
-};
-
-export const REGIONS: readonly Region[] = Region.options;
+export function amazonConnectionsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env['OPENSPELL_AMAZON_CONNECTIONS_ENABLED'] === '1';
+}
 
 export function amazonOAuthConfig(env: NodeJS.ProcessEnv = process.env): AmazonOAuthConfig {
-  return {
+  const installation = AmazonConnectionInstallation.safeParse({
     clientId: required('AMAZON_LWA_CLIENT_ID', env),
-    clientSecret: required('AMAZON_LWA_CLIENT_SECRET', env),
     redirectUri: required('AMAZON_OAUTH_REDIRECT_URI', env),
     // The one scope the tool needs. Widening it is a deliberate act, not a
     // default, so it is written here rather than read from the environment.
     scope: 'advertising::campaign_management',
-    authorizeUrl: optional('AMAZON_LWA_AUTHORIZE_URL', 'https://www.amazon.com/ap/oa', env),
-    tokenUrl: optional('AMAZON_LWA_TOKEN_URL', 'https://api.amazon.com/auth/o2/token', env),
-    hosts: {
-      NA: optional('AMAZON_ADS_HOST_NA', DEFAULT_ADS_HOSTS.NA, env),
-      EU: optional('AMAZON_ADS_HOST_EU', DEFAULT_ADS_HOSTS.EU, env),
-      FE: optional('AMAZON_ADS_HOST_FE', DEFAULT_ADS_HOSTS.FE, env),
-    },
-  };
+  });
+  if (!installation.success) throw new Error('Amazon consent configuration is invalid');
+  const authorizeUrl = optional('AMAZON_LWA_AUTHORIZE_URL', 'https://www.amazon.com/ap/oa', env);
+  const url = new URL(authorizeUrl);
+  if (url.username || url.password || url.hash || !(url.protocol === 'https:'
+    || (url.protocol === 'http:' && ['localhost','127.0.0.1','[::1]'].includes(url.hostname)))) {
+    throw new Error('Amazon consent endpoint is invalid');
+  }
+  return { ...installation.data, authorizeUrl };
 }
 
 /** HMAC key for the OAuth `state`. Length is enforced where it is used. */

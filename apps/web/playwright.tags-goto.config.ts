@@ -1,3 +1,4 @@
+import { e2eTestMatch } from './src/e2e-suite-registry';
 /**
  * End-to-end configuration for the tag and goto surfaces (WP-08).
  *
@@ -20,6 +21,7 @@
  * Supabase session.
  */
 import { defineConfig, devices } from '@playwright/test';
+import { withE2ESummaryReporter } from './e2e/e2e-count-reporter';
 
 function required(name: string): string {
   const value = process.env[name];
@@ -35,7 +37,7 @@ export default defineConfig({
   // WP-15's feedback specs and WP-07's recommendation specs ride this config:
   // they need the same header bridge against the same production build, and
   // standing up another server per work package would buy nothing.
-  testMatch: /(tags-goto|feedback|recommendations|experiments|time-machine|campaigns)\.spec\.ts$/,
+  testMatch: e2eTestMatch('tags-goto'),
   outputDir: './node_modules/.cache/playwright/tags-goto',
   fullyParallel: false,
   workers: 1,
@@ -43,7 +45,7 @@ export default defineConfig({
   retries: 0,
   timeout: 60_000,
   expect: { timeout: 15_000 },
-  reporter: process.env['CI']
+  reporter: withE2ESummaryReporter(process.env['CI']
     ? [
         ['list'],
         [
@@ -54,7 +56,7 @@ export default defineConfig({
           },
         ],
       ]
-    : [['list']],
+    : [['list']]),
   use: {
     baseURL,
     trace: 'retain-on-failure',

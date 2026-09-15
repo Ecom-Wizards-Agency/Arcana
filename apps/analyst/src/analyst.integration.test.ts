@@ -25,6 +25,7 @@ import type { TestDatabase } from '@wizard-ads/db/testing';
 import { issueApiKey, startHttpServer } from '@wizard-ads/mcp';
 import type { McpConfig } from '@wizard-ads/mcp';
 import type { RunningServer } from '@wizard-ads/mcp';
+import { DEV_USER_ID } from '../../../supabase/seed/dev-seed.js';
 import { connectMcp } from './mcp-client.js';
 import type { AnalystMcpClient } from './mcp-client.js';
 import { runDailyAnalyst } from './analyst.js';
@@ -89,6 +90,7 @@ describe.skipIf(!available)('daily analyst against dev-seed', () => {
 
     const issued = await issueApiKey(db, {
       orgId,
+      createdBy: DEV_USER_ID,
       label: 'analyst integration',
       scope: 'read',
       profileIds: profiles.map((profile) => profile.id),

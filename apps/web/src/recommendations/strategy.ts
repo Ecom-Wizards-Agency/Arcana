@@ -1,7 +1,7 @@
 /**
  * The strategy / objective dimension every proposal carries.
  *
- * `https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/docs/DECISIONS.md` (2026-08-14, the vision entry) makes this a constraint on
+ * `https://github.com/Ecom-Wizards-Agency/Arcana/blob/dd4f3887f626128250abee537f374712ca42717c/docs/DECISIONS.md` (2026-08-14, the vision entry) makes this a constraint on
  * WP-07 rather than a nicety: **per-campaign strategy assignment is coming, and
  * the recommendation surfaces have to carry the dimension now so adding
  * assignment later is a data change and not a rework.** So every proposal
@@ -151,6 +151,7 @@ function describe(
 }
 
 export interface ResolveStrategyOptions {
+  methodId?: string;
   campaignId: string | null;
   campaignName: string | null;
   /** `recommendation_runs.strategy_snapshot`, as stored. */
@@ -161,6 +162,14 @@ export interface ResolveStrategyOptions {
 
 /** Resolve the strategy dimension for one proposal. */
 export function resolveProposalStrategy(options: ResolveStrategyOptions): ProposalStrategy {
+  const methodId = options.methodId ?? options.executionSnapshot?.configuration.method;
+  if (methodId === 'sp.coordinated-efficiency') return {
+    optGroup: null, category: classifyCampaignCategory(options.campaignName),
+    objective: 'coordinated-efficiency', objectiveLabel: 'Coordinated efficiency (draft)',
+    source: options.executionSnapshot === undefined ? 'opt_group' : 'one_time',
+    targetAcos: options.executionSnapshot?.configuration.targetAcos ?? null, cutOnAcosAlone: null,
+    explanation: 'Coordinated efficiency uses attributed revenue and joint control bounds. This draft method produces reviewable previews.',
+  };
   if (options.executionSnapshot !== undefined) {
     return {
       optGroup: null,
@@ -170,7 +179,7 @@ export function resolveProposalStrategy(options: ResolveStrategyOptions): Propos
       source: 'one_time',
       targetAcos: options.executionSnapshot.configuration.targetAcos,
       cutOnAcosAlone: null,
-      explanation: 'Calculated with the settings confirmed for this one-time RPC preview and the applicable stock, rank, and observation safeguards.',
+      explanation: `Calculated with the confirmed ${options.executionSnapshot.configuration.method} settings and the applicable evidence and observation safeguards.`,
     };
   }
   const groups = optGroupsOf(options.strategySnapshot);
@@ -241,7 +250,7 @@ export function resolveExportCaps(snapshot: unknown, optGroup: string | null): E
 
 /** Short form for a table cell: `Rank · scale` / `Discovery · unassigned`. */
 export function strategyLabel(strategy: ProposalStrategy): string {
-  if (strategy.source === 'one_time') return 'One-time RPC';
+  if (strategy.source === 'one_time' || strategy.objective === 'coordinated-efficiency') return strategy.objectiveLabel;
   const objective = strategy.source === 'unassigned' ? 'unassigned' : strategy.objective;
   return `${strategy.category} · ${objective}`;
 }

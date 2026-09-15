@@ -62,6 +62,8 @@ export interface GridToolbarProps {
   /** Visible column ids, in order. */
   visible: readonly string[];
   onVisibleChange: (columnIds: string[]) => void;
+  /** Hosts with a full layout editor route every Columns control to it. */
+  onOpenColumnManager?: (() => void) | undefined;
   filter: FilterSet;
   onFilterChange: (filter: FilterSet) => void;
   groupBy: readonly string[];
@@ -165,7 +167,7 @@ export function GridToolbar(props: GridToolbarProps): ReactNode {
         <button
           type="button"
           aria-expanded={pickerOpen}
-          onClick={() => setPickerOpen((open) => !open)}
+          onClick={() => props.onOpenColumnManager ? props.onOpenColumnManager() : setPickerOpen((open) => !open)}
           style={button}
         >
           Columns ({props.visible.length})

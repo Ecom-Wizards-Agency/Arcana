@@ -6,14 +6,13 @@
  * verifies only the session subject and resolves membership, active org,
  * profile ownership, role, and currency in one database statement.
  */
-import type { RequestDatabase } from '@wizard-ads/db';
+import type { QueryHandle } from '@wizard-ads/db';
 import type { OrgRole } from '../auth/roles';
 import { isOrgRole } from '../auth/roles';
 import { ORG_COOKIE } from '../cookies';
 import {
   actorFromHeaders,
   e2eAuthBridgeEnabled,
-  openWebDatabase,
   RequestAuthError,
 } from '../server/request-context';
 
@@ -30,11 +29,6 @@ export interface GridReadReceipt {
   profileId: string | null;
   /** Server-owned and therefore null whenever `profileId` is null. */
   currencyCode: string | null;
-}
-
-export interface AuthorizedGridRequest {
-  database: RequestDatabase;
-  receipt: GridReadReceipt;
 }
 
 interface ReceiptRow {
@@ -135,7 +129,7 @@ export function gridRole(value: string): OrgRole {
  * profile fields.
  */
 export async function resolveGridReadReceipt(
-  handle: Pick<RequestDatabase, 'sql'>,
+  handle: QueryHandle,
   subject: GridRequestSubject,
   candidateProfileId: string | null,
 ): Promise<GridReadReceipt> {
@@ -184,36 +178,8 @@ export async function resolveGridReadReceipt(
   };
 }
 
-interface GridRequestAuthorizationAdapters {
-  identify: typeof gridRequestSubject;
-  openDatabase: typeof openWebDatabase;
-  resolveReceipt: typeof resolveGridReadReceipt;
-  enforceAssurance?: (
-    subject: GridRequestSubject,
-    receipt: GridReadReceipt,
-  ) => Promise<void>;
-}
-
-interface AuthorizeGridRequestInput {
-  headers: Headers;
-  candidateProfileId: string | null;
-  /** Fixed lifecycle boundary for identifier-free route timing. */
-  identityVerified(): void;
-}
-
-export type GridRequestAuthorizer = (
-  input: AuthorizeGridRequestInput,
-) => Promise<AuthorizedGridRequest>;
-
-const DEFAULT_AUTHORIZATION_ADAPTERS: GridRequestAuthorizationAdapters = {
-  identify: gridRequestSubject,
-  openDatabase: openWebDatabase,
-  resolveReceipt: resolveGridReadReceipt,
-  enforceAssurance: enforceGridAssurance,
-};
-
 /** Keep the Grid hot path unchanged until a rollout policy can refuse access. */
-async function enforceGridAssurance(
+export async function enforceGridAssurance(
   subject: GridRequestSubject,
   receipt: GridReadReceipt,
 ): Promise<void> {
@@ -247,38 +213,3 @@ async function enforceGridAssurance(
     );
   }
 }
-
-/**
- * Construct the Grid's one deep authorization operation.
- *
- * Identity, database acquisition, and the receipt query stay in one lifecycle
- * so callers cannot reorder them or accidentally use a different database for
- * authorization. Adapters are fixed at construction and exist only for tests;
- * request callers supply no identity or tenant facts.
- */
-export function createGridRequestAuthorizer(
-  adapters: GridRequestAuthorizationAdapters = DEFAULT_AUTHORIZATION_ADAPTERS,
-): GridRequestAuthorizer {
-  return async (input): Promise<AuthorizedGridRequest> => {
-    const subject = await adapters.identify(input.headers);
-    input.identityVerified();
-
-    const database = adapters.openDatabase();
-    try {
-      const receipt = await adapters.resolveReceipt(
-        database,
-        subject,
-        input.candidateProfileId,
-      );
-      await adapters.enforceAssurance?.(subject, receipt);
-      return { database, receipt };
-    } catch (error) {
-      // The caller never receives a handle when authorization fails, so this
-      // layer owns exactly one close on that path.
-      await database.close();
-      throw error;
-    }
-  };
-}
-
-export const authorizeGridRequest = createGridRequestAuthorizer();

@@ -1,4 +1,6 @@
 import type { NextConfig } from 'next';
+import { SCREEN_REGISTRY } from './src/screens/registry-metadata';
+import { screenEnabled } from './src/screens/types';
 
 /**
  * Workspace packages are consumed as TypeScript source (no build step between
@@ -42,33 +44,43 @@ const nextConfig: NextConfig = {
     '@wizard-ads/ui',
   ],
   typedRoutes: true,
-  // `/` is an entry alias, not an authenticated product surface. Resolve it
-  // before the React layout so the request does not validate the session and
-  // render the application frame only to discard both in a redirect. Next
-  // carries the original query string forward, so an explicit `profile`
-  // remains available to the dashboard's existing org-scoped canonicalizer.
-  redirects: async () => [
-    {
-      source: '/',
-      destination: '/dashboard',
-      permanent: false,
-    },
-  ],
+  // Resolve query-preserving aliases before streaming the application layout.
+  redirects: async () => SCREEN_REGISTRY.flatMap((screen) =>
+    screen.redirectTo !== undefined && screenEnabled(screen)
+      ? [{ source: screen.path, destination: screen.redirectTo, permanent: false }]
+      : [],
+  ),
   // Each authenticated Playwright partition owns one synthetic dev process.
   // A Next development-memory restart would discard that process's in-memory
   // fixture, so each partition keeps the bounded heap configured by global
   // setup and releases it at teardown. Normal development and production
   // retain Next's default behavior.
-  experimental:
-    process.env['WIZARD_ADS_E2E_AUTH'] === '1'
-      ? { devMemoryThresholdRestart: false }
-      : undefined,
-  webpack: (config) => {
+  experimental: {
+    // Resolve named workspace imports through their generated barrels so Grid
+    // loads its schemas and metric helpers without unrelated engine modules.
+    optimizePackageImports: ['@wizard-ads/shared', '@wizard-ads/core', '@wizard-ads/ui'],
+    ...(process.env['WIZARD_ADS_E2E_AUTH'] === '1'
+      ? { devMemoryThresholdRestart: false, webpackMemoryOptimizations: true }
+      : {}),
+  },
+  webpack: (config, { isServer, dev }) => {
     config.resolve = config.resolve ?? {};
     config.resolve.extensionAlias = {
       ...(config.resolve.extensionAlias ?? {}),
       '.js': ['.ts', '.tsx', '.js'],
     };
+    // The early tracker is a classic script, shared by every authenticated
+    // document. Emit its content-hashed URL into Next's public static tree,
+    // including when the importing layout belongs to the server compilation.
+    config.module.rules.push({
+      test: /shell-fetch-bootstrap\.js$/,
+      type: 'asset/resource',
+      generator: {
+        filename: 'static/media/[name].[contenthash:8][ext]',
+        publicPath: '/_next/',
+        outputPath: isServer ? (dev ? '../' : '../../') : undefined,
+      },
+    });
     return config;
   },
   /**

@@ -3,8 +3,13 @@ import { ENTITY_LEVELS } from '@wizard-ads/ui';
 import type { EntityLevel } from '@wizard-ads/ui';
 import { loadGridRows } from '../../../_lib/grid-data';
 import { precedingPeriod } from '../../../_lib/periods';
-import { authorizeGridRequest } from '../../../../src/grid/request-context';
-import { RequestAuthError } from '../../../../src/server/request-context';
+import { withAuthenticatedIdentityRead } from '../../../../src/server/authenticated-identity-read';
+import { enforceGridAssurance, gridRequestSubject, resolveGridReadReceipt } from '../../../../src/grid/request-context';
+// Exception: Grid resolves the selected agency and assurance receipt inside its
+// identity transaction; requestActor would resolve a second agency context first.
+// Its receipt contract observes revocation on the next statement, so this
+// one read-only transaction uses READ COMMITTED rather than a fixed snapshot.
+import { openWebDatabase, RequestAuthError } from '../../../../src/server/request-context';
 import { finalizeTimedGridResponse, GridServerTiming } from './server-timing';
 import { serializeGridPayloadWithinBudget } from './serialize';
 
@@ -32,6 +37,7 @@ interface GridRowsQuery {
   profileId: string;
   entity: EntityLevel;
   period: { start: string; end: string };
+  comparison?: { start: string; end: string };
 }
 
 interface ParsedGridRowsQuery {
@@ -69,7 +75,14 @@ export function parseGridRowsQuery(requestUrl: string): GridRowsQuery {
     throw new GridRequestError('from and to must be an ordered ISO date window');
   }
 
+  const compareFrom = query.get('compareFrom');
+  const compareTo = query.get('compareTo');
+  if ((compareFrom !== null || compareTo !== null) && (!compareFrom || !compareTo || !isCalendarDate(compareFrom) || !isCalendarDate(compareTo) || compareFrom > compareTo)) {
+    throw new GridRequestError('compareFrom and compareTo must be an ordered ISO date window');
+  }
+
   return {
+    ...(compareFrom && compareTo ? { comparison: { start: compareFrom, end: compareTo } } : {}),
     profileId,
     entity: entity as EntityLevel,
     period: { start: from, end: to },
@@ -138,65 +151,66 @@ function gridErrorResponse(error: unknown): Response {
 }
 
 interface GridRowsRouteRuntime {
-  authorizeRequest: typeof authorizeGridRequest;
+  identify: typeof gridRequestSubject;
+  openDatabase: typeof openWebDatabase;
+  resolveReceipt: typeof resolveGridReadReceipt;
+  enforceAssurance: typeof enforceGridAssurance;
   loadRows: typeof loadGridRows;
 }
 
 const DEFAULT_RUNTIME: GridRowsRouteRuntime = {
-  authorizeRequest: authorizeGridRequest,
+  identify: gridRequestSubject,
+  openDatabase: openWebDatabase,
+  resolveReceipt: resolveGridReadReceipt,
+  enforceAssurance: enforceGridAssurance,
   loadRows: loadGridRows,
 };
 
-/** Exported only so route tests can prove handle identity and close cardinality. */
+/** One complete HTTP read owns identity, authenticated SQL, settlement and teardown. */
 export function createGridRowsGet(
   runtime: GridRowsRouteRuntime = DEFAULT_RUNTIME,
 ): (request: Request) => Promise<Response> {
   return async (request: Request): Promise<Response> => {
     const timing = new GridServerTiming();
     const queryAttempt = attemptGridRowsQuery(request.url);
-    let database: Awaited<ReturnType<typeof authorizeGridRequest>>['database'] | null = null;
-    let success: Response | null = null;
     try {
-      // One deep operation establishes identity before opening a database and
-      // returns the same handle whose receipt scopes the facts query. Invalid
-      // input is retained but not refused until membership is established.
-      const authorized = await runtime.authorizeRequest({
-        headers: request.headers,
-        candidateProfileId: queryAttempt.candidateProfileId,
-        identityVerified: () => timing.mark('actor'),
-      });
-      database = authorized.database;
-      const { receipt } = authorized;
-      timing.mark('role');
+      const subject = await runtime.identify(request.headers);
+      timing.mark('actor');
+      const database = runtime.openDatabase();
+      let response: Response;
+      try {
+        response = await withAuthenticatedIdentityRead(database, { userId: subject.userId }, async (sql) => {
+          const handle = { sql };
+          const receipt = await runtime.resolveReceipt(handle, subject, queryAttempt.candidateProfileId);
+          await runtime.enforceAssurance(subject, receipt);
+          timing.mark('role');
 
-      if (!queryAttempt.ok) throw queryAttempt.error;
-      timing.mark('profile');
-      if (receipt.profileId === null || receipt.currencyCode === null) {
-        return json({ error: 'Not found' }, { status: 404 });
+          // Membership and assurance resolve before a retained input refusal.
+          if (!queryAttempt.ok) throw queryAttempt.error;
+          timing.mark('profile');
+          if (receipt.profileId === null || receipt.currencyCode === null) {
+            return json({ error: 'Not found' }, { status: 404 });
+          }
+          const { entity, period } = queryAttempt.query;
+          const payload = await runtime.loadRows(handle, entity, {
+            orgId: receipt.orgId,
+            profileId: receipt.profileId,
+            currencyCode: receipt.currencyCode,
+            period,
+            comparison: queryAttempt.query.comparison ?? precedingPeriod(period),
+          });
+          timing.mark('rows');
+          return gridPayloadResponse(payload, timing);
+        });
+      } finally {
+        // No response leaves this operation until COMMIT/ROLLBACK and close
+        // settle. A teardown failure is caught below and cannot release a 200.
+        await database.close();
       }
-      const { entity, period } = queryAttempt.query;
-
-      // Tenant, profile, and currency all come from one membership-fenced
-      // receipt. The browser cannot splice together pieces from other orgs.
-      const payload = await runtime.loadRows(database, entity, {
-        orgId: receipt.orgId,
-        profileId: receipt.profileId,
-        currencyCode: receipt.currencyCode,
-        period,
-        comparison: precedingPeriod(period),
-      });
-      timing.mark('rows');
-
-      success = gridPayloadResponse(payload, timing);
-      return success;
+      if (response.status === 200) finalizeTimedGridResponse(response, timing);
+      return response;
     } catch (error) {
       return gridErrorResponse(error);
-    } finally {
-      const openedDatabase = database;
-      if (openedDatabase !== null) {
-        if (success === null) await openedDatabase.close();
-        else await finalizeTimedGridResponse(success, timing, () => openedDatabase.close());
-      }
     }
   };
 }

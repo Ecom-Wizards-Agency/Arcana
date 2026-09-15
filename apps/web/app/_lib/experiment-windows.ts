@@ -9,7 +9,7 @@
  */
 import { listExperimentWindows } from '@wizard-ads/db';
 import type { DbHandle } from '@wizard-ads/db';
-import type { ChartWindow } from '../../src/ui/viz';
+import type { ChartWindow } from '@wizard-ads/ui';
 
 export async function loadExperimentWindows(
   handle: DbHandle,

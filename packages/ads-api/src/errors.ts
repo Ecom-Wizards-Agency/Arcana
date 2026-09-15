@@ -1,3 +1,4 @@
+import type { ProviderFailure } from '@wizard-ads/shared';
 /**
  * Every failure this client can produce, as a type the caller can branch on.
  *
@@ -9,8 +10,14 @@
  * start, so the distinction is in the type.
  */
 
+import type { AmazonConnectionReason } from '@wizard-ads/shared';
+
 /** Base class. Everything thrown by this package is an instance of it. */
-export class AdsApiError extends Error {
+export class AdsApiError extends Error implements ProviderFailure {
+  readonly provider = 'amazon_ads';
+  get kind(): string { return this.name; }
+  get retryable(): boolean { return false; }
+  get retryAfterSeconds(): number | undefined { return undefined; }
   override readonly name: string = 'AdsApiError';
 
   constructor(
@@ -28,6 +35,7 @@ export class AdsApiConfigError extends AdsApiError {
 
 /** A non-2xx HTTP response that is not one of the specialised cases below. */
 export class AdsApiHttpError extends AdsApiError {
+  override get retryable(): boolean { return this.status === 429 || this.status === 408 || this.status === 425 || this.status >= 500; }
   override readonly name: string = 'AdsApiHttpError';
 
   constructor(
@@ -44,7 +52,22 @@ export class AdsApiHttpError extends AdsApiError {
 
 /** LWA refused the grant. The refresh token is dead or the app lost its scope. */
 export class AdsAuthError extends AdsApiHttpError {
-  override readonly name = 'AdsAuthError';
+  override readonly name: string = 'AdsAuthError';
+}
+
+/** Single-use consent cannot be retried after either outcome. No raw cause. */
+export class AdsAuthorizationCodeError extends AdsAuthError {
+  override readonly name = 'AdsAuthorizationCodeError';
+  override get retryable(): boolean { return false; }
+
+  constructor(
+    readonly reason: Extract<AmazonConnectionReason, 'exchange_refused' | 'exchange_uncertain'>,
+    status: number,
+  ) {
+    super(reason === 'exchange_refused'
+      ? 'Amazon refused the authorization code; connect again'
+      : 'The authorization exchange could not be confirmed; connect again', status, '', 1);
+  }
 }
 
 /**
@@ -55,6 +78,9 @@ export class AdsAuthError extends AdsApiHttpError {
  * whatever the response actually carried, not a guess.
  */
 export class AdsThrottleError extends AdsApiHttpError {
+  override get retryAfterSeconds(): number | undefined {
+    return this.retryAfterMs == null ? undefined : this.retryAfterMs / 1_000;
+  }
   override readonly name = 'AdsThrottleError';
 
   constructor(
@@ -163,6 +189,7 @@ export class ExportFailedError extends AdsApiError {
 
 /** A bounded wait ran out. Only the smoke script waits; the worker never blocks. */
 export class AdsApiTimeoutError extends AdsApiError {
+  override get retryable(): boolean { return true; }
   override readonly name = 'AdsApiTimeoutError';
 }
 

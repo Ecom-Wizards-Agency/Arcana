@@ -109,7 +109,7 @@ export async function reconcileRecommendationObservations(
       const revertSuffix = evaluation.revertToValue === null
         ? ''
         : `; exact_revert_value=${formatNumber(evaluation.revertToValue)}`;
-      const evidenceNote = `${evaluation.observation.evidenceNote}; incremental_volume=purchases_7d${revertSuffix}`;
+      const evidenceNote = `${evaluation.observation.evidenceNote}; execution=${evaluation.executionVerdict}; objective=${evaluation.objectiveVerdict}; incremental_volume=purchases_7d${revertSuffix}`;
 
       const [latest] = await sql<ObservationComparable[]>`
         select expected_value, synchronized_value, synchronized_at,

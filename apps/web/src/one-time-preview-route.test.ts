@@ -18,7 +18,7 @@ let foreignProfile: string;
 let foreignBatch: string;
 const previous = new Map<string, string | undefined>();
 const keys = ['DATABASE_URL', 'WIZARD_ADS_E2E_AUTH_BRIDGE', 'WIZARD_ADS_AUTH_BRIDGE_SECRET', 'OPENSPELL_RECOMMENDATION_LANE_READY', 'OPENSPELL_RECOMMENDATION_LANE_REVISION'];
-const configuration = { version: 1, method: 'rpc', targetAcos: 0.37, bidFloor: 0.11, bidCeiling: 4.3,
+const configuration = { version: 1, method: 'sp.reference-efficiency', targetAcos: 0.37, bidFloor: 0.11, bidCeiling: 4.3,
   bidIncreaseCap: 0.23, bidDecreaseCap: 0.41, window: { start: '2026-08-01', end: '2026-08-26' } };
 const headers = (userId = owner, organization = orgId) => ({ 'content-type': 'application/json',
   'x-wizard-ads-user-id': userId, 'x-wizard-ads-org-id': organization, 'x-wizard-ads-auth-bridge': secret });
@@ -62,7 +62,7 @@ afterAll(async () => {
 
 it.skipIf(!available)('reconciles an interrupted receipt after worker loss without admitting different settings', async () => {
   const input = body();
-  const first = await post(input);
+  const first = await post({ ...input, configuration: { ...input.configuration, method: 'rpc' } });
   expect(first.status).toBe(202);
   const accepted = await first.json() as { batchId: string; scope: { campaignCount: number }; childCount: number };
   expect(accepted).toMatchObject({ scope: { campaignCount: 1 }, childCount: 1 });
@@ -79,12 +79,21 @@ it.skipIf(!available)('reconciles an interrupted receipt after worker loss witho
     const status = await GET(new Request(`http://localhost/api/optimizer/runs/${accepted.batchId}?profileId=${profileId}`, { headers: headers() }),
       { params: Promise.resolve({ batchId: accepted.batchId }) });
     expect(status.status).toBe(200);
-    expect(status.headers.get('cache-control')).toBe('no-store');
+    expect(status.headers.get('cache-control')).toBe('private, no-store, max-age=0');
     expect(await status.json()).toMatchObject({ status: 'queued', executionSnapshot: { configuration }, availability: { ready: false, reason: 'worker_unavailable' } });
     const [count] = await database.sql<{ count: number }[]>`
       select count(*)::integer as count from public.recommendation_preview_batches where client_request_id = ${input.clientRequestId}::uuid
     `;
     expect(count?.count).toBe(1);
+    const stored = await database.sql<{ method: string }[]>`
+      select execution_snapshot #>> '{configuration,method}' as method
+        from public.recommendation_preview_batches where id = ${accepted.batchId}::uuid
+      union all
+      select execution_snapshot #>> '{configuration,method}' as method
+        from public.recommendation_runs where batch_id = ${accepted.batchId}::uuid
+    `;
+    expect(stored).toEqual(Array.from({ length: 1 + accepted.childCount }, () => ({ method: 'sp.reference-efficiency' })));
+
   } finally { await database.sql`update app.recommendation_runtime_state set ready = true where singleton`; }
 });
 

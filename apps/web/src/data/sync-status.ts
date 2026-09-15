@@ -1,7 +1,7 @@
 /**
  * Sync status, v0.
  *
- * Operator trust starts here (https://github.com/Ecom-Wizards-Agency/openspell/blob/dd4f3887f626128250abee537f374712ca42717c/docs/PLAN.md, v1 module scope item 3), so the
+ * Operator trust starts here (https://github.com/Ecom-Wizards-Agency/Arcana/blob/dd4f3887f626128250abee537f374712ca42717c/docs/PLAN.md, v1 module scope item 3), so the
  * page shows what the queue is doing and what the report requests did. Raw
  * provider and database failures stay in the worker's operational logs; this
  * user-facing boundary emits only bounded, actionable summaries. Two things it
@@ -15,7 +15,7 @@
  *
  * Styling is WP-06's job. This is a table.
  */
-import type { DbHandle } from '@wizard-ads/db';
+import { loadReportLifecycle, type QueryHandle, type DeadReportJob, type ReportLifecycleCounts } from '@wizard-ads/db';
 import { operatorFailureLabel } from '../security/operator-failure';
 
 export interface JobRow {
@@ -66,6 +66,8 @@ export interface ProfileFreshness {
 }
 
 export interface SyncStatus {
+  deadLetters: DeadReportJob[];
+  lifecycle: ReportLifecycleCounts[];
   freshness: ProfileFreshness[];
   jobs: JobRow[];
   reports: ReportRow[];
@@ -75,7 +77,7 @@ const JOB_LIMIT = 100;
 const REPORT_LIMIT = 100;
 
 export async function loadSyncStatus(
-  handle: DbHandle,
+  handle: QueryHandle,
   orgId: string,
   profileId?: string | null,
 ): Promise<SyncStatus> {
@@ -97,13 +99,13 @@ export async function loadSyncStatus(
            coalesce(p.account_name, p.amazon_profile_id) as label,
            p.region::text as region,
            p.sync_enabled,
-           (select max(f.date)::text from public.fact_profile_daily f where f.profile_id = p.id)
+           (select max(f.date)::text from public.fact_profile_daily f where f.org_id = p.org_id and f.profile_id = p.id)
              as latest_fact_date,
            count(*) filter (where j.status = 'queued') as queued,
            count(*) filter (where j.status = 'running') as running,
            count(*) filter (where j.status = 'failed') as failed
       from public.ad_profiles p
-      left join public.sync_jobs j on j.profile_id = p.id
+      left join public.sync_jobs j on j.org_id = p.org_id and j.profile_id = p.id
      where p.org_id = ${orgId}
        and (${scope}::uuid is null or p.id = ${scope}::uuid)
      group by p.id
@@ -137,7 +139,7 @@ export async function loadSyncStatus(
            j.finished_at::text as finished_at,
            j.last_error
       from public.sync_jobs j
-      join public.ad_profiles p on p.id = j.profile_id
+      join public.ad_profiles p on p.org_id = j.org_id and p.id = j.profile_id
      where j.org_id = ${orgId}
        and (${scope}::uuid is null or j.profile_id = ${scope}::uuid)
      order by j.created_at desc
@@ -185,14 +187,17 @@ export async function loadSyncStatus(
            r.accounting_complete,
            r.error
       from public.report_requests r
-      join public.ad_profiles p on p.id = r.profile_id
+      join public.ad_profiles p on p.org_id = r.org_id and p.id = r.profile_id
      where r.org_id = ${orgId}
        and (${scope}::uuid is null or r.profile_id = ${scope}::uuid)
      order by r.requested_at desc
      limit ${REPORT_LIMIT}
   `;
 
+  const { deadLetters, lifecycle } = await loadReportLifecycle(handle, orgId, scope);
   return {
+    deadLetters: deadLetters.map((job) => ({ ...job, lastError: reportFailureLabel(job.lastError) })),
+    lifecycle,
     freshness: freshness.map((row) => ({
       profileId: row.profile_id,
       profileLabel: row.label,
@@ -214,7 +219,7 @@ export async function loadSyncStatus(
       runAfter: row.run_after,
       startedAt: row.started_at,
       finishedAt: row.finished_at,
-      lastError: operatorFailureLabel(row.last_error),
+      lastError: reportFailureLabel(row.last_error),
     })),
     reports: reports.map((row) => ({
       id: row.id,
@@ -234,7 +239,7 @@ export async function loadSyncStatus(
       promotedRows: row.promoted_rows === null ? null : Number(row.promoted_rows),
       unpromotedRows: row.unpromoted_rows === null ? null : Number(row.unpromoted_rows),
       accountingComplete: row.accounting_complete,
-      error: operatorFailureLabel(row.error),
+      error: reportFailureLabel(row.error),
     })),
   };
 }
@@ -256,4 +261,13 @@ export function reportAccountingLabel(report: Pick<
   if (report.accountingComplete === false) return 'incomplete attribution accounting';
   if (report.countsMatch === null) return '—';
   return report.countsMatch ? 'yes · exact row counts' : 'no · row-count mismatch';
+}
+
+/** Preserve safe accounting detail without exposing arbitrary provider/SQL text. */
+export function reportFailureLabel(error: string | null): string | null {
+  if (error && /^report parsed \d+ rows but loaded \d+$/.test(error)) return error;
+  if (error && /parser chunk accounting did not match|source accounting drifted|report (?:date|fact) outcomes do not reconcile/.test(error)) {
+    return 'Report accounting failed. The job requires review before retrying.';
+  }
+  return operatorFailureLabel(error);
 }

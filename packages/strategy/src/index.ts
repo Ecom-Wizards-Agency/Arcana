@@ -18,3 +18,4 @@ export * from './defaults.js';
 export * from './merge.js';
 export * from './resolve.js';
 export * from './loader.js';
+export * from './method-settings.js';

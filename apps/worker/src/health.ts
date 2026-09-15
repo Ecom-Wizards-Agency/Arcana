@@ -1,10 +1,14 @@
 import { createServer, type Server } from 'node:http';
+import type { ReportHealth } from '@wizard-ads/db';
 import type { SyncWorker } from './worker.js';
 import { MARKETING_STREAM_SUSTAINED_FAILURE_THRESHOLD } from './marketing-stream-sqs.js';
 import type { WorkerClaimProtocol, WorkerDeploymentRole } from './deployment-role.js';
 import type { JobType } from '@wizard-ads/shared';
+import type { AmazonConnectionLoop } from './amazon-connections.js';
 
 export interface WorkerHealthComponents {
+  reports?: () => Promise<ReportHealth>;
+  amazonConnections?: Pick<AmazonConnectionLoop, 'status'>;
   deployment: {
     revision: string;
     role: WorkerDeploymentRole;
@@ -28,7 +32,26 @@ export function startHealthServer(
   components: WorkerHealthComponents,
   host = '0.0.0.0',
 ): Promise<Server> {
-  const server = createServer((request, response) => {
+  let pendingReportRead: Promise<ReportHealth> | undefined;
+  async function readReports(): Promise<ReportHealth | null> {
+    if (!components.reports) return null;
+    // Share an outstanding read so probes cannot fill the pool during an outage.
+    pendingReportRead ??= Promise.resolve().then(components.reports).finally(() => {
+      pendingReportRead = undefined;
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        pendingReportRead,
+        new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 1_000); }),
+      ]);
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  const server = createServer(async (request, response) => {
     if (request.method !== 'GET' || request.url !== '/healthz') {
       response.writeHead(404).end();
       return;
@@ -41,10 +64,18 @@ export function startHealthServer(
       || (marketingStream.consecutiveFailures ?? 0) >= MARKETING_STREAM_SUSTAINED_FAILURE_THRESHOLD
     );
     const workerStatus = worker.status();
+    const amazonConnections = components.amazonConnections?.status()
+      ?? { enabled: false, running: false, stopping: false, inFlight: 0, consecutiveFailures: 0, lastSuccessAt: null };
+    const connectionsDead = amazonConnections.enabled && (!amazonConnections.running
+      || amazonConnections.stopping || amazonConnections.consecutiveFailures >= 3);
     const workerDead = !workerStatus.claimLoop.ready
       || (workerStatus.settlementFailure ?? null) !== null;
-    const degraded = streamDead || workerDead;
+    const degraded = streamDead || workerDead || connectionsDead;
+    // Report counters are diagnostic only; failures do not change readiness policy.
+    const reports = await readReports();
     const body = JSON.stringify({
+      reports,
+      reportsAvailable: reports !== null,
       status: degraded ? 'degraded' : 'ok',
       worker: {
         stopping: workerStatus.stopping,
@@ -58,6 +89,7 @@ export function startHealthServer(
       },
       components: {
         marketingStream,
+        amazonConnections,
       },
     });
     response.writeHead(degraded ? 503 : 200, {

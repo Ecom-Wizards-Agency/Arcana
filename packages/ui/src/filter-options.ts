@@ -33,9 +33,8 @@ export function buildCategoricalOptions(
       label: actual === true ? 'Yes' : actual === false ? 'No' : value,
     });
   }
-  return [...byNormalized.values()].sort((left, right) =>
-    left.label.localeCompare(right.label, undefined, { numeric: true, sensitivity: 'base' }),
-  );
+  const compare = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' }).compare;
+  return [...byNormalized.values()].sort((left, right) => compare(left.label, right.label));
 }
 
 export function searchFilterOptions(

@@ -9,9 +9,9 @@
  */
 import { EntityRow } from '@wizard-ads/shared';
 import type { EntityRow as EntityRowValue, TargetExpression } from '@wizard-ads/shared';
-import type { DbHandle } from '../client.js';
+import type { QueryHandle } from '../client.js';
 
-export type CampaignUpdateQueryHandle = Pick<DbHandle, 'sql'>;
+export type CampaignUpdateQueryHandle = QueryHandle;
 
 export interface CampaignUpdateEntityCounts {
   campaigns: number;

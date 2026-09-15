@@ -15,7 +15,7 @@
 import { and, eq, getTableColumns, getTableName, gte, lte, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import type { PgTable, PgUpdateSetSource } from 'drizzle-orm/pg-core';
-import type { DbHandle } from '../client.js';
+import type { DbHandle, QueryHandle } from '../client.js';
 import { bidSeriesDaily } from '../schema/bid-series.js';
 import type { BidSeriesRow, NewBidSeriesRow } from '../schema/bid-series.js';
 
@@ -175,7 +175,7 @@ export interface LatestBidSeries {
  * or load time breaks a tie.
  */
 export async function readLatestBidSeriesByTargetIds(
-  handle: Pick<DbHandle, 'sql'>,
+  handle: QueryHandle,
   args: { orgId: string; profileId: string; targetIds: readonly string[] },
 ): Promise<LatestBidSeries[]> {
   if (args.targetIds.length === 0) return [];

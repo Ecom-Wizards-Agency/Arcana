@@ -1,20 +1,8 @@
-/**
- * The profile roster the switcher renders and every read scopes to.
- *
- * The org predicate is not optional and not a convenience. This module's own
- * header used to claim RLS decided which profiles a member could see — but the
- * web tier connects as the service role (`src/data/db.ts` says so in as many
- * words), which means RLS is *not* what constrains these reads. Until the
- * predicate below existed, `/dashboard` and `/grid` listed every profile in the
- * database and defaulted to the first one, whoever owned it. Authorization for
- * everything the web tier renders is enforced above the connection, so it has
- * to actually be written down: `orgId` comes from `gate()` and travels into the
- * SQL.
+/** Tenant profile roster. Run within the caller's authenticated transaction;
+ * the explicit organization predicate also scopes users with several agencies.
  */
-import { eq } from 'drizzle-orm';
 import { cache } from 'react';
-import { adProfiles } from '@wizard-ads/db';
-import type { AdProfile, DbHandle } from '@wizard-ads/db';
+import type { AdProfile, QueryHandle } from '@wizard-ads/db';
 import { PROFILE_COOKIE } from '../../src/cookies';
 import { orderActiveProfiles, resolveActiveProfile } from '../../src/data/active-profile';
 
@@ -36,11 +24,15 @@ export interface ProfileRecord
   /** Doctrine values, per profile. Absent means the widget that needs one is off. */
 }
 
-async function readProfiles(handle: DbHandle, orgId: string): Promise<ProfileRecord[]> {
-  const rows = await handle.db
-    .select()
-    .from(adProfiles)
-    .where(eq(adProfiles.orgId, orgId));
+async function readProfiles(handle: QueryHandle, orgId: string): Promise<ProfileRecord[]> {
+  const rows = await handle.sql<(Omit<ProfileRecord, 'label'> & { accountName: string | null })[]>`
+    select id, amazon_profile_id as "amazonProfileId", account_name as "accountName",
+           region, country_code as "countryCode", currency_code as "currencyCode",
+           sync_enabled as "syncEnabled", target_acos::float8 as "targetAcos",
+           monthly_budget::float8 as "monthlyBudget", goal_lens as "goalLens", timezone
+      from public.ad_profiles
+     where org_id = ${orgId}
+  `;
 
   return orderActiveProfiles(
     rows.map((row) => ({

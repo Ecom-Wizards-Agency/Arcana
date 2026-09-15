@@ -8,6 +8,7 @@
 // `core` never imports `db` or `ads-api`; `apps/web` never imports `ads-api`
 // (every Amazon call lives in the worker); `shared` imports nothing of ours.
 import js from '@eslint/js';
+import { crossPackageImports } from './tools/cross-package-imports.mjs';
 import tseslint from 'typescript-eslint';
 
 /** Build a no-restricted-imports rule entry for a set of forbidden workspace packages. */
@@ -30,6 +31,20 @@ export default tseslint.config(
       '**/coverage/**',
       'fixtures/golden/**',
     ],
+  },
+  {
+    files: ['apps/**/*.{ts,tsx}', 'packages/**/*.{ts,tsx}'],
+    // Existing exceptions outside WP-272's file scope; new imports remain forbidden.
+    plugins: { workspace: { rules: { 'public-imports': crossPackageImports } } },
+    rules: { 'workspace/public-imports': ['error', { existing: [
+      { file: 'packages/db/scripts/measure-read-path.ts', source: '../../../apps/web/app/_lib/grid-data.js' },
+      { file: 'packages/db/scripts/measure-read-path.ts', source: '../../../apps/web/app/_lib/dashboard-data.js' },
+      { file: 'packages/db/scripts/measure-read-path.ts', source: '../../../apps/web/app/_lib/optimizer-page-data.js' },
+      { file: 'apps/web/app/grid/measure-corridor.ts', source: '../../../../packages/db/src/testing/harness.js' },
+      { file: 'apps/web/src/screens/time-machine/queue.tsx', source: '../../../../../packages/ui/src/cells/ChangeChip' },
+      { file: 'apps/web/src/screens/time-machine/queue.tsx', source: '../../../../../packages/core/src/restore-preview' },
+      { file: 'apps/web/src/screens/time-machine/load.tsx', source: '../../../../../packages/core/src/restore-preview' },
+    ] }] },
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -107,15 +122,14 @@ export default tseslint.config(
     },
   },
   {
-    // The LWA OAuth server routes are the ONE sanctioned exception to the
-    // no-ads-api-in-web rule (WP-04 brief): the code exchange and the
-    // first profile fetch happen in the callback. Everything else in web
-    // stays banned below.
+    // Consent callbacks validate browser custody and enqueue; all provider
+    // clients and credential reads remain in the worker, including first setup.
     files: ['apps/web/**/*.{ts,tsx}'],
-    ignores: ['apps/web/app/api/amazon/oauth/**'],
     rules: {
       'no-restricted-imports': forbid([
         ['@wizard-ads/ads-api', 'every Amazon API call lives in apps/worker, never in the web app.'],
+        ['@wizard-ads/db/operator', 'installation provisioning is not an application or organization-role capability.'],
+        ['@wizard-ads/agency-operator', 'the installation CLI is not an application dependency.'],
         ['@wizard-ads/sp-api', 'every Amazon API call lives in apps/worker, never in the web app.'],
         ['@wizard-ads/datadive-api', 'every DataDive API call lives in apps/worker, never in the web app.'],
         ['@wizard-ads/mrp-api', 'every MRP MCP call lives in apps/worker, never in the web app.'],
@@ -124,6 +138,15 @@ export default tseslint.config(
           '@wizard-ads/db/worker',
           'decrypted integration credentials are worker-only; the web app may only store or revoke them.',
         ],
+      ]),
+    },
+  },
+  {
+    files: ['apps/mcp/**/*.{ts,tsx}', 'apps/worker/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': forbid([
+        ['@wizard-ads/db/operator', 'installation provisioning requires its separate operator command.'],
+        ['@wizard-ads/agency-operator', 'the installation CLI is not an application dependency.'],
       ]),
     },
   },

@@ -4,7 +4,7 @@ import {
   type DaypartingScheduleProposal as DaypartingScheduleProposalValue,
   type HourSettlingState,
 } from '@wizard-ads/shared';
-import { readMarketingStreamHourlyFacts, type DbHandle } from '@wizard-ads/db';
+import { readMarketingStreamHourlyFacts, type QueryHandle } from '@wizard-ads/db';
 
 export interface DaypartingCoverage {
   ledgerMessages: number;
@@ -41,7 +41,7 @@ interface RevisionRow {
 }
 
 export async function readDaypartingWorkspace(
-  handle: DbHandle,
+  handle: QueryHandle,
   input: {
     orgId: string;
     profileId: string;
@@ -149,7 +149,7 @@ export function deriveCurrentSettlingState(input: {
 }
 
 export async function readDaypartingProposal(
-  handle: Pick<DbHandle, 'sql'>,
+  handle: QueryHandle,
   input: { orgId: string; profileId: string; proposalId: string },
 ): Promise<DaypartingScheduleProposalValue | null> {
   const [row] = await handle.sql<ProposalRow[]>`

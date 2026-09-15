@@ -1,3 +1,7 @@
+import type { ReportCoverageObservation } from '@wizard-ads/shared';
+import { mergeControlMirror, mergeKeywordMirror, readKeywordMirrorStart } from '@wizard-ads/db/sp-write-worker';
+import type { ControlMirrorMergeCounts, KeywordMirrorMergeCounts, KeywordMirrorMergeRequest } from '@wizard-ads/shared/sp-write-mirror';
+import { PermanentJobError } from './permanent-job-error.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
   adGroups,
@@ -17,6 +21,10 @@ import {
   recordEntityChanges,
   reconcileEntityChangeLinks,
   reportRequests,
+  recordReportCoverage,
+  upsertReportCoverage,
+  quarantineReportCreate,
+  type ReportCreateEvidence,
   promoteReportDate as promoteDbReportDate,
   requeueStaleSyncJobs,
   targets,
@@ -28,6 +36,7 @@ import {
   type ClaimedJob,
   type ClaimRef,
   type DbHandle,
+  type QueryHandle,
   type JobOutcome,
   type NewEntityChange,
   type ReportDatePromotionResult,
@@ -36,6 +45,7 @@ import {
 import { MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
 import {
   WorkerReportAccounting,
+  type ReportCoverageAccounting,
   type WorkerReportAccounting as WorkerReportAccountingShape,
   type EntityRow,
   type JobPayload,
@@ -84,6 +94,10 @@ function asDate(value: Date | string): Date {
 }
 
 export interface EntitySyncOptions {
+  /** Database time captured before provider listing. */
+  readStartedAt?: string;
+  /** Unlisted kinds are not refreshed or tombstoned; requires an ad-product scope. */
+  excludedEntityTypes?: readonly EntityRow['entityType'][];
   adProduct?: 'SP' | 'SB' | 'SD';
   /**
    * A full pass re-lists every entity the profile has, so an id the mirror
@@ -95,6 +109,8 @@ export interface EntitySyncOptions {
 }
 
 export interface EntitySyncCounts {
+  keywordMirror?: KeywordMirrorMergeCounts;
+  controlMirrors?: Partial<Record<'campaign' | 'target', ControlMirrorMergeCounts>>;
   listed: number;
   upserted: number;
   /**
@@ -117,6 +133,8 @@ export interface StoreLogger {
 const MAX_LOGGED_DUPLICATE_IDS = 20;
 
 export interface WorkerStore {
+  /** WP-256 source-neutral producer. Required when installing additional ingestion sources. */
+  recordCoverage?(observation: ReportCoverageObservation, verifiedLoadedRows: number): Promise<{ offered: number; written: number; unchanged: number }>;
   claim(workerId: string, limit: number, jobTypes?: readonly JobType[]): Promise<ClaimedJob[]>;
   finish(
     jobId: string,
@@ -143,6 +161,7 @@ export interface WorkerStore {
    * that does not exist — retrying five times only delays the human.
    */
   deadLetter(jobId: string, error: string): Promise<void>;
+  quarantineReportCreate(job: ClaimedJob, evidence: ReportCreateEvidence): Promise<void>;
   /** Permanently finish exactly one opaque fenced claim. */
   deadLetterClaim?(claim: ClaimRef, error: string): Promise<void>;
   release(workerId: string): Promise<number>;
@@ -153,6 +172,7 @@ export interface WorkerStore {
    */
   requeueStale(olderThan: string): Promise<number>;
   profile(profileId: string): Promise<AdsProfileContext>;
+  beginEntityRead?(): Promise<string | undefined>;
   syncEntities(
     profile: AdsProfileContext,
     entities: readonly EntityRow[],
@@ -225,16 +245,16 @@ export interface WorkerStore {
   loadFacts(batch: ParsedFactBatch): Promise<number>;
   completeReport(
     reportRequestId: string,
-    counts: { parsed: number; loaded: number; bytesDownloaded: number },
+    counts: { parsed: number; loaded: number; bytesDownloaded: number; coverage?: ReportCoverageAccounting | null },
   ): Promise<void>;
   finishAttributedReport(
     reportRequestId: string,
     counts: AttributedReportCounts,
-    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null },
+    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null; coverage?: ReportCoverageAccounting },
   ): Promise<void>;
 }
 
-export class ParsedLoadedMismatch extends Error {
+export class ParsedLoadedMismatch extends PermanentJobError {
   constructor(readonly parsed: number, readonly loaded: number) {
     super(`report parsed ${parsed} rows but loaded ${loaded}`);
     this.name = 'ParsedLoadedMismatch';
@@ -252,6 +272,13 @@ export class ClaimOwnershipLost extends Error {
 
 export interface PostgresWorkerStoreOptions {
   claimProtocol?: 'legacy' | 'fenced';
+  keywordMirror?: KeywordMirrorCapability;
+}
+
+/** Field-fenced keyword synchronization shared by every entity-sync owner. */
+export interface KeywordMirrorCapability {
+  readStartedAt(): Promise<string>;
+  merge(request: KeywordMirrorMergeRequest): Promise<KeywordMirrorMergeCounts>;
 }
 
 /** `deletedAt` arrives as the wire string, not a `Date` — see the note on `asDate`. */
@@ -259,6 +286,8 @@ type ExistingEntity = { amazonId: string; deletedAt: Date | string | null; snaps
 
 export class PostgresWorkerStore implements WorkerStore {
   private readonly logger: StoreLogger;
+  private readonly keywordMirror: KeywordMirrorCapability | undefined;
+  private readonly reportedDisabledSbKeywords = new Set<string>();
   private readonly claimProtocol: 'legacy' | 'fenced';
 
   constructor(
@@ -268,6 +297,22 @@ export class PostgresWorkerStore implements WorkerStore {
   ) {
     this.logger = logger ?? { info: (message, details) => console.info(message, details ?? {}) };
     this.claimProtocol = options.claimProtocol ?? 'legacy';
+    this.keywordMirror = options.keywordMirror;
+  }
+
+  /** Activation requires explicit composition; construction never queries the DB. */
+  assertKeywordMirrorConfigured(): void {
+    if (this.keywordMirror === undefined) throw new Error('SP write worker requires keyword mirror configuration');
+  }
+
+  async beginEntityRead(): Promise<string | undefined> {
+    if (this.keywordMirror) return this.keywordMirror.readStartedAt();
+    // Cron and other default stores acquire the same fence after migration. A
+    // worker deployed before the migration keeps the historical sync protocol.
+    const [schema] = await this.handle.sql<{ ready: boolean }[]>`
+      select to_regprocedure('app.reconcile_sp_write_mirror(uuid,text)') is not null as ready`;
+    if (schema?.ready !== true) return undefined;
+    return readKeywordMirrorStart(this.handle);
   }
 
   claim(workerId: string, limit: number, jobTypes?: readonly JobType[]): Promise<ClaimedJob[]> {
@@ -315,6 +360,10 @@ export class PostgresWorkerStore implements WorkerStore {
   async deferClaim(claim: ClaimRef, retryIn: string): Promise<void> {
     const decision = await deferSyncJobFenced(this.handle, claim, retryIn);
     if (decision.decision === 'stale_claim') throw new ClaimOwnershipLost();
+  }
+
+  quarantineReportCreate(job: ClaimedJob, evidence: ReportCreateEvidence): Promise<void> {
+    return quarantineReportCreate(this.handle, job, evidence);
   }
 
   async deadLetter(jobId: string, error: string): Promise<void> {
@@ -379,6 +428,24 @@ export class PostgresWorkerStore implements WorkerStore {
     options: EntitySyncOptions = {},
   ): Promise<EntitySyncCounts> {
     const { adProduct, full = false } = options;
+    if (this.keywordMirror && options.readStartedAt === undefined) throw new Error('keyword mirror requires the provider read-start time');
+    const keywordCapability = this.keywordMirror ?? (options.readStartedAt === undefined ? undefined : {
+      merge: (request: KeywordMirrorMergeRequest) => mergeKeywordMirror(this.handle, request),
+    });
+    let keywordMirror: KeywordMirrorMergeCounts | undefined;
+    const controlMirrors: Partial<Record<'campaign' | 'target', ControlMirrorMergeCounts>> = {};
+    const [controlSchema] = await this.handle.sql<{ ready: boolean }[]>`
+      select to_regprocedure('app.guard_campaign_control_observation()') is not null as ready`;
+    if (controlSchema?.ready && options.readStartedAt === undefined) {
+      throw new Error('control mirror requires the provider read-start time');
+    }
+    const excluded = new Set(options.excludedEntityTypes ?? []);
+    if (excluded.size > 0 && adProduct === undefined) {
+      throw new Error('Excluded entity kinds require an ad-product scope');
+    }
+    if (entities.some((entity) => excluded.has(entity.entityType))) {
+      throw new Error('Entity listing contains an excluded kind');
+    }
     for (const entity of entities) {
       if (entity.profileId !== profile.id) {
         throw new Error(`entity ${entity.amazonId} belongs to profile ${entity.profileId}, expected ${profile.id}`);
@@ -392,6 +459,23 @@ export class PostgresWorkerStore implements WorkerStore {
     const entityTypes = ['portfolio', 'campaign', 'ad_group', 'product_ad', 'keyword', 'target', 'negative'] as const;
 
     for (const entityType of entityTypes) {
+      if (excluded.has(entityType)) {
+        if (adProduct === 'SB' && entityType === 'keyword'
+          && !this.reportedDisabledSbKeywords.has(profile.id)) {
+          const [stored] = await this.handle.sql<{ present: boolean }[]>`
+            select exists (
+              select 1 from public.keywords
+               where org_id = ${profile.orgId} and profile_id = ${profile.id}
+                 and ad_product = 'SB' and deleted_at is null
+            ) as present
+          `;
+          if (stored?.present) {
+            this.logger.info('SB keywords are present but sync is disabled', { profileId: profile.id });
+            this.reportedDisabledSbKeywords.add(profile.id);
+          }
+        }
+        continue;
+      }
       // Collapse before diffing or writing. The negatives mirror merges three
       // Amazon endpoints into one `(profile_id, amazon_id)` key, so a listing
       // can legitimately carry the same id twice — and Postgres refuses to let
@@ -408,6 +492,25 @@ export class PostgresWorkerStore implements WorkerStore {
           duplicates: collapsed.duplicateIds.length,
           ids: collapsed.duplicateIds.slice(0, MAX_LOGGED_DUPLICATE_IDS),
         });
+      }
+      if ((entityType === 'campaign' || entityType === 'target') && controlSchema?.ready) {
+        const scope = { orgId: profile.orgId, profileId: profile.id,
+          ...(adProduct === undefined ? {} : { adProduct }), full, readStartedAt: options.readStartedAt! };
+        const counts = await mergeControlMirror(this.handle, entityType === 'campaign'
+          ? { ...scope, entityType, rows: incoming.filter(isType('campaign')) }
+          : { ...scope, entityType, rows: incoming.filter(isType('target')) });
+        controlMirrors[entityType] = counts;
+        upserted += counts.upserted;
+        tombstoned += counts.tombstoned;
+        continue;
+      }
+      if (entityType === 'keyword' && keywordCapability) {
+        keywordMirror = await keywordCapability.merge({ orgId: profile.orgId, profileId: profile.id,
+          ...(adProduct === undefined ? {} : { adProduct }), full, readStartedAt: options.readStartedAt!,
+          rows: incoming.filter(isType('keyword')) });
+        upserted += keywordMirror.upserted;
+        tombstoned += keywordMirror.tombstoned;
+        continue;
       }
       const existing = await this.existingEntities(profile.id, entityType, adProduct);
       const byId = new Map(existing.map((row) => [row.amazonId, row]));
@@ -470,7 +573,10 @@ export class PostgresWorkerStore implements WorkerStore {
         `entity sync listed ${entities.length} rows but upserted ${upserted} (${duplicates} duplicates)`,
       );
     }
-    return { listed: entities.length, upserted, duplicates, changes: writtenChanges, tombstoned };
+    return { listed: entities.length, upserted, duplicates, changes: writtenChanges + (keywordMirror?.changes ?? 0)
+        + Object.values(controlMirrors).reduce((sum, counts) => sum + counts.changes, 0), tombstoned,
+      ...(keywordMirror === undefined ? {} : { keywordMirror }),
+      ...(Object.keys(controlMirrors).length === 0 ? {} : { controlMirrors }) };
   }
 
   async ensureReportRequest(
@@ -758,7 +864,6 @@ export class PostgresWorkerStore implements WorkerStore {
           join (values
             ('keepa',   'keepa.sync',       '1 day',  '{"includeCompetitors":true}'::jsonb),
             ('datadive','rank.sync',        '1 day',  '{}'::jsonb),
-            ('datadive','sqp.categorize',   '7 days', '{}'::jsonb),
             ('mrp',     'economics.sync',   '1 day',  '{}'::jsonb)
           ) as m(provider, job_type, cadence, payload)
             on m.provider = s.provider
@@ -881,51 +986,68 @@ export class PostgresWorkerStore implements WorkerStore {
     }
   }
 
+  async recordCoverage(observation: ReportCoverageObservation, verifiedLoadedRows: number) {
+    return upsertReportCoverage(this.handle, observation, verifiedLoadedRows);
+  }
+
   async completeReport(
     reportRequestId: string,
-    counts: { parsed: number; loaded: number; bytesDownloaded: number },
+    counts: { parsed: number; loaded: number; bytesDownloaded: number; coverage?: ReportCoverageAccounting | null },
   ): Promise<void> {
-    const rows = await this.handle.sql<{ id: string }[]>`
-      update public.report_requests
-         set status = ${counts.parsed === counts.loaded ? 'completed' : 'failed'}::public.report_status,
-             completed_at = now(), next_poll_at = null,
-             rows_parsed = ${counts.parsed}, rows_loaded = ${counts.loaded},
-             bytes_downloaded = ${counts.bytesDownloaded},
-             error = ${counts.parsed === counts.loaded ? null : `parsed ${counts.parsed}, loaded ${counts.loaded}`}
-       where id = ${reportRequestId}
-       returning id
-    `;
-    if (rows.length !== 1) throw new Error(`complete report update matched ${rows.length} rows`);
+    await this.handle.sql.begin(async (sql) => {
+      const rows = await sql<{ id: string }[]>`
+        update public.report_requests
+           set status = ${counts.parsed === counts.loaded ? 'completed' : 'failed'}::public.report_status,
+               completed_at = now(), next_poll_at = null,
+               rows_parsed = ${counts.parsed}, rows_loaded = ${counts.loaded},
+               bytes_downloaded = ${counts.bytesDownloaded},
+               error = ${counts.parsed === counts.loaded ? null : `parsed ${counts.parsed}, loaded ${counts.loaded}`}
+         where id = ${reportRequestId}
+         returning id
+      `;
+      if (rows.length !== 1) throw new Error(`complete report update matched ${rows.length} rows`);
+      if (counts.parsed === counts.loaded && counts.coverage !== null) {
+        await recordReportCoverage({ sql }, reportRequestId, counts.coverage);
+      }
+    });
     if (counts.parsed !== counts.loaded) throw new ParsedLoadedMismatch(counts.parsed, counts.loaded);
   }
 
   async finishAttributedReport(
     reportRequestId: string,
     input: AttributedReportCounts,
-    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null },
+    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null; coverage?: ReportCoverageAccounting },
   ): Promise<void> {
     const counts = WorkerReportAccounting.parse(input);
-    const rows = await this.handle.sql<{ id: string; accounting_complete: boolean }[]>`
-      update public.report_requests
-         set status = ${options.status}::public.report_status,
-             completed_at = now(), next_poll_at = null,
-             source_rows = ${counts.sourceRows},
-             rows_parsed = ${counts.parsedRows},
-             refused_rows = ${counts.refusedRows},
-             promoted_rows = ${counts.promotedRows},
-             unpromoted_rows = ${counts.unpromotedRows},
-             rows_loaded = ${counts.canonicalRows},
-             bytes_downloaded = ${options.bytesDownloaded},
-             error = ${options.error ?? null}
-       where id = ${reportRequestId}
-       returning id, accounting_complete
-    `;
-    if (rows.length !== 1) {
-      throw new Error(`attributed report completion matched ${rows.length} rows`);
-    }
-    if (rows[0]?.accounting_complete !== true) {
-      throw new Error('attributed report durable accounting did not reconcile');
-    }
+    const finish = async (sql: QueryHandle['sql']) => {
+      const rows = await sql<{ id: string; accounting_complete: boolean }[]>`
+        update public.report_requests
+           set status = ${options.status}::public.report_status,
+               completed_at = now(), next_poll_at = null,
+               source_rows = ${counts.sourceRows},
+               rows_parsed = ${counts.parsedRows},
+               refused_rows = ${counts.refusedRows},
+               promoted_rows = ${counts.promotedRows},
+               unpromoted_rows = ${counts.unpromotedRows},
+               rows_loaded = ${counts.canonicalRows},
+               bytes_downloaded = ${options.bytesDownloaded},
+               error = ${options.error ?? null}
+         where id = ${reportRequestId}
+         returning id, accounting_complete
+      `;
+      if (rows.length !== 1) {
+        throw new Error(`attributed report completion matched ${rows.length} rows`);
+      }
+      if (rows[0]?.accounting_complete !== true) {
+        throw new Error('attributed report durable accounting did not reconcile');
+      }
+      if (options.status === 'completed' && options.coverage !== undefined) {
+        await recordReportCoverage({ sql }, reportRequestId, options.coverage);
+      }
+    };
+    // Existing callers retain ledger-only completion; the ingestion hook supplies coverage.
+    if (options.coverage === undefined) await finish(this.handle.sql);
+    else await this.handle.sql.begin(finish);
   }
 
   private async upsertCampaignFacts(kind: 'sb' | 'sd', rows: readonly CampaignFactRow[]): Promise<number> {

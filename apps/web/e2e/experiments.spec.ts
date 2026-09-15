@@ -76,7 +76,7 @@ test('create from a guided grid selection, run it, end it, and read the comparis
   }));
   await expect(page.getByTestId('scope-campaigns-option-c-1')).toBeChecked();
   await expect(page.getByTestId('scope-campaigns-selected-count')).toHaveText('2 selected');
-  await expect(page.getByText('c-missing', { exact: true })).toBeVisible();
+  await expect(page.getByText('c-missing', { exact: true }).last()).toBeVisible();
   await expect(page.getByTestId('scope-products-option-B0TEST0001')).toBeChecked();
   await expect(page.getByTestId('scope-targets')).toHaveValue('kw-1');
 
@@ -109,16 +109,19 @@ test('create from a guided grid selection, run it, end it, and read the comparis
   await expect(page.getByTestId('scope-links')).toContainText('2 campaign(s)');
   await expect(page.getByTestId('comparison')).toBeVisible();
 
-  // End it, with a result note.
+  // End it, then write the result once at analysis.
   await page.getByTestId('result-note').fill('ACOS held while sales rose.');
   await page.getByTestId('transition-ended').click();
   await expect(page.getByRole('status')).toHaveText('Saved');
   await expect(page.getByTestId('experiment-status')).toContainText('Ended');
+  await page.getByTestId('transition-analyzed').click();
+  await expect(page.getByRole('status')).toHaveText('Saved');
   await expect(page.getByTestId('experiment-result')).toContainText('ACOS held');
-  // The comparison is still derived after ending.
+  // The comparison remains available after analysis.
+  await page.getByText('Comparison and observed changes', { exact: true }).click();
   await expect(page.getByTestId('comparison-table')).toBeVisible();
   // A move was logged.
-  await expect(page.getByTestId('timeline-event').filter({ hasText: 'Ended' })).toHaveCount(1);
+  await expect(page.getByTestId('timeline-event').filter({ hasText: 'Ended' })).toHaveCount(2);
 });
 
 test.describe('as a viewer', () => {

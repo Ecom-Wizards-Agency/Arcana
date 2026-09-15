@@ -22,7 +22,7 @@ import {
   resolveGoalLens,
 } from '@wizard-ads/core';
 import type { DailyRow, Flag, PacingResult } from '@wizard-ads/core';
-import type { DbHandle } from '@wizard-ads/db';
+import type { QueryHandle } from '@wizard-ads/db';
 import { readCampaignDaily, readProfileDaily } from './data.js';
 import type { KeyScopeContext, ProfileRecord } from './data.js';
 
@@ -48,7 +48,7 @@ export interface PacingReport {
 }
 
 async function latestFactDay(
-  handle: DbHandle,
+  handle: QueryHandle,
   scope: KeyScopeContext,
   profileId: string,
 ): Promise<{ date: string; provisional: boolean } | null> {
@@ -67,7 +67,7 @@ function accountLabel(profile: ProfileRecord): string {
 }
 
 export async function buildFlags(
-  handle: DbHandle,
+  handle: QueryHandle,
   scope: KeyScopeContext,
   profile: ProfileRecord,
   asOfInput?: string,
@@ -133,7 +133,7 @@ export async function buildFlags(
 }
 
 export async function buildPacing(
-  handle: DbHandle,
+  handle: QueryHandle,
   scope: KeyScopeContext,
   profile: ProfileRecord,
   asOfInput?: string,

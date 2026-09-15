@@ -14,52 +14,20 @@
  *
  * ## Storage
  *
- * `ViewStore` is a port with two implementations here: in-memory (tests) and
- * `localStorage` (the browser). Both are per-user by construction because the
- * storage is. A shared, org-scoped, DB-backed store needs a `grid_views` table,
- * which belongs to WP-01's migrations -- so this file defines the interface it
- * would implement and stops there rather than inventing a schema across an
- * ownership line.
+ * `ViewStore` has memory, browser and database-backed implementations. The
+ * database transport is injected by the application. Browser caches require
+ * both user and agency identity; origin storage alone is shared across accounts.
  */
+import { GridSavedView, OrgActor } from '@wizard-ads/shared';
 import { ENTITY_LEVELS } from './columns.js';
 import type { EntityLevel } from './columns.js';
-import { isGridDensity } from './density.js';
-import type { GridDensity } from './density.js';
-import type { FilterSet } from './filter.js';
-import type { SortRule } from './sort.js';
 
 export interface DateRange {
   start: string;
   end: string;
 }
 
-export interface SavedView {
-  id: string;
-  name: string;
-  entity: EntityLevel;
-  /** Visible column ids, in display order. Order is the layout. */
-  columns: readonly string[];
-  /** Column ids pinned left of the pin line. */
-  pinned: readonly string[];
-  /** Per-column width overrides, keyed by column id. */
-  widths: Readonly<Record<string, number>>;
-  /**
-   * Row density. Absent on layouts written before it existed, which render at
-   * the normal density they were designed against.
-   */
-  density?: GridDensity;
-  filter: FilterSet;
-  sort: readonly SortRule[];
-  /** Unique dimension ids in outermost-to-innermost hierarchy order. */
-  groupBy: readonly string[];
-  /**
-   * Null means "whatever the page is showing". A view that pins a date range is
-   * a report; a view that does not is a lens. Both are useful and they are not
-   * the same object, so the difference is explicit.
-   */
-  dateRange: DateRange | null;
-  updatedAt: string;
-}
+export type SavedView = GridSavedView;
 
 export interface ViewStore {
   list(entity: EntityLevel): Promise<SavedView[]>;
@@ -193,70 +161,12 @@ export class MemoryViewStore implements ViewStore {
   }
 }
 
-const NAMED_KEY = 'wizard-ads:views:v1';
-const LAYOUT_KEY = 'wizard-ads:layout:v1';
-const FILTER_OPERATORS = new Set([
-  '>', '<', '>=', '<=', '=', '<>', 'IN', 'NOT_IN', 'LIKE', 'NOT_LIKE', 'IS_NULL', 'IS_NOT_NULL',
-]);
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
-}
-
-function isFilterSet(value: unknown): value is FilterSet {
-  if (!isRecord(value) || !Array.isArray(value['groups'])) return false;
-  return value['groups'].every((group) => {
-    if (!isRecord(group) || !Array.isArray(group['filters'])) return false;
-    return group['filters'].every((filter) => {
-      if (!isRecord(filter) || typeof filter['key'] !== 'string' || !Array.isArray(filter['conditions'])) {
-        return false;
-      }
-      if (
-        filter['logical_operator'] !== undefined &&
-        filter['logical_operator'] !== 'AND' &&
-        filter['logical_operator'] !== 'OR'
-      ) {
-        return false;
-      }
-      return filter['conditions'].every((condition) =>
-        isRecord(condition) &&
-        isStringArray(condition['values']) &&
-        (condition['operator'] === undefined || FILTER_OPERATORS.has(String(condition['operator']))),
-      );
-    });
-  });
-}
-
 function isSavedView(value: unknown): value is SavedView {
-  if (!isRecord(value)) return false;
-  const widths = value['widths'];
-  const sort = value['sort'];
-  const dateRange = value['dateRange'];
-  return (
-    typeof value['id'] === 'string' &&
-    typeof value['name'] === 'string' &&
-    ENTITY_LEVELS.includes(value['entity'] as EntityLevel) &&
-    isStringArray(value['columns']) &&
-    isStringArray(value['pinned']) &&
-    isRecord(widths) &&
-    Object.values(widths).every((width) => typeof width === 'number' && Number.isFinite(width)) &&
-    (value['density'] === undefined || isGridDensity(value['density'])) &&
-    isFilterSet(value['filter']) &&
-    Array.isArray(sort) &&
-    sort.every((rule) =>
-      isRecord(rule) &&
-      typeof rule['columnId'] === 'string' &&
-      (rule['direction'] === 'asc' || rule['direction'] === 'desc'),
-    ) &&
-    isStringArray(value['groupBy']) &&
-    (dateRange === null ||
-      (isRecord(dateRange) && typeof dateRange['start'] === 'string' && typeof dateRange['end'] === 'string')) &&
-    typeof value['updatedAt'] === 'string'
-  );
+  return GridSavedView.safeParse(value).success;
 }
 
 /** Minimal shape of `window.localStorage`, so this file needs no DOM lib at rest. */
@@ -273,7 +183,19 @@ export interface KeyValueStorage {
  * never be able to blank the grid. It is a cache of a preference, not data.
  */
 export class LocalViewStore implements ViewStore, SynchronousLayoutSource {
-  constructor(private readonly storage: KeyValueStorage) {}
+  private readonly namedKey: string;
+  private readonly layoutKey: string;
+
+  constructor(private readonly storage: KeyValueStorage, rawActor: Readonly<OrgActor>) {
+    const actor = OrgActor.parse(rawActor);
+    // UUID validation makes the separators unambiguous. Derive immutable keys
+    // once, so a delayed write always belongs to the store's original owner.
+    const scope = `${actor.orgId}:${actor.userId}`;
+    this.namedKey = `wizard-ads:views:v2:${scope}`;
+    this.layoutKey = `wizard-ads:layout:v2:${scope}`;
+    // Ownerless v1 keys are deliberately left unread and unchanged. Assigning
+    // them to the next signer would disclose the previous agency's filters.
+  }
 
   private readRecord(key: string): Record<string, unknown> {
     try {
@@ -304,22 +226,34 @@ export class LocalViewStore implements ViewStore, SynchronousLayoutSource {
   }
 
   async list(entity: EntityLevel): Promise<SavedView[]> {
-    const all = this.readViews(NAMED_KEY);
+    const all = this.readViews(this.namedKey);
     return Object.values(all)
       .filter((view) => view.entity === entity)
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async save(view: SavedView): Promise<void> {
-    const all = this.readViews(NAMED_KEY);
+    const all = this.readViews(this.namedKey);
     all[view.id] = view;
-    this.write(NAMED_KEY, all);
+    this.write(this.namedKey, all);
   }
 
   async remove(id: string): Promise<void> {
-    const all = this.readViews(NAMED_KEY);
+    const all = this.readViews(this.namedKey);
     delete all[id];
-    this.write(NAMED_KEY, all);
+    this.write(this.namedKey, all);
+  }
+
+  /** Upload receipts are scoped like the cache and compare the exact document. */
+  async pendingViews(): Promise<SavedView[]> {
+    const receipts = this.readRecord(`${this.namedKey}:uploaded`);
+    return Object.values(this.readViews(this.namedKey)).filter((view) => receipts[view.id] !== JSON.stringify(view));
+  }
+
+  markUploaded(views: readonly SavedView[]): void {
+    const receipts = this.readRecord(`${this.namedKey}:uploaded`);
+    for (const view of views) receipts[view.id] = JSON.stringify(view);
+    this.write(`${this.namedKey}:uploaded`, receipts);
   }
 
   async lastLayout(entity: EntityLevel): Promise<SavedView | null> {
@@ -337,13 +271,55 @@ export class LocalViewStore implements ViewStore, SynchronousLayoutSource {
    * able to blank the grid.
    */
   cachedLayout(entity: EntityLevel): SavedView | null {
-    const candidate = this.readRecord(LAYOUT_KEY)[entity];
+    const candidate = this.readRecord(this.layoutKey)[entity];
     return isSavedView(candidate) && candidate.entity === entity ? candidate : null;
   }
 
   async rememberLayout(view: SavedView): Promise<void> {
-    const all = this.readViews(LAYOUT_KEY);
+    const all = this.readViews(this.layoutKey);
     all[view.entity] = view;
-    this.write(LAYOUT_KEY, all);
+    this.write(this.layoutKey, all);
+  }
+}
+
+/** Network operations are injected so the UI package has no application dependency. */
+export interface GridViewTransport {
+  list(entity: EntityLevel): Promise<SavedView[]>;
+  save(views: readonly SavedView[]): Promise<number>;
+  remove(id: string): Promise<void>;
+}
+
+/** Named views in the agency database; browser layouts remain a synchronous cache. */
+export class DbViewStore implements ViewStore, SynchronousLayoutSource {
+  private migrated = false;
+  constructor(private readonly remote: GridViewTransport, private readonly local: ViewStore & SynchronousLayoutSource & {
+    pendingViews?: () => Promise<SavedView[]>;
+    markUploaded?: (views: readonly SavedView[]) => void;
+  }) {}
+  cachedLayout(entity: EntityLevel): SavedView | null { return this.local.cachedLayout(entity); }
+  lastLayout(entity: EntityLevel): Promise<SavedView | null> { return this.local.lastLayout(entity); }
+  rememberLayout(view: SavedView): Promise<void> { return this.local.rememberLayout(view); }
+  async list(entity: EntityLevel): Promise<SavedView[]> {
+    try { return await this.remote.list(entity); }
+    catch (error) { if (!(error instanceof TypeError)) throw error; return this.local.list(entity); }
+  }
+  async save(view: SavedView): Promise<void> {
+    const legacy = this.local.pendingViews !== undefined
+      ? await this.local.pendingViews()
+      : this.migrated ? [] : (await Promise.all(ENTITY_LEVELS.map((entity) => this.local.list(entity)))).flat();
+    const views = [...new Map([...legacy, view].map((entry) => [entry.id, entry])).values()];
+    let uploaded = false;
+    try {
+      if (await this.remote.save(views) !== views.length) throw new Error('View save count mismatch');
+      this.migrated = true;
+      uploaded = true;
+    } catch (error) { if (!(error instanceof TypeError)) throw error; }
+    await this.local.save(view);
+    if (uploaded) this.local.markUploaded?.(views);
+  }
+  async remove(id: string): Promise<void> {
+    try { await this.remote.remove(id); }
+    catch (error) { if (!(error instanceof TypeError)) throw error; }
+    await this.local.remove(id);
   }
 }

@@ -76,7 +76,7 @@ describe('groupRows', () => {
     },
   );
 
-  it('sums only the entities that reported in the comparison window', () => {
+  it('retains reported comparison sums but marks the incomplete aggregate unknown', () => {
     const rows = [
       row('a', 'Campaign', { spend: 10, sales: 40 }, { spend: 8, sales: 32 }),
       row('b', 'Campaign', { spend: 5, sales: 10 }, null),
@@ -85,8 +85,9 @@ describe('groupRows', () => {
     expect(group?.comparison).toEqual(
       expect.objectContaining({ spend: 8, sales: 32 }),
     );
-    // The delta compares like with like: 15/50 now against 8/32 then.
-    expect(resolveField(group as GridRow, 'acos_comparison')).toBeCloseTo(0.25, 12);
+    // Internal accumulators retain evidence; neither the comparison nor its delta is complete.
+    expect(resolveField(group as GridRow, 'acos_comparison')).toBeNull();
+    expect(resolveField(group as GridRow, 'acos_delta_percent')).toBeNull();
   });
 
   it('leaves the comparison null when no member had one, so deltas are null not zero', () => {

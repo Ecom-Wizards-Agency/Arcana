@@ -19,6 +19,8 @@ import {
   parseSpWrite207,
   parseSpWriteObservationPage,
   parseSpWriteObservationRows,
+  parseSpWritePostWriteObservationPage,
+  parseSpWritePostWriteObservationRows,
   prepareSpWriteCalls,
 } from './sp-write-codec.js';
 
@@ -230,6 +232,26 @@ function allRoutePlan(): SpWritePlanType {
 }
 
 describe('SP write preparation and wire compilation', () => {
+  it('selects unchanged plan actions canonically and rejects missing or repeated identities', () => {
+    const plan = planFor([1, 2, 3].map((serial) => moneyAction('sp.v3.keywords.update', '0.9', '0.7', 'USD', serial)));
+    const original = JSON.stringify(plan);
+    const whole = prepareSpWriteCalls(plan, sha256)[0]!;
+    const selected = prepareSpWriteCalls(plan, sha256, [uuid(3), uuid(1)]);
+    expect(selected).toHaveLength(1);
+    expect(selected[0]!.positions.map((row) => row.actionId)).toEqual([uuid(1), uuid(3)]);
+    expect(selected[0]!.positions.map((row) => row.requestIndex)).toEqual([0, 1]);
+    expect(selected[0]!.positions.map((row) => row.actionRequestFingerprint))
+      .toEqual([whole.positions[0]!.actionRequestFingerprint, whole.positions[2]!.actionRequestFingerprint]);
+    expect(JSON.parse(selected[0]!.mutation.body)).toEqual({ keywords: [{ keywordId: 'keyword-1', bid: 0.7 }, { keywordId: 'keyword-3', bid: 0.7 }] });
+    expect(JSON.stringify(plan)).toBe(original);
+    expect(prepareSpWriteCalls(plan, sha256, [])).toEqual([]);
+    expect(() => prepareSpWriteCalls(plan, sha256, [uuid(1), uuid(1)])).toThrow();
+    expect(() => prepareSpWriteCalls(plan, sha256, [uuid(9)])).toThrow();
+    const corrupted = structuredClone(plan);
+    corrupted.actions[1]!.fingerprint = sha('f');
+    expect(() => prepareSpWriteCalls(corrupted, sha256, [uuid(1)])).toThrow();
+  });
+
   it('groups all five routes deterministically and compiles exact route bodies', () => {
     const calls = prepareSpWriteCalls(allRoutePlan(), sha256);
     expect(calls.map((call) => call.routeKey)).toEqual([
@@ -407,6 +429,34 @@ describe('marketplace money policy', () => {
 });
 
 describe('strict SP observations', () => {
+  it('keeps complete post-write absence in exact request positions and refuses duplicate or extra identities', () => {
+    const call = prepareSpWriteCalls(planFor([
+      moneyAction('sp.v3.keywords.update', '1', '1.1', 'USD', 501),
+      moneyAction('sp.v3.keywords.update', '2', '2.1', 'USD', 502),
+    ]), sha256)[0]!;
+    const secondId = call.positions[1]!.amazonEntityId;
+    const row = { keywordId: secondId, bid: 2, state: 'ENABLED' };
+    expect(parseSpWritePostWriteObservationRows(call, [row])).toMatchObject([
+      null, { actionId: call.positions[1]!.actionId, amazonEntityId: secondId, values: { bid: { amount: '2' } } },
+    ]);
+    expect(() => parseSpWriteObservationRows(call, [row])).toThrow(/count/);
+    expect(() => parseSpWritePostWriteObservationRows(call, [row, row])).toThrow(/repeated/);
+    expect(() => parseSpWritePostWriteObservationRows(call, [{ ...row, keywordId: 'synthetic-extra' }])).toThrow(/extra/);
+    expect(parseSpWritePostWriteObservationPage({ keywords: [], totalResults: 0 }, call).totalResults).toBe(0);
+    expect(() => parseSpWritePostWriteObservationPage({ keywords: [], totalResults: 3 }, call)).toThrow(/positions/);
+  });
+
+  it.each([undefined, 0.7])('retains archived presence with optional explicit bid %s only in post-write reads', (bid) => {
+    const call = prepareSpWriteCalls(planFor([moneyAction('sp.v3.keywords.update', '1', '1.1')]), sha256)[0]!;
+    const row = { keywordId: call.positions[0]!.amazonEntityId, state: 'ARCHIVED', ...(bid === undefined ? {} : { bid }) };
+    const [observed] = parseSpWritePostWriteObservationRows(call, [row]);
+    expect(observed).toMatchObject({ values: { state: 'archived' } });
+    expect(observed?.routeKey === 'sp.v3.keywords.update' ? observed.values.bid : undefined)
+      .toEqual(bid === undefined ? undefined : { amount: '0.7', currencyCode: 'USD' });
+    expect(() => parseSpWriteObservationRows(call, [row])).toThrow(/not mutable/);
+    expect(() => parseSpWritePostWriteObservationRows(call, [{ ...row, state: 'OTHER' }])).toThrow(/not mutable/);
+  });
+
   it('parses a complete campaign bidding state and selected current values', () => {
     const call = prepareSpWriteCalls(planFor([campaignAction()]), sha256)[0]!;
     const observed = parseSpWriteObservationRows(call, [{

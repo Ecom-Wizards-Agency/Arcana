@@ -8,19 +8,27 @@
   "exports": {
     ".": "./src/index.ts",
     "./schema": "./src/schema/index.ts",
+    "./operator": "./src/operator.ts",
     "./recommendation-worker": "./src/recommendation-worker.ts",
     "./sp-write-persistence": "./src/sp-write-persistence.ts",
     "./testing": "./src/testing/index.ts",
-    "./worker": "./src/worker.ts"
+    "./worker": "./src/worker.ts",
+    "./sp-write-application": "./src/sp-write-application.ts",
+    "./sp-write-worker": "./src/sp-write-worker.ts",
+    "./mcp-writes": "./src/mcp-writes.ts",
+    "./campaign-creation-previews": "./src/campaign-creation-previews.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "seed:strategy": "tsx ../../supabase/seed/import-strategy.ts",
     "seed:dev": "tsx ../../supabase/seed/dev-seed.ts",
-    "seed:roadmap": "tsx ../../supabase/seed/seed-roadmap.ts"
+    "seed:roadmap": "tsx ../../supabase/seed/seed-roadmap.ts",
+    "measure:read-path": "tsx scripts/measure-read-path.ts",
+    "generate:barrels": "UPDATE_PACKAGE_BARRELS=1 vitest run src/registry.test.ts"
   },
   "dependencies": {
+    "@wizard-ads/campaigns": "workspace:*",
     "@wizard-ads/shared": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "postgres": "^3.4.9"

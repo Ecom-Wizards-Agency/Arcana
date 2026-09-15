@@ -4,10 +4,10 @@ import {
   listRecommendations,
   readOptimizationWorkspace,
 } from '@wizard-ads/db';
-import type { DbHandle, RecommendationRunDetail } from '@wizard-ads/db';
+import type { QueryHandle, RecommendationRunDetail } from '@wizard-ads/db';
 import { RECOMMENDATIONS_ENGINE_VERSION } from '@wizard-ads/worker';
 import { loadOptimizerCampaignFacts } from './optimizer-campaigns';
-import { loadProfileDailyRows, loadReportLedger } from './dashboard-data';
+import { loadProfileDailyRows } from './dashboard-data';
 import { precedingPeriod } from './periods';
 import type { Period } from './periods';
 import { withServerTiming } from './server-timing';
@@ -15,7 +15,7 @@ import { withServerTiming } from './server-timing';
 const RUN_HISTORY_LIMIT = 20;
 
 export interface OptimizerPageDataInput {
-  handle: DbHandle;
+  handle: QueryHandle;
   orgId: string;
   profile: { id: string; label: string };
   period: Period;
@@ -69,11 +69,6 @@ export async function loadOptimizerPageData(input: OptimizerPageDataInput) {
     ),
     (rows) => rows.length,
   );
-  const ledgerPromise = withServerTiming(
-    'optimizer.report_ledger',
-    () => loadReportLedger(handle, orgId, profile.id),
-    (rows) => rows.length,
-  );
   const campaignFactsPromise = loadOptimizerCampaignFacts(handle, {
     orgId,
     profileId: profile.id,
@@ -94,49 +89,52 @@ export async function loadOptimizerPageData(input: OptimizerPageDataInput) {
     ? Promise.resolve(null)
     : loadLatestRunSnapshot(handle, { orgId, profileId: profile.id });
 
-  const [allRuns, requestedRun, latestRunSnapshot] = await Promise.all([
-    runsPromise,
-    requestedRunPromise,
-    latestRunSnapshotPromise,
-  ]);
-  const runs = allRuns.filter(
-    (candidate) => candidate.engineVersion === RECOMMENDATIONS_ENGINE_VERSION,
-  );
-  const selectedRequestedRun =
-    requestedRun !== null &&
-    requestedRun.profileId === profile.id &&
-    requestedRun.engineVersion === RECOMMENDATIONS_ENGINE_VERSION
-      ? requestedRun
-      : null;
-  const newestRun = runs[0] ?? null;
-  const run =
-    selectedRequestedRun ??
-    (newestRun === null
-      ? null
-      : latestRunSnapshot?.id === newestRun.id
-        ? { ...newestRun, strategySnapshot: latestRunSnapshot.strategySnapshot }
-        : await withServerTiming(
-            'optimizer.latest_run_detail',
-            () => getRecommendationRun(handle, { orgId, runId: newestRun.id }),
-            (detail) => (detail === null ? 0 : 1),
-          ));
-  const recordsPromise =
-    run === null
-      ? Promise.resolve([])
-      : withServerTiming(
-          'optimizer.recommendations',
-          () => listRecommendations(handle, { orgId, runId: run.id }),
-          (records) => records.length,
-        );
-
-  const [optimizationWorkspace, accountRows, ledger, campaignFacts, records] =
-    await Promise.all([
-      workspacePromise,
-      accountRowsPromise,
-      ledgerPromise,
-      campaignFactsPromise,
-      recordsPromise,
+  const runDataPromise = (async () => {
+    const discoveries = await Promise.allSettled([
+      runsPromise, requestedRunPromise, latestRunSnapshotPromise,
     ]);
+    const [allRuns, requestedRun, latestRunSnapshot] = [
+      fulfilled(discoveries[0]), fulfilled(discoveries[1]), fulfilled(discoveries[2]),
+    ];
+    const runs = allRuns.filter(
+      (candidate) => candidate.engineVersion === RECOMMENDATIONS_ENGINE_VERSION,
+    );
+    const selectedRequestedRun =
+      requestedRun !== null &&
+      requestedRun.profileId === profile.id &&
+      requestedRun.engineVersion === RECOMMENDATIONS_ENGINE_VERSION
+        ? requestedRun
+        : null;
+    const newestRun = runs[0] ?? null;
+    const run =
+      selectedRequestedRun ??
+      (newestRun === null
+        ? null
+        : latestRunSnapshot?.id === newestRun.id
+          ? { ...newestRun, strategySnapshot: latestRunSnapshot.strategySnapshot }
+          : await withServerTiming(
+              'optimizer.latest_run_detail',
+              () => getRecommendationRun(handle, { orgId, runId: newestRun.id }),
+              (detail) => (detail === null ? 0 : 1),
+            ));
+    const records = run === null ? [] : await withServerTiming(
+      'optimizer.recommendations',
+      () => listRecommendations(handle, { orgId, runId: run.id }),
+      (rows) => rows.length,
+    );
+    return { runs, run, records };
+  })();
+
+  // Observe every started read immediately. On failure, wait for the whole
+  // wave before releasing the authenticated transaction; no query may escape
+  // into rollback or become an unhandled rejection while run discovery waits.
+  const evidence = await Promise.allSettled([
+    runDataPromise, workspacePromise, accountRowsPromise, campaignFactsPromise,
+  ]);
+  const { runs, run, records } = fulfilled(evidence[0]);
+  const optimizationWorkspace = fulfilled(evidence[1]);
+  const accountRows = fulfilled(evidence[2]);
+  const campaignFacts = fulfilled(evidence[3]);
   const periodRows = accountRows.filter(
     (row) => row.date >= period.start && row.date <= period.end,
   );
@@ -154,7 +152,6 @@ export async function loadOptimizerPageData(input: OptimizerPageDataInput) {
     optimizationWorkspace,
     periodRows,
     comparisonRows,
-    ledger,
     campaignFacts,
   };
 }
@@ -165,7 +162,7 @@ interface LatestRunSnapshotRow {
 }
 
 async function loadLatestRunSnapshot(
-  handle: Pick<DbHandle, 'sql'>,
+  handle: QueryHandle,
   input: { orgId: string; profileId: string },
 ): Promise<{ id: string; strategySnapshot: RecommendationRunDetail['strategySnapshot'] } | null> {
   return withServerTiming('optimizer.latest_run_snapshot', async () => {
@@ -183,4 +180,9 @@ async function loadLatestRunSnapshot(
       ? null
       : { id: row.id, strategySnapshot: row.strategy_snapshot };
   }, (snapshot) => (snapshot === null ? 0 : 1));
+}
+
+function fulfilled<T>(result: PromiseSettledResult<T>): T {
+  if (result.status === 'rejected') throw result.reason;
+  return result.value;
 }

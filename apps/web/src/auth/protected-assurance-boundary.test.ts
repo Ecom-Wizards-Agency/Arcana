@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -18,29 +18,23 @@ describe('protected assurance boundary', () => {
       expect(contents).toContain('currentOperatorIdentity');
       expect(contents).toContain('authorizeOperatorRole');
     }
-    expect(files[1]).toContain('enforceAssurance: enforceGridAssurance');
+    expect(await source('app/api/grid/rows/route.ts')).toContain('enforceAssurance: enforceGridAssurance');
   });
 
-  it('redirects every requestActor page through the structured auth continuation', async () => {
-    const pagePaths = [
-      'app/bugs/page.tsx',
-      'app/campaigns/page.tsx',
-      'app/experiments/new/page.tsx',
-      'app/experiments/[experimentId]/page.tsx',
-      'app/experiments/page.tsx',
-      'app/feedback/new/page.tsx',
-      'app/feedback/page.tsx',
-      'app/ngrams/page.tsx',
-      'app/query-intelligence/page.tsx',
-      'app/recommendations/page.tsx',
-      'app/roadmap/page.tsx',
-      'app/tags/page.tsx',
-      'app/time-machine/page.tsx',
-    ];
-    for (const path of pagePaths) {
-      const contents = await source(path);
-      expect(contents).toContain('requestActor(');
-      expect(contents).toContain('authenticationDestination(error)');
+  it('keeps screen adapters on the shared structured auth continuation', async () => {
+    const files = await readdir(resolve(process.cwd(), 'app'), { recursive: true });
+    const pages = files.filter((file) => file.endsWith('/page.tsx'))
+      .filter((file) => !/^(auth|login|forgot-password|recover-password|invite|agency-invite|go)\//.test(file));
+    const { SCREEN_REGISTRY } = await import('../screens/registry');
+    const physical = SCREEN_REGISTRY.filter((screen) => screen.route === 'page' || screen.route === 'redirect');
+    expect(pages).toHaveLength(physical.length);
+    for (const path of pages) {
+      expect(await source(`app/${path}`)).toContain('pageRead(descriptor, searchParams, params)');
     }
+    const boundary = await source('src/server/page-read.ts');
+    expect(boundary).toContain('await requestActor(await headers())');
+    expect(boundary).toContain('authenticationDestination(error)');
+    expect(boundary).toContain('authorizeOperatorRole(identity, context.active.role');
+    expect(await source('src/server/authenticated-page-read.ts')).toContain('await requestActor(headers)');
   });
 });

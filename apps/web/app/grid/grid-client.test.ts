@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
+import { parseGridView, serializeGridView } from '@wizard-ads/shared';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_LAYOUT_WRITE_DELAY_MS, columnsFor } from '@wizard-ads/ui';
+import { DEFAULT_LAYOUT_WRITE_DELAY_MS, MemoryViewStore, columnsFor } from '@wizard-ads/ui';
 import type {
   EntityLevel,
   GridRow,
@@ -10,10 +11,10 @@ import type {
   SynchronousLayoutSource,
   ViewStore,
 } from '@wizard-ads/ui';
-import { GridWorkspace, experimentScopeIds, withValidGrouping } from './grid-client';
+import { GridWorkspace, gridExperimentHref, experimentScopeIds, withValidGrouping } from './grid-client';
 
 const navigation = vi.hoisted(() => ({ push: vi.fn() }));
-vi.mock('next/navigation', () => ({ useRouter: () => navigation }));
+vi.mock('next/navigation', () => ({ useRouter: () => navigation, useSearchParams: () => new URLSearchParams(window.location.search) }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const mounted: Array<{ unmount: () => void }> = [];
@@ -23,6 +24,7 @@ afterEach(() => {
     for (const root of mounted.splice(0)) root.unmount();
   });
   document.body.replaceChildren();
+  window.history.replaceState(null, '', '/');
   navigation.push.mockReset();
   vi.unstubAllGlobals();
 });
@@ -147,11 +149,63 @@ const freshness = {
   coversThrough: null,
 };
 
+describe('Grid actor ownership', () => {
+  it('cannot apply a delayed saved layout from the previous actor at the same URL', async () => {
+    stubGridFetch();
+    const previous = new DeferredViewStore(); const nextStore = new MemoryViewStore();
+    const host = document.createElement('div'); document.body.append(host);
+    const root = createRoot(host); mounted.push(root);
+    act(() => root.render(createElement(GridWorkspace, workspaceProps('campaigns', previous))));
+    await flushGridLoad();
+    const next = workspaceProps('campaigns', nextStore);
+    next.actor = { ...next.actor, userId: '82828282-8282-4282-8282-828282828282' };
+    window.history.replaceState(null, '', '/grid');
+    act(() => root.render(createElement(GridWorkspace, next)));
+    await flushGridLoad();
+    expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('true');
+    await act(async () => {
+      previous.restore('campaigns', scopedView('campaigns', {
+        columns: ['campaign_name'], sort: [], groupBy: [],
+        filter: { groups: [{ filters: [{ key: 'CAMPAIGN_NAME', conditions: [{ operator: '=', values: ['Synthetic old private filter'] }] }] }] },
+      }));
+    });
+    expect(host.textContent).not.toContain('Synthetic old private filter');
+    expect(host.querySelector('[aria-label="Remove filter CAMPAIGN_NAME"]')).toBeNull();
+  });
+
+  it('flushes the previous actor buffer to its old store before a new workspace can edit', async () => {
+    stubGridFetch();
+    const previous = new CachedViewStore({ campaigns: scopedView('campaigns', {
+      columns: ['campaign_name', 'clicks', 'spend'], filter: { groups: [] }, sort: [], groupBy: [],
+    }) });
+    const nextStore = new MemoryViewStore();
+    const host = document.createElement('div'); document.body.append(host);
+    const root = createRoot(host); mounted.push(root);
+    act(() => root.render(createElement(GridWorkspace, workspaceProps('campaigns', previous))));
+    await flushGridLoad();
+    await act(async () => {
+      host.querySelector<HTMLElement>('[role="columnheader"][aria-label="Spend"]')?.click();
+      host.querySelector<HTMLElement>('[role="columnheader"][aria-label="Clicks"]')?.click();
+    });
+    expect(previous.remembered).toHaveLength(1);
+    const next = workspaceProps('campaigns', nextStore);
+    next.actor = { ...next.actor, orgId: '83838383-8383-4383-8383-838383838383' };
+    window.history.replaceState(null, '', '/grid');
+    act(() => root.render(createElement(GridWorkspace, next)));
+    expect(previous.remembered).toHaveLength(2);
+    expect(previous.remembered.at(-1)?.sort).toEqual([{ columnId: 'clicks', direction: 'desc' }]);
+    await flushGridLoad();
+    expect(await nextStore.lastLayout('campaigns')).toBeNull();
+    expect(host.querySelector('[role="columnheader"][aria-label="Clicks"]')?.getAttribute('aria-sort')).not.toBe('descending');
+  });
+});
+
 function workspaceProps(
   entity: EntityLevel,
   store: ViewStore | null,
 ): Parameters<typeof GridWorkspace>[0] {
   return {
+    actor: { userId: '76767676-7676-4676-8676-767676767676', orgId: '77777777-7777-4777-8777-777777777777' },
     entity,
     currencyCode: 'USD',
     profileId: 'synthetic-profile',
@@ -367,7 +421,7 @@ describe('grid density and grouped headers', () => {
     const headers = [...host.querySelectorAll<HTMLElement>('[role="columnheader"]')].map(
       (header) => header.getAttribute('aria-label'),
     );
-    expect(headers).toEqual(['State', 'Campaign', 'Ad type', 'Clicks', 'Spend']);
+    expect(headers).toEqual(['Select', 'State', 'Campaign', 'Ad type', 'Clicks', 'Spend']);
     expect(host.querySelector('[data-testid="grid-shell"]')?.getAttribute('data-density')).toBe('normal');
     expect(host.querySelector('[data-testid="grid-scroller"]')?.getAttribute('style')).not.toContain('620px');
 
@@ -517,6 +571,7 @@ describe('grid first paint', () => {
     await flushGridLoad();
     expect(clicksSort()).toBe('ascending');
 
+    window.history.replaceState(null, '', '/grid?campaign=c-1');
     // A campaign deep link does not change the row request, so nothing is
     // remounted: this scope has no cached layout and opens on the scoped
     // default, filter chip and all.
@@ -533,6 +588,7 @@ describe('grid first paint', () => {
     expect(store.asked).toEqual(['campaigns']);
     expect(host.querySelector('[aria-label="Remove filter CAMPAIGN_ID"]')).not.toBeNull();
 
+    window.history.replaceState(null, '', '/grid');
     // Dropping the deep link returns to a scope that was restored once
     // already. It must be read again, or the grid stays on the campaign's
     // view — and silently on its CAMPAIGN_ID filter.
@@ -584,5 +640,109 @@ describe('grid first paint', () => {
     // The state the operator ended on is the state that survives.
     expect(store.remembered).toHaveLength(2);
     expect(store.remembered.at(-1)?.sort).toEqual([{ columnId: 'clicks', direction: 'desc' }]);
+  });
+});
+
+
+it('restores URL before an asynchronous local layout and replaces history on changes', async () => {
+  stubGridFetch();
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(600);
+  vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(1200);
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+  const store = new DeferredViewStore();
+  const shared = { ...view([]), entity: 'targets' as const, columns: ['targeting', 'spend'], density: 'compact' as const };
+  window.history.replaceState(null, '', `/grid?view=${serializeGridView(shared)}`);
+  const pushes = vi.spyOn(window.history, 'pushState');
+  const replacements = vi.spyOn(window.history, 'replaceState');
+  const host = document.createElement('div'); document.body.append(host);
+  const root = createRoot(host); mounted.push(root);
+  act(() => root.render(createElement(GridWorkspace, workspaceProps('targets', store))));
+  await flushGridLoad();
+  expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('true');
+  const density = host.querySelector<HTMLSelectElement>('[aria-label="Row density"]')!;
+  expect(density.value).toBe('compact');
+  const target = { series: { bid:true,realisedCpc:false,suggestedBand:true,maxCpc:true,dailySpend:true,acos:true },maxCpcExpanded:true };
+  act(() => window.dispatchEvent(new CustomEvent('arcana:target-view', { detail: serializeGridView({ ...shared,target }) })));
+
+  act(() => { density.value = 'comfortable'; density.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(parseGridView(new URL(window.location.href).searchParams.get('view'))?.density).toBe('comfortable');
+  expect(parseGridView(new URL(window.location.href).searchParams.get('view'))?.target).toEqual(target);
+  expect(pushes).not.toHaveBeenCalled();
+  expect(replacements).toHaveBeenCalled();
+  const link = host.querySelector<HTMLAnchorElement>('a[href^="/targets/"]')!;
+  expect(link).not.toBeNull();
+  const back = new URL(link.href).searchParams.get('back')!;
+  expect(parseGridView(new URL(back, window.location.origin).searchParams.get('view'))?.density).toBe('comfortable');
+  vi.restoreAllMocks();
+});
+
+
+describe('grid navigation scope', () => {
+  it('follows same-route ASIN A to B to unscoped navigation', async () => {
+    const rows = ['B000SYN001', 'B000SYN002'].map((asin, index) => ({ ...row('targets'), id: `target:${index}`, dimensions: { ...row('targets').dimensions, asin } }));
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ rows, rowCount: rows.length, truncated: false })));
+    const store = new MemoryViewStore();
+    const host = document.createElement('div'); document.body.append(host);
+    const root = createRoot(host); mounted.push(root);
+    for (const asin of ['B000SYN001', 'B000SYN002', null]) {
+      window.history.replaceState(null, '', `/grid?entity=targets${asin ? `&asin=${asin}` : ''}`);
+      act(() => root.render(createElement(GridWorkspace, { ...workspaceProps('targets', store), asin })));
+      await flushGridLoad();
+      expect(host.textContent).toContain(asin ? `Product is ${asin}` : 'Export CSV (2 of 2)');
+      if (asin) {
+        expect(host.textContent).toContain('Export CSV (1 of 1)');
+        expect(host.textContent).not.toContain(`Product is ${asin === 'B000SYN001' ? 'B000SYN002' : 'B000SYN001'}`);
+      } else expect(host.querySelector('[aria-label="Remove product scope"]')).toBeNull();
+    }
+  });
+  it('uses navigation after A is removed and the same retained ASIN prop is selected again', async () => {
+    const rows = ['B000SYN001', 'B000SYN002'].map((asin, index) => ({ ...row('targets'), id: `target:${index}`, dimensions: { ...row('targets').dimensions, asin } }));
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ rows, rowCount: rows.length, truncated: false })));
+    const host = document.createElement('div'); document.body.append(host);
+    const root = createRoot(host); mounted.push(root);
+    const props = { ...workspaceProps('targets', new MemoryViewStore()), asin: 'B000SYN001' };
+    const render = async () => { act(() => root.render(createElement(GridWorkspace, props))); await flushGridLoad(); };
+    const scoped = '/grid?' + new URLSearchParams({ entity: 'targets', asin: props.asin });
+    window.history.replaceState(null, '', scoped);
+    await render();
+    expect(host.textContent).toContain('Export CSV (1 of 1)');
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Remove product scope"]')!.click());
+    await render();
+    expect(new URL(window.location.href).searchParams.get('asin')).toBeNull();
+    expect(host.textContent).toContain('Export CSV (2 of 2)');
+    window.history.pushState(null, '', scoped);
+    await render();
+    expect(host.textContent).toContain('Product is B000SYN001');
+    expect(host.textContent).toContain('Export CSV (1 of 1)');
+  });
+  it('prefills experiment ad-group ids with the destination adgroups parameter', () => {
+    const rows = ['ag-a', 'ag-b', 'ag-a'].map((id) => ({ ...row('ad_groups'), dimensions: { ad_group_id: id } }));
+    const query = new URL(gridExperimentHref('synthetic-profile', 'ad_groups', rows), 'https://example.invalid').searchParams;
+    expect(query.get('adgroups')?.split(',')).toEqual(['ag-a', 'ag-b']);
+    expect(query.has('adGroups')).toBe(false);
+  });
+});
+
+describe('verdict chip population', () => {
+  it('counts active non-verdict filters and ASIN scope exactly as each chip click', async () => {
+    const rows = [
+      ['one', 'B000SYN001', 'Efficient'], ['two', 'B000SYN001', 'Rank gap'],
+      ['other', 'B000SYN001', 'Efficient'], ['one', 'B000SYN002', 'Efficient'],
+    ].map(([name, asin, verdict], index) => ({ ...row('targets'), id: `target:${index}`, dimensions: { ...row('targets').dimensions, targeting: name!, asin: asin!, verdict: verdict! } }));
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ rows, rowCount: rows.length, truncated: false })));
+    const saved = scopedView('targets', { columns: ['targeting', 'verdict', 'spend'], filter: { groups: [{ filters: [{ key: 'TARGETING', conditions: [{ operator: '<>', values: ['other'] }] }] }] }, sort: [], groupBy: [] });
+    const query = new URLSearchParams({ entity: 'targets', asin: 'B000SYN001', view: serializeGridView(saved) });
+    window.history.replaceState(null, '', '/grid?' + query);
+    const host = document.createElement('div'); document.body.append(host);
+    const root = createRoot(host); mounted.push(root);
+    act(() => root.render(createElement(GridWorkspace, { ...workspaceProps('targets', new MemoryViewStore()), asin: 'B000SYN001' })));
+    await flushGridLoad();
+    for (const chip of host.querySelectorAll<HTMLButtonElement>('[data-quick-verdict]')) {
+      const diagnosis = chip.dataset['quickVerdict'];
+      const count = diagnosis === 'Efficient' || diagnosis === 'Rank gap' ? 1 : 0;
+      expect(chip.textContent).toBe(`${diagnosis} (${count})`);
+      await act(async () => chip.click());
+      expect(host.textContent).toContain(`Export CSV (${count} of 3)`);
+    }
   });
 });

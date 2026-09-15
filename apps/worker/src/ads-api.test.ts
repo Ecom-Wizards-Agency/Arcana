@@ -1,3 +1,7 @@
+import { batchSpBidRecommendationIds, parseSpBidRecommendationResponse } from '@wizard-ads/ads-api';
+import { bidRecommendationTargetKey, type BidRecommendationTarget } from '@wizard-ads/shared';
+import type { NewBidSeriesRow } from '@wizard-ads/db';
+import { syncBidSeriesForProfile } from './bid-series.js';
 /**
  * The adapter that maps the real `@wizard-ads/ads-api` client onto the worker's
  * narrow `AdsApiClient`. Driven entirely through a mock underlying client and a
@@ -6,6 +10,7 @@
 import { gzipSync } from 'node:zlib';
 import {
   AdsApiHttpError,
+  buildReportRequestBody,
   AdsApiParseError,
   AdsThrottleError,
   DuplicateReportError,
@@ -40,6 +45,7 @@ const profile: AdsProfileContext = {
 };
 
 const CONNECTION_ID = '99999999-9999-4999-8999-999999999999';
+const binding = { connectionId: CONNECTION_ID, orgId: profile.orgId, generation: '1' };
 
 const unifiedDefinition: UnifiedReportDefinition = {
   format: 'CSV',
@@ -71,14 +77,13 @@ function underlying(overrides: Partial<UnderlyingClient> = {}): UnderlyingClient
     getReport: async () => reportMeta('PENDING'),
     createUnifiedReports: async () => unifiedCreatedBatch('unified-created'),
     retrieveUnifiedReports: async () => unifiedObservedBatch('unified-observed'),
-    getSpKeywordBidRecommendations: async () => emptyRecommendations(),
-    getSpTargetBidRecommendations: async () => emptyRecommendations(),
+    getSpBidRecommendations: async () => emptyRecommendations(),
   };
   return { ...base, ...overrides };
 }
 
 function emptyRecommendations() {
-  return { items: [], errors: [], submitted: 0, batches: 0 };
+  return { items: [], errors: [], submitted: 0, batches: 0, offered: 0, eligible: 0, requested: 0, returned: 0, refused: 0, unmatched: 0 };
 }
 
 function reportMeta(status: string, extra: Partial<ReportMetadata> = {}): ReportMetadata {
@@ -142,7 +147,8 @@ function makeAdapter(
 ): { adapter: DbAdsApiClient; createClient: ReturnType<typeof vi.fn> } {
   const createClient = vi.fn(() => client);
   const deps: AdsApiAdapterDeps = {
-    resolveConnectionId: async () => CONNECTION_ID,
+    resolveProfileBinding: async () => binding,
+    resolveConnectionBinding: async () => binding,
     listConnectionIds: async () => [CONNECTION_ID],
     getRefreshToken: async () => 'refresh-token',
     createClient,
@@ -250,8 +256,55 @@ describe('DbAdsApiClient.listEntities', () => {
     });
   });
 
+  it('both worker processes observe an in-place reconnect before cache reuse', async () => {
+    let generation = '1';
+    const used: string[] = [];
+    const readBinding = vi.fn(async () => ({ ...binding, generation }));
+    const getRefreshToken = vi.fn(async (requested: typeof binding) =>
+      requested.generation === generation ? `synthetic-generation-${generation}` : null);
+    const createClient = vi.fn(({ refreshToken }: { refreshToken: string }) => underlying({
+      getReport: async () => { used.push(refreshToken); return reportMeta('PENDING'); },
+    }));
+    const make = () => new DbAdsApiClient({
+      resolveProfileBinding: readBinding, resolveConnectionBinding: readBinding,
+      listConnectionIds: async () => [CONNECTION_ID], getRefreshToken, createClient,
+    });
+    const first = make(); const second = make();
+    for (const adapter of [first, second]) await adapter.getReport(profile, 'synthetic-report');
+    generation = '2';
+    for (const adapter of [first, second, first]) await adapter.getReport(profile, 'synthetic-report');
+    expect(used).toEqual(['synthetic-generation-1', 'synthetic-generation-1',
+      'synthetic-generation-2', 'synthetic-generation-2', 'synthetic-generation-2']);
+    expect(readBinding).toHaveBeenCalledTimes(5);
+    expect(getRefreshToken).toHaveBeenCalledTimes(4);
+    expect(createClient).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not use an existing cached client after revocation', async () => {
+    let revoked = false;
+    const readBinding = vi.fn(async () => revoked ? null : binding);
+    const getReport = vi.fn(async () => reportMeta('PENDING'));
+    const { adapter } = makeAdapter(underlying({ getReport }), { resolveProfileBinding: readBinding });
+    await adapter.getReport(profile, 'synthetic-report');
+    revoked = true;
+    await expect(adapter.getReport(profile, 'synthetic-report')).rejects.toThrow(/no Amazon connection/);
+    expect(getReport).toHaveBeenCalledTimes(1);
+    expect(readBinding).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a foreign organization binding before reading Vault or creating a client', async () => {
+    const getRefreshToken = vi.fn(async () => 'synthetic-grant');
+    const { adapter, createClient } = makeAdapter(underlying(), {
+      resolveProfileBinding: async () => ({ ...binding, orgId: '33333333-3333-4333-8333-333333333333' }),
+      getRefreshToken,
+    });
+    await expect(adapter.getReport(profile, 'synthetic-report')).rejects.toThrow(/binding mismatch/);
+    expect(getRefreshToken).not.toHaveBeenCalled();
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
   it('throws when the profile has no connection', async () => {
-    const { adapter } = makeAdapter(underlying(), { resolveConnectionId: async () => null });
+    const { adapter } = makeAdapter(underlying(), { resolveProfileBinding: async () => null });
     await expect(adapter.listEntities(profile, false)).rejects.toThrow(/no Amazon connection/);
   });
 
@@ -265,12 +318,46 @@ describe('DbAdsApiClient.listEntities', () => {
     const { adapter } = makeAdapter(underlying(), { getRefreshToken });
     await adapter.listEntities(profile, false);
     // The token reaches createClient only; the adapter never returns it.
-    expect(getRefreshToken).toHaveBeenCalledWith(CONNECTION_ID);
+    expect(getRefreshToken).toHaveBeenCalledWith(binding);
   });
 });
 
 describe('DbAdsApiClient.createReport', () => {
   const input = { profile, reportType: 'spCampaigns' as const, startDate: '2026-08-01', endDate: '2026-08-07' };
+
+  it.each([false, true])('forwards optional overrides only when supplied (%s)', async (supplied) => {
+    const overrides = {
+      columns: ['campaignId', 'impressions'],
+      filters: [{ field: 'campaignStatus', values: ['ENABLED'] }],
+      name: 'synthetic report override',
+      timeUnit: 'SUMMARY' as const,
+    };
+    const createReport = vi.fn<UnderlyingClient['createReport']>(async () => reportMeta('PENDING'));
+    const { adapter } = makeAdapter(underlying({ createReport }));
+    await adapter.createReport({ ...input, ...(supplied ? overrides : {}) });
+    expect(createReport).toHaveBeenCalledTimes(1);
+    const forwarded = createReport.mock.calls[0]?.[1];
+    expect(createReport.mock.calls[0]?.[0]).toBe(profile.amazonProfileId);
+    expect(forwarded).toStrictEqual({
+      reportType: input.reportType, startDate: input.startDate, endDate: input.endDate,
+      ...(supplied ? overrides : {}),
+    });
+    if (forwarded === undefined) throw new Error('missing request');
+    const body = buildReportRequestBody(forwarded);
+    const configuration = body['configuration'] as Record<string, unknown>;
+    if (supplied) {
+      expect(body['name']).toBe(overrides.name);
+      expect(configuration['columns']).toEqual(overrides.columns);
+      expect(configuration['filters']).toEqual(overrides.filters);
+      expect(configuration['timeUnit']).toBe(overrides.timeUnit);
+    } else {
+      for (const key of Object.keys(overrides)) expect(forwarded).not.toHaveProperty(key);
+      expect(configuration).not.toHaveProperty('filters');
+      expect(configuration['timeUnit']).toBe('DAILY');
+      expect(configuration['columns']).toContain('date');
+      expect(body['name']).toBe('wizard-ads spCampaigns 2026-08-01..2026-08-07');
+    }
+  });
 
   it('returns the minted report id', async () => {
     const client = underlying({ createReport: async () => reportMeta('PENDING', { reportId: 'r-42' }) });
@@ -594,53 +681,74 @@ describe('DbAdsApiClient.listProfiles', () => {
 });
 
 describe('DbAdsApiClient.getSpSuggestedBids', () => {
-  const corridor = (targetId: string, low: number, median: number, high: number) => ({
-    kind: 'keywords' as const,
-    index: 0,
-    targetId,
-    low,
-    median,
-    high,
-    suggestedBid: median,
-    raw: {},
+  const target = (index: number): BidRecommendationTarget => ({
+    targetId: `target-${index}`, campaignId: 'campaign-one', adGroupId: 'group-one', isKeyword: true,
+    targetingExpression: { type: 'KEYWORD_EXACT_MATCH', value: `synthetic keyword ${index}` },
+  });
+  function readResult(inputs: BidRecommendationTarget[], rows: unknown[]) {
+    const batch = batchSpBidRecommendationIds(inputs).flat();
+    const parsed = parseSpBidRecommendationResponse({ bidRecommendations: [{ theme: 'CONVERSION_OPPORTUNITIES',
+      bidRecommendationsForTargetingExpressions: rows }] }, batch);
+    return { ...parsed, offered: inputs.length };
+  }
+  const row = (input: BidRecommendationTarget, values: unknown[] = [0.5, 0.8, 1.2]) => ({
+    targetingExpression: input.targetingExpression, bidValues: values.map((suggestedBid) => ({ suggestedBid })),
   });
 
-  it('reads both endpoints and keys the corridor by target, counting returns and errors', async () => {
-    const client = underlying({
-      getSpKeywordBidRecommendations: async () => ({
-        items: [corridor('kw-1', 0.5, 0.8, 1.2)],
-        errors: [{ kind: 'keywords', index: 1, targetId: 'kw-2', code: 'X', details: null, raw: {} }],
-        submitted: 2,
-        batches: 1,
-      }),
-      getSpTargetBidRecommendations: async () => ({
-        items: [{ ...corridor('tg-1', 0.3, 0.4, 0.6), kind: 'targets' as const }],
-        errors: [],
-        submitted: 1,
-        batches: 1,
-      }),
-    });
-    const { adapter } = makeAdapter(client);
-    const result = await adapter.getSpSuggestedBids(profile, {
-      keywordIds: ['kw-1', 'kw-2'],
-      targetIds: ['tg-1'],
-    });
-    expect(result.submitted).toBe(3);
-    expect(result.returned).toBe(2);
-    expect(result.errors).toBe(1);
-    expect(result.byTarget.get('kw-1')).toEqual({ targetId: 'kw-1', low: 0.5, median: 0.8, high: 1.2 });
-    expect(result.byTarget.get('tg-1')?.high).toBe(0.6);
+  it('reads the theme endpoint and keys the corridor by full target identity, counting returns and refusals', async () => {
+    const inputs = [target(0), target(1), { ...target(2), isKeyword: false, targetingExpression: { type: 'CLOSE_MATCH' as const } }];
+    const getSpBidRecommendations = vi.fn(async () => readResult(inputs, [row(inputs[0]!), row(inputs[1]!, []), row(inputs[2]!, [0.3, 0.4, 0.6])]));
+    const { adapter } = makeAdapter(underlying({ getSpBidRecommendations }));
+    const result = await adapter.getSpSuggestedBids(profile, { targets: inputs });
+    expect(getSpBidRecommendations).toHaveBeenCalledExactlyOnceWith(profile.amazonProfileId, inputs);
+    expect(result).toMatchObject({ offered: 3, eligible: 3, requested: 3, returned: 2, refused: 1, unmatched: 0 });
+    expect(result.byTarget.get(bidRecommendationTargetKey(inputs[0]!))).toMatchObject({ targetId: 'target-0', low: 0.5, median: 0.8, high: 1.2 });
+    expect(result.byTarget.get(bidRecommendationTargetKey(inputs[2]!))?.high).toBe(0.6);
   });
 
-  it('skips an endpoint with no ids to read', async () => {
-    const keywords = vi.fn(async () => ({ items: [corridor('kw-1', 0.5, 0.8, 1.2)], errors: [], submitted: 1, batches: 1 }));
-    const targets = vi.fn(async () => ({ items: [], errors: [], submitted: 0, batches: 0 }));
-    const client = underlying({ getSpKeywordBidRecommendations: keywords, getSpTargetBidRecommendations: targets });
-    const { adapter } = makeAdapter(client);
-    const result = await adapter.getSpSuggestedBids(profile, { keywordIds: ['kw-1'], targetIds: [] });
-    expect(keywords).toHaveBeenCalledOnce();
-    expect(targets).not.toHaveBeenCalled();
-    expect(result.submitted).toBe(1);
+  it('skips the endpoint with no targets to read', async () => {
+    const getSpBidRecommendations = vi.fn(async () => emptyRecommendations());
+    const { adapter } = makeAdapter(underlying({ getSpBidRecommendations }));
+    const result = await adapter.getSpSuggestedBids(profile, { targets: [] });
+    expect(getSpBidRecommendations).not.toHaveBeenCalled();
+    expect(result).toEqual({ byTarget: new Map(), offered: 0, eligible: 0, requested: 0, returned: 0, refused: 0, unmatched: 0 });
+  });
+
+  it('reconciles all seven counts through parsing, the adapter, and the daily history writer', async () => {
+    const inputs = [target(0), target(1), target(2), target(3), { ...target(4), targetingExpression: null }];
+    const providerResult = readResult(inputs, [row(inputs[1]!, [0.3, null, 0.9]), row(inputs[0]!), row(inputs[2]!, []), row(target(99))]);
+    const { adapter } = makeAdapter(underlying({ getSpBidRecommendations: async () => providerResult }));
+    const written: NewBidSeriesRow[] = [];
+    const counts = await syncBidSeriesForProfile(profile, {
+      client: adapter,
+      store: {
+        listSyncEnabledProfiles: async () => [profile], hasSeriesForDate: async () => false,
+        listBidSeriesTargets: async () => inputs.map((t) => ({ ...t, bid: 0.7, cpc: 0.4, placementModifiers: [] })),
+        upsertBidSeries: async (rows) => { written.push(...rows); return rows.length; },
+      },
+    });
+    expect(counts).toEqual({ offered: 5, eligible: 4, requested: 4, returned: 2, refused: 2, written: 5, unmatched: 1, targets: 5, corridors: 1 });
+    expect(written).toHaveLength(inputs.length);
+    expect(written[0]).toMatchObject({ suggestedBidLow: 0.5, suggestedBidMedian: 0.8, suggestedBidHigh: 1.2 });
+    expect(written[1]).toMatchObject({ suggestedBidLow: 0.3, suggestedBidMedian: null, suggestedBidHigh: 0.9 });
+    for (const saved of written.slice(2)) expect(saved).toMatchObject({ suggestedBidLow: null, suggestedBidMedian: null, suggestedBidHigh: null });
+    expect(written.map((saved) => saved.targetId)).toEqual(inputs.map((input) => input.targetId));
+  });
+
+  it('keeps overlapping numeric ids in different ad groups separate and rejects dropped or misidentified results', async () => {
+    const inputs = [target(0), { ...target(0), adGroupId: 'group-two' }];
+    const batches = batchSpBidRecommendationIds(inputs);
+    const results = batches.map((batch) => parseSpBidRecommendationResponse({ bidRecommendations: [{ theme: 'CONVERSION_OPPORTUNITIES',
+      bidRecommendationsForTargetingExpressions: [row(batch[0]!.target)] }] }, batch));
+    const result = { ...results[0]!, items: results.flatMap((r) => r.items), offered: 2, eligible: 2, requested: 2, returned: 2, submitted: 2, batches: 2 };
+    const getSpBidRecommendations = vi.fn(async () => result);
+    const { adapter } = makeAdapter(underlying({ getSpBidRecommendations }));
+    expect((await adapter.getSpSuggestedBids(profile, { targets: inputs })).byTarget.size).toBe(2);
+    for (const items of [[result.items[0]!], [result.items[0]!, result.items[0]!],
+      [result.items[0]!, { ...result.items[1]!, adGroupId: 'wrong-group' }]]) {
+      getSpBidRecommendations.mockResolvedValueOnce({ ...result, items });
+      await expect(adapter.getSpSuggestedBids(profile, { targets: inputs })).rejects.toThrow(/bid recommendation/);
+    }
   });
 });
 
@@ -674,5 +782,36 @@ describe('createAdsApiClientFromEnv', () => {
     expect(() => createAdsApiClientFromEnv(handle, {} as NodeJS.ProcessEnv)).toThrow(
       /AMAZON_LWA_CLIENT_ID/,
     );
+  });
+});
+
+describe('SB keyword sync gate and accounting', () => {
+  const keyword: MirrorRow<KeywordRow> = {
+    entityType: 'keyword', amazonId: 'kw-sb', adProduct: 'SB', name: 'blue widget', state: 'enabled',
+    campaignId: 'campaign-sb', adGroupId: 'group-sb', keywordText: 'blue widget', matchType: 'phrase', bid: 1,
+  };
+  it.each([undefined, false, true])('lists keywords only with explicit enablement: %j', async (enabled) => {
+    const listSbKeywords = vi.fn(async () => ({ ...emptyList(), raw: [{}], items: [keyword] }));
+    const { adapter } = makeAdapter(underlying({ listSbKeywords }), { sbKeywordSyncEnabled: enabled });
+    const result = await adapter.listEntities(profile, false);
+    expect(listSbKeywords).toHaveBeenCalledTimes(enabled === true ? 1 : 0);
+    expect(result.excludedEntityTypes).toEqual(enabled === true ? undefined : { SB: ['keyword'] });
+    expect(result.rows).toHaveLength(enabled === true ? 1 : 0);
+    if (enabled) expect(result.rows[0]).toMatchObject({ ...keyword, profileId: profile.id });
+    expect(result.failures).toHaveLength(0);
+  });
+  it.each([
+    { raw: [{}, {}], items: [keyword], skipped: [{ index: 1, id: null, reason: 'invalid' }] },
+    { raw: [{}, {}], items: [keyword], skipped: [] },
+    { raw: [{}], items: [keyword], truncated: true },
+  ])('refuses an incomplete SB product listing', async (result) => {
+    const { adapter } = makeAdapter(underlying({
+      listSbKeywords: async () => ({ ...emptyList(), ...result }),
+    }), { sbKeywordSyncEnabled: true });
+    const listed = await adapter.listEntities(profile, true);
+    expect(listed.rows).toHaveLength(0);
+    expect(listed.succeeded).toEqual(['SP', 'SD']);
+    expect(listed.failures).toHaveLength(1);
+    expect(listed.failures[0]?.message).toMatch(/SB keywords: listed/);
   });
 });

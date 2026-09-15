@@ -34,6 +34,7 @@ import {
   type DbHandle,
   type NewBidSeriesRow,
 } from '@wizard-ads/db';
+import { BidSeriesReconciliationCounts, bidRecommendationTargetKey, type BidRecommendationTarget, type BidRecommendationExpression, type TargetExpression } from '@wizard-ads/shared';
 import type { AdsProfileContext, SuggestedBidClient } from './ads-api.js';
 import { defaultRegionTokenBuckets, type RegionTokenBuckets } from './region-token-buckets.js';
 import type { WorkerLogger } from './worker.js';
@@ -42,11 +43,7 @@ import { profileToday } from './profile-calendar.js';
 export { profileToday } from './profile-calendar.js';
 
 /** One target the sync will read a corridor for, with the day's context. */
-export interface BidSeriesTargetInput {
-  targetId: string;
-  isKeyword: boolean;
-  campaignId: string;
-  adGroupId: string;
+export interface BidSeriesTargetInput extends BidRecommendationTarget {
   /** The bid in force. Null where the mirror has none (e.g. an auto target). */
   bid: number | null;
   /** Realized CPC over the reference day (cost / clicks), or null if no clicks. */
@@ -57,6 +54,8 @@ export interface BidSeriesTargetInput {
    * largest binds the max-potential CPC.
    */
   placementModifiers: ModifierComponent[];
+  /** Explicit source observation, never inferred from the composed maximum. */
+  placementModifiersObserved?: boolean;
 }
 
 export interface BidSeriesStore {
@@ -89,11 +88,10 @@ export interface BidSeriesSyncDeps {
   deadlineMs?: number;
 }
 
-export interface BidSeriesSyncCounts {
+export interface BidSeriesSyncCounts extends BidSeriesReconciliationCounts {
   profiles: number;
   targets: number;
   corridors: number;
-  written: number;
   /** Profiles whose corridor was already written for their local day. */
   skipped: number;
   /** Profiles whose sync threw. The pass fails only when every one did. */
@@ -117,24 +115,27 @@ function referenceDay(timezone: string, now: Date): string {
 export async function syncBidSeriesForProfile(
   profile: AdsProfileContext,
   deps: BidSeriesSyncDeps,
-): Promise<{ targets: number; corridors: number; written: number }> {
+): Promise<BidSeriesReconciliationCounts & { targets: number; corridors: number }> {
   const buckets = deps.buckets ?? defaultRegionTokenBuckets;
   const now = deps.now ?? (() => new Date());
   const date = profileToday(profile.timezone, now());
   const reference = referenceDay(profile.timezone, now());
 
   const targets = await deps.store.listBidSeriesTargets(profile, reference);
-  if (targets.length === 0) return { targets: 0, corridors: 0, written: 0 };
-
-  const keywordIds = targets.filter((t) => t.isKeyword).map((t) => t.targetId);
-  const targetIds = targets.filter((t) => !t.isKeyword).map((t) => t.targetId);
+  if (targets.length === 0) return { targets: 0, corridors: 0, written: 0,
+    offered: 0, eligible: 0, requested: 0, returned: 0, refused: 0, unmatched: 0 };
 
   const suggestions = await buckets.run(profile.region, () =>
-    deps.client.getSpSuggestedBids(profile, { keywordIds, targetIds }),
+    deps.client.getSpSuggestedBids(profile, { targets }),
   );
+  const expectedKeys = new Set(targets.map(bidRecommendationTargetKey));
+  if (suggestions.offered !== targets.length || suggestions.byTarget.size !== suggestions.returned
+    || [...suggestions.byTarget.keys()].some((key) => !expectedKeys.has(key))) {
+    throw new Error('bid series received unreconciled suggestions');
+  }
 
   const rows: NewBidSeriesRow[] = targets.map((target) => {
-    const corridor = suggestions.byTarget.get(target.targetId) ?? null;
+    const corridor = suggestions.byTarget.get(bidRecommendationTargetKey(target)) ?? null;
     const composed = maxPotentialCpc({
       baseBid: target.bid ?? 0,
       placementModifiers: target.placementModifiers,
@@ -155,7 +156,11 @@ export async function syncBidSeriesForProfile(
       // Only meaningful when there is a bid to inflate; null otherwise so the
       // chart draws a gap rather than a zero line.
       maxPotentialCpc: target.bid === null ? null : composed.value,
-      modifierComponents: composed.components,
+      // Persist the full observed placement set, including zeros, with completeness.
+      // Extra JSON fields survive the base component type used by the DB upsert.
+      modifierComponents: target.placementModifiers.map((component) => ({
+        ...component, fullyObserved: target.placementModifiersObserved === true,
+      })),
     };
   });
 
@@ -164,7 +169,8 @@ export async function syncBidSeriesForProfile(
     throw new Error(`bid series composed ${rows.length} rows but wrote ${written}`);
   }
   const corridors = rows.filter((r) => r.suggestedBidMedian !== null).length;
-  return { targets: targets.length, corridors, written };
+  const counts = BidSeriesReconciliationCounts.parse({ ...suggestions, written });
+  return { ...counts, targets: targets.length, corridors };
 }
 
 /**
@@ -188,6 +194,7 @@ export async function runBidSeriesSync(deps: BidSeriesSyncDeps): Promise<BidSeri
   const now = deps.now ?? (() => new Date());
   const profiles = await deps.store.listSyncEnabledProfiles();
   const counts: BidSeriesSyncCounts = {
+    offered: 0, eligible: 0, requested: 0, returned: 0, refused: 0, unmatched: 0,
     profiles: 0, targets: 0, corridors: 0, written: 0, skipped: 0, failed: 0, unvisited: 0,
   };
   const failures: unknown[] = [];
@@ -209,11 +216,12 @@ export async function runBidSeriesSync(deps: BidSeriesSyncDeps): Promise<BidSeri
       counts.targets += result.targets;
       counts.corridors += result.corridors;
       counts.written += result.written;
+      for (const key of ['offered', 'eligible', 'requested', 'returned', 'refused', 'unmatched'] as const) {
+        counts[key] += result[key];
+      }
       logger?.info('bid series synced', {
         profileId: profile.id,
-        targets: result.targets,
-        corridors: result.corridors,
-        written: result.written,
+        ...result,
       });
     } catch (error) {
       counts.failed += 1;
@@ -221,6 +229,7 @@ export async function runBidSeriesSync(deps: BidSeriesSyncDeps): Promise<BidSeri
       logger?.error('bid series sync failed for a profile', {
         profileId: profile.id,
         error: error instanceof Error ? error.message : String(error),
+        errorClass: error instanceof Error ? error.name : typeof error,
       });
     }
   }
@@ -229,9 +238,10 @@ export async function runBidSeriesSync(deps: BidSeriesSyncDeps): Promise<BidSeri
   // profile failing, and the caller should see it.
   const attempted = counts.profiles + counts.failed;
   if (attempted > 0 && counts.failed === attempted) {
-    throw failures[0] instanceof Error
+    const error = failures[0] instanceof Error
       ? failures[0]
       : new Error(`bid series sync failed for all ${counts.failed} profiles`);
+    throw Object.assign(error, { profiles: profiles.length, written: counts.written });
   }
   return counts;
 }
@@ -290,6 +300,9 @@ export class PostgresBidSeriesStore implements BidSeriesStore {
         is_keyword: boolean;
         campaign_id: string;
         ad_group_id: string;
+        keyword_text: string | null;
+        match_type: string | null;
+        expression: TargetExpression[] | null;
         bid: string | number | null;
         placement_bidding: { topOfSearch: number | null; productPages: number | null; restOfSearch: number | null } | null;
         cost: string | number | null;
@@ -303,7 +316,7 @@ export class PostgresBidSeriesStore implements BidSeriesStore {
          group by target_id
       )
       select k.amazon_id as target_id, true as is_keyword,
-             k.campaign_id, k.ad_group_id, k.bid,
+             k.campaign_id, k.ad_group_id, k.keyword_text, k.match_type::text, null::jsonb as expression, k.bid,
              c.placement_bidding, f.cost, f.clicks
         from public.keywords k
         left join public.campaigns c
@@ -313,7 +326,7 @@ export class PostgresBidSeriesStore implements BidSeriesStore {
          and k.state = 'enabled'
       union all
       select t.amazon_id as target_id, false as is_keyword,
-             t.campaign_id, t.ad_group_id, t.bid,
+             t.campaign_id, t.ad_group_id, null::text as keyword_text, null::text as match_type, t.expression, t.bid,
              c.placement_bidding, f.cost, f.clicks
         from public.targets t
         left join public.campaigns c
@@ -331,9 +344,15 @@ export class PostgresBidSeriesStore implements BidSeriesStore {
         isKeyword: row.is_keyword,
         campaignId: row.campaign_id,
         adGroupId: row.ad_group_id,
+        targetingExpression: recommendationExpression(row),
         bid: row.bid === null ? null : Number(row.bid),
         cpc: clicks > 0 ? Number((cost / clicks).toFixed(4)) : null,
         placementModifiers: placementModifiersOf(row.placement_bidding),
+        placementModifiersObserved: row.placement_bidding !== null &&
+          (['topOfSearch', 'restOfSearch', 'productPages'] as const).every((key) => {
+            const pct = row.placement_bidding?.[key];
+            return typeof pct === 'number' && Number.isFinite(pct) && pct >= 0;
+          }),
       };
     });
   }
@@ -344,7 +363,7 @@ export class PostgresBidSeriesStore implements BidSeriesStore {
   }
 }
 
-/** The campaign's non-zero placement uplifts, as modifier components. */
+/** Every observed placement value, including zero; unobserved values remain absent. */
 function placementModifiersOf(
   bidding: { topOfSearch: number | null; productPages: number | null; restOfSearch: number | null } | null,
 ): ModifierComponent[] {
@@ -356,7 +375,29 @@ function placementModifiersOf(
   ];
   const components: ModifierComponent[] = [];
   for (const [name, pct] of named) {
-    if (pct !== null && pct > 0) components.push({ name, pct });
+    if (typeof pct === 'number' && Number.isFinite(pct) && pct >= 0) components.push({ name, pct });
   }
   return components;
+}
+
+/** Manual product/refined targets have no v3 representation; never guess a replacement. */
+function recommendationExpression(row: {
+  is_keyword: boolean;
+  keyword_text: string | null;
+  match_type: string | null;
+  expression: TargetExpression[] | null;
+}): BidRecommendationExpression | null {
+  if (row.is_keyword) {
+    const type = row.match_type === 'exact' ? 'KEYWORD_EXACT_MATCH'
+      : row.match_type === 'phrase' ? 'KEYWORD_PHRASE_MATCH'
+      : row.match_type === 'broad' ? 'KEYWORD_BROAD_MATCH' : null;
+    return type && row.keyword_text?.trim() ? { type, value: row.keyword_text } : null;
+  }
+  if (row.expression?.length !== 1) return null;
+  const expression = row.expression[0]!;
+  const type = expression.type === 'close_match' ? 'CLOSE_MATCH'
+    : expression.type === 'loose_match' ? 'LOOSE_MATCH'
+    : expression.type === 'substitutes' ? 'SUBSTITUTES'
+    : expression.type === 'complements' ? 'COMPLEMENTS' : null;
+  return type && expression.value === null ? { type } : null;
 }

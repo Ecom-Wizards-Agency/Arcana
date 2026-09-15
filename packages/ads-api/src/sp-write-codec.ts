@@ -1,3 +1,4 @@
+import { SP_MARKETPLACE_MONEY_RULES as MONEY_RULES, type SpMarketplaceMoneyRule as MoneyRule } from '@wizard-ads/shared';
 import {
   SpWriteObservedAction,
   type SpCompleteCampaignBiddingState,
@@ -13,59 +14,6 @@ import {
 
 const MAX_CALL_SIZE = 100;
 const ACTION_REQUEST_DOMAIN = 'openspell.sp-write-action-request.v1';
-
-type MoneyRule = Readonly<{
-  region: SpWriteProviderScope['region'];
-  currencyCode: string;
-  scale: number;
-  bidMin: string;
-  bidMax: string;
-  budgetMin: string;
-  budgetMax: string;
-}>;
-
-/**
- * Active marketplace identities plus the SP rows in Amazon's limits table,
- * captured 2026-08-31. China is not present because the current active-store
- * table has no China identity and the limits table has no current SP bid row.
- */
-const MONEY_RULES: Readonly<Record<string, MoneyRule>> = Object.freeze({
-  A1AM78C64UM0Y8: rule('NA', 'MXN', 2, '0.1', '20000', '1', '21000000'),
-  A1F83G8C2ARO7P: rule('EU', 'GBP', 2, '0.02', '1000', '1', '1000000'),
-  A1PA6795UKMFR9: rule('EU', 'EUR', 2, '0.02', '1000', '1', '1000000'),
-  A2EUQ1WTGCTBG2: rule('NA', 'CAD', 2, '0.02', '1000', '1', '1000000'),
-  A39IBJ37TRP1C6: rule('FE', 'AUD', 2, '0.02', '1410', '1.4', '1500000'),
-  ATVPDKIKX0DER: rule('NA', 'USD', 2, '0.02', '1000', '1', '1000000'),
-  A13V1IB3VIYZZH: rule('EU', 'EUR', 2, '0.02', '1000', '1', '1000000'),
-  A1RKKUPIHCS9HS: rule('EU', 'EUR', 2, '0.02', '1000', '1', '1000000'),
-  APJ6JRA9NG5V4: rule('EU', 'EUR', 2, '0.02', '1000', '1', '1000000'),
-  A1805IZSGTT6HS: rule('EU', 'EUR', 2, '0.02', '1000', '1', '1000000'),
-  A1VC38T7YXB528: rule('FE', 'JPY', 0, '2', '100000', '100', '21000000'),
-  A2VIGQ35RCS4UG: rule('EU', 'AED', 2, '0.24', '184', '4', '3700000'),
-  A2Q3Y263D00KWC: rule('NA', 'BRL', 2, '0.07', '3700', '1.32', '5300000'),
-  A19VAU5U5O7RUS: rule('FE', 'SGD', 2, '0.02', '1100', '1.39', '1300000'),
-  A2NODRKZP88ZB9: rule('EU', 'SEK', 2, '0.18', '9300', '9', '9300000'),
-  A21TJRUUN4KGV: rule('EU', 'INR', 2, '1', '5000', '50', '21000000'),
-  A1C3SOZRARQ6R3: rule('EU', 'PLN', 2, '0.04', '2000', '2', '2000000'),
-  A33AVAJ2PDY3EV: rule('EU', 'TRY', 2, '0.05', '2500', '2', '2500000'),
-  ARBP9OOSHTCHU: rule('EU', 'EGP', 2, '0.15', '5.5', '7', '7400000'),
-  A17E79C6D8DWNP: rule('EU', 'SAR', 2, '0.1', '3670', '4', '3700000'),
-  AMEN7PMS3EDWL: rule('EU', 'EUR', 2, '0.02', '1000', '1', '1000000'),
-  AE08WJ6YKNBMC: rule('EU', 'ZAR', 2, '1', '7000', '20', '7000000'),
-  A28R8C7NBKEWEA: rule('EU', 'EUR', 2, '0.02', '1000', '1', '1000000'),
-});
-
-function rule(
-  region: MoneyRule['region'],
-  currencyCode: string,
-  scale: number,
-  bidMin: string,
-  bidMax: string,
-  budgetMin: string,
-  budgetMax: string,
-): MoneyRule {
-  return Object.freeze({ region, currencyCode, scale, bidMin, bidMax, budgetMin, budgetMax });
-}
 
 type RouteSpec = Readonly<{
   path: string;
@@ -289,9 +237,15 @@ export type SpWrite207ParseResult =
 export function prepareSpWriteCalls(
   rawPlan: unknown,
   hasher: SpWriteSha256Hasher,
+  actionIds?: readonly string[],
 ): readonly SpWriteCompiledCall[] {
   const plan = verifySpWritePlanFingerprints(rawPlan, hasher);
   assertProviderScope(plan.providerScope);
+  const selected = actionIds === undefined ? null : new Set(actionIds);
+  if (selected !== null && (selected.size !== actionIds?.length
+    || [...selected].some((id) => !plan.actions.some((action) => action.actionId === id)))) {
+    throw new Error('SP write selection must contain unique actions from the immutable plan');
+  }
 
   const calls: SpWriteCompiledCall[] = [];
   let group: SpWriteAction[] = [];
@@ -299,6 +253,13 @@ export function prepareSpWriteCalls(
 
   const flush = (): void => {
     if (routeKey === null || group.length === 0) return;
+    // Predispatch evidence orders the complete entity/action key by code point.
+    // Locale collation differs for prefix IDs such as "kw-1" and "kw-10".
+    group.sort((left, right) => {
+      const a = `${entityId(left)}:${left.actionId}`;
+      const b = `${entityId(right)}:${right.actionId}`;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
     for (let offset = 0; offset < group.length; offset += MAX_CALL_SIZE) {
       calls.push(compileCall(plan, routeKey, group.slice(offset, offset + MAX_CALL_SIZE), hasher));
     }
@@ -306,6 +267,7 @@ export function prepareSpWriteCalls(
   };
 
   for (const action of plan.actions) {
+    if (selected !== null && !selected.has(action.actionId)) continue;
     if (routeKey !== action.routeKey) {
       flush();
       routeKey = action.routeKey;
@@ -503,10 +465,26 @@ export function buildSpWriteObservationBody(
   });
 }
 
+/** Include every documented live state so an archived entity cannot look absent. */
+export function buildSpWritePostWriteObservationBody(
+  call: SpWriteCompiledCall, nextToken?: string,
+): Readonly<Record<string, unknown>> {
+  return Object.freeze({ ...buildSpWriteObservationBody(call, nextToken),
+    stateFilter: { include: ['ENABLED', 'PAUSED', 'ARCHIVED'] } });
+}
+
 export function parseSpWriteObservationPage(
   raw: unknown,
   call: SpWriteCompiledCall,
 ): SpWriteObservationPage {
+  return parseObservationPage(raw, call, false);
+}
+
+export function parseSpWritePostWriteObservationPage(raw: unknown, call: SpWriteCompiledCall): SpWriteObservationPage {
+  return parseObservationPage(raw, call, true);
+}
+
+function parseObservationPage(raw: unknown, call: SpWriteCompiledCall, allowMissing: boolean): SpWriteObservationPage {
   const source = requiredRecord(raw, 'SP observation response');
   assertOnlyKeys(source, [call.observation.responseKey, 'nextToken', 'totalResults'], 'SP observation response');
   const rawRows = source[call.observation.responseKey];
@@ -520,7 +498,7 @@ export function parseSpWriteObservationPage(
   if (total !== undefined && (!Number.isSafeInteger(total) || (total as number) < 0)) {
     throw new Error('SP observation totalResults is malformed');
   }
-  if (total !== undefined && total !== call.positions.length) {
+  if (total !== undefined && (allowMissing ? (total as number) > call.positions.length : total !== call.positions.length)) {
     throw new Error('SP observation totalResults does not match requested positions');
   }
   return Object.freeze({
@@ -537,6 +515,26 @@ export function parseSpWriteObservationRows(
   if (rawRows.length !== call.positions.length) {
     throw new Error('SP observation entity count does not match requested positions');
   }
+  const parsed = parseObservationRows(call, rawRows, false);
+  return Object.freeze(call.actions.map((action) => {
+    const observed = parsed.get(entityId(action));
+    if (observed === undefined) throw new Error(`SP observation omitted entity: ${entityId(action)}`);
+    return observed;
+  }));
+}
+
+/** Null positions are authoritative absence only after the adapter closes pagination. */
+export function parseSpWritePostWriteObservationRows(
+  call: SpWriteCompiledCall, rawRows: readonly unknown[],
+): readonly (SpWriteObservedAction | null)[] {
+  if (rawRows.length > call.positions.length) throw new Error('SP observation returned more rows than requested positions');
+  const parsed = parseObservationRows(call, rawRows, true);
+  return Object.freeze(call.positions.map((position) => parsed.get(position.amazonEntityId) ?? null));
+}
+
+function parseObservationRows(
+  call: SpWriteCompiledCall, rawRows: readonly unknown[], afterWrite: boolean,
+): ReadonlyMap<string, SpWriteObservedAction> {
   const actionById = new Map(call.actions.map((action) => [entityId(action), action]));
   const seen = new Set<string>();
   const parsed = new Map<string, SpWriteObservedAction>();
@@ -548,14 +546,14 @@ export function parseSpWriteObservationRows(
     if (action === undefined) throw new Error(`SP observation returned an extra entity: ${id}`);
     if (seen.has(id)) throw new Error(`SP observation repeated an entity: ${id}`);
     seen.add(id);
-    parsed.set(id, parseObservedAction(action, row, call.providerScope));
+    if (afterWrite && action.routeKey === 'sp.v3.keywords.update' && row['state'] === 'ARCHIVED') {
+      parsed.set(id, SpWriteObservedAction.parse({ routeKey: action.routeKey, actionId: action.actionId,
+        actionFingerprint: action.fingerprint, amazonEntityId: id,
+        values: { ...(row['bid'] === undefined ? {} : { bid: parseMoney(row['bid'], call.providerScope, 'bid') }), state: 'archived' },
+      }));
+    } else parsed.set(id, parseObservedAction(action, row, call.providerScope));
   });
-
-  return Object.freeze(call.actions.map((action) => {
-    const observed = parsed.get(entityId(action));
-    if (observed === undefined) throw new Error(`SP observation omitted entity: ${entityId(action)}`);
-    return observed;
-  }));
+  return parsed;
 }
 
 function parseObservedAction(
@@ -563,6 +561,8 @@ function parseObservedAction(
   row: Readonly<Record<string, unknown>>,
   scope: SpWriteProviderScope,
 ): SpWriteObservedAction {
+  // Even a bid-only reservation must refuse an archived or unknown-state keyword.
+  if (action.routeKey === 'sp.v3.keywords.update') parseState(row['state']);
   const base = {
     routeKey: action.routeKey,
     actionId: action.actionId,

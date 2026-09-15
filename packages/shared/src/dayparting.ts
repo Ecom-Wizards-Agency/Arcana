@@ -174,3 +174,44 @@ export const MarketingStreamNormalizationCounts = z.object({
 export type MarketingStreamNormalizationCounts = z.infer<
   typeof MarketingStreamNormalizationCounts
 >;
+
+/** Sunday is row 0, matching Marketing Stream. Display order may start on Monday. */
+export const DaypartingModifiers = z.array(z.array(z.number().int().min(-99).max(300)).length(24)).length(7);
+export type DaypartingModifiers = z.infer<typeof DaypartingModifiers>;
+export const DaypartingScheduleStatus = z.enum(['draft', 'reviewed', 'enabled', 'paused']);
+export type DaypartingScheduleStatus = z.infer<typeof DaypartingScheduleStatus>;
+export const DaypartingEvidenceSummary = z.object({
+  start: IsoDate, end: IsoDate, campaignIds: z.array(AmazonId),
+  factRows: count, settledRows: count, settlingRows: count, revisedRows: count,
+  coveredCampaignIds: z.array(AmazonId), maturityPolicyConfigured: z.boolean(),
+  spend: metric.nullable(), sales: metric.nullable(), orders: count.nullable(),
+  fingerprint: z.string().min(1),
+});
+export type DaypartingEvidenceSummary = z.infer<typeof DaypartingEvidenceSummary>;
+export const DaypartingReviewRecord = z.object({
+  reviewedBy: Uuid, reviewedAt: z.iso.datetime(), campaignIds: z.array(AmazonId).min(1),
+  modifiers: DaypartingModifiers, evidence: DaypartingEvidenceSummary,
+});
+export type DaypartingReviewRecord = z.infer<typeof DaypartingReviewRecord>;
+export const DaypartingSchedule = z.object({
+  id: Uuid, orgId: Uuid, profileId: Uuid, name: z.string().trim().min(1).max(200), timezone: z.string().min(1),
+  modifiers: DaypartingModifiers, status: DaypartingScheduleStatus, campaignIds: z.array(AmazonId),
+  review: DaypartingReviewRecord.nullable(), enabledAt: z.iso.datetime().nullable(), pausedAt: z.iso.datetime().nullable(),
+  sourceProposalId: Uuid.nullable(), createdAt: z.iso.datetime(), updatedAt: z.iso.datetime(),
+  /** Execution metadata is supplied by the cadence backend, never inferred by the UI. */
+  nextRunAt: z.iso.datetime().nullable(), cadenceLimits: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).nullable(),
+  profileKillSwitch: z.boolean().nullable(),
+});
+export type DaypartingSchedule = z.infer<typeof DaypartingSchedule>;
+const uniqueCampaigns = z.array(AmazonId).refine((ids) => new Set(ids).size === ids.length, 'Campaigns must be unique');
+export const DaypartingDraftInput = z.object({
+  profileId: Uuid, id: Uuid.optional(), expectedUpdatedAt: z.iso.datetime().optional(),
+  name: z.string().trim().min(1).max(200), modifiers: DaypartingModifiers,
+  campaignIds: uniqueCampaigns, sourceProposalId: Uuid.nullable().default(null),
+}).strict().refine((input) => (input.id === undefined) === (input.expectedUpdatedAt === undefined), 'An edit requires its saved revision');
+export type DaypartingDraftInput = z.infer<typeof DaypartingDraftInput>;
+export const DaypartingReviewInput = z.object({
+  profileId: Uuid, id: Uuid, expectedUpdatedAt: z.iso.datetime(),
+  evidenceStart: IsoDate, evidenceEnd: IsoDate, evidenceFingerprint: z.string().min(1),
+}).strict().refine((input) => input.evidenceStart <= input.evidenceEnd, 'Evidence dates are reversed');
+export type DaypartingReviewInput = z.infer<typeof DaypartingReviewInput>;

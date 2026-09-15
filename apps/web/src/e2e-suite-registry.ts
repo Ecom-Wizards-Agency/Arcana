@@ -1,3 +1,9 @@
+import { SCREEN_REGISTRY } from './screens/registry-metadata';
+
+function specsFor(suite: string): string[] {
+  return SCREEN_REGISTRY.flatMap((screen) => screen.specs.filter((spec) => spec.suite === suite).map((spec) => spec.file)).sort();
+}
+
 /**
  * The complete browser-suite ownership contract.
  *
@@ -11,38 +17,31 @@ export const E2E_SUITE_DEFINITIONS = [
     kind: 'production-bridge',
     config: 'playwright.tags-goto.config.ts',
     project: 'tags-goto',
-    expectedSpecFiles: [
-      'campaigns.spec.ts',
-      'experiments.spec.ts',
-      'feedback.spec.ts',
-      'recommendations.spec.ts',
-      'tags-goto.spec.ts',
-      'time-machine.spec.ts',
-    ],
-    expectedTests: 33,
+    expectedSpecFiles: specsFor('tags-goto'),
+    expectedTests: 34,
   },
   {
     name: 'grid-performance',
     kind: 'authenticated-dev',
     config: 'playwright.grid-performance.config.ts',
     project: 'grid-performance',
-    expectedSpecFiles: ['grid-performance.spec.ts'],
-    expectedTests: 1,
+    expectedSpecFiles: specsFor('grid-performance'),
+    expectedTests: 2,
   },
   {
     name: 'optimization-groups',
     kind: 'authenticated-dev',
     config: 'playwright.optimization-groups.config.ts',
     project: 'optimization-groups',
-    expectedSpecFiles: ['optimization-groups.spec.ts'],
-    expectedTests: 2,
+    expectedSpecFiles: specsFor('optimization-groups'),
+    expectedTests: 3,
   },
   {
     name: 'profile-context',
     kind: 'authenticated-dev',
     config: 'playwright.profile-context.config.ts',
     project: 'profile-context',
-    expectedSpecFiles: ['profile-context.spec.ts', 'sidebar-layout.spec.ts'],
+    expectedSpecFiles: specsFor('profile-context'),
     expectedTests: 8,
   },
   {
@@ -50,7 +49,7 @@ export const E2E_SUITE_DEFINITIONS = [
     kind: 'authenticated-dev',
     config: 'playwright.auth-guards-anonymous.config.ts',
     project: 'auth-guards-anonymous',
-    expectedSpecFiles: ['guards-anonymous.spec.ts'],
+    expectedSpecFiles: specsFor('auth-guards-anonymous'),
     expectedTests: 2,
   },
   {
@@ -58,7 +57,7 @@ export const E2E_SUITE_DEFINITIONS = [
     kind: 'authenticated-dev',
     config: 'playwright.auth-guards-signed-in.config.ts',
     project: 'auth-guards-signed-in',
-    expectedSpecFiles: ['guards-signed-in.spec.ts'],
+    expectedSpecFiles: specsFor('auth-guards-signed-in'),
     expectedTests: 3,
   },
   {
@@ -66,15 +65,15 @@ export const E2E_SUITE_DEFINITIONS = [
     kind: 'authenticated-dev',
     config: 'playwright.auth.config.ts',
     project: 'auth',
-    expectedSpecFiles: ['dashboard.spec.ts', 'grid.spec.ts'],
-    expectedTests: 7,
+    expectedSpecFiles: specsFor('auth'),
+    expectedTests: 21,
   },
   {
     name: 'auth-members',
     kind: 'authenticated-dev',
     config: 'playwright.auth-members.config.ts',
     project: 'auth-members',
-    expectedSpecFiles: ['members.spec.ts'],
+    expectedSpecFiles: specsFor('auth-members'),
     expectedTests: 5,
   },
   {
@@ -82,7 +81,7 @@ export const E2E_SUITE_DEFINITIONS = [
     kind: 'authenticated-dev',
     config: 'playwright.auth-oauth.config.ts',
     project: 'auth-oauth',
-    expectedSpecFiles: ['oauth.spec.ts'],
+    expectedSpecFiles: specsFor('auth-oauth'),
     expectedTests: 7,
   },
   {
@@ -90,16 +89,16 @@ export const E2E_SUITE_DEFINITIONS = [
     kind: 'authenticated-dev',
     config: 'playwright.auth-roles.config.ts',
     project: 'auth-roles',
-    expectedSpecFiles: ['roles.spec.ts'],
-    expectedTests: 8,
+    expectedSpecFiles: specsFor('auth-roles'),
+    expectedTests: 9,
   },
   {
     name: 'route-acceptance',
     kind: 'authenticated-dev',
     config: 'playwright.route-acceptance.config.ts',
     project: 'route-acceptance',
-    expectedSpecFiles: ['route-acceptance.dashboard.spec.ts'],
-    expectedTests: 3,
+    expectedSpecFiles: specsFor('route-acceptance'),
+    expectedTests: 17,
   },
 ] as const;
 
@@ -147,3 +146,14 @@ export async function runE2ESuiteMatrix(
   }
   return finalCode;
 }
+
+/** Exact basename ownership, including a path boundary on Windows and POSIX. */
+export function e2eTestMatch(name: E2ESuite): RegExp[] {
+  return getE2ESuiteDefinition(name).expectedSpecFiles.map((file) =>
+    new RegExp(`(?:^|[/\\\\])${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`),
+  );
+}
+
+export const E2E_EXPECTED_TOTAL = E2E_SUITE_DEFINITIONS.reduce(
+  (total, suite) => total + suite.expectedTests, 0,
+);
