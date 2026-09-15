@@ -44,7 +44,12 @@ export function DateRangePicker(props: DateRangePickerProps): ReactNode {
         <nav aria-label="Date range presets" style={{ display: 'flex', flexDirection: 'column', gap: tokens.space(1) }}><small>RANGE</small>
           {presets.map((item) => <a key={item.id} href={props.presetHref(item.range, item.id)} aria-current={preset === item.id ? 'date' : undefined}
             style={{ ...button, textDecoration: 'none', background: preset === item.id ? tokens.color.indigoSoft : tokens.color.surface }}
-            onClick={(event) => { event.preventDefault(); setPeriod(item.range); setPreset(item.id); setMonth(`${item.range.start.slice(0, 8)}01`); setAnchor(null); }}>{item.label}</a>)}
+            onClick={(event) => {
+              if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              event.preventDefault();
+              props.onApply({ period: item.range, preset: item.id, mode, comparison: comparisonRange(item.range, mode, custom) });
+              close();
+            }}>{item.label}</a>)}
           <button style={button} onClick={() => { setPreset(undefined); root.current?.querySelector<HTMLInputElement>('[name="from"]')?.focus(); }}>Custom</button>
         </nav>
         <div><div style={{ display: 'flex', justifyContent: 'space-between' }}><button style={button} aria-label="Previous month" onClick={() => moveMonth(-1)}>←</button><button style={button} aria-label="Next month" onClick={() => moveMonth(1)}>→</button></div>

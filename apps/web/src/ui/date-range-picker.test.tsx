@@ -15,8 +15,7 @@ it('routes shared picker Apply with both periods and preserves screen scope; Can
   fireEvent.click(screen.getByRole('button', { name: 'Apply range' }));
   expect(push).toHaveBeenLastCalledWith(`/grid?${new URLSearchParams({ profile: 'profile-synthetic', entity: 'targets', compareFrom: '2026-02-01', compareTo: '2026-02-28', comparison: 'custom', from: '2026-04-01', to: '2026-04-30' })}`);
   fireEvent.click(document.querySelector('summary')!);
-  fireEvent.click(screen.getByRole('link', { name: 'Last 7 days' }));
   fireEvent.click(screen.getByRole('button', { name: 'None' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Apply range' }));
+  fireEvent.click(screen.getByRole('link', { name: 'Last 7 days' }));
   expect(push).toHaveBeenLastCalledWith(`/grid?${new URLSearchParams({ profile: 'profile-synthetic', entity: 'targets', preset: 'last_7', comparison: 'none', from: '2026-04-24', to: '2026-04-30' })}`);
 });

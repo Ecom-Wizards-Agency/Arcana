@@ -7,25 +7,43 @@ import { comparisonRange, mismatchPercentage, rangeDays, rangePresets } from './
 afterEach(cleanup);
 const period = { start: '2026-07-30', end: '2026-08-28' };
 const comparison = { start: '2026-06-30', end: '2026-07-29' };
-function mount() {
+function mount(mode: 'previous' | 'year' | 'custom' | 'none' = 'previous') {
   const apply = vi.fn();
-  render(<DateRangePicker period={period} comparison={comparison} today="2026-08-29" factsThrough="2026-08-28" factsComplete presetHref={(_, id) => `?preset=${id}`} onApply={apply} />);
+  render(<DateRangePicker period={period} comparison={comparison} mode={mode} today="2026-08-29" factsThrough="2026-08-28" factsComplete presetHref={(_, id) => `?preset=${id}`} onApply={apply} />);
   fireEvent.click(document.querySelector('summary')!);
   return apply;
 }
 describe('date and comparison picker', () => {
-  for (const preset of rangePresets('2026-08-29')) it(`stages ${preset.label} until Apply`, () => {
+  for (const preset of rangePresets('2026-08-29')) for (const mode of ['previous', 'year', 'custom', 'none'] as const) it(`applies ${preset.label} immediately with ${mode} comparison`, () => {
+    const apply = mount(mode);
+    const link = screen.getByRole('link', { name: preset.label });
+    expect(link.getAttribute('href')).toBe(`?preset=${preset.id}`);
+    fireEvent.click(link);
+    expect(apply).toHaveBeenCalledExactlyOnceWith({ period: preset.range, mode, preset: preset.id, comparison: comparisonRange(preset.range, mode, comparison) });
+    expect(document.querySelector('details')!.open).toBe(false);
+    expect(document.activeElement).toBe(document.querySelector('summary'));
+  });
+  it('retains the edited custom comparison when applying a preset', () => {
+    const apply = mount('custom');
+    fireEvent.change(screen.getByLabelText('Comparison from'), { target: { value: '2026-07-02' } });
+    fireEvent.click(screen.getByRole('link', { name: 'Last 7 days' }));
+    expect(apply).toHaveBeenCalledExactlyOnceWith({ period: { start: '2026-08-22', end: '2026-08-28' }, preset: 'last_7', mode: 'custom', comparison: { start: '2026-07-02', end: '2026-07-29' } });
+  });
+  it('stages calendar selection until Apply', () => {
     const apply = mount();
-    fireEvent.click(screen.getByRole('link', { name: preset.label }));
+    fireEvent.click(screen.getByRole('button', { name: '2 Jul 2026' }));
+    fireEvent.click(screen.getByRole('button', { name: '8 Jul 2026' }));
     expect(apply).not.toHaveBeenCalled();
-    expect(screen.getByLabelText('From')).toHaveProperty('value', preset.range.start);
+    expect(document.querySelector('details')!.open).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Apply range' }));
-    expect(apply).toHaveBeenCalledWith(expect.objectContaining({ period: preset.range, mode: 'previous', preset: preset.id }));
+    expect(apply).toHaveBeenCalledExactlyOnceWith({ period: { start: '2026-07-02', end: '2026-07-08' }, mode: 'previous', comparison: { start: '2026-06-25', end: '2026-07-01' } });
+    expect(document.querySelector('details')!.open).toBe(false);
   });
   for (const [mode, label] of [['previous', 'Previous period'], ['year', 'Same period last year'], ['custom', 'Custom'], ['none', 'None']] as const) it(`applies comparison ${mode}`, () => {
     const apply = mount();
     const fieldset = screen.getByText('COMPARE AGAINST').closest('fieldset')!;
     fireEvent.click(within(fieldset).getByRole('button', { name: label }));
+    expect(apply).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Apply range' }));
     expect(apply).toHaveBeenCalledWith(expect.objectContaining({ mode, comparison: comparisonRange(period, mode, comparison) }));
   });

@@ -76,7 +76,6 @@ async function exerciseEveryPreset({
     const picker = page.locator('.wa-topbar details.wa-date-range:not(.wa-shell-comparison)');
     await picker.locator('summary').click();
     await picker.getByRole('link', { name: preset.label, exact: true }).click();
-    await picker.getByRole('button', { name: 'Apply range', exact: true }).click();
     await page.waitForURL((url) => (
       url.pathname === path
         && url.searchParams.get('profile') === profileId
