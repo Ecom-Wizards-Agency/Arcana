@@ -20,7 +20,7 @@ export interface WorkerConfig {
   pollIntervalMs: number;
   claimBatchSize: number;
   maxConcurrentJobs: number;
-  /** Queue types this runtime may claim. Undefined means the whole queue. */
+  /** Queue types this runtime may claim; opt-in integration work needs an explicit list. */
   jobTypes: readonly JobTypeValue[] | undefined;
   /** Sanitized deployment identity; never derived from a hostname or secret. */
   deploymentRole: WorkerDeploymentRole;
@@ -138,7 +138,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     pollIntervalMs: positiveInteger(env['WORKER_POLL_INTERVAL_MS'], 1_000, 'WORKER_POLL_INTERVAL_MS'),
     claimBatchSize: positiveInteger(env['WORKER_CLAIM_BATCH_SIZE'], 10, 'WORKER_CLAIM_BATCH_SIZE'),
     maxConcurrentJobs: positiveInteger(env['WORKER_MAX_CONCURRENT_JOBS'], 10, 'WORKER_MAX_CONCURRENT_JOBS'),
-    jobTypes: deployment.jobTypes,
+    jobTypes: deployment.jobTypes ?? JobType.options.filter(type => type !== 'marketing_stream.extensions.project'),
     deploymentRole: deployment.role,
     claimProtocol: deployment.claimProtocol,
     revision: workerRevisionFromEnv(env),

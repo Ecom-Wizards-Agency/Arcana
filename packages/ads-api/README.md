@@ -249,3 +249,71 @@ Keys are printed before checking the candidate response key. A mismatch fails th
 command. Supply credentials through the external runtime secret file described
 above. Record sanitized live evidence and correct the endpoint contract before
 marking it verified and enabling worker sync. This smoke mode was not run in WP-246.
+
+## Stream, Asset Library and read graph evidence (WP-313)
+
+The additional clients are pure HTTP adapters with injected transports. Importing
+one does not install a worker source, acquire infrastructure authority or enable a
+schedule. Tests use synthetic fixtures and the public contracts listed below;
+they do not establish hosted capability.
+
+- `StreamSubscriptionsClient`: sponsored `/streams/subscriptions` list/create,
+  exact lookup and archive. The documented update supports status/notes, not a
+  destination change. SNS confirmation validates the approved challenge against
+  exact region/topic/destination and uses a fixed SNS host. Provisioning is a
+  separate default-denied worker authority; an uncertain create is never resent.
+- `AssetLibraryClient`: validated upload, single and asynchronous batch
+  registration, counted search, and exact ID/version lookup. URLs and upload
+  handles remain transient. Registration acceptance, processing, specification
+  checks and moderation are separate observations. The DB admits an exact immutable request against separately issued asset
+  authority. Worker execution validates bytes and provider scope before reserving
+  an attempt; campaign write authority cannot authorize these calls. No production
+  upload/registration caller is composed.
+- `ModerationClient`: v4 result reads and SD creative moderation. Ad and creative
+  versions require verified associations to Asset Library versions. The public
+  Unified Pre-moderation contract exposes submission; this implementation parses
+  supplied evidence but provides no implicit submission or claimed status reader.
+- `readProviderGraph`: eleven product-specific SB/SD resources, strict counted
+  pages and typed node/edge observations. It does not replace the existing entity
+  mirror or adopt Ads v1. Remaining SB target/negative and localization contracts
+  remain unsupported pending their prerequisites and a named consumer.
+
+The eight additional Stream datasets register strict `fixture.v1` parsers with
+synthetic recorded payloads. Each uses the existing SQS durable receipt boundary,
+one `marketing_stream.extensions.project` job on `integrations`, independently
+verified event counts and WP-256 partial coverage. These fixtures do not establish
+Amazon wire parity. Unknown versions are refused; live contract/access evidence
+is required before activation.
+
+Both `OPENSPELL_STREAM_EXTENSIONS_ENABLED=1` and an exact
+`OPENSPELL_STREAM_EXTENSIONS_DESTINATION_ARN` are required for intake. Projection
+execution also requires an explicit job claimant and a confirmed, enabled,
+capability-verified binding matching the advertiser, profile, region and queue.
+No event schedule is installed. After opt-in, startup and bounded 60-second
+DB-only reconciliation repair missing work using the existing queue custody,
+backoff and eight-attempt ceiling. Existing normalizer claimant sets stay intact.
+
+Stored observations feed Campaigns, Ad groups, Products, Targets, Target 360,
+Creatives, Creative detail, Creative campaign, Timeline, Time Machine,
+Recommendations, Home and Sync status. Aggregate measures require verified
+creative/asset/campaign associations throughout the event window. Windows remain
+separate from report totals; zero is rendered only when measured. Provider budget
+advice exposes `readStreamBudgetHandoff` with Stream provenance, no observed usage
+and no approval authority for the WP-292 consumer.
+
+Accepted asset registrations enqueue the existing `asset-library.search` consumer
+once. Search persists immutable ownership/version evidence before coverage.
+`OPENSPELL_ASSET_RECONCILIATION_ENABLED=1` and an explicit search claimant opt into
+restart repair; interrupted writes become uncertain and cannot be uploaded again.
+Only an independently verified read can settle an uncertain provider identity.
+The shared/DB `readAssetSelectionEvidence` seam provides scope-specific moderation
+to the builder; builder wiring remains with its owner. Prompt/video extension
+reports remain disabled and unsupported until real identity mapping and capability
+evidence exist, followed by reporting recovery and separate activation.
+
+Public contract references:
+
+- [Sponsored Stream subscriptions](https://dtrnk0o2zy01c.cloudfront.net/openapi/en-us/dest/AmazonMarketingStream_prod_3p.json)
+- [Asset Library v3](https://d3a0d0y2hgofx6.cloudfront.net/openapi/en-us/creative-asset-library/creative-asset-library-openapi.yaml)
+- [Moderation](https://d1y2lf8k3vrkfu.cloudfront.net/openapi/en-us/dest/Moderation_prod_3p.json)
+- [Unified Pre-moderation](https://d1y2lf8k3vrkfu.cloudfront.net/openapi/en-us/dest/PreModeration_prod_3p.json)

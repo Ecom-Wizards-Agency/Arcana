@@ -11,6 +11,11 @@ interface RegistryEntry {
   exports: readonly { barrel: string; order: number; clause: string; after: string }[];
 }
 export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
+  {"domain":"stream-subscriptions","contract":"stream-subscriptions.ts","schema":null,"queries":null,"migrationPrefix":null,"exports":[{"barrel":"index.ts","order":107,"clause":"*","after":""}]},
+  {"domain":"asset-evidence","contract":"asset-evidence.ts","schema":null,"queries":null,"migrationPrefix":null,"exports":[{"barrel":"index.ts","order":106,"clause":"*","after":""}]},
+  {"domain":"extension-report-support","contract":"extension-report-support.ts","schema":null,"queries":null,"migrationPrefix":null,"exports":[{"barrel":"index.ts","order":105,"clause":"*","after":""}]},
+  {"domain":"provider-graph","contract":"provider-graph.ts","schema":null,"queries":null,"migrationPrefix":null,"exports":[{"barrel":"index.ts","order":104,"clause":"*","after":""}]},
+  {"domain":"marketing-stream-extensions","contract":"marketing-stream-extensions.ts","schema":null,"queries":null,"migrationPrefix":null,"exports":[{"barrel":"index.ts","order":103,"clause":"*","after":""}]},
   {"domain": "sponsored-prompts", "contract": "sponsored-prompts.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 102, "clause": "*", "after": ""}]},
   {"domain":"campaign-builder","contract":"campaign-builder.ts","schema":null,"queries":null,"migrationPrefix":null,"exports":[{"barrel":"index.ts","order":102,"clause":"*","after":""}]},
   {"domain": "timeline-events", "contract": "timeline-events.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 101, "clause": "*", "after": ""}]},
@@ -21,7 +26,7 @@ export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
   {"domain": "agency", "contract": "agency.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 1, "clause": "*", "after": ""}]},
   {"domain": "amazon-connections", "contract": "amazon-connections.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 3, "clause": "*", "after": ""}]},
   {"domain": "apply", "contract": "apply.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 10, "clause": "*", "after": ""}]},
-  {"domain": "asset-library", "contract": "asset-library.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": []},
+  {"domain": "asset-library", "contract": "asset-library.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel":"index.ts","order":108,"clause":"*","after":""}]},
   {"domain": "campaign-creation", "contract": "campaign-creation.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 20, "clause": "*", "after": ""}]},
   {"domain": "campaign-creation-approval", "contract": "campaign-creation-approval.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": []},
   {"domain": "creative", "contract": "creative.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 13, "clause": "*", "after": ""}]},

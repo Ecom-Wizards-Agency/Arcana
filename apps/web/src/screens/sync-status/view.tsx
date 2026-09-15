@@ -76,6 +76,11 @@ function renderReady({ context, status }: Extract<ScreenData, { view: 'ready'; }
       </table></TableFrame>
       {status.freshness.length === 0 ? <ScreenState title="No profiles yet." body="Choose a connected profile or check again after the next sync." /> : null}
 
+      <h2 style={subheading}>Additional Stream datasets</h2>
+      <p style={muted}>Bindings and projections default off. Event time determines age; replay does not renew evidence. Counters include only verified binding scope; unmatched delivery failures remain in the infrastructure ledger.</p>
+      {status.streams ? <TableFrame><table style={table}><thead><tr>{['Dataset', 'Bindings', 'Enabled', 'Confirmation', 'Stored', 'Latest event', 'Maximum lag', 'Duplicates / rejected / dead-lettered'].map((label) => <th style={th} key={label}>{label}</th>)}</tr></thead><tbody>
+        {status.streams.map((row) => <tr key={row.datasetId} data-testid="stream-extension-row"><td style={td}>{row.datasetId}</td><td style={td}>{row.bindingCount}</td><td style={td}>{row.enabled ? 'on' : 'off'}</td><td style={td}>{row.confirmed ? 'confirmed' : 'missing confirmation'}</td><td style={td}>{row.stored}</td><td style={td}>{formatTimestamp(row.latestEventAt)}</td><td style={td}>{row.maximumLagSeconds === null ? '—' : `${row.maximumLagSeconds}s`}</td><td style={td}>{[row.duplicates, row.rejected, row.deadLettered].map((n) => n === null ? 'unmeasured' : n).join(' / ')}</td></tr>)}
+      </tbody></table></TableFrame> : <p style={muted}>Choose a profile to inspect Stream bindings.</p>}
       <ReportLifecycleTables deadLetters={status.deadLetters} lifecycle={status.lifecycle} />
 
       <h2 style={subheading}>Jobs</h2>

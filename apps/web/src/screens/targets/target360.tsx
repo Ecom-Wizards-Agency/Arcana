@@ -141,5 +141,19 @@ export function Target360({ model, currencyCode, back, savedView, onClose, showL
       const other = p.profileId === model.profileId && p.targetId === model.payload.target.targetId ? model : comparisons[key];
       return <section key={key}><button className="wa-btn" onClick={() => update({ ...view, compare: view.compare!.filter((c) => c !== p) })}>Remove {other?.payload.target.targeting ?? p.targetId}</button>{other ? <BidCorridorChart title={other.payload.target.targeting} ariaLabel={`Compare ${other.payload.target.targeting}`} currencyCode={other.currencyCode} points={other.payload.points} /> : <p aria-busy="true">Loading comparison {p.targetId}…</p>}</section>;
     })}</section> : null}
+    <section className={styles.panel} aria-label="Provider associations" data-state={model.graph?.status ?? 'missing'}>
+      <h2>Provider associations</h2>
+      {model.graph?.observation ? <p>Provider target state: {model.graph.observation.state} · {model.graph.observation.source} · {model.graph.observation.sourceEventAt}</p> : null}
+      {!model.graph || model.graph.status === 'missing' ? <p>No provider associations measured for this target.</p> : <>
+        <p>{model.graph.status === 'stale' ? 'Provider association evidence is stale.' : model.graph.status === 'partial' ? 'Provider association evidence is partial.' : 'Observed provider associations.'}
+          {' '}{model.graph.rows.length} resolved · {model.graph.unresolvedCount} awaiting endpoint evidence.</p>
+        {model.graph.rows.length>0 ? <table><thead><tr><th>Association</th><th>Entity</th><th>Source</th><th>Observed</th></tr></thead>
+          <tbody>{model.graph.rows.map((row) => <tr key={`${row.relation}:${row.kind}:${row.providerId}:${row.version ?? ''}`}>
+            <td>{row.relation.replaceAll('_',' ')}</td><td>{row.kind.replaceAll('_',' ')} · {row.providerId}{row.version ? ` · ${row.version}` : ''}</td>
+            <td>{row.source === 'marketing_stream' ? 'Amazon Marketing Stream' : 'Amazon Ads API'}</td>
+            <td>{row.sourceEventAt.slice(0,10)}{row.stale ? ' · Stale' : ''}</td>
+          </tr>)}</tbody></table> : null}
+      </>}
+    </section>
   </article>;
 }

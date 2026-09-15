@@ -32,6 +32,14 @@ export const AssetLibrarySpecChecks = z.object({
 }).strict();
 export type AssetLibrarySpecChecks = z.infer<typeof AssetLibrarySpecChecks>;
 
+export const AssetLibraryMediaMetadata = z.object({
+  byteLength: z.number().int().nonnegative().nullable(),
+  contentType: z.string().max(100).nullable(),
+  width: z.number().int().positive().nullable(), height: z.number().int().positive().nullable(),
+  durationSeconds: z.number().nonnegative().nullable(),
+}).strict();
+export type AssetLibraryMediaMetadata = z.infer<typeof AssetLibraryMediaMetadata>;
+
 /** No source URLs, upload URLs, arbitrary provider metadata or raw errors are retained. */
 export const AssetLibraryObservation = z.object({
   scope: AssetLibraryScope,
@@ -41,6 +49,7 @@ export const AssetLibraryObservation = z.object({
   name: z.string().nullable(),
   processing: AssetLibraryProcessing,
   specChecks: AssetLibrarySpecChecks,
+  mediaMetadata: AssetLibraryMediaMetadata.optional(),
 }).strict();
 export type AssetLibraryObservation = z.infer<typeof AssetLibraryObservation>;
 
@@ -154,3 +163,54 @@ export const AssetLibraryRegistrationOutcome = z.discriminatedUnion('kind', [
   }).strict(),
 ]);
 export type AssetLibraryRegistrationOutcome = z.infer<typeof AssetLibraryRegistrationOutcome>;
+
+/** One immutable local input manifest; content is checked before any provider call. */
+export const AssetLibraryUploadManifest = z.object({
+  fileName: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\.(?:png|jpe?g|mp4)$/i),
+  contentType: z.enum(['image/png', 'image/jpeg', 'video/mp4']),
+  byteLength: z.number().int().positive(), sha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+export type AssetLibraryUploadManifest = z.infer<typeof AssetLibraryUploadManifest>;
+
+/** Each asynchronous result maps to its submitted index without retaining its URL. */
+export const AssetLibraryBatchStatus = z.object({
+  scope: AssetLibraryScope, requestId: z.string().min(1),
+  status: z.enum(['complete', 'in_progress', 'failed']),
+  items: z.array(z.discriminatedUnion('kind', [
+    z.object({ index: z.number().int().nonnegative(), kind: z.literal('accepted'), identity: AssetLibraryIdentity }).strict(),
+    z.object({ index: z.number().int().nonnegative(), kind: z.literal('processing') }).strict(),
+    z.object({ index: z.number().int().nonnegative(), kind: z.literal('refused') }).strict(),
+  ])),
+  counts: z.object({ submitted: z.number().int().positive(), accepted: z.number().int().nonnegative(),
+    processing: z.number().int().nonnegative(), refused: z.number().int().nonnegative() }).strict(),
+}).strict().superRefine((value, context) => {
+  const { submitted, accepted, processing, refused } = value.counts;
+  if (submitted !== value.items.length || accepted + processing + refused !== submitted
+    || new Set(value.items.map((item) => item.index)).size !== submitted
+    || value.items.some((item) => item.index >= submitted)
+    || accepted !== value.items.filter((item) => item.kind === 'accepted').length
+    || processing !== value.items.filter((item) => item.kind === 'processing').length
+    || refused !== value.items.filter((item) => item.kind === 'refused').length
+    || new Set(value.items.flatMap((item) => item.kind === 'accepted' ? [JSON.stringify(item.identity)] : [])).size !== accepted
+    || (value.status === 'complete' && processing !== 0)) {
+    context.addIssue({ code: 'custom', message: 'batch registration counts do not reconcile' });
+  }
+});
+export type AssetLibraryBatchStatus = z.infer<typeof AssetLibraryBatchStatus>;
+
+/** Separate infrastructure authority; never a campaign action class. */
+export const AssetRegistrationIntent = z.object({
+  id: Uuid, authorityId: Uuid, profileId: Uuid, scope: AssetLibraryScope,
+  manifest: AssetLibraryUploadManifest, registration: AssetLibraryRegistration,
+}).strict();
+export type AssetRegistrationIntent = z.infer<typeof AssetRegistrationIntent>;
+export const AssetRegistrationRefusal = z.enum(['disabled', 'unauthorized_actor', 'authority_missing',
+  'authority_expired', 'scope_mismatch', 'manifest_mismatch', 'invalid_media', 'count_exceeded',
+  'intent_conflict', 'already_reserved', 'outcome_uncertain']);
+export type AssetRegistrationRefusal = z.infer<typeof AssetRegistrationRefusal>;
+export const AssetRegistrationAdmission = z.object({
+  intentId: Uuid, admitted: z.boolean(), refusal: AssetRegistrationRefusal.nullable(),
+  requested: z.literal(1), admittedCount: z.number().int().min(0).max(1), refused: z.number().int().min(0).max(1),
+}).strict().refine((v) => v.requested === v.admittedCount + v.refused && v.admitted === (v.admittedCount === 1)
+  && v.admitted === (v.refusal === null));
+export type AssetRegistrationAdmission = z.infer<typeof AssetRegistrationAdmission>;

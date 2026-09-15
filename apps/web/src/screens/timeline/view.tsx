@@ -1,4 +1,5 @@
 'use client';
+import { StreamEvidencePanel } from '../creative/stream-evidence';
 import { useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { TrendChart } from '@wizard-ads/ui';
@@ -94,5 +95,6 @@ function Timeline({ data }: {
     </>}
     {manual ? <ManualEventForm profileId={data.profileId} event={manual === 'new' ? null : manual} start={start} onClose={() => setManual(null)} onSaved={() => { setManual(null); router.refresh(); }}/> : null}
     {info ? <section className="tl-dialog" role="dialog" aria-label="Event info"><h2>{info.name}</h2><p>{names[info.kind]} · {info.start} → {info.end ?? 'running'}</p><p>{info.scopeText}</p><p>{info.note || 'No note recorded.'}</p><p>Event overlap alone does not prove causation.</p>{info.kind === 'experiment' ? <a href={`/experiments/${info.id}`}>Status trail and result</a> : data.canEdit && info.kind !== 'apply_batch' ? <Button onClick={() => { setManual(info); setInfo(null); }}>Supersede event</Button> : null}<Button onClick={() => setInfo(null)}>Close</Button></section> : null}
+    <StreamEvidencePanel evidence={data.streamEvidence} title="Provider change observations" />
   </main>;
 }

@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { type CSSProperties } from 'react';
 
 import {
@@ -47,7 +48,7 @@ function renderEmpty({ data }: Extract<ScreenData, { view: 'empty'; }>['props'])
   </main>);
 }
 
-function renderReady({ entity, profile, period, comparison, params, slot1: _slot1, actor, freshness: _freshness }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ entity, profile, period, comparison, params, slot1: _slot1, actor, freshness: _freshness, streamEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main style={main}>
     <h1 className="wa-sr-only">{ENTITY_LABELS[entity]}</h1>
     <p className="wa-sr-only">{profile.label} · {profile.countryCode} · {profile.currencyCode} · {period.start} to {period.end}</p>
@@ -65,6 +66,7 @@ function renderReady({ entity, profile, period, comparison, params, slot1: _slot
       campaignId={entity === 'campaigns' ? params.campaign ?? null : null}
     />
 
+    <Suspense fallback={null}>{streamEvidence}</Suspense>
   </main>);
 }
 

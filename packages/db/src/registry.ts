@@ -11,6 +11,11 @@ interface RegistryEntry {
   exports: readonly { barrel: string; order: number; clause: string; after: string }[];
 }
 export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
+  {"domain":"asset-registration","contract":null,"schema":null,"queries":"queries/asset-registration.ts","migrationPrefix":"20260915360000","exports":[{"barrel":"index.ts","order":190,"clause":"*","after":""}]},
+  {"domain": "schema/stream-assets-graph", "contract": null, "schema": "schema/stream-assets-graph.ts", "queries": null, "migrationPrefix": "20260915360000", "exports": [{"barrel": "schema/index.ts", "order": 110, "clause": "*", "after": ""}]},
+  {"domain": "queries/asset-evidence", "contract": null, "schema": null, "queries": "queries/asset-evidence.ts", "migrationPrefix": "20260915360000", "exports": [{"barrel": "index.ts", "order": 109, "clause": "*", "after": ""}]},
+  {"domain": "queries/provider-graph", "contract": null, "schema": null, "queries": "queries/provider-graph.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 108, "clause": "*", "after": ""}]},
+  {"domain": "queries/marketing-stream-extensions", "contract": null, "schema": null, "queries": "queries/marketing-stream-extensions.ts", "migrationPrefix": "20260915360000", "exports": [{"barrel": "index.ts", "order": 107, "clause": "*", "after": ""}]},
   {domain: "queries/sp-write-application-optimizer", contract: null, schema: null, queries: "queries/sp-write-application-optimizer.ts", migrationPrefix: null, exports: [{barrel: "index.ts", order: 106, clause: "{ prepareOptimizerRetry, readOptimizerRetryExclusions }", after: ""}]},
   {domain: "queries/optimizer-export", contract: null, schema: null, queries: "queries/optimizer-export.ts", migrationPrefix: "20260915190000", exports: [{barrel: "index.ts", order: 105, clause: "*", after: ""}]},
   {"domain": "queries/optimizer-run", "contract": null, "schema": null, "queries": "queries/optimizer-run.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 104, "clause": "*", "after": ""}]},

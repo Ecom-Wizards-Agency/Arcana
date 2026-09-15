@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('../cockpit/load', () => ({ load: mocks.performance }));
 vi.mock('../../server/org-role', () => ({ requireOrgRole: mocks.role }));
-vi.mock('@wizard-ads/db', () => ({ listRecommendations: mocks.proposals, listHomeInsights: mocks.events, listHomeMarketGaps: mocks.market }));
+vi.mock('@wizard-ads/db', () => ({ readStreamConsumerSource: vi.fn(async()=>({events:[],scope:{orgId:'00000000-0000-4000-8000-000000000001',profileId:'00000000-0000-4000-8000-000000000002',amazonProfileId:'313',region:'EU'},graph:{observations:[],associations:[],persistedObservations:0,persistedAssociations:0},truncated:false})), readStreamExtensionEvidence: vi.fn(async () => ({ events: [], count: 0, source: 'amazon_marketing_stream', completeness: 'missing', selectionAuthority: false })), listRecommendations: mocks.proposals, listHomeInsights: mocks.events, listHomeMarketGaps: mocks.market }));
 vi.mock('../../../app/_lib/dashboard-data', () => ({ loadCampaignDailyRows: mocks.campaigns, loadHomeRankWatch: mocks.ranks, loadProfileDailyRows: mocks.month }));
 import { load } from './load';
 

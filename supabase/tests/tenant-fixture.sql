@@ -37,6 +37,12 @@ declare
   v_group uuid;
   v_creative_snapshot uuid;
   v_sponsored_prompt uuid;
+  v_wp313_at text := to_char(statement_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+  v_wp313_identity text;
+  v_wp313_authority uuid;
+  v_wp313_binding jsonb;
+  v_wp313_asset jsonb;
+  v_wp313_graph_scope jsonb;
   v_unified_binding uuid;
   v_unified_run uuid := gen_random_uuid();
   v_unified_operation uuid := gen_random_uuid();
@@ -822,6 +828,88 @@ begin
       select v_org,v_profile,id,'synthetic-fixture-asset','1','video','Synthetic fixture asset','{}',
         '{"scope":{"region":"NA","amazonProfileId":"270"},"identity":{"assetId":"synthetic-fixture-asset","version":"1"},"observedAt":"2000-01-01T00:00:00Z","assetType":"video","name":"Synthetic fixture asset","processing":"unknown","specChecks":{"approvedPrograms":null,"failedSpecChecks":null}}'::jsonb,
         '2000-01-01T00:00:00Z' from snapshot;
+  end if;
+
+  if to_regclass('public.marketing_stream_extension_bindings') is not null then
+    v_wp313_identity := md5(p_slug || ':wp313-event') || md5(p_slug || ':wp313-event-2');
+    v_wp313_binding := jsonb_build_object('orgId',v_org,'profileId',v_profile,
+      'datasetId','ads-campaign-management-campaigns','subscriptionId','synthetic-subscription',
+      'advertiserId','synthetic-advertiser','marketplaceId','synthetic-marketplace','region','NA',
+      'destinationArn','arn:aws:sqs:us-east-1:000000000000:synthetic-stream',
+      'enabled',false,'confirmed',false,'capabilityVerified',false,'contractVersion','fixture.v1');
+    insert into public.marketing_stream_extension_bindings
+      (org_id,profile_id,dataset_id,subscription_id,destination_arn,binding)
+    values(v_org,v_profile,'ads-campaign-management-campaigns','synthetic-subscription',
+      'arn:aws:sqs:us-east-1:000000000000:synthetic-stream',v_wp313_binding);
+    insert into public.marketing_stream_extension_events
+      (org_id,profile_id,identity,dataset_id,entity_key,event_time,revision,payload_fingerprint,event,received_at,expires_at)
+    values(v_org,v_profile,v_wp313_identity,'ads-campaign-management-campaigns','synthetic-campaign',
+      v_wp313_at::timestamptz,0,v_wp313_identity,jsonb_build_object('orgId',v_org,'profileId',v_profile,
+        'identity',v_wp313_identity,'payloadFingerprint',v_wp313_identity,'receivedAt',v_wp313_at,
+        'record',(v_wp313_binding - array['orgId','profileId','enabled','confirmed','capabilityVerified'])
+          || jsonb_build_object('eventId','synthetic-event','revision',0,'eventTime',v_wp313_at,'window',null,
+            'observation',jsonb_build_object('entityId','synthetic-campaign','adProduct','SB','operation','patch','state','paused'))),
+      v_wp313_at::timestamptz,v_wp313_at::timestamptz + interval '95 days');
+    insert into public.marketing_stream_extension_projections(org_id,profile_id,identity)
+    values(v_org,v_profile,v_wp313_identity);
+  end if;
+
+  if to_regclass('public.asset_library_versions') is not null then
+    -- Unknown evidence cannot make a fixture asset eligible. The synthetic provider ID is numeric.
+    v_wp313_asset := jsonb_build_object('scope',jsonb_build_object('region','NA','amazonProfileId','1'),
+      'identity',jsonb_build_object('assetId','synthetic-library-asset','version','1'),
+      'observedAt',v_wp313_at,'assetType','unknown','name',null,'processing','unknown',
+      'specChecks',jsonb_build_object('approvedPrograms',null,'failedSpecChecks',null));
+    insert into public.asset_library_versions(org_id,profile_id,asset_id,version,fingerprint,observation,observed_at)
+    values(v_org,v_profile,'synthetic-library-asset','1',md5(p_slug || ':asset') || md5(p_slug || ':asset-2'),
+      v_wp313_asset,v_wp313_at::timestamptz);
+    insert into public.asset_library_observations
+      (org_id,profile_id,identity,asset_id,asset_version,observation,observed_at,expires_at)
+    values(v_org,v_profile,md5(p_slug || ':asset-observation') || md5(p_slug || ':asset-observation-2'),
+      'synthetic-library-asset','1',v_wp313_asset,v_wp313_at::timestamptz,v_wp313_at::timestamptz + interval '95 days');
+    insert into public.asset_moderation_observations
+      (org_id,profile_id,identity,asset_id,asset_version,observation,observed_at,expires_at)
+    values(v_org,v_profile,md5(p_slug || ':moderation') || md5(p_slug || ':moderation-2'),'synthetic-library-asset','1',
+      jsonb_build_object('context',jsonb_build_object('scope',v_wp313_asset->'scope','marketplace','US','program','SB'),
+        'subject',jsonb_build_object('kind','ad','adId','synthetic-moderation-ad','adVersion','1'),
+        'assetIdentity',v_wp313_asset->'identity','stage','final','source','moderation_v4','status','unknown',
+        'reasons','[]'::jsonb,'observedAt',v_wp313_at,'contractVersion','wp313.v1'),
+      v_wp313_at::timestamptz,v_wp313_at::timestamptz + interval '95 days');
+  end if;
+
+  if to_regclass('public.provider_graph_observations') is not null then
+    v_wp313_graph_scope := jsonb_build_object('orgId',v_org,'profileId',v_profile,
+      'amazonProfileId',p_slug || '-profile-1','region','NA');
+    v_wp313_identity := md5(p_slug || ':graph') || md5(p_slug || ':graph-2');
+    insert into public.provider_graph_observations
+      (org_id,profile_id,identity,entity_key,observation,source_event_at,observed_at,expires_at)
+    values(v_org,v_profile,v_wp313_identity,'synthetic-graph-ad',jsonb_build_object(
+      'scope',v_wp313_graph_scope,'identity',jsonb_build_object('adProduct','SB','kind','ad','providerId','synthetic-graph-ad','version',null),
+      'source','product_api','contractVersion','fixture.v1','sourceEventAt',v_wp313_at,'observedAt',v_wp313_at,
+      'revision','0','payloadFingerprint',v_wp313_identity,'operation','upsert','state','unknown'),
+      v_wp313_at::timestamptz,v_wp313_at::timestamptz,v_wp313_at::timestamptz + interval '95 days');
+    insert into public.provider_entity_associations(org_id,profile_id,identity,association,observed_at,expires_at)
+    values(v_org,v_profile,md5(p_slug || ':association') || md5(p_slug || ':association-2'),jsonb_build_object(
+      'scope',v_wp313_graph_scope,'from',jsonb_build_object('adProduct','SB','kind','ad','providerId','synthetic-graph-ad','version',null),
+      'to',jsonb_build_object('adProduct','SB','kind','campaign','providerId','synthetic-unresolved-campaign','version',null),
+      'relation','parent','sourceEventAt',v_wp313_at,'revision','0','payloadFingerprint',v_wp313_identity,'operation','upsert'),
+      v_wp313_at::timestamptz,v_wp313_at::timestamptz + interval '95 days');
+  end if;
+
+  if to_regclass('public.asset_registration_authorities') is not null then
+    v_wp313_authority:=gen_random_uuid();
+    -- Inert storage/RLS fixture; no valid registration request or enabled authority.
+    insert into public.asset_registration_authorities(id,org_id,profile_id,actor_id,request,expires_at)
+      values(v_wp313_authority,v_org,v_profile,p_user_id,'{}',statement_timestamp()+interval '1 hour');
+    insert into public.asset_registration_intents(id,org_id,profile_id,actor_id,authority_id,request)
+      values(gen_random_uuid(),v_org,v_profile,p_user_id,v_wp313_authority,'{}');
+    v_wp313_identity:=md5(p_slug || ':receipt') || md5(p_slug || ':receipt-2');
+    insert into public.marketing_stream_extension_receipts(delivery_id,body_fingerprint,received_at,receipt,expires_at,org_id,profile_id,dataset_id)
+      values(v_wp313_identity,v_wp313_identity,v_wp313_at::timestamptz,
+        jsonb_build_object('deliveryId',v_wp313_identity,'bodyFingerprint',v_wp313_identity,'receivedAt',v_wp313_at,
+          'outcome','rejected','reason','disabled','counts',jsonb_build_object('received',1,'undecodable',0,'decoded',1,'accepted',0,
+            'deduplicated',0,'stored',0,'rejected',1,'deadLettered',0,'verifiedStored',0)),
+        v_wp313_at::timestamptz+interval '95 days',v_org,v_profile,'ads-campaign-management-campaigns');
   end if;
 
   return v_org;
