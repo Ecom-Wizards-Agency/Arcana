@@ -1,4 +1,5 @@
 import type { RecommendationRecord } from '@wizard-ads/db';
+import { OptimizerSelectionExportResult } from '@wizard-ads/shared';
 import { reviewUnits, selectedIncludesShadow } from './model';
 
 type Post = (url: string, body: unknown) => Promise<unknown>;
@@ -27,8 +28,15 @@ async function decide(ids: string[], decision: 'accepted' | 'proposed', send: Po
     || !('offered' in result) || result.offered !== ids.length || !('refused' in result) || !Array.isArray(result.refused) || result.refused.length > 0) throw new Error('The recorded selection does not match the selected rows. Refresh this review.');
 }
 
-export async function stageSelection(profileId: string, rows: readonly RecommendationRecord[], ids: readonly string[], send: Post = post): Promise<string> {
+export async function stageSelection(profileId: string, rows: readonly RecommendationRecord[], ids: readonly string[], send: Post = post,
+  saved?: { batchId: string; reviewFingerprint: string; requestId: string }): Promise<string> {
   const selection = rows.filter((row) => ids.includes(row.id));
+  if (saved) {
+    if (selection.length !== ids.length || new Set(ids).size !== ids.length || selection.some((row) => row.status === 'dismissed')) throw new Error('The exact selected suggestions are required.');
+    const result = OptimizerSelectionExportResult.parse(await send('/api/optimizer/exports', { ...saved, profileId, recommendationIds: [...ids].sort() }));
+    if (result.requestId !== saved.requestId || result.batchId !== saved.batchId || result.counts.exported !== ids.length) throw new Error('The staged change count does not match this selection.');
+    return result.applyBatchId;
+  }
   const runIds = new Set(selection.map((row) => row.runId));
   if (runIds.size !== 1) throw new Error('Changes from several group runs require a combined guarded preview. Review one group run at a time.');
   const result = await send('/api/recommendations/export', { profileId, runId: selection[0]!.runId, ids, note: 'Selected in Optimize Now for guarded preview', optGroup: 'optimizer', lever: 'bid' });

@@ -79,6 +79,16 @@ describe('optimizer operation evidence', () => {
     expect(OptimizerOperationRow.safeParse({ ...rows[0], retryEligible: true }).success).toBe(false);
   });
 
+  it('waits for pending siblings and incomplete responses before exposing a retry population', () => {
+    const firstIntent = { ...intent, positions: intent.positions.slice(0, 1) };
+    const rejected = result(['authoritative_rejected']);
+    const pending = optimizerOperationRows({ ...emptyEvidence, providerCallIntents: [firstIntent], providerResults: [rejected] });
+    expect(pending.map((row) => [row.status, row.retryEligible])).toEqual([['failed', false], ['pending', false]]);
+    const sending = optimizerOperationRows({ ...emptyEvidence, providerCallIntents: [intent], providerResults: [rejected] });
+    expect(sending.map((row) => [row.status, row.retryEligible])).toEqual([['failed', false], ['sending', false]]);
+    expect(sending[0]?.retryReason).toContain('remaining sends and provider responses');
+  });
+
   it('distinguishes accepted from observed in sync', () => {
     const rows = optimizerOperationRows({ ...emptyEvidence, providerCallIntents: [intent],
       providerResults: [result(['accepted', 'accepted'])], observations: [observation(0, 'observed_requested')] });
@@ -87,12 +97,13 @@ describe('optimizer operation evidence', () => {
     ]);
   });
 
-  it('requires conclusive observation before retrying an ambiguous provider response', () => {
+  it('keeps expected-value observation after ambiguity unresolved without retry authority', () => {
     const evidence = { ...emptyEvidence, providerCallIntents: [intent], providerResults: [result(['ambiguous', 'ambiguous'])] };
     expect(optimizerOperationRows(evidence).every((row) => !row.retryEligible)).toBe(true);
     const rows = optimizerOperationRows({ ...evidence, observations: [observation(0, 'observed_requested'), observation(1, 'observed_expected_after_ambiguous')] });
-    expect(rows.map((row) => row.retryEligible)).toEqual([false, true]);
+    expect(rows.map((row) => row.retryEligible)).toEqual([false, false]);
     expect(rows[0]?.status).toBe('observed');
+    expect(rows[1]?.status).toBe('ambiguous');
   });
 
   it('refuses blind retries on a conflicting observation', () => {
@@ -101,13 +112,13 @@ describe('optimizer operation evidence', () => {
     expect(rows[0]).toMatchObject({ status: 'conflict', retryEligible: false });
   });
 
-  it('offers a fresh preview for refused rows without claiming an attempt', () => {
+  it('requires fresh evaluation for stale-state refusals without claiming an attempt', () => {
     const refusal = SpWritePreDispatchDisposition.parse({ ...identity,
       schemaVersion: 'openspell.sp-write-predispatch-disposition.v1', dispositionId: id(44), actionId: plan.actions[0]!.actionId,
       actionFingerprint: hash, recordedAt: now, outcome: 'refused_before_dispatch', reason: 'stale_expected_state',
       providerObservationFingerprint: hash, fingerprint: hash });
     expect(optimizerOperationRows({ ...emptyEvidence, predispatchDispositions: [refusal] })[0]).toMatchObject({
-      status: 'refused', providerOutcome: null, retryEligible: true,
+      status: 'refused', providerOutcome: null, retryEligible: false,
     });
   });
 });

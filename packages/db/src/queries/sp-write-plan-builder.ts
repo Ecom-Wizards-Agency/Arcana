@@ -75,10 +75,18 @@ async function existingPreview(
   if (evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v2') {
     throw new SpWriteApplicationError('unsupported_source');
   }
-  if (plan.source.kind !== 'apply_batch' || plan.source.applyBatchId !== request.applyBatchId) {
+  if (!spWritePreviewRequestMatches(plan, request)) {
     throw new SpWriteApplicationError('identity_conflict');
   }
   return SpWritePreview.parse({ plan, binding: spWritePlanBinding(plan), evidence });
+}
+
+/** Replay identity includes the complete normalized scope, not just the source batch. */
+export function spWritePreviewRequestMatches(plan: SpWritePlan, request: SpWritePreviewRequest): boolean {
+  return plan.profileId === request.profileId && plan.source.kind === 'apply_batch'
+    && plan.source.restoreProposal === undefined && plan.source.applyBatchId === request.applyBatchId
+    && JSON.stringify(plan.source.forwardRowIds) === JSON.stringify(request.forwardRowIds)
+    && JSON.stringify(plan.source.retryOrigin) === JSON.stringify(request.retryOrigin);
 }
 
 interface BatchSnapshot {
@@ -194,6 +202,7 @@ export async function buildSpWriteLegacyPreview(
   sql: QuerySql, orgId: string, request: SpWritePreviewRequest,
   restoreRowIds?: readonly string[],
 ): Promise<{ plan: SpWritePlan; evidence: SpWritePreviewEvidence | SpWriteDependencyPreviewEvidence }> {
+  if (restoreRowIds !== undefined && request.forwardRowIds !== undefined) throw new SpWriteApplicationError('invalid_request');
   const batches = await sql<BatchSnapshot[]>`
     select b.tag, g.grant_id::text, g.version_id::text as grant_version,
            b.status::text, b.source_batch_id::text, b.artifact_sha256,
@@ -226,7 +235,7 @@ export async function buildSpWriteLegacyPreview(
         || batch.dependency_sets_count < 1 || batch.dependency_sets_count > batch.reversible_rows))))) {
     throw new SpWriteApplicationError('unsupported_source');
   }
-  if (restoreRowIds && batch.dependency_sets_count !== null) {
+  if ((restoreRowIds || request.forwardRowIds) && batch.dependency_sets_count !== null) {
     throw new SpWriteApplicationError('unsupported_source');
   }
   const sourceRows = await sql<SourceRow[]>`
@@ -242,8 +251,10 @@ export async function buildSpWriteLegacyPreview(
            (rec.inputs -> 'dependencySet')::text as dependency_set_text,
            snapshot.calculation_snapshot_text, snapshot.calculation_snapshot_count,
            to_char(mirror.current_synced_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as read_at,
-           r.recommendation_id::text, r.proposal_revision_id::text, rec.run_id::text, run.strategy_snapshot::text,
-           run.strategy_goal, run.group_id::text, run.group_snapshot::text,
+           r.recommendation_id::text, r.proposal_revision_id::text, rec.run_id::text,
+           (case when run.scope_version=2 then run.execution_snapshot else run.strategy_snapshot end)::text as strategy_snapshot,
+           case when run.scope_version=2 then 'one_time' else run.strategy_goal end as strategy_goal,
+           run.group_id::text, run.group_snapshot::text,
            rec.inputs ->> 'methodId' as method_id, rec.inputs ->> 'methodVersion' as method_version,
            (rec.inputs -> 'trace')::text as trace_text,
            (rec.inputs -> 'settingSources')::text as setting_sources_text
@@ -282,8 +293,22 @@ export async function buildSpWriteLegacyPreview(
     ...(row.revenue === null ? {} : { revenue: exportNumber(row.revenue) }),
   })));
   if (sha256(sourceArtifactText) !== batch.artifact_sha256) throw new SpWriteApplicationError('source_changed');
-  const rows = restoreRowIds ? sourceRows.filter(row => restoreRowIds.includes(row.id)) : sourceRows;
-  if (rows.length !== (restoreRowIds?.length ?? batch.reversible_rows)) throw new SpWriteApplicationError('source_changed');
+  if (request.retryOrigin !== undefined) {
+    const origin = request.retryOrigin;
+    const [parent] = await sql<{ matches: boolean }[]>`select exists(select 1 from public.sp_write_cycle_plans cycle
+      join public.sp_write_plans plan on plan.org_id=cycle.org_id and plan.profile_id=cycle.profile_id and plan.plan_id=cycle.plan_id
+      where cycle.org_id=${orgId}::uuid and cycle.profile_id=${request.profileId}::uuid
+        and cycle.execution_id=${origin.executionId}::uuid and cycle.plan_id=${origin.planId}::uuid
+        and plan.fingerprint=${origin.planFingerprint} and plan.artifact#>>'{source,applyBatchId}'=${request.applyBatchId}) as matches`;
+    const population = await sql<{ source_row_id: string }[]>`select source_row_id::text from app.sp_write_retry_population(
+      ${orgId}::uuid,${request.profileId}::uuid,${origin.executionId}::uuid,${origin.planId}::uuid) where eligible order by source_row_id`;
+    if (!parent?.matches || JSON.stringify(population.map((row) => row.source_row_id)) !== JSON.stringify(request.forwardRowIds)) {
+      throw new SpWriteApplicationError('source_changed');
+    }
+  }
+  const narrowedIds = restoreRowIds ?? request.forwardRowIds;
+  const rows = narrowedIds ? sourceRows.filter(row => narrowedIds.includes(row.id)) : sourceRows;
+  if (rows.length !== (narrowedIds?.length ?? batch.reversible_rows)) throw new SpWriteApplicationError('source_changed');
   const scope = SpWriteProviderScope.parse({
     amazonProfileId: batch.amazon_profile_id, connectionId: batch.connection_id,
     region: batch.region, marketplaceId: batch.marketplace_id,
@@ -432,6 +457,8 @@ export async function buildSpWriteLegacyPreview(
     orgId: orgId, profileId: request.profileId, providerScope: scope, direction: 'forward',
     source: {
       kind: 'apply_batch', applyBatchId: request.applyBatchId,
+      ...(request.forwardRowIds === undefined ? {} : { forwardRowIds: request.forwardRowIds, sourceArtifactText,
+        ...(request.retryOrigin === undefined ? {} : { retryOrigin: request.retryOrigin }) }),
       ...(restoreRowIds ? { restoreProposal: {kind:'restore_proposal',sourceArtifactText,sourceBatchId:request.applyBatchId,
         sourceRowIds:rows.map(row=>row.id),rows:rows.map(row=>({sourceRowId:row.id,entityId:row.entity_id,
           current:{amount:decimal(row.current_bid),currencyCode:scope.currencyCode},readAt:row.read_at,

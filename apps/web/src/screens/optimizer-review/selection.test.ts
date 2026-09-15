@@ -20,3 +20,20 @@ it('refuses dismissed selection and a partial decision acknowledgement', async (
   expect(send).not.toHaveBeenCalled();
   await expect(acceptSelection([first], new Set([first.id]), send)).rejects.toThrow('does not match');
 });
+
+it('exports one complete saved selection across child runs and reuses its identity after a lost response', async () => {
+  const rows = [first, { ...second, runId: '77777777-7777-4777-8777-777777777777' }, dismissed];
+  const saved = { batchId: '88888888-8888-4888-8888-888888888888', requestId: '99999999-9999-4999-8999-999999999999', reviewFingerprint: 'a'.repeat(64) };
+  const result = { ...saved, applyBatchId: '22222222-2222-4222-8222-222222222222',
+    forwardRowIds: ['33333333-3333-4333-8333-333333333333','44444444-4444-4444-8444-444444444444'],
+    counts: { offered: 2, accepted: 2, exported: 2, applyRows: 2 } };
+  const { reviewFingerprint: _binding, ...response } = result;
+  const send = vi.fn().mockRejectedValueOnce(new Error('Lost export response')).mockResolvedValue(response);
+  const execute = () => stageSelection(first.profileId, rows, [second.id,first.id], send, saved);
+  await expect(execute()).rejects.toThrow('Lost export response');
+  expect(await execute()).toBe(response.applyBatchId);
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(send.mock.calls[0]).toEqual(send.mock.calls[1]);
+  expect(send.mock.calls[0]).toEqual(['/api/optimizer/exports', { ...saved, profileId: first.profileId, recommendationIds: [first.id,second.id].sort() }]);
+  expect(rows[2]?.status).toBe('dismissed');
+});

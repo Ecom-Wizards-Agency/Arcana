@@ -78,3 +78,30 @@ it('shows campaign scope from the recorded source identities and formats the imm
   expect(screen.getByRole('link', { name: 'Review limits and settings' }).className).toContain('action');
   expect(screen.getByRole('heading', { name: 'Apply 1 bid change to Amazon' }).parentElement?.className).toContain('card');
 });
+
+it('prepares the recorded one-time forward subset before rendering its confirmation', async () => {
+  const forwardRowIds = fixtures.ready.preview.plan.actions.flatMap((action) => action.sources.flatMap((row) => row.kind === 'apply_row' ? [row.applyRowId] : [])).sort();
+  const fetcher = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(fixtures.ready.preview)))
+    .mockResolvedValueOnce(new Response(JSON.stringify(fixtures.ready)));
+  vi.stubGlobal('fetch', fetcher);
+  render(<Screen data={{ view: 'ready', props: { profile, batchId, proposals: [], recorded: null, applyBatchId: '88888888-8888-4888-8888-888888888888', forwardRowIds } }} />);
+  await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+  expect(fetcher.mock.calls[0]?.[0]).toBe('/api/writes/preview');
+  const body = JSON.parse((fetcher.mock.calls[0]?.[1] as RequestInit).body as string) as Record<string, unknown>;
+  expect(body).toMatchObject({ profileId: profile.id, applyBatchId: '88888888-8888-4888-8888-888888888888', forwardRowIds });
+  expect(body['retryOrigin']).toBeUndefined();
+  expect(screen.getByRole('button', { name: spWriteConfirmation(fixtures.ready.preview.plan.counts.logicalChanges) })).toBeTruthy();
+});
+it('uses the saved retry count and excluded successful names for the exact terminal request', async () => {
+  const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(fixtures.queued.admission)));
+  vi.stubGlobal('fetch', fetcher);
+  render(<Screen data={{ view: 'ready', props: { profile, batchId, proposals: [], recorded: fixtures.ready,
+    applyBatchId: null, retryDetails: { excludedSuccessfulNames: ['Synthetic earlier success'] } } }} />);
+  expect(screen.getByRole('heading', { name: 'Confirm retry' })).toBeTruthy();
+  expect(screen.getByText(/earlier successful changes are excluded: Synthetic earlier success/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Yes, apply 1 changes to Amazon' }));
+  await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+  const body = SpWriteConfirmedApprovalRequest.parse(JSON.parse((fetcher.mock.calls[0]?.[1] as RequestInit).body as string));
+  expect(body.confirmation).toBe(spWriteConfirmation(body.approval.plan.counts.logicalChanges));
+  expect(body.approval.plan.counts.logicalChanges).toBe(1);
+});

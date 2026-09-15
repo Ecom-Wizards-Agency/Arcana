@@ -3,7 +3,7 @@ import type { RecommendationRecord } from '@wizard-ads/db';
 import { changeValue } from '../optimizer-review/presentation';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { SpWriteAdmission, SpWriteConfirmedApprovalRequest, SpWritePreview, SpWriteRecordedPreview, spWriteConfirmation } from '@wizard-ads/shared/sp-write-application';
+import { SpWriteAdmission, SpWriteConfirmedApprovalRequest, SpWritePreview, type SpWritePreviewRequest, SpWriteRecordedPreview, spWriteConfirmation } from '@wizard-ads/shared/sp-write-application';
 import { gateMessage } from '../../ui/gate-message';
 import { OptimizerFrame, OptimizerUnavailable } from '../optimizer/frame';
 import { optimizerBatchHref } from '../optimizer/navigation';
@@ -75,12 +75,12 @@ function ConfirmScreen({ data }: { data: Extract<ScreenData, { view: 'ready' }> 
   const approvalIdentity = useRef<string | null>(null);
   const previewIdentity = useRef<string | null>(null);
   const lock = useRef(false);
-  async function requestPreview(source: string) {
+  async function requestPreview(source: string, selection: Pick<SpWritePreviewRequest, 'forwardRowIds' | 'retryOrigin'> = { forwardRowIds: 'forwardRowIds' in data.props ? data.props.forwardRowIds : undefined }) {
     if (lock.current) return;
     lock.current = true; setBusy(true); setError(null);
     const requestId = previewIdentity.current ?? crypto.randomUUID(); previewIdentity.current = requestId;
     try {
-      const response = await fetch('/api/writes/preview', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId, profileId: profile.id, applyBatchId: source }) });
+      const response = await fetch('/api/writes/preview', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId, profileId: profile.id, applyBatchId: source, ...selection }) });
       const payload: unknown = await response.json();
       if (!response.ok) throw new Error(errorMessage(payload));
       const preview = SpWritePreview.parse(payload);
@@ -109,7 +109,7 @@ function ConfirmScreen({ data }: { data: Extract<ScreenData, { view: 'ready' }> 
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Approval status is unknown. Retry this same confirmation to check the saved result.'); }
     finally { lock.current = false; setBusy(false); }
   }
-  return <>{error ? <p role="alert">{error}</p> : null}{recorded ? <ConfirmContent proposals={data.props.proposals} recorded={recorded} batchId={batchId} busy={busy} onConfirm={() => { void approve(); }} onRefresh={() => { const source = recorded.preview.plan.source; if (source.kind === 'apply_batch') { previewIdentity.current = null; approvalIdentity.current = null; void requestPreview(source.applyBatchId); } }} /> : <OptimizerFrame title="Preparing immutable preview" step={3}><p aria-busy={busy}>The selected rows, saved limits and current values are being checked.</p>{error && applyBatchId ? <button className={styles.action} onClick={() => { void requestPreview(applyBatchId); }}>Check saved preview</button> : null}</OptimizerFrame>}</>;
+  return <>{error ? <p role="alert">{error}</p> : null}{recorded ? <ConfirmContent retry={'retryDetails' in data.props ? data.props.retryDetails : undefined} proposals={data.props.proposals} recorded={recorded} batchId={batchId} busy={busy} onConfirm={() => { void approve(); }} onRefresh={() => { const source = recorded.preview.plan.source; if (source.kind === 'apply_batch') { previewIdentity.current = null; approvalIdentity.current = null; void requestPreview(source.applyBatchId, { forwardRowIds: source.forwardRowIds, retryOrigin: source.retryOrigin }); } }} /> : <OptimizerFrame title="Preparing immutable preview" step={3}><p aria-busy={busy}>The selected rows, saved limits and current values are being checked.</p>{error && applyBatchId ? <button className={styles.action} onClick={() => { void requestPreview(applyBatchId); }}>Check saved preview</button> : null}</OptimizerFrame>}</>;
 }
 function errorMessage(value: unknown): string {
   const code = typeof value === 'object' && value !== null && 'code' in value ? value.code : null;

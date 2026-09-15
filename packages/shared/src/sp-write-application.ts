@@ -15,6 +15,8 @@ import {
   SpWritePlan,
   SpWritePlanBinding,
   spWritePlanBinding,
+  SpWriteForwardRowIds,
+  SpWriteRetryOrigin,
 } from './sp-writes.js';
 
 /** Server authentication supplies this context; it is never part of request JSON. */
@@ -42,7 +44,11 @@ export const SpWritePreviewRequest = z.object({
   requestId: Uuid,
   profileId: Uuid,
   applyBatchId: Uuid,
-}).strict();
+  forwardRowIds: SpWriteForwardRowIds.optional(),
+  retryOrigin: SpWriteRetryOrigin.optional(),
+}).strict().refine((request) => request.retryOrigin === undefined || request.forwardRowIds !== undefined, {
+  path: ['forwardRowIds'], message: 'retry requires the original unresolved row selection',
+});
 export type SpWritePreviewRequest = z.infer<typeof SpWritePreviewRequest>;
 
 export const SpWriteInversePreviewRequest = z.object({
@@ -103,6 +109,16 @@ export const SpWritePreview = z.object({
   }
 });
 export type SpWritePreview = z.infer<typeof SpWritePreview>;
+
+/** The server derives the retry population; a browser cannot assert eligibility. */
+export const OptimizerRetryRequest = z.object({ requestId: Uuid, profileId: Uuid, batchId: Uuid,
+  original: SpWriteOperationId }).strict();
+export type OptimizerRetryRequest = z.infer<typeof OptimizerRetryRequest>;
+export const OptimizerRetryPreview = z.object({
+  preview: SpWritePreview,
+  excludedSuccessfulRows: z.array(z.object({ applyRowId: Uuid, name: z.string() }).strict()),
+}).strict();
+export type OptimizerRetryPreview = z.infer<typeof OptimizerRetryPreview>;
 
 /** A known approval survives a lost or failed enqueue response and can be resumed. */
 export const SpWriteAdmission = z.object({
@@ -235,6 +251,18 @@ export const SpWriteOperationDetail = z.object({
 export type SpWriteOperationDetail = z.infer<typeof SpWriteOperationDetail>;
 
 /** Saved optimizer results use ledger evidence, never a provider-success guess. */
+/** Only irrevocable nonexecution evidence permits another original-row attempt. */
+export function spWriteRetryEvidenceAllows(input: {
+  refusal: Pick<SpWritePreDispatchDisposition, 'reason'> | null;
+  providerOutcome: SpWriteProviderPositionOutcome | null;
+  observation: Pick<SpWriteObservation, 'outcome'> | null;
+}): boolean {
+  return input.observation === null && (input.providerOutcome === 'authoritative_rejected'
+    || (input.providerOutcome === null && input.refusal !== null && [
+      'approval_expired', 'authorization_revoked', 'environment_gate_closed', 'profile_gate_closed', 'lease_unavailable',
+    ].includes(input.refusal.reason)));
+}
+
 export const OptimizerOperationRow = z.object({
   actionId: Uuid,
   action: SpWriteAction,
@@ -258,11 +286,7 @@ export const OptimizerOperationRow = z.object({
       source.kind === 'apply_row' ? [source.applyRowId] : []))) {
     context.addIssue({ code: 'custom', message: 'result row must retain its exact action and source identities' });
   }
-  if (row.retryEligible && (row.applyRowIds.length === 0
-    || row.providerOutcome === 'accepted' || row.observation?.outcome === 'observed_requested'
-    || row.observation?.outcome === 'conflict' || row.observation?.outcome === 'missing'
-    || !(row.refusal !== null || row.providerOutcome === 'authoritative_rejected'
-      || row.observation?.outcome === 'observed_expected_after_ambiguous'))) {
+  if (row.retryEligible && (row.applyRowIds.length === 0 || !spWriteRetryEvidenceAllows(row))) {
     context.addIssue({ code: 'custom', path: ['retryEligible'], message: 'retry requires evidence that the original action did not succeed' });
   }
 });

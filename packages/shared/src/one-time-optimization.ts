@@ -94,6 +94,28 @@ export const OneTimeRpcSnapshot = z.strictObject({
 });
 export type OneTimeRpcSnapshot = z.infer<typeof OneTimeRpcSnapshot>;
 
+/** The exact selected population of one saved preview, across all its children. */
+export const OptimizerSelectionExportRequest = z.strictObject({
+  requestId: Uuid,
+  profileId: Uuid,
+  batchId: Uuid,
+  reviewFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  recommendationIds: z.array(Uuid).min(1).max(500).refine((ids) =>
+    ids.every((id, index) => id === id.toLowerCase() && (index === 0 || ids[index - 1]! < id)),
+  'selected recommendations must be sorted unique canonical UUIDs'),
+});
+export type OptimizerSelectionExportRequest = z.infer<typeof OptimizerSelectionExportRequest>;
+
+export const OptimizerSelectionExportResult = z.strictObject({
+  requestId: Uuid, batchId: Uuid, applyBatchId: Uuid,
+  forwardRowIds: z.array(Uuid).min(1).max(500),
+  counts: z.strictObject({ offered: z.number().int().positive(), accepted: z.number().int().positive(),
+    exported: z.number().int().positive(), applyRows: z.number().int().positive() }),
+}).refine((result) => result.counts.offered === result.counts.accepted
+  && result.counts.accepted === result.counts.exported && result.counts.applyRows === result.forwardRowIds.length
+  && new Set(result.forwardRowIds).size === result.forwardRowIds.length, 'export counts must reconcile');
+export type OptimizerSelectionExportResult = z.infer<typeof OptimizerSelectionExportResult>;
+
 export const ONE_TIME_RPC_BID_FIELDS = [
   'targetAcos', 'bidFloor', 'bidCeiling', 'bidIncreaseCap', 'bidDecreaseCap',
 ] as const;

@@ -1,7 +1,7 @@
 /** Complete saved optimizer reads. The caller owns the authenticated read snapshot. */
 import { Uuid, OptimizerReviewIdentity, OptimizerRunNarrative, OneTimeRpcSnapshot, RecommendationPreviewDiagnostics, MethodAdmissionSnapshot,
   type Hold, type MethodEvaluatorInput, type OptimizerTargetOutcome } from '@wizard-ads/shared';
-import { OptimizerOperation, OptimizerOperationRow, SpWriteOperationRequest, type SpWriteRecordedPreview } from '@wizard-ads/shared/sp-write-application';
+import { OptimizerOperation, OptimizerOperationRow, SpWriteOperationRequest, spWriteRetryEvidenceAllows, type SpWriteRecordedPreview } from '@wizard-ads/shared/sp-write-application';
 import type { SpWriteAction, SpWriteExecutionEvidence, SpWriteObservation } from '@wizard-ads/shared/sp-writes';
 import type { QueryHandle } from '../client.js';
 import type { AuthenticatedReadSnapshot } from './authenticated-actor.js';
@@ -192,6 +192,7 @@ names: ReadonlyMap<string, string> = new Map()): OptimizerOperationRow[] {
   const results = new Map(evidence.providerResults.flatMap((result) => result.positions.map((position) => [position.actionId, position] as const)));
   const observations = new Map(evidence.observations.map((observation) => [observation.actionId, observation]));
   const refusals = new Map(evidence.predispatchDispositions.map((refusal) => [refusal.actionId, refusal]));
+  const settledPopulation = evidence.plan.actions.every((action) => results.has(action.actionId) || refusals.has(action.actionId));
   return evidence.plan.actions.map((action) => {
     const intent = intents.get(action.actionId);
     const result = results.get(action.actionId);
@@ -199,13 +200,12 @@ names: ReadonlyMap<string, string> = new Map()): OptimizerOperationRow[] {
     const refusal = refusals.get(action.actionId) ?? null;
     const providerOutcome = result?.outcome ?? (intent === undefined ? null : 'ambiguous');
     const successful = result?.outcome === 'accepted' || observation?.outcome === 'observed_requested';
-    const retryEligible = evidence.plan.direction === 'forward' && evidence.plan.dependencySets === undefined && !successful
-      && observation?.outcome !== 'conflict' && observation?.outcome !== 'missing'
-      && (refusal !== null || result?.outcome === 'authoritative_rejected' || observation?.outcome === 'observed_expected_after_ambiguous');
+    const retryEligible = settledPopulation && evidence.plan.direction === 'forward' && evidence.plan.dependencySets === undefined && !successful
+      && spWriteRetryEvidenceAllows({ refusal, providerOutcome, observation });
     const status = observation?.outcome === 'observed_requested' ? 'observed'
       : observation?.outcome === 'conflict' || observation?.outcome === 'missing' ? 'conflict' : refusal !== null ? 'refused'
       : result?.outcome === 'accepted' ? 'accepted' : result?.outcome === 'authoritative_rejected' ? 'failed'
-      : observation?.outcome === 'observed_expected_after_ambiguous' ? 'failed'
+      : observation?.outcome === 'observed_expected_after_ambiguous' ? 'ambiguous'
       : result?.outcome === 'ambiguous' ? 'ambiguous' : intent === undefined ? 'pending' : 'sending';
     return OptimizerOperationRow.parse({ actionId: action.actionId, action,
       name: names.get(action.actionId) ?? Object.values(action.entity)[0] ?? action.actionId,
@@ -216,6 +216,7 @@ names: ReadonlyMap<string, string> = new Map()): OptimizerOperationRow[] {
           : observation?.outcome === 'conflict' ? 'The synchronized value differs from the requested value.' : null),
       retryEligible, retryReason: successful ? 'The earlier successful change will not be sent again.'
         : evidence.plan.dependencySets !== undefined ? 'Dependent controls require a fresh review of the complete set.'
+        : !settledPopulation ? 'Wait for the remaining sends and provider responses before refreshing this retry.'
         : retryEligible ? 'A fresh preview and confirmation are required.' : 'Wait for a conclusive provider response or observation.',
     });
   });

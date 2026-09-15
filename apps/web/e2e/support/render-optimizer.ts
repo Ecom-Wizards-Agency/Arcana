@@ -29,7 +29,7 @@ const { OptimizerFrame, OptimizerUnavailable } = await import('../../src/screens
 const { OptimizationHelp } = await import('../../src/screens/optimizer-help/view');
 const { RunDetails } = await import('../../src/screens/optimizer-review/details');
 const { ConfirmContent } = await import('../../src/screens/optimizer-confirm/view');
-const { RetryReview } = await import('../../src/screens/optimizer-run/view');
+const { RetryReview, PreparedRetryReview } = await import('../../src/screens/optimizer-run/view');
 const { default: Loading } = await import('../../src/screens/shared-loading');
 const { default: ErrorView } = await import('../../src/screens/shared-error');
 const { default: ChooseScreen } = await import('../../src/screens/optimizer/view');
@@ -78,7 +78,10 @@ const views: Record<string, ReactElement> = {
   'confirm-both': confirm(await spWriteTwoChangeApprovalFixture(approvals.ready)), stale: confirm(approvals.stale), refused: confirm(approvals.unavailable),
   'approved-waiting': result('queued'), applying: result('applying'), 'partial-result': result('partial'), 'single-result': result('single'), 'ambiguous-result': result('ambiguous'),
   'retry-stale': frame('Refresh this preview', createElement(RetryReview, { operation: operationFixture('partial'), onBack: noop })),
-  'retry-preview': selection([referenceRows[1]!.id], 'suggestions', true), 'retry-confirm': confirm(approvals.ready, true), 'retry-result': result('retry', true),
+  'retry-preview': frame('Review unresolved change', createElement(PreparedRetryReview, {
+    saved: { preview: approvals.ready.preview, excludedSuccessfulRows: [{ applyRowId: '77777777-7777-4777-8777-777777777777', name: 'Synthetic earlier success' }] },
+    proposals: confirmationProposals(approvals.ready), onBack: noop, onReview: noop,
+  }), 2), 'retry-confirm': confirm(approvals.ready, true), 'retry-result': result('retry', true),
   help: createElement(OptimizationHelp, { profileId: syntheticProfile.id }), 'worked-example': createElement(OptimizationHelp, { profileId: syntheticProfile.id, example: true }),
 };
 const markup = Object.fromEntries(Object.entries(views).map(([state, view]) => [state, renderToStaticMarkup(createElement(AppRouterContext.Provider, { value: router, children: view }))]));

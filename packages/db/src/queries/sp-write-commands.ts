@@ -7,7 +7,7 @@ import { serializeSpWritePreviewGuardrails, serializeSpWritePreviewProvenance } 
 import { serializeSpWriteActionFingerprint, serializeSpWritePlanFingerprint, spWritePlanBinding } from '@wizard-ads/shared/sp-writes';
 import type { AuthenticatedEditorTransaction, AuthenticatedReadSnapshot } from './authenticated-actor.js';
 import { SpWriteApplicationError } from './sp-write-errors.js';
-import { buildSpWriteLegacyPreview } from './sp-write-plan-builder.js';
+import { buildSpWriteLegacyPreview, spWritePreviewRequestMatches } from './sp-write-plan-builder.js';
 import { loadSpWritePreviewEvidence } from './sp-write-preview-evidence.js';
 import { loadRecordedSpWritePreview } from './sp-write-recorded-preview.js';
 import { loadSpWriteOperationDetail } from './sp-write-operation-read.js';
@@ -38,7 +38,7 @@ export async function previewSpWriteForActor(context: AuthenticatedEditorTransac
     orgId: context.actor.orgId, profileId: request.profileId, planId: request.requestId,
   });
   if (existing !== null) {
-    if (existing.plan.source.kind !== 'apply_batch' || existing.plan.source.applyBatchId !== request.applyBatchId
+    if (!spWritePreviewRequestMatches(existing.plan, request)
       || existing.evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v2') {
       throw new SpWriteApplicationError('identity_conflict');
     }

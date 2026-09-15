@@ -1532,3 +1532,28 @@ it('binds restore selection and read instants to the immutable forward preview f
   expect(SpWritePlan.safeParse({...plan,source:{...source,restoreProposal:{...source.restoreProposal,sourceRowIds:[]}}}).success).toBe(false);
   expect(SpWritePlan.safeParse({...plan,source:{...source,restoreProposal:{...source.restoreProposal,rows:[{...row,restoreTo:{...row.restoreTo,amount:'999'}}]}}}).success).toBe(false);
 });
+
+describe('optional forward source narrowing', () => {
+  it('keeps the pre-narrowing recorded plan fingerprint and serialized artifact byte-identical when omitted', () => {
+    // Captured with the integration revision's schema and serializer before this extension.
+    const saved = keywordPlan();
+    expect(saved.fingerprint).toBe('2609bfe841c35accf4c7410b257a777ebb2589e7c0745f1dc5781a1c86bc56bb');
+    expect(sha256.digest(JSON.stringify(saved))).toBe('1baaa5cea2e0f13ced9e3d09638631ea26f632d0df4a249244da59ca3690d4c0');
+    expect(JSON.stringify(SpWritePlan.parse({ ...saved, source: { ...saved.source, forwardRowIds: undefined, retryOrigin: undefined } }))).toBe(JSON.stringify(saved));
+  });
+  it('binds the exact original apply-row set, full source bytes and parent identity into its fingerprint', () => {
+    const saved = keywordPlan();
+    const source = { ...saved.source, forwardRowIds: [uuid(302)], sourceArtifactText: '[]',
+      retryOrigin: { executionId: EXECUTION_ID, planId: uuid(99), planFingerprint: sha('c') } };
+    const narrowed = SpWritePlan.parse({ ...saved, source });
+    expect(serializeSpWritePlanFingerprint(narrowed)).not.toBe(serializeSpWritePlanFingerprint(saved));
+    for (const change of [ { forwardRowIds: [] }, { forwardRowIds: [uuid(302),uuid(302)] },
+      { forwardRowIds: [uuid(303)] }, { forwardRowIds: [uuid(303),uuid(302)] }, { sourceArtifactText: undefined } ]) {
+      expect(SpWritePlan.safeParse({ ...saved, source: { ...source, ...change } }).success).toBe(false);
+    }
+    for (const change of [ { sourceArtifactText: '[{}]' }, { retryOrigin: { ...source.retryOrigin, executionId: uuid(98) } },
+      { retryOrigin: { ...source.retryOrigin, planId: uuid(98) } }, { retryOrigin: { ...source.retryOrigin, planFingerprint: sha('d') } } ]) {
+      expect(serializeSpWritePlanFingerprint(SpWritePlan.parse({ ...saved, source: { ...source, ...change } }))).not.toBe(serializeSpWritePlanFingerprint(narrowed));
+    }
+  });
+});

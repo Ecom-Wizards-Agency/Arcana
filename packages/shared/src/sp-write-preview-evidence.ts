@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { Uuid } from './primitives.js';
 import { ApplyRowWire } from './apply.js';
 import { TenantStrategy } from './strategy.js';
+import { OneTimeRpcSnapshot } from './one-time-optimization.js';
 import { OptimizationGroupSnapshot, normalizeOptimizationGroupSnapshot } from './optimization.js';
 import {
   McpKeywordBidProposal, McpWriteDelegation, SpWriteProviderScope, SpWriteSha256,
@@ -28,14 +29,18 @@ const PreviewPolicy = z.object({
   recommendationId: Uuid,
   runId: Uuid,
   strategySnapshotText: z.string().refine((text) => {
-    try { return TenantStrategy.safeParse(JSON.parse(text)).success; } catch { return false; }
-  }, 'expected the exact stored tenant strategy JSON'),
+    try { const value: unknown = JSON.parse(text); return TenantStrategy.safeParse(value).success || OneTimeRpcSnapshot.safeParse(value).success; } catch { return false; }
+  }, 'expected the exact stored tenant strategy or one-time snapshot JSON'),
   strategyGoal: z.string().min(1),
   groupId: Uuid.nullable(),
   groupSnapshotText: z.string().refine((text) => {
     try { return OptimizationGroupSnapshot.safeParse(JSON.parse(text)).success; } catch { return false; }
   }, 'expected the exact stored group snapshot JSON').nullable(),
 }).strict().superRefine((value, context) => {
+  try {
+    const oneTime = OneTimeRpcSnapshot.safeParse(JSON.parse(value.strategySnapshotText)).success;
+    if (oneTime !== (value.strategyGoal === 'one_time')) context.addIssue({ code: 'custom', path: ['strategyGoal'], message: 'one-time policy must be identified explicitly' });
+  } catch { /* The field refinement reports malformed snapshots. */ }
   let groupId: string | null = null;
   try {
     if (value.groupSnapshotText !== null) groupId = normalizeOptimizationGroupSnapshot(JSON.parse(value.groupSnapshotText)).group.id;

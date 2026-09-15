@@ -50,6 +50,11 @@ test('captures every saved optimizer state in the operator shell', async ({ page
     }
     if (state === 'single-result') await expect(page.getByText('Not yet answerable', { exact: true })).toHaveCount(3);
     if (state === 'exposure-info') await expect(page.getByRole('tooltip')).toBeVisible();
+    if (state === 'retry-preview') {
+      await expect(page.getByRole('table', { name: 'Refreshed retry changes' }).getByRole('row')).toHaveCount(2);
+      await expect(page.getByRole('button', { name: 'Review 1 selected change', exact: true })).toBeEnabled();
+      await expect(page.getByRole('button', { name: /Yes, apply/ })).toHaveCount(0);
+    }
     if (state === 'confirm-both') await expect(page.getByRole('button', { name: 'Yes, apply 2 changes to Amazon', exact: true })).toBeVisible();
     const path = join(directory, `${state}.png`);
     await page.screenshot({ path, fullPage: true, animations: 'disabled', style: 'nextjs-portal { display: none; }' });

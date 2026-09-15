@@ -11,6 +11,8 @@ interface RegistryEntry {
   exports: readonly { barrel: string; order: number; clause: string; after: string }[];
 }
 export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
+  {domain: "queries/sp-write-application-optimizer", contract: null, schema: null, queries: "queries/sp-write-application-optimizer.ts", migrationPrefix: null, exports: [{barrel: "index.ts", order: 106, clause: "{ prepareOptimizerRetry, readOptimizerRetryExclusions }", after: ""}]},
+  {domain: "queries/optimizer-export", contract: null, schema: null, queries: "queries/optimizer-export.ts", migrationPrefix: "20260915190000", exports: [{barrel: "index.ts", order: 105, clause: "*", after: ""}]},
   {"domain": "queries/optimizer-run", "contract": null, "schema": null, "queries": "queries/optimizer-run.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 104, "clause": "*", "after": ""}]},
   {"domain": "queries/optimization-group-performance", "contract": null, "schema": null, "queries": "queries/optimization-group-performance.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 103, "clause": "*", "after": ""}]},
   {"domain": "queries/timeline", "contract": null, "schema": null, "queries": "queries/timeline.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 102, "clause": "*", "after": ""}]},

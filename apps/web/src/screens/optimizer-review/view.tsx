@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { gateMessage } from '../../ui/gate-message';
 import { OptimizerFrame, OptimizerUnavailable } from '../optimizer/frame';
@@ -22,12 +22,22 @@ function ReviewScreen({ data }: { data: Extract<ScreenData, { view: 'ready' }> }
   const [selected, setSelected] = useState(new Set(review.proposals.filter((row) => row.status === 'accepted').map((row) => row.id)));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const decisionRows = useRef(review.proposals);
+  const exportIdentity = useRef<{ key: string; id: string } | null>(null);
   const details = <RunDetails review={review} currencyCode={profile.currencyCode} marketplace={profile.countryCode} />;
   async function proceed() {
     setBusy(true); setError(null);
     try {
-      const ids = await acceptSelection(review.proposals, selected);
-      const applyBatchId = await stageSelection(profile.id, review.proposals, ids);
+      const ids = await acceptSelection(decisionRows.current, selected);
+      // A lost export response must recover that command without deciding already exported rows again.
+      decisionRows.current = decisionRows.current.map((row) => ids.includes(row.id)
+        ? { ...row, status: 'accepted' } : row.status === 'accepted' ? { ...row, status: 'proposed' } : row);
+      const key = JSON.stringify([...ids].sort());
+      if (exportIdentity.current?.key !== key) exportIdentity.current = { key, id: crypto.randomUUID() };
+      if (review.executionSnapshot !== null && !data.props.exportFingerprint) throw new Error('The immutable export binding is unavailable. Reload this review.');
+      const applyBatchId = await stageSelection(profile.id, review.proposals, ids, undefined,
+        review.executionSnapshot === null ? undefined : { batchId: review.batchId,
+          reviewFingerprint: data.props.exportFingerprint!, requestId: exportIdentity.current.id });
       router.push(optimizerBatchHref('confirm', review.batchId, profile.id, { applyBatch: applyBatchId }));
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'The selected changes could not be prepared.'); }
     finally { setBusy(false); }
@@ -43,6 +53,7 @@ function ReviewScreen({ data }: { data: Extract<ScreenData, { view: 'ready' }> }
       return <li key={plan.id}><a href={href}>{admission ? 'View saved results' : 'Review saved preview'} · {plan.counts.logicalChanges} change{plan.counts.logicalChanges === 1 ? '' : 's'}</a></li>;
     })}</ul></section> : null}
     {error ? <p role="alert">{error}</p> : null}
+    {(data.props.savedExports ?? []).filter((item) => !data.props.savedPreviews.some((saved) => saved.preview.plan.source.kind === 'apply_batch' && saved.preview.plan.source.applyBatchId === item.applyBatchId)).map((item) => <p key={item.requestId}><a href={optimizerBatchHref('confirm', review.batchId, profile.id, { applyBatch: item.applyBatchId })}>Review saved selection · {item.counts.exported} changes</a></p>)}
     {data.props.details ? details : <ReviewContent snapshots={review.children.flatMap((child) => child.calculationSnapshots)} rows={review.proposals} population={review.totals} holds={review.children.flatMap((child) => child.outcomesComplete ? child.blocked.flatMap((row) => row.hold ? [row.hold] : []) : child.holds)} unchanged={review.children.flatMap((child) => child.unchanged.map((row) => ({ id: `${row.entityRef.entityType}:${row.entityRef.entityId}`, name: row.entityRef.entityId, campaignName: row.entityRef.campaignId ?? null, currentValue: row.currentBid, proposedValue: row.currentBid, reason: `${row.reasonCode} · ${row.reason}` })))} evaluatedTargets={review.totals.evaluated} selected={selected} onToggle={(ids) => { const next = new Set(selected); const remove = ids.every((id) => next.has(id)); for (const id of ids) { if (remove) next.delete(id); else next.add(id); } setSelected(next); }} onClear={() => setSelected(new Set())} onContinue={() => { void proceed(); }} profileId={profile.id} batchId={review.batchId} currencyCode={profile.currencyCode} busy={busy} details={details} />}
     {review.status === 'succeeded' && review.proposals.length === 0 ? <p>This run proposed nothing. Preview completed. No changes were recommended.</p> : null}
   </OptimizerFrame>;
