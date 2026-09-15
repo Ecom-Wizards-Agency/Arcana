@@ -1,3 +1,4 @@
+import { WorkerReportType } from '@wizard-ads/shared';
 import { JobType } from '@wizard-ads/shared';
 import { readFile } from 'node:fs/promises';
 import { is, getTableName } from 'drizzle-orm';
@@ -284,7 +285,7 @@ describe.skipIf(!available)('migrations', () => {
     expect(constraint?.definition).toContain('(report_type IS NOT NULL)');
   });
 
-  it('adds sbAds only to the durable worker report ledger enum', async () => {
+  it('adds feature families only to the durable worker report ledger enum', async () => {
     const labels = await database.sql<{ enumlabel: string }[]>`
       select e.enumlabel
         from pg_catalog.pg_enum e
@@ -292,7 +293,7 @@ describe.skipIf(!available)('migrations', () => {
        where t.typname = 'report_type'
        order by e.enumsortorder
     `;
-    expect(labels.map((row) => row.enumlabel).at(-1)).toBe('sbAds');
+    expect(labels.map((row) => row.enumlabel)).toEqual(WorkerReportType.options);
   });
 
   it('keeps Unified sidecar lifecycle and one-input accounting closed', async () => {

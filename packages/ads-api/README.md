@@ -249,3 +249,52 @@ Keys are printed before checking the candidate response key. A mismatch fails th
 command. Supply credentials through the external runtime secret file described
 above. Record sanitized live evidence and correct the endpoint contract before
 marking it verified and enabling worker sync. This smoke mode was not run in WP-246.
+
+## Core reporting expansion (WP-310, disabled)
+
+`CORE_REPORT_FAMILIES` in shared owns the dated 2026-09-07 audit candidates.
+The 17 family/grouping variants run in C1–C5 order. C6 adds seven logical metric
+variants (`spCampaignMetrics`, `spTargetMetrics`, `spQueryMetrics`,
+`spPlacementMetrics`, `sbCampaignMetrics`, `sdCampaignMetrics`, `sbAdMetrics`)
+which request the existing provider report IDs at their original grains. The six
+default report requests and their column lists remain unchanged.
+
+All variants use the existing `report.request` → `report.poll` → `report.fetch`
+source on the report lane. There is one transactional fetch registration. Workers
+require `OPENSPELL_CORE_REPORTING_ENABLED=1` and a persisted profile/family capability
+with enabled status, recovery evidence, marketplace observation and the exact
+approved configuration (columns, format, time unit and attribution generation).
+SB also requires recorded preview eligibility. Multi-touch storage is separate
+from legacy facts, but provider admission refuses it until its exact column
+contract is pinned; evidence alone cannot relabel a legacy request. No local test supplies
+hosted authorization. The Unified sidecar does not admit these variants.
+
+`provisionCoreFamilySchedules` creates three disabled schedules per variant:
+three recent calendar days daily, at most 32 calendar days weekly for restatement,
+and a bounded weekly comparison window. The maximum *date difference* and oldest
+permitted date are validated separately. SB purchased-product retention never
+implies a default 731-day request. Reads retain facts after a family is disabled.
+
+The entity prerequisites use existing `entity.sync` general lanes. They require
+both `OPENSPELL_CORE_ENTITY_SYNC_ENABLED=1` and membership in
+`OPENSPELL_CORE_ENTITY_PROFILE_IDS`. Unlisted SD kinds and SP campaign negative
+targets are protected from tombstoning while disabled. Synthetic contract v1
+fixtures verify product-specific identities and source accounting. The SP campaign
+negative-target list uses `targetId`; write-response IDs are not list identities.
+
+DAILY facts use distinct family/grain keys; SUMMARY uses interval facts and is
+never expanded into invented daily values. Metric selections have separate variants,
+and replay retains the original observation time. Refusals block replacement;
+promotion independently reads destination identities and values before completion
+and coverage. Purchased ASINs never receive invented spend or advertised identity.
+The Products grid measures exact advertised-product observations in multi-ASIN ad
+groups; missing facts remain unmeasured. Video/NTB evidence is retained at ad grain,
+without assigning ad-group measurements to creative assets.
+
+These tests establish local contracts only. The audit does not pin complete,
+marketplace-specific provider column specifications. Every candidate column set,
+preview restriction and retention boundary needs hosted verification before its
+configuration can be approved. Exports was not needed: no named bulk identity join
+required it; unresolved provider identities remain explicit. Audience reports stay
+deferred for the documented conflict, and prompt/video-extension lifecycle belongs
+to WP-313.

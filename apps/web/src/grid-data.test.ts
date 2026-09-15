@@ -574,7 +574,8 @@ suite('grid and roster reads against SQL aggregates', () => {
       expect(targets.performance?.rankDays[target.id]).toHaveLength(14);
       expect(targets.performance?.rankDays[target.id]?.filter((day) => day.observed)).toHaveLength(2);
       const products = await loadGridRows(database, 'products', options);
-      expect(products.rows.find((row) => row.dimensions['asin'] === asin)?.totals.spend).toBe(1680);
+      // A mirrored ASIN and target spend do not establish measured product spend.
+      expect(products.rows.find((row) => row.dimensions['asin'] === asin)?.measurement?.missing).toContain('spend');
       expect(products.rows.find((row) => row.dimensions['asin'] === asin)?.dimensions['gap']).toBeNull();
       await database.sql`insert into public.product_ads(org_id,profile_id,amazon_id,ad_product,name,state,campaign_id,ad_group_id,asin)
         values(${orgId},${profileId},'synthetic-product-two','SP','Synthetic second product','enabled','c-skew-a','c-skew-a-ag','B000SYN002')`;

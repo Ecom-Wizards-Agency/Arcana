@@ -1,5 +1,6 @@
 /** Public export inventory. generatedBarrels is pure; the caller owns file I/O. */
 export const PACKAGE_REGISTRY = [
+  { module: './report-metrics.js', clause: '*' },
   {
     "module": "./types.js",
     "clause": "*"

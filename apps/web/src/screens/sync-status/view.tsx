@@ -1,6 +1,7 @@
 import { formatShellDate, formatTimestamp, formatDateWindow } from '../../ui/date-format';
 import { TableFrame } from '../../ui/primitives';
 import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
+import { CoreReportEvidencePanel } from '../grid/core-report-evidence';
 import { reportAccountingLabel } from '../../data/sync-status';
 
 import { ReportLifecycleTables } from '../../../app/sync-status/report-lifecycle-tables';
@@ -32,10 +33,11 @@ function renderGated({ result }: Extract<ScreenData, { view: 'gated'; }>['props'
   </main>);
 }
 
-function renderReady({ context, status }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ context, status, coreEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main style={page}>
     <Shell context={context} current="sync">
       <h1 style={heading}>Sync status</h1>
+      {coreEvidence ? <CoreReportEvidencePanel evidence={coreEvidence} title="Report family coverage" /> : null}
       <p style={muted}>
         Freshness is the newest fact date a profile holds, not the last time a job ran. Same-day
         figures are provisional and sales restate for about fourteen days, so a fresh date is not

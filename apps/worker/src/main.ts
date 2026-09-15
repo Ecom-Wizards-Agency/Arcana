@@ -143,6 +143,7 @@ const integrations = {
     marketingStreamNormalize: createMarketingStreamNormalizeHandler({ handle, queue: store }),
   };
 const worker = new SyncWorker({
+  coreReportingEnabled: process.env['OPENSPELL_CORE_REPORTING_ENABLED'] === '1',
   workerId: config.workerId,
   store,
   adsApi,

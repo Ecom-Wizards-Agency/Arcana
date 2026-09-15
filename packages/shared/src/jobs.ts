@@ -9,6 +9,7 @@
  */
 import { z } from 'zod';
 import { AssetLibrarySearchJob } from './asset-library.js';
+import { CoreFeatureReportType, CoreReportConfiguration } from './report-families.js';
 import { AdProduct, AmazonId, IsoDate, Uuid } from './primitives.js';
 
 export const JobType = z.enum([
@@ -56,7 +57,7 @@ export const ReportType = z.enum([
 export type ReportType = z.infer<typeof ReportType>;
 
 /** Additive report surfaces not yet implemented by the legacy Ads API client. */
-export const FeatureReportType = z.enum(['sbAds']);
+export const FeatureReportType = z.enum(['sbAds', ...CoreFeatureReportType.options]);
 export type FeatureReportType = z.infer<typeof FeatureReportType>;
 export const WorkerReportType = z.enum([
   ...ReportType.options,
@@ -106,6 +107,7 @@ export const ReportRequestJob = z.object({
   reportType: WorkerReportType,
   startDate: IsoDate,
   endDate: IsoDate,
+  familyConfiguration: CoreReportConfiguration.optional(),
   /** Required by the runtime for sbAds; forbidden there for base reports. */
   creativeSyncSnapshotId: Uuid.nullable().optional(),
 });
@@ -216,6 +218,7 @@ export const WorkerReportLedger = z.object({
   orgId: Uuid,
   profileId: Uuid,
   reportType: WorkerReportType,
+  familyConfiguration: CoreReportConfiguration.nullish(),
   startDate: IsoDate,
   endDate: IsoDate,
   source: z.string().min(1),

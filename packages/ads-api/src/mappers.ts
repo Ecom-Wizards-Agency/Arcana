@@ -356,7 +356,7 @@ export function mapKeywords(raw: readonly unknown[], adProduct: 'SP' | 'SB' = 'S
   return result(rows, skipped, raw.length);
 }
 
-export function mapTargets(raw: readonly unknown[]): MapResult<MirrorRow<TargetRow>> {
+export function mapTargets(raw: readonly unknown[], product: 'SP' | 'SD' = 'SP'): MapResult<MirrorRow<TargetRow>> {
   const rows: MirrorRow<TargetRow>[] = [];
   const skipped: SkippedEntity[] = [];
 
@@ -381,7 +381,7 @@ export function mapTargets(raw: readonly unknown[]): MapResult<MirrorRow<TargetR
     rows.push({
       entityType: 'target',
       amazonId,
-      adProduct: 'SP',
+      adProduct: product,
       name: readResolvedExpression(entry),
       state,
       campaignId,
@@ -450,6 +450,7 @@ export function mapNegativeKeywords(
 export function mapNegativeTargets(
   raw: readonly unknown[],
   scope: 'campaign' | 'ad_group',
+  product: 'SP' | 'SD' = 'SP',
 ): MapResult<MirrorRow<NegativeRow>> {
   const rows: MirrorRow<NegativeRow>[] = [];
   const skipped: SkippedEntity[] = [];
@@ -476,7 +477,7 @@ export function mapNegativeTargets(
     rows.push({
       entityType: 'negative',
       amazonId,
-      adProduct: 'SP',
+      adProduct: product,
       name: readResolvedExpression(entry),
       state,
       campaignId,
@@ -491,7 +492,7 @@ export function mapNegativeTargets(
   return result(rows, skipped, raw.length);
 }
 
-export function mapProductAds(raw: readonly unknown[]): MapResult<MirrorRow<ProductAdRow>> {
+export function mapProductAds(raw: readonly unknown[], product: 'SP' | 'SD' = 'SP'): MapResult<MirrorRow<ProductAdRow>> {
   const rows: MirrorRow<ProductAdRow>[] = [];
   const skipped: SkippedEntity[] = [];
 
@@ -513,7 +514,7 @@ export function mapProductAds(raw: readonly unknown[]): MapResult<MirrorRow<Prod
     rows.push({
       entityType: 'product_ad',
       amazonId,
-      adProduct: 'SP',
+      adProduct: product,
       name: asin ?? sku,
       state,
       campaignId,

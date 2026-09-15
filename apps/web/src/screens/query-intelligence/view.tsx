@@ -2,6 +2,7 @@ import type { OrgProfile } from '../../recommendations/data';
 import { formatResearchPeriod } from './research-format';
 import { QueryResearch } from './research-view';
 import type { CSSProperties } from 'react';
+import { CoreReportEvidencePanel } from '../grid/core-report-evidence';
 
 import {
   type ContextualNegativeReviewLoad
@@ -43,8 +44,9 @@ function renderEmpty(_props: Extract<ScreenData, { view: 'empty'; }>['props']) {
   </main>);
 }
 
-function renderNotMeasured({ profile }: Extract<ScreenData, { view: 'not-measured'; }>['props']) {
+function renderNotMeasured({ profile, coreEvidence }: Extract<ScreenData, { view: 'not-measured'; }>['props']) {
   return (<main className="wa-stack">
+    {coreEvidence ? <CoreReportEvidencePanel evidence={coreEvidence} title="Sponsored Brands paid queries" /> : null}
     <header className="wa-page-head">
       <div>
         <h1 className="wa-page-title">Query Intelligence</h1>
@@ -65,8 +67,9 @@ function renderNotMeasured({ profile }: Extract<ScreenData, { view: 'not-measure
   </main>);
 }
 
-function renderReady({ profile, scope, scopes, category, search, model, contextualReview, contextualExports, role }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ profile, scope, scopes, category, search, model, contextualReview, contextualExports, role, coreEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main className="wa-stack" data-interactive="true">
+    {coreEvidence ? <CoreReportEvidencePanel evidence={coreEvidence} title="Sponsored Brands paid queries" /> : null}
     <header className="wa-page-head">
       <div>
         <h1 className="wa-page-title">Query Intelligence</h1>

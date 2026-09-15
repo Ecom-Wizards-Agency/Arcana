@@ -5,6 +5,7 @@ import { corridorReading, corridorSummary, targetBidChecks } from '@wizard-ads/c
 import { normalizeQueuedBidOverride, parseGridView, serializeGridView, type GridSavedView } from '@wizard-ads/shared';
 import type { Target360Model } from './model';
 import styles from './target360.module.css';
+import { CoreReportEvidencePanel } from '../grid/core-report-evidence';
 const tabs = ['Corridor', 'Shelf', 'Rank', 'Changes', 'Performance'] as const;
 const defaultTarget: NonNullable<GridSavedView['target']> = { series: { bid: true, realisedCpc: true, suggestedBand: true, maxCpc: true, dailySpend: true, acos: true }, maxCpcExpanded: true };
 const seriesLabels = { bid: 'Bid', realisedCpc: 'Realised CPC', suggestedBand: 'Amazon suggested band', maxCpc: 'Max CPC', dailySpend: 'Daily spend', acos: 'ACOS' };
@@ -92,6 +93,7 @@ export function Target360({ model, currencyCode, back, savedView, onClose, showL
   const zeroPlacements = model.payload.points.at(-1)?.placementEvidence === 'known-zero';
   const maxPlacement = components.length ? components.reduce((a,b) => a.pct >= b.pct ? a : b) : null;
   return <article className={styles.root} style={onClose ? { margin: 0 } : undefined} data-state={queued ? 'queued' : rankBlocked ? 'rank-gated' : hasSeries ? 'populated' : 'empty-series'}>
+    {model.coreEvidence ? <CoreReportEvidencePanel evidence={model.coreEvidence} title="Target and campaign report evidence" /> : null}
     <header className={styles.header}>
       <div className={styles.breadcrumb}><a href={returnTo}>Back to grid</a> / Targets / {model.payload.target.targeting}</div>
       <div className={styles.titleRow}><div><h1>{model.payload.target.targeting}</h1><p className={styles.meta}>{model.payload.target.matchType ?? 'Not measured'} · {model.payload.target.targetKind} · {model.payload.target.state ?? 'State not measured'} | {model.payload.target.adProduct} | {model.payload.target.campaignName}</p></div>

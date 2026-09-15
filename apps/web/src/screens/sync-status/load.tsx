@@ -1,4 +1,6 @@
 import type { ScreenActor } from '../../server/page-read';
+import { readCoreReportEvidence } from '@wizard-ads/db';
+import { CoreFeatureReportType } from '@wizard-ads/shared';
 
 import type { ScreenParams } from '../types';
 
@@ -34,6 +36,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   if (!org) return null;
 
   const status = await access.readSql((sql) => loadSyncStatus({ sql }, org.orgId, query.profile ?? null));
-
-  return { view: 'ready' as const, props: { context, status } };
+  const today = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const coreEvidence = query.profile ? await access.readSql((sql) => readCoreReportEvidence({ sql }, { orgId: org.orgId, profileId: query.profile!, families: CoreFeatureReportType.options, startDate: today, endDate: today, limit: 10 })) : [];
+  return { view: 'ready' as const, props: { context, status, ...(coreEvidence.length ? { coreEvidence } : {}) } };
 }
