@@ -348,12 +348,14 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock): SpawnedWe
         // Each authenticated suite owns one bounded dev process. The signed-in
         // guard suite compiles every route in that one process; with the full
         // Targets column set the webpack module cache crossed 4 GB while
-        // compiling /grid/translation and the server died mid-suite. Keep a
-        // bounded ceiling (the runner has 16 GB) without allowing a
+        // compiling /grid/translation and the server died mid-suite; with the
+        // Optimize Now screens it crossed 6 GB too. The e2e config also enables
+        // Next's webpack memory optimisations. Keep a bounded ceiling (the
+        // runner has 16 GB) without allowing a
         // development-memory restart to discard an in-process fixture.
         NODE_OPTIONS: appendNodeOption(
           process.env['NODE_OPTIONS'],
-          '--max-old-space-size=6144',
+          '--max-old-space-size=8192',
         ),
         NODE_ENV: 'development',
         DATABASE_URL: connectionString,
