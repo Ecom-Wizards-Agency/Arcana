@@ -357,7 +357,7 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock, fixturePro
         // development-memory restart to discard an in-process fixture.
         NODE_OPTIONS: appendNodeOption(
           process.env['NODE_OPTIONS'],
-          '--max-old-space-size=8192',
+          '--max-old-space-size=12288',
         ),
         NODE_ENV: 'development',
         DATABASE_URL: connectionString,
