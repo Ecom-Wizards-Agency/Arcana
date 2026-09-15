@@ -1,7 +1,8 @@
 'use client';
 
+import { EmptyState } from '@wizard-ads/ui';
 import { useEffect } from 'react';
-import { heading, muted, page } from '../../src/ui/tokens';
+import { heading, page } from '../../src/ui/tokens';
 
 const LEGACY_ANCHOR = /^#feedback-([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
 
@@ -18,7 +19,7 @@ export function LegacyFeedbackRedirect() {
   return (
     <main style={page}>
       <h1 style={heading}>Redirecting…</h1>
-      <p style={muted}>Taking you to Bugs or Roadmap.</p>
+      <EmptyState variant="loading" title="Taking you to Bugs or Roadmap." body="Opening the matching report." />
     </main>
   );
 }

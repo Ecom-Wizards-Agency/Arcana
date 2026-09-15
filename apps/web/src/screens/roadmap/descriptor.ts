@@ -4,6 +4,7 @@ import type ScreenView from './view';
 
 export const descriptor = {
   id: "roadmap",
+  title: "Roadmap",
   path: "/roadmap",
   route: "page",
   nav: { "group": "utility", "label": "Roadmap", "icon": "icon/timeline", "order": 6 },

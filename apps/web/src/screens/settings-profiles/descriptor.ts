@@ -4,6 +4,7 @@ import type ScreenView from './view';
 
 export const descriptor = {
   id: "settings-profiles",
+  title: "Profiles",
   path: "/settings/profiles",
   route: "page",
   nav: null,

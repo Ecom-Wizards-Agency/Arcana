@@ -8,6 +8,7 @@
 // `core` never imports `db` or `ads-api`; `apps/web` never imports `ads-api`
 // (every Amazon call lives in the worker); `shared` imports nothing of ours.
 import js from '@eslint/js';
+import { crossPackageImports } from './tools/cross-package-imports.mjs';
 import tseslint from 'typescript-eslint';
 
 /** Build a no-restricted-imports rule entry for a set of forbidden workspace packages. */
@@ -30,6 +31,21 @@ export default tseslint.config(
       '**/coverage/**',
       'fixtures/golden/**',
     ],
+  },
+  {
+    files: ['apps/**/*.{ts,tsx}', 'packages/**/*.{ts,tsx}'],
+    // Existing exceptions outside WP-272's file scope; new imports remain forbidden.
+    plugins: { workspace: { rules: { 'public-imports': crossPackageImports } } },
+    rules: { 'workspace/public-imports': ['error', { existing: [
+      { file: 'apps/web/src/screens/timeline/view.tsx', source: '../../../../../packages/core/src/timeline-effect' },
+      { file: 'packages/db/scripts/measure-read-path.ts', source: '../../../apps/web/app/_lib/grid-data.js' },
+      { file: 'packages/db/scripts/measure-read-path.ts', source: '../../../apps/web/app/_lib/dashboard-data.js' },
+      { file: 'packages/db/scripts/measure-read-path.ts', source: '../../../apps/web/app/_lib/optimizer-page-data.js' },
+      { file: 'apps/web/app/grid/measure-corridor.ts', source: '../../../../packages/db/src/testing/harness.js' },
+      { file: 'apps/web/src/screens/time-machine/queue.tsx', source: '../../../../../packages/ui/src/cells/ChangeChip' },
+      { file: 'apps/web/src/screens/time-machine/queue.tsx', source: '../../../../../packages/core/src/restore-preview' },
+      { file: 'apps/web/src/screens/time-machine/load.tsx', source: '../../../../../packages/core/src/restore-preview' },
+    ] }] },
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

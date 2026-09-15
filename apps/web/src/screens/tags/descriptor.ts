@@ -4,6 +4,7 @@ import type ScreenView from './view';
 
 export const descriptor = {
   id: "tags",
+  title: "Tags",
   path: "/tags",
   route: "page",
   nav: { "group": "utility", "label": "Tags", "icon": "icon/brand-lens", "order": 1 },

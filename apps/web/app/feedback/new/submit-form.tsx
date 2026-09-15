@@ -185,7 +185,7 @@ export function SubmitFeedbackForm({
         </aside>
 
         <div>
-          <button type="submit" disabled={pending} data-testid="feedback-submit" style={button}>
+          <button className="wa-btn" type="submit" disabled={pending} data-testid="feedback-submit" style={button}>
             {pending ? 'Sending…' : type === 'bug' ? 'Report bug' : 'Request feature'}
           </button>{' '}
           <a

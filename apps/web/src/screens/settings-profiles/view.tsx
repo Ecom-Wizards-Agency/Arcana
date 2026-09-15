@@ -1,3 +1,4 @@
+import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
 import type { ReactNode } from 'react';
 
 import { GOAL_LENSES } from '@wizard-ads/core';
@@ -6,7 +7,7 @@ import { Region } from '@wizard-ads/shared';
 
 import type { ProfileRow } from '../../data/profiles';
 
-import { Shell } from '../../ui/shell';
+import { Shell } from '../settings/frame';
 
 import {
   Badge,
@@ -33,7 +34,7 @@ import type { load } from './load';
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
 
-export default function ScreenView({ data }: { data: ScreenData; }) {
+function ScreenContent({ data }: { data: ScreenData; }) {
   if (data === null) return null;
   switch (data.view) {
     case 'gated': return renderGated(data.props);
@@ -44,11 +45,11 @@ export default function ScreenView({ data }: { data: ScreenData; }) {
 function renderGated({ result }: Extract<ScreenData, { view: 'gated'; }>['props']) {
   return (<main style={page}>
     <PageHeader title="Profiles" />
-    <Banner tone="warn">
+    <ScreenState variant="gated" title="Access unavailable" body={<>
       {result.state === 'no-database'
         ? 'DATABASE_URL is not set, so this instance cannot read its own database.'
         : 'Your account is not a member of any organisation yet.'}
-    </Banner>
+    </>} />
   </main>);
 }
 
@@ -447,4 +448,9 @@ function Cell({
 function fractionToPercent(value: number | null): string {
   if (value === null) return '';
   return String(Number((value * 100).toFixed(2)));
+}
+
+export default function ScreenView({ data }: { data: ScreenData }) {
+  if (data === null) return null;
+  return <ScreenSurface title="Profiles">{ScreenContent({ data })}</ScreenSurface>;
 }

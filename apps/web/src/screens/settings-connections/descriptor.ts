@@ -4,6 +4,7 @@ import type ScreenView from './view';
 
 export const descriptor = {
   id: "settings-connections",
+  title: "Connections",
   path: "/settings/connections",
   route: "page",
   nav: null,

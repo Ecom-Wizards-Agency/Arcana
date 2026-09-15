@@ -1,3 +1,4 @@
+import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
 import type { ReactNode } from 'react';
 
 import type {
@@ -9,7 +10,7 @@ import type {
 
 import { operatorFailureLabel } from '../../security/operator-failure';
 
-import { Shell } from '../../ui/shell';
+import { Shell } from '../settings/frame';
 
 import {
   Badge,
@@ -40,7 +41,7 @@ import type { load } from './load';
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
 
-export default function ScreenView({ data }: { data: ScreenData; }) {
+function ScreenContent({ data }: { data: ScreenData; }) {
   if (data === null) return null;
   switch (data.view) {
     case 'no-database': return renderNoDatabase(data.props);
@@ -52,19 +53,19 @@ export default function ScreenView({ data }: { data: ScreenData; }) {
 function renderNoDatabase(_props: Extract<ScreenData, { view: 'no-database'; }>['props']) {
   return (<main style={page}>
     <h1 style={heading}>Integrations</h1>
-    <Banner tone="warn">
+    <ScreenState variant="gated" title="Access unavailable" body={<>
       <code>DATABASE_URL</code> is not set, so this instance cannot read its own database.
-    </Banner>
+    </>} />
   </main>);
 }
 
 function renderNoOrg(_props: Extract<ScreenData, { view: 'no-org'; }>['props']) {
   return (<main style={page}>
     <h1 style={heading}>Integrations</h1>
-    <Banner tone="warn">
+    <ScreenState variant="gated" title="Access unavailable" body={<>
       Your account is not a member of any organisation yet. Ask an administrator to add
       you before connecting an integration.
-    </Banner>
+    </>} />
   </main>);
 }
 
@@ -134,9 +135,7 @@ function ProviderCard({
       aria-label={`${provider.name} integration`}
     >
       {connections.length === 0 ? (
-        <p className="wa-hint" data-testid={`integration-empty-${provider.id}`}>
-          Not connected yet.
-        </p>
+        <ScreenState title="Not connected yet." body="Add credentials to connect this provider." data-testid={`integration-empty-${provider.id}`} />
       ) : (
         <TableFrame>
           <table className="wa-table">
@@ -262,7 +261,7 @@ function CompetitorLinksSection({
             </tbody>
           </table>
         </TableFrame>
-      ) : <p className="wa-hint" data-testid="competitor-links-empty">No competitor pairs yet.</p>}
+      ) : <ScreenState title="No competitor pairs yet." body="Add a pair to compare products in the same marketplace." data-testid="competitor-links-empty" />}
 
       {mayEdit && profiles.length > 0 ? (
         <form action={addCompetitorLink} className="wa-row" style={{ alignItems: 'end', gap: '0.75rem', marginTop: '1rem' }}>
@@ -292,4 +291,9 @@ function statusTone(
 function formatTimestamp(value: Date | null): string {
   if (!value) return '—';
   return `${value.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+}
+
+export default function ScreenView({ data }: { data: ScreenData }) {
+  if (data === null) return null;
+  return <ScreenSurface title="Integrations">{ScreenContent({ data })}</ScreenSurface>;
 }

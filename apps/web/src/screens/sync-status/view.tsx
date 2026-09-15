@@ -1,16 +1,18 @@
+import { TableFrame } from '../../ui/primitives';
+import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
 import { reportAccountingLabel } from '../../data/sync-status';
 
 import { ReportLifecycleTables } from '../../../app/sync-status/report-lifecycle-tables';
 
-import { Shell } from '../../ui/shell';
+import { Shell } from '../settings/frame';
 
-import { banner, colors, heading, muted, page, subheading, table, td, th } from '../../ui/tokens';
+import { colors, heading, muted, page, subheading, table, td, th } from '../../ui/tokens';
 
 import type { load } from './load';
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
 
-export default function ScreenView({ data }: { data: ScreenData; }) {
+function ScreenContent({ data }: { data: ScreenData; }) {
   if (data === null) return null;
   switch (data.view) {
     case 'gated': return renderGated(data.props);
@@ -21,11 +23,11 @@ export default function ScreenView({ data }: { data: ScreenData; }) {
 function renderGated({ result }: Extract<ScreenData, { view: 'gated'; }>['props']) {
   return (<main style={page}>
     <h1 style={heading}>Sync status</h1>
-    <p style={banner('warn')}>
+    <ScreenState variant="gated" title="Access unavailable" body={<>
       {result.state === 'no-database'
         ? 'DATABASE_URL is not set, so this instance cannot read its own database.'
         : 'Your account is not a member of any organisation yet.'}
-    </p>
+    </>} />
   </main>);
 }
 
@@ -39,8 +41,9 @@ function renderReady({ context, status }: Extract<ScreenData, { view: 'ready'; }
         a final one.
       </p>
 
+      {status.freshness.some((row) => row.latestFactDate === null) ? <ScreenState variant="not-measured" title="Facts not measured" body="Some profiles have no synchronized fact date yet. Their freshness is shown as never." /> : null}
       <h2 style={subheading}>Profiles</h2>
-      <table style={table}>
+      <TableFrame><table style={table}>
         <thead>
           <tr>
             <th style={th}>Profile</th>
@@ -69,13 +72,13 @@ function renderReady({ context, status }: Extract<ScreenData, { view: 'ready'; }
             </tr>
           ))}
         </tbody>
-      </table>
-      {status.freshness.length === 0 ? <p style={muted}>No profiles yet.</p> : null}
+      </table></TableFrame>
+      {status.freshness.length === 0 ? <ScreenState title="No profiles yet." body="Choose a connected profile or check again after the next sync." /> : null}
 
       <ReportLifecycleTables deadLetters={status.deadLetters} lifecycle={status.lifecycle} />
 
       <h2 style={subheading}>Jobs</h2>
-      <table style={table}>
+      <TableFrame><table style={table}>
         <thead>
           <tr>
             <th style={th}>Profile</th>
@@ -104,11 +107,11 @@ function renderReady({ context, status }: Extract<ScreenData, { view: 'ready'; }
             </tr>
           ))}
         </tbody>
-      </table>
-      {status.jobs.length === 0 ? <p style={muted}>Nothing has been queued yet.</p> : null}
+      </table></TableFrame>
+      {status.jobs.length === 0 ? <ScreenState title="Nothing has been queued yet." body="Choose a connected profile or check again after the next sync." /> : null}
 
       <h2 style={subheading}>Report requests</h2>
-      <table style={table}>
+      <TableFrame><table style={table}>
         <thead>
           <tr>
             <th style={th}>Profile</th>
@@ -158,8 +161,13 @@ function renderReady({ context, status }: Extract<ScreenData, { view: 'ready'; }
             </tr>
           ))}
         </tbody>
-      </table>
-      {status.reports.length === 0 ? <p style={muted}>No reports requested yet.</p> : null}
+      </table></TableFrame>
+      {status.reports.length === 0 ? <ScreenState title="No reports requested yet." body="Choose a connected profile or check again after the next sync." /> : null}
     </Shell>
   </main>);
+}
+
+export default function ScreenView({ data }: { data: ScreenData }) {
+  if (data === null) return null;
+  return <ScreenSurface title="Sync status">{ScreenContent({ data })}</ScreenSurface>;
 }
