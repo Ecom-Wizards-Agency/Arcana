@@ -1,3 +1,4 @@
+import { amazonEntryFixtures } from '../grid/catalogue-fixtures';
 // @vitest-environment jsdom
 import { COORDINATED_RESTORE_UNAVAILABLE } from '@wizard-ads/shared';
 import { expect, it, vi } from 'vitest';
@@ -68,4 +69,15 @@ it('disables restore construction for an active reversion even when two rows rem
   render(<Screen data={{...restore,props:{...restore.props,preview:{...restore.props.preview,blockedReason:'This batch already has an active reversion export.'}}}}/>);
   expect(screen.getByRole('button',{name:'Build a restore proposal for 2 rows'}).hasAttribute('disabled')).toBe(true);
   expect(screen.getByText('This batch already has an active reversion export.')).toBeDefined();
+});
+
+it('renders three imported events with resolution and collision evidence and zero write controls',()=>{
+  const imported=amazonEntryFixtures();render(<Screen data={{...ready,props:{...ready.props,entries:[ready.props.entries[0]!,...imported]}}}/>);
+  const rows=screen.getAllByTestId('timeline-entry');expect(rows).toHaveLength(4);
+  const provider=rows.filter(row=>row.getAttribute('data-source')==='amazon');expect(provider).toHaveLength(3);
+  expect(screen.getAllByTestId('amazon-observation-provenance')).toHaveLength(3);
+  expect(screen.getAllByTestId('amazon-observation-provenance')[2]!.textContent).toContain('identity conflict');
+  expect(provider[0]!.textContent).toContain('unresolved');expect(provider[1]!.textContent).toContain('resolved campaign campaign-1');expect(provider[2]!.textContent).toContain('identity conflict');
+  for(const row of provider){expect(row.textContent).toContain('SYNTHETIC-MARKET-');expect(row.textContent).toContain('derived identity (provider ID unavailable)');expect(row.querySelectorAll('a,button,summary')).toHaveLength(0);}
+  expect(rows[0]!.querySelectorAll('a')).toHaveLength(1);
 });

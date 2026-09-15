@@ -1,3 +1,5 @@
+import { readAdvertisedCatalogueProducts } from '@wizard-ads/db';
+import { CatalogueProducts } from './catalogue-products';
 import { ShellFreshnessBanner } from '../../ui/shell-evidence';
 import { loadCoreGridEvidence } from './core-report-rows';
 
@@ -117,7 +119,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
 
   return {
     view: 'ready' as const, props: {
-      ...({ sourceEvidence: data.sourceEvidence } as { sourceEvidence?: SpEvidence }), ...(coreEvidence.length ? { coreEvidence } : {}), entity, profile, period, comparison, params, slot1: (<GridCockpit
+      ...({ sourceEvidence: data.sourceEvidence } as { sourceEvidence?: SpEvidence }), ...(coreEvidence.length ? { coreEvidence } : {}), entity, profile, period, comparison, params, catalogue: entity==='products'?<CatalogueProductsRead access={access} orgId={orgId} profileId={profile.id} asin={params.asin}/>:null, slot1: (<GridCockpit
         handle={entry.handle} actor={actor}
         orgId={orgId}
         profile={profile}
@@ -239,4 +241,9 @@ async function GridFreshness({ handle, actor, profileId }: {
 }) {
   const crosscheck = await GridCrosscheck({ handle, actor, profileId });
   return <ShellFreshnessBanner>{crosscheck}</ShellFreshnessBanner>;
+}
+
+async function CatalogueProductsRead({access,orgId,profileId,asin}:{access:ScreenActor;orgId:string;profileId:string;asin?:string}) {
+  const data=await access.read(handle=>readAdvertisedCatalogueProducts(handle,{orgId,profileId,...(asin?{asin}:{}),staleAfter:new Date(Date.now()-48*60*60*1000).toISOString()}));
+  return <CatalogueProducts data={data}/>;
 }

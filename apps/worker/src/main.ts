@@ -82,6 +82,7 @@ const store = new PostgresWorkerStore(handle, undefined, {
   ownCollectorsEnabled: config.ownCollectorsEnabled,
   ...((config.jobTypes === undefined || config.jobTypes.includes('budget_usage.collect'))
     ? { budgetUsageApiEnabled: config.budgetUsageApiEnabled } : {}),
+  catalogueDeploymentEnabled: () => config.catalogueSourcesEnabled,
   ...((config.spWrites.dispatchEnabled || config.spWrites.reconcileEnabled)
     ? { keywordMirror: createKeywordMirrorCapability(handle) } : {}),
 });

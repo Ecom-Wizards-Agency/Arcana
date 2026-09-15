@@ -1,8 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { AmazonChangeEvent, ProductEligibilitySnapshot, ProductMetadataSnapshot } from '@wizard-ads/shared';
+import { AmazonChangeEvent, ProductEligibilitySnapshot, ProductMetadataSnapshot, ValidationConfiguration } from '@wizard-ads/shared';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '../testing/harness.js';
-import { catalogueDigest, catalogueSourceEnabled, persistCatalogueCollection, readAmazonObservedChanges, readProductEvidence, resolveAmazonChangeEvents } from './ads-catalogue.js';
+import { catalogueDigest, catalogueSourceEnabled, persistCatalogueCollection, readAmazonObservedChanges, readProductEvidence, resolveAmazonChangeEvents, readCampaignProductEvidence, readCurrentValidationConfiguration, readCatalogueSourceStatus, resumeCatalogueAcquisition, persistCataloguePage, readAdvertisedCatalogueProducts } from './ads-catalogue.js';
 import { listChangeQueue } from './time-machine.js';
+import { readCreativeWorkspace } from './creative-workspace.js';
 import { readTimeline } from './timeline.js';
 
 let database: TestDatabase;
@@ -57,7 +59,8 @@ describe.skipIf(!available)('catalogue snapshots and Amazon event ledger',()=>{
     const row=metadata(marketplaceId,15,'Replay title');
     const first=await persist('product_metadata',marketplaceId,15,[row]);
     const replay=await persist('product_metadata',marketplaceId,15,[row]);
-    expect(replay).toEqual(first);
+    expect(first.counts.writtenRows).toBe(1);
+    expect(replay).toMatchObject({receiptId:first.receiptId,replayed:true,counts:{writtenRows:0,existingRows:1,verifiedRows:1}});
     const count=await database.sql<{count:string;acquired_at:string}[]>`select count(*)::text as count,min(acquired_at)::text as acquired_at from public.ads_product_metadata_snapshots where org_id=${orgId} and profile_id=${profileId} and marketplace_id=${marketplaceId} and acquired_at=${at(15)}`;
     expect(count[0]!.count).toBe('1');expect(new Date(count[0]!.acquired_at).toISOString()).toBe(at(15));
   });
@@ -100,4 +103,146 @@ describe.skipIf(!available)('catalogue snapshots and Amazon event ledger',()=>{
     const other=await database.sql<{org_id:string;id:string}[]>`select org_id,id from public.ad_profiles where org_id=${seeded[0]!.id} limit 1`;
     const receipt=await database.sql<{id:string}[]>`select id from public.ads_catalogue_source_receipts where org_id=${orgId} and profile_id=${profileId} limit 1`;await expect(database.sql`insert into public.ads_product_metadata_snapshots(org_id,profile_id,marketplace_id,asin,ad_product,acquired_at,retrieved_at,contract_version,snapshot,payload_digest,receipt_id) values(${other[0]!.org_id},${other[0]!.id},${marketplaceId},'B000TEST09','SP',now(),now(),'synthetic','{}',${catalogueDigest({synthetic:true})},${receipt[0]!.id})`).rejects.toThrow();
   });
+  it('rejects malformed and conflicting receipt replay before returning saved counts',async()=>{
+    const row=metadata('REPLAY-BOUNDARY',15), scope=row.scope;
+    const input={scope,family:'product_metadata' as const,selectorKey:'boundary',windowStart:at(15),windowEnd:at(15),acquiredAt:at(15),pages:1,finalCursor:null,sourceRows:1,parsedRows:1,refusedRows:0,duplicates:0,rows:[row]};
+    await persistCatalogueCollection(database,input);
+    await expect(persistCatalogueCollection(database,{...input,rows:[{scope} as ProductMetadataSnapshot]})).rejects.toThrow();
+    await expect(persistCatalogueCollection(database,{...input,rows:[{...row,title:{state:'returned',value:'Changed replay',sourceField:'title'}}]})).rejects.toThrow('fingerprint');
+    const replay=await persistCatalogueCollection(database,input);
+    expect(replay.counts).toMatchObject({writtenRows:0,existingRows:1,verifiedRows:1});
+    await database.sql`alter table public.ads_product_metadata_snapshots disable trigger ads_product_metadata_append_only`;
+    try { await database.sql`delete from public.ads_product_metadata_snapshots where marketplace_id='REPLAY-BOUNDARY'`;
+      await expect(persistCatalogueCollection(database,input)).rejects.toThrow('independent readback');
+    } finally {await database.sql`alter table public.ads_product_metadata_snapshots enable trigger ads_product_metadata_append_only`;}
+  });
+
+  it('preserves A to B to A configuration observations, exact replay and older arrivals',async()=>{
+    const scope={orgId,profileId,marketplaceId:'CONFIG-HISTORY'};
+    const save=async(day:number,value:string,acquisitionId?:string)=>{
+      const configuration={syntheticRule:value};
+      const row=ValidationConfiguration.parse({scope,resource:'campaigns',countryCode:'DE',entityType:'SELLER',adProduct:'SP',providerVersion:null,contentDigest:catalogueDigest(configuration),configuration,
+        provenance:{family:'validation_configurations',contractVersion:'synthetic-v1',providerObservedAt:null,acquiredAt:at(day),retrievedAt:at(16)}});
+      return persistCatalogueCollection(database,{scope,...(acquisitionId?{acquisitionId}:{}),family:'validation_configurations',selectorKey:'rules',windowStart:at(day),windowEnd:at(day),acquiredAt:at(day),pages:1,finalCursor:null,sourceRows:1,parsedRows:1,refusedRows:0,duplicates:0,rows:[row]});
+    };
+    await save(11,'A');await save(12,'B');await save(13,'A');await save(10,'B');
+    await save(13,'A','second-acquisition-at-same-time');
+    expect((await save(13,'A')).counts).toMatchObject({writtenRows:0,existingRows:1,verifiedRows:1});
+    const [count]=await database.sql<{contents:number;observations:number}[]>`select count(distinct c.id)::int as contents,count(o.id)::int as observations from public.ads_validation_configurations c join public.ads_validation_configuration_observations o on o.configuration_id=c.id where c.marketplace_id='CONFIG-HISTORY'`;
+    expect(count).toEqual({contents:2,observations:5});
+    const request={scope,resource:'campaigns' as const,countryCode:'DE',entityType:'SELLER' as const,adProduct:'SP' as const,staleAfter:at(12)};
+    expect(await readCurrentValidationConfiguration(database,request)).toMatchObject({availability:'measured',configuration:{configuration:{syntheticRule:'A'},provenance:{acquiredAt:at(13)}}});
+    expect(await readCurrentValidationConfiguration(database,{...request,staleAfter:at(14)})).toMatchObject({availability:'stale'});
+    expect(await readCurrentValidationConfiguration(database,{...request,countryCode:'FR'})).toMatchObject({availability:'missing',configuration:null,candidates:[]});
+  });
+
+  it('classifies eight product combinations and exposes the tested builder handoff',async()=>{
+    const market='READER-MATRIX',scope={orgId,profileId,marketplaceId:market};
+    const asins=Array.from({length:8},(_,i)=>`SYNTHETIC${i}`);
+    const absent={state:'refused' as const,reason:'Synthetic unavailable'};
+    const noFacts=(index:number)=>({...metadata(market,15),asin:asins[index]!,title:absent,imageUrl:absent,category:absent,variationAsins:absent,price:absent,basisPrice:absent,availability:absent,inventoryQuantity:absent,bestSellerRank:absent});
+    const facts=[noFacts(1),...[2,4,5,6,7].map(index=>({...metadata(market,index===6?12:15),asin:asins[index]!}))];
+    const verdicts=[1,2,3,4,5,6,7].map(index=>ProductEligibilitySnapshot.parse({scope,asin:asins[index],sku:null,adProduct:'SP',verdict:index<3?'unknown':index===5?'ineligible':'eligible',reasons:[{code:'SYNTHETIC_REASON',message:`Reason ${index}`,severity:null}],provenance:{family:'product_eligibility',contractVersion:'synthetic-v1',providerObservedAt:null,acquiredAt:at(index===7?12:15),retrievedAt:at(15)}}));
+    await persist('product_metadata',market,15,facts);await persist('product_eligibility',market,15,verdicts);
+    const input={scope,asins,adProduct:'SP' as const,staleAfter:at(14)};
+    const products=await readProductEvidence(database,input);
+    expect(products).toHaveLength(8);
+    expect(products.map(row=>row.availability)).toEqual(['missing','missing','partial','partial','measured','measured','stale','stale']);
+    const handoff=await readCampaignProductEvidence(database,input);
+    expect(handoff.products).toHaveLength(8);expect(handoff.checks).toHaveLength(8);
+    expect(handoff.checks.map(row=>row.status)).toEqual(['unavailable','unavailable','unavailable','unavailable','eligible','ineligible','unavailable','unavailable']);
+    expect(handoff.checks[5]!.reasons).toEqual(['Reason 5']);
+    expect(handoff).toMatchObject({campaignCreationAuthority:false,assetModeration:'unknown'});
+  });
+
+  it('preserves SKU-specific and same-SKU conflicting eligibility instead of picking a UUID',async()=>{
+    const market='SKU-MATRIX',scope={orgId,profileId,marketplaceId:market};
+    await persist('product_metadata',market,15,[metadata(market,15)]);
+    const rows=['sku-a','sku-b'].map((sku,index)=>ProductEligibilitySnapshot.parse({
+      scope,asin:'B000TEST01',sku,adProduct:'SP',verdict:index===0?'eligible':'ineligible',reasons:[{code:`SKU_${index}`,message:null,severity:null}],provenance:{family:'product_eligibility',contractVersion:'synthetic-v1',providerObservedAt:null,acquiredAt:at(15),retrievedAt:at(15)}}));
+    await persist('product_eligibility',market,15,rows);
+    const input={scope,asins:['B000TEST01'],adProduct:'SP' as const,staleAfter:at(14)};
+    const [ambiguous]=await readProductEvidence(database,input);
+    expect(ambiguous).toMatchObject({availability:'partial',eligibility:null,eligibilityIdentity:'ambiguous'});expect(ambiguous!.eligibilityCandidates).toHaveLength(2);
+    const [specific]=await readProductEvidence(database,{...input,sku:'sku-b'});
+    expect(specific).toMatchObject({sku:'sku-b',eligibility:{verdict:'ineligible',reasons:[{code:'SKU_1'}]}});
+    const conflict={...rows[0]!,verdict:'ineligible' as const};
+    await persistCatalogueCollection(database,{scope,family:'product_eligibility',selectorKey:'conflicting-sku',windowStart:at(15),windowEnd:at(15),acquiredAt:at(15),pages:1,finalCursor:null,sourceRows:1,parsedRows:1,refusedRows:0,duplicates:0,rows:[conflict]});
+    const [sameSku]=await readProductEvidence(database,{...input,sku:'sku-a'});
+    expect(sameSku!.eligibilityCandidates).toHaveLength(2);expect(sameSku!.eligibilityIdentity).toBe('ambiguous');
+    expect((await readCampaignProductEvidence(database,input)).checks[0]!.status).toBe('unavailable');
+  });
+
+  it('distinguishes absent receipt counts from a verified empty collection',async()=>{
+    const scope={orgId,profileId,marketplaceId:'EMPTY-COUNTS'};
+    await database.sql`insert into public.ads_catalogue_source_checkpoints(org_id,profile_id,marketplace_id,family,selector_key,cursor_failure) values(${orgId},${profileId},${scope.marketplaceId},'change_history','never-completed','synthetic cursor failure')`;
+    await persistCatalogueCollection(database,{scope,family:'change_history',selectorKey:'empty-complete',windowStart:at(14),windowEnd:at(15),acquiredAt:at(15),pages:1,finalCursor:null,sourceRows:0,parsedRows:0,refusedRows:0,duplicates:0,rows:[]});
+    const statuses=await readCatalogueSourceStatus(database,scope);expect(statuses).toHaveLength(2);
+    expect(statuses.find(row=>row.selectorKey==='never-completed')).toMatchObject({sourceRows:null,loadedRows:null});
+    expect(statuses.find(row=>row.selectorKey==='empty-complete')).toMatchObject({availability:'measured',sourceRows:0,loadedRows:0,coveredThrough:at(15)});
+  });
+
+  it('commits pages and continuations atomically and resumes a stable acquisition after crashes',async()=>{
+    const scope={orgId,profileId,marketplaceId:'CRASH-MATRIX'},id=randomUUID();
+    const request={id,scope,family:'product_metadata' as const,selectorKey:'crash',requestFingerprint:catalogueDigest({scope,id}),proposedAcquiredAt:at(15),windowStart:null,windowEnd:null,requestedMembers:2};
+    let state=await resumeCatalogueAcquisition(database,request);
+    const row={...metadata(scope.marketplaceId,15),asin:'CRASH00001'};
+    const page={acquisition:state,expected:state.next!,next:{page:1,unit:0,token:'page-two'},rows:[row],sourceRows:1,parsedRows:1,refusedRows:0,duplicates:0};
+    await database.sql`create function public.synthetic_page_crash() returns trigger language plpgsql as $$ begin raise exception 'synthetic crash before page commit'; end $$`;
+    await database.sql`create trigger synthetic_page_crash before insert on public.ads_catalogue_pages for each row execute function public.synthetic_page_crash()`;
+    try {await expect(persistCataloguePage(database,page)).rejects.toThrow('synthetic crash');} finally {await database.sql`drop trigger synthetic_page_crash on public.ads_catalogue_pages`;await database.sql`drop function public.synthetic_page_crash()`;}
+    const [rolledBack]=await database.sql<{rows:number}[]>`select count(*)::int as rows from public.ads_product_metadata_snapshots where marketplace_id=${scope.marketplaceId}`;
+    expect(rolledBack!.rows).toBe(0);
+    state=await resumeCatalogueAcquisition(database,{...request,proposedAcquiredAt:at(16)});expect(state.next).toEqual({page:0,unit:0,token:null});expect(state.acquiredAt).toBe(at(15));
+    state=await persistCataloguePage(database,page);expect(state.next).toEqual({page:1,unit:0,token:'page-two'});
+    const [notPublished]=await readProductEvidence(database,{scope,asins:[row.asin],adProduct:'SP',staleAfter:at(14)});
+    expect(notPublished!.availability).toBe('missing');
+    state=await resumeCatalogueAcquisition(database,{...request,proposedAcquiredAt:at(16)});expect(state.next).toEqual({page:1,unit:0,token:'page-two'});expect(state.pages).toHaveLength(1);
+    await expect(persistCataloguePage(database,{...page,rows:[{...row,title:{state:'returned',value:'Replay conflict',sourceField:'title'}}]})).rejects.toThrow('fingerprint');
+    state=await persistCataloguePage(database,{acquisition:state,expected:state.next!,next:null,rows:[{...row,asin:'CRASH00002'}],sourceRows:1,parsedRows:1,refusedRows:0,duplicates:0});
+    expect(state.result!.counts).toMatchObject({pages:2,sourceRows:2,canonicalRows:2,verifiedRows:2});
+    const restart=await resumeCatalogueAcquisition(database,{...request,proposedAcquiredAt:at(16)});
+    expect(restart.next).toBeNull();expect(restart.result).toMatchObject({replayed:true,counts:{writtenRows:0,existingRows:2,verifiedRows:2}});
+    expect(await readProductEvidence(database,{scope,asins:['CRASH00001','CRASH00002'],adProduct:'SP',staleAfter:at(14)})).toHaveLength(2);
+    await expect(resumeCatalogueAcquisition(database,{...request,requestFingerprint:catalogueDigest('changed')})).rejects.toThrow('fingerprint');
+  });
+
+  it('counts scoped Products rows for owned advertised identities',async()=>{
+    const result=await readAdvertisedCatalogueProducts(database,{orgId,profileId,staleAfter:at(14)});
+    expect(result.advertisedIdentities).toBeGreaterThan(0);
+    expect(result.scopedRows).toBe(result.products.length);
+    expect(result.products.every(row=>row.scope.orgId===orgId&&row.scope.profileId===profileId)).toBe(true);
+    const filtered=await readAdvertisedCatalogueProducts(database,{orgId,profileId,asin:'MISSING-ASIN',staleAfter:at(14)});
+    expect(filtered).toMatchObject({advertisedIdentities:0,scopedRows:0,products:[]});
+  });
+
+  it('partitions adjacent listing history by SKU and retains explicit reader conflict evidence',async()=>{
+    const market='CREATIVE-SKU',row=metadata(market,11);
+    for(const day of [11,12]) {
+      await persist('product_metadata',market,day,['sku-a','sku-b'].map(sku=>({...metadata(market,day,`${sku} day ${day}`),asin:'CREATIVE01',sku})));
+    }
+    const workspace=await readCreativeWorkspace(database,{orgId,profileId,from:'2026-09-01',to:'2026-09-20'});
+    const listing=workspace.listingChanges.filter(change=>change.marketplaceId===row.scope.marketplaceId);
+    expect(listing).toHaveLength(2);expect(listing.every(change=>change.previous.sku===change.current.sku)).toBe(true);
+    const imported=await listChangeQueue(database,{orgId,profileId,source:'amazon'});
+    expect(imported).toHaveLength(3);expect(imported.filter(change=>change.amazonObservation?.identityConflict)).toHaveLength(2);
+    expect(imported.every(change=>change.amazonObservation?.resolution==='resolved' && change.amazonObservation.marketplaceId.length>0)).toBe(true);
+  });
+
+  it('reads a counted Products matrix through advertised-ASIN scope',async()=>{
+    const [tenant]=await database.sql<{id:string}[]>`select app.seed_tenant_fixture('products-reader-matrix','00000000-0000-4000-8000-000000000319'::uuid) as id`;
+    const [profile]=await database.sql<{id:string}[]>`select id from public.ad_profiles where org_id=${tenant!.id} limit 1`;
+    const scope={orgId:tenant!.id,profileId:profile!.id,marketplaceId:'ATVPDKIKX0DER'};
+    for(const asin of ['PRODUCT-0','PRODUCT-1','PRODUCT-2','PRODUCT-3']) await database.sql`insert into public.product_ads(org_id,profile_id,amazon_id,ad_product,state,campaign_id,ad_group_id,asin) values(${scope.orgId},${scope.profileId},${asin},'SP','enabled','c-1','ag-1',${asin})`;
+    const rows=[1,2,3].map(index=>({...metadata(scope.marketplaceId,index===3?10:15),scope,asin:`PRODUCT-${index}`,
+      ...(index===2?{price:{state:'absent' as const,reason:null},bestSellerRank:{state:'absent' as const,reason:null}}:{})}));
+    await persistCatalogueCollection(database,{scope,family:'product_metadata',selectorKey:'products-matrix',windowStart:at(15),windowEnd:at(15),acquiredAt:at(15),pages:1,finalCursor:null,sourceRows:3,parsedRows:3,refusedRows:0,duplicates:0,rows});
+    const result=await readAdvertisedCatalogueProducts(database,{orgId:scope.orgId,profileId:scope.profileId,staleAfter:at(14)});
+    expect(result).toMatchObject({advertisedIdentities:5,scopedRows:5,truncated:false});expect(result.products).toHaveLength(5);
+    const products=result.products.filter(row=>row.asin.startsWith('PRODUCT-'));expect(products).toHaveLength(4);
+    expect(products.map(row=>row.metadataAvailability)).toEqual(['missing','measured','measured','stale']);
+    expect(products[1]!.metadata!.price).toMatchObject({state:'returned',value:{amount:0}});
+    expect(products[2]!.metadata!.price.state).toBe('absent');
+  });
+
 });

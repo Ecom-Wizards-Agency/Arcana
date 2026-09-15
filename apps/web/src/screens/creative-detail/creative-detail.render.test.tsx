@@ -2,7 +2,7 @@
 import { verifyScreen } from '../render-test-support';
 import Loading from '../shared-loading';
 import SharedError from '../shared-error';
-import { visualFixture } from '../creative/render-fixture';
+import { visualFixture, listingHistoryFixture } from '../creative/render-fixture';
 import Screen from './view';
 import { descriptor } from './descriptor';
 import { render, screen, within } from '@testing-library/react';
@@ -91,4 +91,13 @@ describe('Creative detail tabs', () => {
     expect(rows).toHaveLength(cases.length);
     expect(rows.map((row) => within(row).getAllByRole('cell')[3]!.textContent)).toEqual(cases.map((row) => row[3]));
   });
+});
+
+it('renders two actual adjacent listing changes with exact and window certainty',()=>{
+  render(<Screen data={listingHistoryFixture()}/>);
+  const region=screen.getByRole('region',{name:'Amazon listing observations'});
+  expect(within(region).getAllByRole('row')).toHaveLength(3);
+  expect(region.textContent).toContain('exact');expect(region.textContent).toContain('window');expect(region.textContent).toContain('4 days');
+  expect(within(region).getAllByText('Amazon Product Metadata v1 observation')).toHaveLength(2);
+  expect(region.textContent).toContain('Synthetic revision 0');expect(region.textContent).toContain('Synthetic revision 1');
 });

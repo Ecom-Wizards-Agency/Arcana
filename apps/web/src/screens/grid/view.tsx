@@ -1,5 +1,5 @@
 import { RetailEvidencePanel, AbaEvidencePanel } from './spapi-evidence';
-import { type CSSProperties } from 'react';
+import { Suspense, type CSSProperties } from 'react';
 import { CoreReportEvidencePanel } from './core-report-evidence';
 
 import {
@@ -49,11 +49,12 @@ function renderEmpty({ data }: Extract<ScreenData, { view: 'empty'; }>['props'])
   </main>);
 }
 
-function renderReady({ sourceEvidence, entity, profile, period, comparison, params, slot1: _slot1, actor, freshness: _freshness, coreEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ catalogue, sourceEvidence, entity, profile, period, comparison, params, slot1: _slot1, actor, freshness: _freshness, coreEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main style={main}>
     <h1 className="wa-sr-only">{ENTITY_LABELS[entity]}</h1>
     <p className="wa-sr-only">{profile.label} · {profile.countryCode} · {profile.currencyCode} · {period.start} to {period.end}</p>
 
+    {catalogue?<Suspense fallback={<p>Loading current catalogue facts…</p>}>{catalogue}</Suspense>:null}
     <GridWorkspace
       key={`${profile.id}:${entity}:${period.start}:${period.end}:${params.campaign ?? ''}:${params.view ?? ''}:${params.asin ?? ''}`}
       actor={actor}

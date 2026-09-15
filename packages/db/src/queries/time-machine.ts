@@ -925,7 +925,16 @@ export async function listChangeQueue(
       'entity',entity,'entityType',entity_type,'entityId',entity_id,'field',field,'oldValue',old_value,'newValue',new_value,
       'source',source,'state',state,'batchId',batch_id,'batchLabel',batch_label,'batchCount',batch_count,
       'experimentStart',experiment_start,'candidateCount',candidate_count,'acknowledgedAt',acknowledged_at,
-      'acknowledgedBy',acknowledged_by,'reviewHref',review_href) as artifact
+      'acknowledgedBy',acknowledged_by,'reviewHref',review_href,
+      'amazonObservation',case when source='amazon' then (
+        select jsonb_build_object('marketplaceId',e.marketplace_id,'retrievedAt',to_char(e.retrieved_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+          'identityQuality','derived','identityAmbiguity','provider_id_unavailable',
+          'identityConflict',exists(select 1 from public.amazon_change_events conflict where conflict.org_id=e.org_id and conflict.profile_id=e.profile_id and conflict.marketplace_id=e.marketplace_id and conflict.source_namespace=e.source_namespace and conflict.source_event_key=e.source_event_key and conflict.payload_digest<>e.payload_digest),
+          'resolution',case when resolved.event_id is null then 'unresolved' else 'resolved' end,
+          'resolvedEntityType',resolved.resolved_entity_type,'resolvedAmazonId',resolved.resolved_amazon_id)
+        from public.amazon_change_events e left join lateral(select event_id,resolved_entity_type,resolved_amazon_id from public.amazon_change_event_resolutions where org_id=e.org_id and profile_id=e.profile_id and event_id=e.id order by resolved_at desc,id desc limit 1) resolved on true
+        where 'amazon:'||e.id::text=entries.id and e.org_id=${input.orgId}::uuid and e.profile_id=${input.profileId}::uuid
+      ) else null end) as artifact
     from entries where (${input.source ?? null}::text is null or source=${input.source ?? null})
       and (${input.state ?? null}::text is null or state=${input.state ?? null})
       and (${input.field ?? null}::text is null or field=${input.field ?? null})
