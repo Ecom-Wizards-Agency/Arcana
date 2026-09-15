@@ -3,7 +3,8 @@ import { syntheticRecommendationMethodInputs } from '@wizard-ads/db/testing';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSpWriteAdapter, type SpWriteAdapter } from '@wizard-ads/ads-api/sp-write-adapter';
-import { exportAcceptedRecommendations, withAuthenticatedOrgEditor, listTimeline, reconcileEntityChangeLinks } from '@wizard-ads/db';
+import { buildRestoreProposal, exportAcceptedRecommendations, getReversionBatchPreview, listChangeQueue, prepareRestoreRetry, recordEntityChanges,
+  withAuthenticatedOrgEditor, listTimeline, reconcileEntityChangeLinks } from '@wizard-ads/db';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
 import { approveAndQueueSpWrite, previewSpWriteInverse, readSpWriteOperation } from '@wizard-ads/db/testing';
 import { createSpWriteOutboxLedger, createSpWriteRuntimeLedger } from '@wizard-ads/db/sp-write-persistence';
@@ -29,10 +30,13 @@ describe.skipIf(!available)('SP write worker with real ledger and fake HTTP prov
   let preview: SpWritePreview;
   let admission: SpWriteAdmission;
   let gateId: string;
+  let sourceBatchId: string;
   let dispatchEnabled: boolean;
   let bid: number;
   let providerBids: Map<string, number>;
   let providerMissing: Set<string>;
+  let providerRejected: Set<string>;
+  let attemptedKeywords: string[][];
   let providerArchived: Map<string, number | null>;
   let readFailure: boolean;
   let ambiguous: boolean;
@@ -79,16 +83,19 @@ describe.skipIf(!available)('SP write worker with real ledger and fake HTTP prov
     }
     const exported = await exportAcceptedRecommendations(database, { orgId, profileId, runId: run!.id, ids: recIds,
       tag: randomUUID(), optGroup: 'synthetic', lever: 'bid-down', note: 'Synthetic worker', actorId: OWNER });
-    preview = await withAuthenticatedOrgEditor(database, { orgId, userId: OWNER }, (context) =>
-      previewSpWriteForActor(context, { requestId: randomUUID(), profileId, applyBatchId: exported.batchId }));
-    admission = await withAuthenticatedOrgEditor(database, { orgId, userId: OWNER }, (context) =>
-      approveSpWriteForActor(context, { profileId, confirmation: `Yes, apply ${preview.plan.counts.logicalChanges} changes to Amazon`, approval: {
-      approvalRequestId: randomUUID(), plan: preview.binding, approvalMode: 'manual',
-      confirmationVersion: 'openspell.amazon-sp-write-confirmation.v1', boundedAuthorization: null, preapprovedInversePlan: null,
-    } }));
+    sourceBatchId = exported.batchId;
+    if (!context.task.name.includes('restore mixed batch')) {
+      preview = await withAuthenticatedOrgEditor(database, { orgId, userId: OWNER }, (context) =>
+        previewSpWriteForActor(context, { requestId: randomUUID(), profileId, applyBatchId: exported.batchId }));
+      admission = await withAuthenticatedOrgEditor(database, { orgId, userId: OWNER }, (context) =>
+        approveSpWriteForActor(context, { profileId, confirmation: `Yes, apply ${preview.plan.counts.logicalChanges} changes to Amazon`, approval: {
+          approvalRequestId: randomUUID(), plan: preview.binding, approvalMode: 'manual',
+          confirmationVersion: 'openspell.amazon-sp-write-confirmation.v1', boundedAuthorization: null, preapprovedInversePlan: null,
+        } }));
+    }
     dispatchEnabled = true; bid = 0.9; readFailure = false; ambiguous = false; puts = 0; reads = 0; credentialsPrepared = 0;
     providerBids = new Map();
-    providerMissing = new Set(); providerArchived = new Map();
+    providerMissing = new Set(); providerArchived = new Map(); providerRejected = new Set(); attemptedKeywords = [];
     const clientId = 'synthetic-client'; const secret = ['synthetic', 'secret'].join('-'); const refresh = 'synthetic-refresh';
     adapter = createSpWriteAdapter({ region: 'NA', credentials: { clientId, clientSecret: secret, refreshToken: refresh },
       fetch: async (url, init = {}) => {
@@ -98,9 +105,15 @@ describe.skipIf(!available)('SP write worker with real ledger and fake HTTP prov
           const body = JSON.parse(String(init.body)) as { keywords: Array<{ keywordId: string; bid: number }> };
           expect(body.keywords.length).toBeGreaterThan(0);
           expect(body.keywords.length).toBeLessThanOrEqual(100);
-          for (const row of body.keywords) providerBids.set(row.keywordId, row.bid);
+          attemptedKeywords.push(body.keywords.map((row) => row.keywordId));
+          for (const row of body.keywords) if (!providerRejected.has(row.keywordId)) providerBids.set(row.keywordId, row.bid);
           if (ambiguous) return new Response('{}', { status: 503 });
-          return new Response(JSON.stringify({ keywords: { success: body.keywords.map((row, index) => ({ index, keywordId: row.keywordId })), error: [] } }), { status: 207 });
+          return new Response(JSON.stringify({ keywords: {
+            success: body.keywords.flatMap((row, index) => providerRejected.has(row.keywordId) ? [] : [{ index, keywordId: row.keywordId }]),
+            error: body.keywords.flatMap((row, index) => providerRejected.has(row.keywordId) ? [{ index,
+              errors: [{ errorType: 'RANGE_ERROR', errorValue: { rangeError: { message: 'Synthetic rejection', reason: 'TOO_LOW' } } }],
+            }] : []),
+          } }), { status: 207 });
         }
         reads += 1;
         if (readFailure) return new Response('{}', { status: 200 });
@@ -137,6 +150,117 @@ describe.skipIf(!available)('SP write worker with real ledger and fake HTTP prov
   async function detail() {
     return readSpWriteOperation(database, { orgId, userId: OWNER }, { profileId, ...admission.operation });
   }
+
+  async function restoreLegacySource() {
+    const applyBatchId = sourceBatchId;
+    const rows = await database.sql<{ entity_id: string }[]>`select entity_id from public.apply_rows
+      where org_id = ${orgId} and profile_id = ${profileId} and batch_id = ${applyBatchId} order by entity_id`;
+    expect(rows).toHaveLength(2);
+    await recordEntityChanges(database, rows.map((row) => ({ orgId, profileId, entityType: 'keyword' as const,
+      amazonId: row.entity_id, field: 'bid', oldValue: 0.9, newValue: 0.7, source: 'sync' as const, observedAt: new Date() })));
+    await database.sql`update public.keywords set bid = 0.7, synced_at = clock_timestamp()
+      where org_id = ${orgId} and profile_id = ${profileId} and amazon_id = any(${rows.map((row) => row.entity_id)})`;
+    for (const row of rows) providerBids.set(row.entity_id, 0.7);
+    const source = await getReversionBatchPreview(database, { orgId, batchId: applyBatchId });
+    expect(source?.readyRows).toBe(rows.length);
+    const sourceRowIds = source!.rows.map((row) => row.rowId).sort();
+    preview = await withAuthenticatedOrgEditor(database, { orgId, userId: OWNER }, (context) =>
+      buildRestoreProposal(context, { requestId: randomUUID(), profileId, applyBatchId, sourceRowIds }));
+    expect(preview.plan.source).toMatchObject({ kind: 'apply_batch', applyBatchId,
+      restoreProposal: { sourceRowIds: expect.arrayContaining(sourceRowIds) } });
+    if (preview.plan.source.kind !== 'apply_batch') throw new Error('Synthetic restore source missing');
+    expect(preview.plan.source.restoreProposal!.sourceRowIds).toHaveLength(sourceRowIds.length);
+    expect(preview.plan.actions.map((action) => action.routeKey === 'sp.v3.keywords.update' ? action.changes.bid : null))
+      .toEqual(sourceRowIds.map(() => ({ expected: { amount: '0.7', currencyCode: 'USD' }, requested: { amount: '0.9', currencyCode: 'USD' } })));
+    admission = await approvePreview();
+    puts = 0; reads = 0; attemptedKeywords = []; mirror.mockClear();
+    return { applyBatchId, sourceRowIds };
+  }
+
+  async function approvePreview() {
+    return withAuthenticatedOrgEditor(database, { orgId, userId: OWNER }, (context) =>
+      approveSpWriteForActor(context, { profileId,
+        confirmation: `Yes, apply ${preview.plan.counts.logicalChanges} changes to Amazon`, approval: {
+          approvalRequestId: randomUUID(), plan: preview.binding, approvalMode: 'manual',
+          confirmationVersion: 'openspell.amazon-sp-write-confirmation.v1', boundedAuthorization: null, preapprovedInversePlan: null,
+        } }));
+  }
+
+  it('runs a restore mixed batch through partial acceptance and observation, then retries only its failed row', async () => {
+    const source = await restoreLegacySource();
+    const restorePlan = preview.plan;
+    const restoreOperation = admission.operation;
+    const [initialApplyRows] = await database.sql<{ count: number }[]>`select count(*)::int as count from public.apply_rows where org_id = ${orgId}`;
+    const queueState = async (planId: string) => (await listChangeQueue(database, { orgId, profileId, source: 'restore' }))
+      .find((row) => row.id === `restore:${planId}`);
+    expect(await queueState(restorePlan.id)).toMatchObject({ source: 'restore', state: 'admitted', batchCount: 2 });
+    expect((await detail()).snapshot.accounting).toMatchObject({ approvedRows: 2, pendingDispatch: 2, intentCommitted: 0 });
+    providerRejected.add('kw-2');
+    const worker = loop();
+    expect(await worker.tick()).toEqual({ kind: 'completed', attemptedCalls: 1 });
+    expect((await detail()).snapshot.accounting).toMatchObject({ approvedRows: 2, intentCommitted: 2,
+      providerAccepted: 1, providerRejected: 1, pendingDispatch: 0, pendingObservation: 1 });
+    expect(await queueState(restorePlan.id)).toMatchObject({ source: 'restore', state: 'failed', batchCount: 2 });
+    expect(await worker.tick()).toEqual({ kind: 'completed', attemptedCalls: 0 });
+    const result = await detail();
+    expect(result.snapshot.accounting).toMatchObject({ approvedRows: 2, intentCommitted: 2,
+      providerAccepted: 1, providerRejected: 1, observedRequested: 1, pendingDispatch: 0, pendingObservation: 0 });
+    expect(result.mirror).toMatchObject({ observations: 1, promoted: 1, pending: 0 });
+    expect(mirror).toHaveBeenCalledTimes(1);
+    expect(attemptedKeywords).toEqual([['kw-1', 'kw-2']]);
+    expect((await listChangeQueue(database, { orgId, profileId, source: 'restore' }))
+      .some((row) => row.reviewHref?.includes(restorePlan.id))).toBe(true);
+
+    const request = { requestId: randomUUID(), profileId, batchId: source.applyBatchId,
+      original: { executionId: restoreOperation.executionId, planId: restorePlan.id } };
+    const retry = await withAuthenticatedOrgEditor(database, { orgId, userId: OWNER }, (context) => prepareRestoreRetry(context, request));
+    expect(retry.preview.plan.actions).toHaveLength(1);
+    expect(retry.preview.plan.actions[0]).toMatchObject({ entity: { keywordId: 'kw-2' },
+      changes: { bid: { expected: { amount: '0.7' }, requested: { amount: '0.9' } } } });
+    expect(retry.preview.plan.source).toMatchObject({ kind: 'apply_batch', applyBatchId: source.applyBatchId,
+      retryOrigin: { ...request.original, planFingerprint: restorePlan.fingerprint },
+      restoreProposal: { sourceRowIds: expect.any(Array) } });
+    expect(retry.excludedSuccessfulRows).toHaveLength(1);
+    expect(await withAuthenticatedOrgEditor(database, { orgId, userId: OWNER }, (context) => prepareRestoreRetry(context, request))).toEqual(retry);
+    preview = retry.preview;
+    admission = await approvePreview();
+    expect(admission.operation.planId).not.toBe(restoreOperation.planId);
+    providerRejected.clear();
+    expect(await worker.tick()).toEqual({ kind: 'completed', attemptedCalls: 1 });
+    expect(await worker.tick()).toEqual({ kind: 'completed', attemptedCalls: 0 });
+    expect((await detail()).snapshot.accounting).toMatchObject({ approvedRows: 1, providerAccepted: 1,
+      providerRejected: 0, observedRequested: 1, pendingDispatch: 0, pendingObservation: 0 });
+    expect(await queueState(preview.plan.id)).toMatchObject({ source: 'restore', state: 'observed', batchCount: 1 });
+    expect(attemptedKeywords).toEqual([['kw-1', 'kw-2'], ['kw-2']]);
+    expect(puts).toBe(2);
+    expect(mirror).toHaveBeenCalledTimes(2);
+    expect(await database.sql`select amazon_id, bid::text from public.keywords where profile_id = ${profileId}
+      and amazon_id = any(${['kw-1', 'kw-2']}) order by amazon_id`)
+      .toEqual([{ amazon_id: 'kw-1', bid: '0.9000' }, { amazon_id: 'kw-2', bid: '0.9000' }]);
+    const restored = await getReversionBatchPreview(database, { orgId, batchId: source.applyBatchId });
+    expect(restored?.rows).toHaveLength(2);
+    expect(restored?.rows.map((row) => row.state)).toEqual(['already_reverted', 'already_reverted']);
+    expect(restored?.rows.map((row) => row.reason)).toEqual(Array(2).fill('The current synchronized value already equals the original value.'));
+    const [finalApplyRows] = await database.sql<{ count: number }[]>`select count(*)::int as count from public.apply_rows where org_id = ${orgId}`;
+    expect(finalApplyRows).toEqual(initialApplyRows);
+    expect(await worker.tick()).toEqual({ kind: 'idle', attemptedCalls: 0 });
+  });
+
+  it('refuses a conflicting restore mixed batch row before mutation while observing the unchanged row', async () => {
+    await restoreLegacySource();
+    providerBids.set('kw-1', 0.8);
+    const worker = loop();
+    expect(await worker.tick()).toEqual({ kind: 'completed', attemptedCalls: 1 });
+    expect(attemptedKeywords).toEqual([['kw-2']]);
+    expect(providerBids.get('kw-1')).toBe(0.8);
+    expect(await worker.tick()).toEqual({ kind: 'completed', attemptedCalls: 0 });
+    expect((await detail()).snapshot.accounting).toMatchObject({ approvedRows: 2, refusedBeforeDispatch: 1,
+      intentCommitted: 1, providerAccepted: 1, observedRequested: 1, pendingDispatch: 0, pendingObservation: 0 });
+    expect((await detail()).mirror).toMatchObject({ observations: 1, pending: 0, promoted: 1 });
+    expect(puts).toBe(1);
+    expect(mirror).toHaveBeenCalledTimes(1);
+    expect(await worker.tick()).toEqual({ kind: 'idle', attemptedCalls: 0 });
+  });
 
   it.each(['missing flags', 'missing profiles', 'different profile', 'different plan'] as const)(
     'makes no provider request for %s despite a valid database approval', async (scope) => {

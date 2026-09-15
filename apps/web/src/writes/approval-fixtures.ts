@@ -1,4 +1,4 @@
-import { OptimizerOperation, SpWriteOperationDetail, SpWriteRecordedPreview } from '@wizard-ads/shared/sp-write-application';
+import { OptimizerOperation, SpWriteOperationDetail, SpWriteRecordedPreview, SpWriteRestoreExportPreview } from '@wizard-ads/shared/sp-write-application';
 import { SpWritePreviewEvidence, serializeSpWritePreviewGuardrails, serializeSpWritePreviewProvenance } from '@wizard-ads/shared/sp-write-preview-evidence';
 import {
   SpWriteAction, SpWritePlan, SpWriteObservation, type SpWriteAccounting, type SpWriteExecutionStatus, serializeSpWriteActionFingerprint,
@@ -167,4 +167,63 @@ export async function spWriteTwoChangeApprovalFixture(first: SpWriteRecordedPrev
   plan.fingerprint = await digest(serializeSpWritePlanFingerprint(plan));
   const firstObserved = first.currentRows[0]!.observation!;
   return SpWriteRecordedPreview.parse({ ...first, preview: { plan, binding: spWritePlanBinding(plan), evidence }, currentRows: [...first.currentRows, { actionId: second.actionId, entityName: 'Synthetic second keyword', syncedAt: plan.frozenAt, observation: { ...firstObserved, actionId: second.actionId, actionFingerprint: second.fingerprint, amazonEntityId: 'synthetic-second-keyword' } }] });
+}
+
+
+/** Synthetic restore evidence for presentation and browser state verification only. */
+export function restorePlan(plan: SpWritePlan) {
+  if (plan.source.kind !== 'apply_batch') throw new Error('Expected a synthetic apply batch');
+  return SpWritePlan.parse({ ...plan, source: { ...plan.source, restoreProposal: {
+    kind: 'restore_proposal', sourceBatchId: plan.source.applyBatchId,
+    sourceArtifactText: JSON.stringify(plan.actions.map((action) => {
+      if (action.routeKey !== 'sp.v3.keywords.update' || !action.changes.bid) throw new Error('Expected a synthetic keyword bid');
+      return { entity_type: 'keyword', entity_id: action.entity.keywordId, field: 'bid', old: action.changes.bid.requested.amount, new: action.changes.bid.expected.amount };
+    })),
+    sourceRowIds: plan.actions.flatMap((action) => action.sources.flatMap((source) => source.kind === 'apply_row' ? [source.applyRowId] : [])),
+    rows: plan.actions.map((action) => {
+      const source = action.sources[0];
+      if (source?.kind !== 'apply_row' || action.routeKey !== 'sp.v3.keywords.update' || !action.changes.bid) throw new Error('Expected a synthetic keyword bid');
+      return { sourceRowId: source.applyRowId, entityId: action.entity.keywordId, current: action.changes.bid.expected, readAt: plan.frozenAt, restoreTo: action.changes.bid.requested };
+    }),
+  } } });
+}
+export async function restoreApprovalFixture() {
+  const original = (await spWriteApprovalFixtures()).ready;
+  const plan = restorePlan(original.preview.plan);
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(serializeSpWritePlanFingerprint(plan)));
+  plan.fingerprint = Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return SpWriteRecordedPreview.parse({ ...original, gates: { environmentEnabled: true, profileAllowlisted: true }, preview: { ...original.preview, plan, binding: spWritePlanBinding(plan) } });
+}
+export type RestoreResultState = SpWriteResultVisualState | 'failed' | 'refused' | 'conflict';
+export function restoreOperationFixture(state: RestoreResultState) {
+  const original = spWriteOperationFixture(state === 'failed' || state === 'refused' || state === 'conflict' ? 'single' : state);
+  original.plan = restorePlan(original.plan);
+  if (state === 'failed' || state === 'refused' || state === 'conflict') {
+    const row = original.rows[0]!;
+    const c = original.detail.snapshot.accounting;
+    original.detail.snapshot.status = state;
+    c.pendingObservation = 0;
+    if (state === 'failed') { c.providerAccepted = 0; c.providerRejected = 1; row.providerOutcome = 'authoritative_rejected'; row.retryEligible = true; }
+    if (state === 'refused') {
+      c.providerAccepted = 0; c.intentCommitted = 0; c.refusedBeforeDispatch = 1; c.providerCallsCommitted = 0; c.providerCallsCompleted = 0; row.providerOutcome = null; row.retryEligible = false;
+      row.refusal = { schemaVersion: 'openspell.sp-write-predispatch-disposition.v1', dispositionId: '11111111-1111-4111-8111-111111111111', planId: original.plan.id, planFingerprint: original.plan.fingerprint, approvalId: original.detail.receipt.approvalId, executionId: original.detail.operation.executionId, generation: original.detail.receipt.generation, actionId: row.actionId, actionFingerprint: row.action.fingerprint, recordedAt: original.plan.frozenAt, outcome: 'refused_before_dispatch', reason: 'stale_expected_state', providerObservationFingerprint: 'b'.repeat(64), fingerprint: 'c'.repeat(64) };
+    }
+    if (state === 'conflict') {
+      c.observationConflict = 1; row.observed = '1.12'; row.reason = 'The current synchronized value changed after Amazon accepted this row.'; row.retryEligible = false;
+      row.observation = { ...spWriteOperationFixture('retry').rows[0]!.observation!, outcome: 'conflict' };
+      original.detail.mirror = { observations: 1, pending: 1, promoted: 0, alreadyCurrent: 0, superseded: 0, missing: 0 };
+    }
+    row.status = state;
+    row.retryReason = state === 'failed' ? 'Amazon rejected this row. Review a fresh preview.' : 'A fresh source review is required.';
+  }
+  return OptimizerOperation.parse(original);
+}
+export async function restoreExportFixture() {
+  const recorded = await restoreApprovalFixture();
+  const plan = recorded.preview.plan;
+  if (plan.source.kind !== 'apply_batch' || !plan.source.restoreProposal) throw new Error('Synthetic restore missing');
+  return SpWriteRestoreExportPreview.parse({ kind: 'export_only', profileId: plan.profileId, batchId: plan.source.applyBatchId, fingerprint: 'd'.repeat(64), preview: {
+    batchId: plan.source.applyBatchId, sourceBatchId: null, activeReversionBatchId: null, profileId: plan.profileId, tag: 'Synthetic source', optGroup: 'synthetic', lever: 'bid', note: '', lifecycleStatus: 'applied_externally', exportedAt: plan.generatedAt, appliedAt: plan.frozenAt, artifactSha256: 'a'.repeat(64), exportedProposals: 1, reversibleRows: 1, unsupportedRows: 0, readyRows: 1, blockedRows: 0, exportAllowed: true, reason: 'Current synchronized values match the recorded export.',
+    rows: plan.source.restoreProposal.rows.map((row) => ({ batchId: plan.source.kind === 'apply_batch' ? plan.source.applyBatchId : '', rowId: row.sourceRowId, recommendationId: null, entityType: 'keyword', entityId: row.entityId, entityName: 'Synthetic restore keyword', field: 'bid', originalValue: row.restoreTo.amount, proposedValue: row.current.amount, exportedValue: row.current.amount, synchronizedValue: row.current.amount, synchronizedAt: row.readAt, currentValue: row.current.amount, currentSyncedAt: row.readAt, inverseValue: row.restoreTo.amount, state: 'ready', conflict: false, exportAllowed: true, reason: 'Untouched since we set it' })),
+  } });
 }

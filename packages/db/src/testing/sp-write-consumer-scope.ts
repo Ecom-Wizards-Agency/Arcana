@@ -45,5 +45,6 @@ export const SP_WRITE_MIGRATIONS = [
   "20260915110000_campaign_creation_previews.sql",
   "20260915130000_coordinated_methods.sql",
   "20260915170000_change_acknowledgements.sql",
-  "20260915190000_sp_write_forward_narrowing_and_retry_lineage.sql"
+  "20260915190000_sp_write_forward_narrowing_and_retry_lineage.sql",
+  "20260915270000_sp_write_direct_restore.sql"
 ] as const;

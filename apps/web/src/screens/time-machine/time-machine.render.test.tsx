@@ -16,6 +16,8 @@ verifyScreen(descriptor, [
   { state:'error',name:'preserves the safe read error message',render:()=> <Screen data={{view:'error',props:{message:'Synthetic read unavailable'}}}/>,text:'Synthetic read unavailable' },
   { state:'empty',name:'shows an empty profile roster without invented data',render:()=> <Screen data={{view:'empty',props:{}}}/>,text:'No changes recorded in this range' },
   { state:'not-measured',name:'reports exports awaiting a current mirror read',render:()=> <Screen data={{view:'ready',props:{...ready.props,partial:true}}}/>,text:'The mirror has not been read since the last export' },
+  { state:'stale',name:'shows restore rows with conflicting current values',render:()=> <Screen data={restore}/>,text:'Someone changed it after us' },
+  { state:'refused',name:'names unsupported restore rows',render:()=> <Screen data={restore}/>,text:'No adapter for this field' },
 ]);
 it('renders all six source and attribution cases in newest-first order',()=>{
   render(<Screen data={ready}/>);
@@ -26,6 +28,16 @@ it('renders all six source and attribution cases in newest-first order',()=>{
     expect.stringContaining('awaiting review'),expect.stringContaining('approved'),
   ]);
   expect(screen.getAllByRole('columnheader')).toHaveLength(8);
+});
+it.each(['awaiting review', 'admitted', 'attempted', 'succeeded', 'failed', 'observed'] as const)('renders the Restore queue source and its %s lifecycle state', (state) => {
+  const entry = { ...ready.props.entries[0]!, source: 'restore' as const, state, reviewHref: '/optimizer/run/synthetic?plan=synthetic' };
+  render(<Screen data={{ view: 'ready', props: { ...ready.props, entries: [entry] } }} />);
+  const row = screen.getByTestId('timeline-entry');
+  expect(screen.getAllByTestId('timeline-entry')).toHaveLength(1);
+  expect(screen.getByTestId('entry-source').textContent).toBe('Restore');
+  expect(row.textContent).toContain(state);
+  if (state === 'awaiting review') expect(row.textContent).toContain('Review proposal');
+  else expect(row.textContent).toContain('Batch 1000 · 7 changes');
 });
 it('renders exactly seven restore rows, ready 2, blocked 4 and nothing to do 1',()=>{
   const {container}=render(<Screen data={restore}/>);
