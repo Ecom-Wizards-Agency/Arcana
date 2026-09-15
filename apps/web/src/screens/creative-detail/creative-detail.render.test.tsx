@@ -56,10 +56,35 @@ describe('Creative detail tabs', () => {
     render(<Screen data={visualFixture('history')} />);
     const table = screen.getByRole('region', { name: 'Creative change history' });
     expect(within(table).getAllByRole('row')).toHaveLength(4);
+    for (const text of ['not observed → $1.37', 'Top of search → +17% (not observed before)', 'First seen in this ad group']) expect(within(table).getByText(text)).toBeTruthy();
     for (const text of ['exact', 'window · 4 days', 'first']) expect(within(table).getByText(text)).toBeTruthy();
     expect(within(table).queryByText('Listing')).toBeNull();
     expect(within(table).queryByText('Promotion')).toBeNull();
     expect(screen.getByRole('heading', { name: 'Needs ingestion: listing snapshots' })).toBeTruthy();
     expect(screen.getByText('The judgement is made once when the change is recorded and stored, never recomputed on read.')).toBeTruthy();
+  });
+  it('renders recorded change values as prose in the profile currency, preserving unknowns and zero', () => {
+    const data = visualFixture('history');
+    if (data.view !== 'ready') throw new Error('Expected ready synthetic fixture');
+    data.props.profile = { ...data.props.profile, currencyCode: 'EUR' };
+    const cases = [
+      ['Bid', 0.73, 1.37, '€0.73 → €1.37'],
+      ['Bid', null, 1.37, 'not observed → €1.37'],
+      ['Bid', '0', null, '€0.00 → not observed'],
+      ['Bid', { unavailable: true }, { unavailable: true }, 'not observed → not observed'],
+      ['Placement', { topOfSearch: 9, restOfSearch: 0 }, { topOfSearch: 17, restOfSearch: 0 }, 'Top of search +9% → +17%'],
+      ['Placement', null, { topOfSearch: 17 }, 'Top of search → +17% (not observed before)'],
+      ['Placement', { productPages: 0 }, { productPages: 8, restOfSearch: 0 }, 'Rest of search → +0% (not observed before); Product pages +0% → +8%'],
+      ['Placement', { topOfSearch: 17 }, null, 'Top of search +17% → not observed'],
+      ['Placement', null, { unsupported: true }, 'Placement change details not observed'],
+      ['Creative', null, 'synthetic-asset-a', 'First seen in this ad group'],
+    ] as const;
+    const base = data.props.workspace.changes[0]!;
+    data.props.workspace.changes = cases.map(([kind, oldValue, newValue], index) => ({ ...base, id: `synthetic-prose-${index}`, kind, oldValue, newValue }));
+    render(<Screen data={data} />);
+    const table = screen.getByRole('region', { name: 'Creative change history' });
+    const rows = within(table).getAllByRole('row').slice(1);
+    expect(rows).toHaveLength(cases.length);
+    expect(rows.map((row) => within(row).getAllByRole('cell')[3]!.textContent)).toEqual(cases.map((row) => row[3]));
   });
 });

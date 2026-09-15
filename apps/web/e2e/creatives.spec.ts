@@ -4,7 +4,7 @@ import { createDb } from '@wizard-ads/db';
 import { signIn } from './support/auth';
 import { readState } from './support/fixture';
 import { CREATIVE_ASSETS, CREATIVE_CAMPAIGN_ID, CREATIVE_NAMES, seedCreativeWorkspace } from './support/creative-fixture';
-import { captureCreativeStates } from './support/creative-screenshots';
+import { captureCreativeStates, waitForCreativeShell } from './support/creative-screenshots';
 
 test('creative workspace preserves selection, filters, evidence and detail routes', async ({ page }, testInfo) => {
   test.setTimeout(180_000);
@@ -32,6 +32,7 @@ test('creative workspace preserves selection, filters, evidence and detail route
     .map((tile) => ({ text: tile.textContent, width: tile.clientWidth, height: tile.clientHeight })));
   expect(overflowingFallbacks, 'Expired thumbnail labels fit every tile').toEqual([]);
   const expiredScreenshot = testInfo.outputPath('creative-expired-thumbnail-persisted.png');
+  await waitForCreativeShell(page);
   await page.screenshot({ path: expiredScreenshot, fullPage: true, animations: 'disabled' });
   await testInfo.attach('Expired creative thumbnail', { path: expiredScreenshot, contentType: 'image/png' });
   await page.getByText('Sync evidence', { exact: true }).click();
@@ -69,6 +70,7 @@ test('creative workspace preserves selection, filters, evidence and detail route
   await expect(page.getByText('Approved', { exact: true })).toBeVisible();
   await expect(page.getByText(/No moderation source|No source|Not measured/).first()).toBeVisible();
   const path = testInfo.outputPath('creative-eligibility-persisted.png');
+  await waitForCreativeShell(page);
   await page.screenshot({ path, fullPage: true, animations: 'disabled' });
   await testInfo.attach('Persisted creative eligibility', { path, contentType: 'image/png' });
 });

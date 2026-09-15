@@ -11,6 +11,7 @@ import { CreativePerformanceExplorer } from './attribution-evidence';
 import type { CreativeTab } from './load';
 import { creativeHref, creativeCampaignHref, CreativeThumbnail, Chip, EvidenceCard, DataTable, Measure, Missing, integer, money, percent, ratio, dateLabel } from './presentation';
 import styles from './creative.module.css';
+import { creativeChangeText } from './format';
 
 const key = (asset: CreativeWorkspaceAsset) => asset.assetId ?? `attribution:${asset.attributionState}`;
 const label = (asset: CreativeWorkspaceAsset) => asset.name ?? asset.assetId ?? `${ATTRIBUTION_LABELS[asset.attributionState]} performance`;
@@ -81,7 +82,7 @@ export function CreativeDetail({ workspace, asset, currencyCode, countryCode, qu
   };
   const content = tab === 'overview' || asset.assetId === null ? <CreativeOverview asset={asset} currencyCode={currencyCode} targetAcos={workspace.targetAcos} />
     : tab === 'keywords' || tab === 'spend' ? <CreativeCampaignTable workspace={workspace} asset={asset} currencyCode={currencyCode} query={query} tab={tab} sbKeywordSyncEnabled={sbKeywordSyncEnabled} />
-      : tab === 'placements' ? <CreativePlacements workspace={workspace} asset={asset} currencyCode={currencyCode} /> : <CreativeHistory workspace={workspace} asset={asset} />;
+      : tab === 'placements' ? <CreativePlacements workspace={workspace} asset={asset} currencyCode={currencyCode} /> : <CreativeHistory workspace={workspace} asset={asset} currencyCode={currencyCode} />;
   return <article className={styles.detail} aria-label="Selected creative">
     <header className={styles.detailHeader}><CreativeThumbnail url={asset.thumbnailUrl} name={label(asset)} large /><div><h2>{label(asset)}{asset.durationSeconds === null ? '' : ` · ${asset.durationSeconds}s`}</h2><p className={styles.muted}>{asset.assetId ?? 'No Amazon Asset ID'} · {asset.assetType?.toUpperCase() ?? 'Type not measured'} · {asset.width !== null && asset.height !== null ? `${asset.width}×${asset.height}` : 'Dimensions not measured'} · observed in {asset.campaignIds.length} campaigns · first seen {dateLabel(asset.firstSeenAt)}</p>
       <div className={styles.actions}><span className={styles.disabledAction}><Button variant="primary" size="sm" disabled title="Destination not decided">Open in-depth ↗</Button><small>Destination not decided</small></span>
@@ -145,12 +146,11 @@ export function CreativePlacements({ workspace, asset, currencyCode }: { workspa
   </section>;
 }
 
-export function CreativeHistory({ workspace, asset }: { workspace: CreativeWorkspace; asset: CreativeWorkspaceAsset }) {
+export function CreativeHistory({ workspace, asset, currencyCode }: { workspace: CreativeWorkspace; asset: CreativeWorkspaceAsset; currencyCode: string }) {
   const rows = workspace.changes.filter((change) => asset.assetId !== null && change.assetIds.includes(asset.assetId));
-  const value = (item: unknown) => item === null || item === undefined ? 'not observed' : typeof item === 'object' ? JSON.stringify(item) : String(item);
   return <section><div className={styles.sectionHeader}><h2>Everything that could have moved this creative’s numbers</h2></div><p className={styles.muted}>Selected window · ordered newest first · recorded observation certainty</p>
     {!rows.length ? <EvidenceCard title="No recorded changes in this window" tone="missing"><p>No scoped bid, placement or creative first-seen observations are held for this selection.</p></EvidenceCard> : <DataTable label="Creative change history" headers={['When', 'Certainty', 'What', 'Change', 'Scope', 'Effect on this creative']}>
-      {rows.map((row) => <tr key={row.id}><td>{dateLabel(row.observedAt)}</td><td><Chip tone={row.certainty.kind === 'exact' ? 'good' : row.certainty.kind === 'window' ? 'warn' : 'muted'}>{row.certainty.kind}{row.certainty.kind === 'window' ? row.certainty.widthDays === null ? ' · width unknown' : ` · ${row.certainty.widthDays} days` : ''}</Chip></td><td><Chip>{row.kind}</Chip></td><td className={styles.wrap}>{row.field}: {value(row.oldValue)} → {value(row.newValue)}</td><td>{row.scope}</td><td>{row.effect}</td></tr>)}
+      {rows.map((row) => <tr key={row.id}><td>{dateLabel(row.observedAt)}</td><td><Chip tone={row.certainty.kind === 'exact' ? 'good' : row.certainty.kind === 'window' ? 'warn' : 'muted'}>{row.certainty.kind}{row.certainty.kind === 'window' ? row.certainty.widthDays === null ? ' · width unknown' : ` · ${row.certainty.widthDays} days` : ''}</Chip></td><td><Chip>{row.kind}</Chip></td><td className={styles.wrap}>{creativeChangeText(row, currencyCode)}</td><td>{row.scope}</td><td>{row.effect}</td></tr>)}
     </DataTable>}
     <EvidenceCard title="A gap is not a change date" tone="missing"><p>Exact: consecutive observations bracket the change. Window: observations are missing on either side; the label carries the gap width. First: the earliest observation held.</p><p>The judgement is made once when the change is recorded and stored, never recomputed on read.</p></EvidenceCard>
     <p className={styles.footnote}>Effects describe the scope of the change. No spend or sales effect is inferred.</p><EvidenceCard title="Needs ingestion: listing snapshots" tone="warn"><p>Listing and promotion changes have no source on this screen yet.</p></EvidenceCard>

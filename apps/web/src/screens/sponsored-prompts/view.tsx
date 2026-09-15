@@ -20,7 +20,11 @@ function PromptsWorkspace({ data }: { data: Extract<SponsoredPromptsData, { view
     if (!data.canEdit) return;
     let active = true;
     void fetch('/api/prompts/visit', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ profileId, viewedThrough }) })
-      .then((response) => { if (active && !response.ok) setVisitError(true); }).catch(() => { if (active) setVisitError(true); });
+      .then(async (response) => {
+        // Finish the response body so the shell's request-idle tracker can settle.
+        await response.text();
+        if (active && !response.ok) setVisitError(true);
+      }).catch(() => { if (active) setVisitError(true); });
     return () => { active = false; };
   }, [profileId, viewedThrough, data.canEdit]);
   async function upload(file: File | undefined) {

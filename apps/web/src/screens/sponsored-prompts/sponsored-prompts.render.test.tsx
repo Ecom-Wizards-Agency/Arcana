@@ -21,6 +21,17 @@ verifyScreen(descriptor, [
   { state: 'ready', name: 'renders the first visit without a fabricated marker', render: () => renderVisualFixture('first-visit'), text: 'first visit; no previous visit marker' },
 ]);
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+it('explains viewer access without attempting to save a visit or showing an error', () => {
+  const fetcher = vi.fn(async () => new Response('{}', { status: 403 }));
+  vi.stubGlobal('fetch', fetcher);
+  render(<Screen data={{ ...ready, canEdit: false }} />);
+  expect(screen.getByText('Read-only access. An owner, admin or analyst can import observations and record a visit.')).toBeTruthy();
+  expect(screen.queryByText(/The visit marker could not be saved/)).toBeNull();
+  expect(screen.queryByRole('status')).toBeNull();
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Import observations' })).toBeNull();
+  expect(fetcher).not.toHaveBeenCalled();
+});
 it('uses protected marketplace console links and disables an unknown destination', () => {
   const host = rendered(renderVisualFixture('newly-sponsored'));
   const link = host.querySelector('a[target="_blank"]'); expect(link?.getAttribute('rel')).toBe('noopener noreferrer');
@@ -30,12 +41,15 @@ it('uses protected marketplace console links and disables an unknown destination
   expect(unavailable.querySelector('a[target="_blank"]')).toBeNull();
 });
 it('expands unchanged rows and records the displayed cutoff through POST', async () => {
-  const fetcher = vi.fn(async () => new Response('{}')); vi.stubGlobal('fetch', fetcher);
+  const response = new Response('{}');
+  const consumed = vi.spyOn(response, 'text');
+  const fetcher = vi.fn(async () => response); vi.stubGlobal('fetch', fetcher);
   render(<Screen data={visualFixture('unchanged-collapsed')} />);
   expect(screen.queryByText('Synthetic prompt 3')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Expand' }));
   expect(screen.getByText('Synthetic prompt 3')).toBeTruthy();
   await waitFor(() => expect(fetcher).toHaveBeenCalledWith('/api/prompts/visit', expect.objectContaining({ method: 'POST', body: JSON.stringify({ profileId: ready.snapshot.profileId, viewedThrough: ready.snapshot.viewedThrough }) })));
+  await waitFor(() => expect(consumed).toHaveBeenCalledOnce());
 });
 it('validates pasted exports before importing and shows reconciled counts', async () => {
   const fetcher = vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/import') ? { offered: 1, prompts: 1, inserted: 1, alreadyPresent: 0, verified: 1 } : {})));

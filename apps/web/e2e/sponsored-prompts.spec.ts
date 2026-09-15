@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createDb } from '@wizard-ads/db';
 import { signIn } from './support/auth';
 import { readState, USERS } from './support/fixture';
-import { captureCreativeStates } from './support/creative-screenshots';
+import { captureCreativeStates, waitForCreativeShell } from './support/creative-screenshots';
 import { seedPromptImportProfile } from './support/sponsored-prompt-fixture';
 
 test('prompt import preserves observations, detects returns and keeps visits per user', async ({ page }, testInfo) => {
@@ -89,6 +89,7 @@ test('prompt import preserves observations, detects returns and keeps visits per
     expect(consoleUrl.href).not.toContain(state.orgId);
     expect(consoleUrl.href).not.toContain('ag-1');
     const screenshot = testInfo.outputPath('sponsored-prompts-persisted.png');
+    await waitForCreativeShell(page);
     await page.screenshot({ path: screenshot, fullPage: true, animations: 'disabled' });
     await testInfo.attach('Imported prompt observations', { path: screenshot, contentType: 'image/png' });
     const [unchangedAdminVisit] = await db.sql<{ last_visited_at: Date }[]>`select last_visited_at from public.sponsored_prompt_visits
