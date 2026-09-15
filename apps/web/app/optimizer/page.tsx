@@ -11,5 +11,5 @@ export default async function Page({ searchParams, params }: {
 } = {}) {
   const data = await pageRead(descriptor, searchParams, params);
   const Screen = await descriptor.client();
-  return Screen({ data });
+  return <Screen data={data} />;
 }

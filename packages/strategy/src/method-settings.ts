@@ -19,14 +19,14 @@ export function resolveMethodBidSettings(input: ResolveMethodBidSettingsInput):
     const groupValue = input.group?.values[field];
     const fallback = input.run[field];
     const resolved = groupValue == null
-      ? input.group !== null && fallback?.source === 'default' ? undefined : fallback
+      ? input.group !== null && (field === 'targetAcos' || fallback?.source === 'default') ? undefined : fallback
       : { value: groupValue, source: 'group' as const, sourceLabel: input.group!.name };
     if (resolved === undefined) missing.push(field);
     else settings[field] = resolved;
   }
   if (missing.length > 0) return { kind: 'hold', hold: {
     reason: 'MISSING_SETTING', prose: `Required bid settings are missing: ${missing.join(', ')}.`,
-    affectedScope: [input.entity], reconsiderWhen: 'Supply each missing value in the assigned group or the run settings.',
+    affectedScope: [input.entity], reconsiderWhen: input.group === null ? 'Supply each missing value in the run settings.' : 'Supply the missing required value in the assigned group. Run ACOS cannot replace a missing group target.',
   } };
   const parsed = ResolvedBidSettings.safeParse(settings);
   if (!parsed.success) return { kind: 'hold', hold: {

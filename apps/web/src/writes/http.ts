@@ -1,9 +1,9 @@
 import { AgencyAccessDenied, type AuthenticatedEditorTransaction, type AuthenticatedReadSnapshot } from '@wizard-ads/db';
 import { resolveMethod } from '@wizard-ads/core';
 import { MethodSelection } from '@wizard-ads/shared';
-import { SpWriteConfirmedApprovalRequest } from '@wizard-ads/shared/sp-write-application';
+import { SpWriteConfirmedApprovalRequest, SpWriteRecordedPreviewRequest } from '@wizard-ads/shared/sp-write-application';
 import { SpWriteSourceEvidence } from '@wizard-ads/shared/sp-write-preview-evidence';
-import { SpWriteApplicationError } from '@wizard-ads/db/sp-write-application';
+import { SpWriteApplicationError, readRecordedSpWritePreviewForActor } from '@wizard-ads/db/sp-write-application';
 import { authenticatedMutation } from '../server/authenticated-mutation';
 import { authenticatedRead } from '../server/authenticated-read';
 import { JsonMutationError, readJsonMutation } from '../server/json-mutation';
@@ -11,6 +11,12 @@ import { requireCapability } from '../server/org-role';
 import { RequestAuthError } from '../server/request-context';
 
 type InputSchema<T> = { safeParse(input: unknown): { success: true; data: T } | { success: false } };
+
+/** Page confirmation reads keep the same capability and input checks as write HTTP reads. */
+export async function readSpWriteConfirmationSnapshot(context: AuthenticatedReadSnapshot, input: SpWriteRecordedPreviewRequest) {
+  await requireCapability(context, 'exportBatches');
+  return readRecordedSpWritePreviewForActor(context, SpWriteRecordedPreviewRequest.parse(input));
+}
 
 /** Errors leave the transaction before mapping, so failed readback rolls back DML. */
 export function spWriteHttpFailure(error: unknown): Response | null {

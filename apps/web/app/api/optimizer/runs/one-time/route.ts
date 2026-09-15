@@ -19,6 +19,7 @@ export async function POST(request: Request): Promise<Response> {
     const accepted = await new PostgresManualRecommendationAdmission(database).enqueuePreviewBatch(actor, {
       profileId: body.profileId, clientRequestId: body.clientRequestId, scope: body.scope,
       oneTimeConfiguration: body.configuration, oneTimeReadiness: readiness,
+      campaignMethods: body.campaignMethods,
     });
     return Response.json({ ...accepted, mode: 'fenced' }, { status: 202 });
   }, (error) => {

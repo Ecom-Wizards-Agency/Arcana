@@ -220,7 +220,9 @@ for (const entity of ['search_terms', 'targets'] as const) test(`${entity}: one 
     browser: await page.evaluate(() => {
       const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
       return { documentTtfbMs: navigation.responseStart - navigation.requestStart, documentTransferMs: navigation.responseEnd - navigation.responseStart, domContentLoadedMs: navigation.domContentLoadedEventEnd, loadMs: navigation.loadEventEnd,
-        scriptsBytes: performance.getEntriesByType('resource').filter((entry) => (entry as PerformanceResourceTiming).initiatorType === 'script').reduce((bytes, entry) => bytes + (entry as PerformanceResourceTiming).decodedBodySize, 0) };
+        scriptsBytes: performance.getEntriesByType('resource').filter((entry) => (entry as PerformanceResourceTiming).initiatorType === 'script').reduce((bytes, entry) => bytes + (entry as PerformanceResourceTiming).decodedBodySize, 0),
+        scripts: performance.getEntriesByType('resource').filter((entry) => (entry as PerformanceResourceTiming).initiatorType === 'script')
+          .map((entry) => ({ path: new URL(entry.name).pathname, bytes: (entry as PerformanceResourceTiming).decodedBodySize })) };
     }),
     shellAfterLoadMs: Math.round((measuredShellRequests[0]!.timing().startTime - loadEndedAt) * 100) / 100,
   };

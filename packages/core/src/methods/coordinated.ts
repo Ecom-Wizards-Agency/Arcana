@@ -8,7 +8,7 @@ import { coordinatedPlacementChange } from './placement-change.js';
 import { resolveControlFeasibility } from './control-feasibility.js';
 
 export const coordinatedDescriptor: MethodDescriptor = {
-  ...COORDINATED_METHOD, releaseState: 'draft', adProducts: ['SP'], controls: ['bid', 'placement'],
+  ...COORDINATED_METHOD, releaseState: 'shadow', adProducts: ['SP'], controls: ['bid', 'placement'],
   placementEvaluator: 'coordinated', objectivePolicy: 'attributed_revenue_efficiency',
   requiredEvidence: ['target facts', 'campaign placement facts with click shares', 'complete campaign controls', 'placement proxy eligibility'],
 };

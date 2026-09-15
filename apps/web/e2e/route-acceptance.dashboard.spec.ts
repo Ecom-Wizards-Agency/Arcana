@@ -51,7 +51,7 @@ async function exerciseEveryPreset({
 }: {
   page: Page;
   path: '/optimizer' | '/creative';
-  heading: 'Campaign Optimizer' | 'Creative Performance';
+  heading: 'Optimize Now' | 'Creative Performance';
   profileId: string;
   includeToday?: boolean;
 }): Promise<void> {
@@ -114,7 +114,7 @@ test('optimizer exposes all date presets and preserves canonical account scope',
   await exerciseEveryPreset({
     page,
     path: '/optimizer',
-    heading: 'Campaign Optimizer',
+    heading: 'Optimize Now',
     profileId: fixtureProfileId,
   });
 });
@@ -130,18 +130,18 @@ test('creative exposes all date presets and preserves canonical account scope', 
   });
 });
 
-test('legacy strategy links land on Home without the retired operating status block', async ({ page }) => {
+test('legacy strategy links land on the method catalogue without the retired operating status block', async ({ page }) => {
   const { fixtureProfileId } = await readState();
   await page.goto(`/strategy?profile=${fixtureProfileId}`);
 
   await expect(page.getByTestId('shell-title')).toBeVisible();
   await page.waitForURL((url) => (
-    url.pathname === '/'
+    url.pathname === '/settings/strategy'
       && url.searchParams.get('profile') === fixtureProfileId
-      && url.hash === '#operating-status'
+      && url.hash === ''
   ));
   await expect(page.locator('#operating-status')).toHaveCount(0);
-  const destination = page.getByLabel('Performance summary');
+  const destination = page.getByRole('heading', { name: 'Optimization methods', exact: true });
   await expect(destination).toBeVisible();
   await expect(destination).toBeInViewport();
 });

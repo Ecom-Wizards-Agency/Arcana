@@ -33,6 +33,24 @@ export const MethodDescriptor = MethodSelection.safeExtend({
 });
 export type MethodDescriptor = z.infer<typeof MethodDescriptor>;
 
+/** Catalogue-only identities never enlarge the set of executable selections. */
+export const DraftMethodId = z.enum(['sp.organic-growth', 'sp.discovery', 'sp.contribution-profit',
+  'sb.bid-efficiency', 'sb.acquisition', 'sd.bid-efficiency', 'sd.acquisition-reach']);
+export type DraftMethodId = z.infer<typeof DraftMethodId>;
+export const MethodCatalogueEntry = z.object({
+  id: z.union([MethodId, DraftMethodId]), version: MethodVersion,
+  releaseState: MethodReleaseState, displayName: z.string().min(1), purpose: z.string().min(1),
+  adProducts: z.array(AdProduct).min(1), controls: MethodDescriptor.shape.controls,
+  requiredEvidence: MethodDescriptor.shape.requiredEvidence,
+}).superRefine((entry, context) => {
+  if (DraftMethodId.safeParse(entry.id).success) {
+    if (entry.releaseState !== 'draft' || entry.version !== 'candidate.1') context.addIssue({ code: 'custom', message: 'Unimplemented catalogue methods must remain draft candidates.' });
+  } else if (!MethodSelection.safeParse(entry).success) {
+    context.addIssue({ code: 'custom', message: 'Catalogue method identity must match its registered version.' });
+  }
+});
+export type MethodCatalogueEntry = z.infer<typeof MethodCatalogueEntry>;
+
 export const SettingSource = z.enum(['run', 'group', 'tenant_strategy', 'default']);
 export type SettingSource = z.infer<typeof SettingSource>;
 export const SettingValue = z.union([z.number(), z.string(), z.boolean(), z.null()]);

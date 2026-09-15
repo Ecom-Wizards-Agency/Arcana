@@ -286,6 +286,58 @@ describe('explicit one-time RPC runner', () => {
     await runRecommendations(store, { ...job, groupId: GROUP_ID }, EXECUTION);
     expect(store.completed[0]?.proposals).toHaveLength(0);
     expect(store.completed[0]?.narrative.groupSafety?.mayPropose).toBe(false);
+    expect(store.completed[0]?.narrative.targetOutcomes).toMatchObject([{ outcome: 'blocked', reasonCode: 'GUARDRAIL_BLOCKED' }]);
+  });
+
+  it('uses the per-campaign method before the group method while preserving group ACOS', async () => {
+    const store = explicitStore();
+    const group: ScheduledOptimizationGroup = { version: 2, id: GROUP_ID, orgId: ORG_ID, profileId: PROFILE_ID,
+      name: 'Synthetic method group', role: 'profit', method: COORDINATED_METHOD,
+      targetAcos: 0.43, bidFloor: 0.23, bidCeiling: 3.7, bidIncreaseCap: 0.17, bidDecreaseCap: 0.63,
+      placementIncreaseCap: 0, placementDecreaseCap: 0, exclusions: [], prioritization: 'efficiency_first', enabled: true,
+      reviewSchedule: { version: 2, weekdays: ['thursday'] } };
+    store.startResult.groupRun = { group, dueAt: snapshot.admittedAt, scheduleContext: null };
+    store.startResult.methodAdmission = { ...METHOD_ADMISSION, campaignMethods: { 'c-1': REFERENCE_METHOD } };
+    await runRecommendations(store, { ...job, groupId: GROUP_ID }, EXECUTION);
+    const proposal = store.completed[0]?.proposals[0];
+    expect(proposal?.inputs.methodId).toBe(REFERENCE_METHOD.id);
+    expect(proposal?.inputs.settingSources?.['method']).toMatchObject({ source: 'run', value: 'sp.reference-efficiency@reference.1' });
+    expect(proposal?.inputs.settingSources?.['targetAcos']).toEqual({ value: group.targetAcos, source: 'group', sourceLabel: group.name });
+    expect(store.completed[0]?.narrative.targetOutcomes).toMatchObject([{ method: REFERENCE_METHOD, outcome: 'suggestion' }]);
+  });
+
+  it('uses a group method before the one-time default method', async () => {
+    const store = explicitStore();
+    store.startResult.groupRun = { dueAt: snapshot.admittedAt, scheduleContext: null, group: {
+      version: 2, id: GROUP_ID, orgId: ORG_ID, profileId: PROFILE_ID, name: 'Synthetic selected group', role: 'profit',
+      method: COORDINATED_METHOD, targetAcos: 0.43, bidFloor: 0.23, bidCeiling: 3.7, bidIncreaseCap: 0.17, bidDecreaseCap: 0.63,
+      placementIncreaseCap: 0, placementDecreaseCap: 0, exclusions: [], prioritization: 'efficiency_first', enabled: true,
+      reviewSchedule: { version: 2, weekdays: ['thursday'] } } };
+    await runRecommendations(store, { ...job, groupId: GROUP_ID }, EXECUTION);
+    expect(store.completed[0]?.proposals).toHaveLength(0);
+    expect(store.completed[0]?.narrative.targetOutcomes).toMatchObject([{ method: COORDINATED_METHOD,
+      outcome: 'blocked', reasonCode: 'MISSING_SETTING' }]);
+  });
+
+  it('records one exact outcome for suggestions, unchanged targets and blocked targets', async () => {
+    const store = explicitStore();
+    const suggestion = store.inputs.targets[0]!;
+    const unchanged = structuredClone(suggestion);
+    unchanged.entityRef.entityId = 'synthetic-unchanged';
+    unchanged.currentBid = 0.55;
+    const blocked = structuredClone(suggestion);
+    blocked.entityRef.entityId = 'synthetic-inactive';
+    blocked.entityState = 'paused';
+    store.inputs.targets = [suggestion, unchanged, blocked];
+    await runRecommendations(store, job, EXECUTION);
+    const outcomes = store.completed[0]?.narrative.targetOutcomes ?? [];
+    expect(outcomes).toHaveLength(3);
+    expect(outcomes.map((outcome) => [outcome.entityRef.entityId, outcome.outcome, outcome.reasonCode])).toEqual([
+      ['kw-1', 'suggestion', 'high_acos'], ['synthetic-unchanged', 'unchanged', 'no_change'],
+      ['synthetic-inactive', 'blocked', 'ENTITY_INACTIVE'],
+    ]);
+    expect(store.completed[0]?.narrative.diagnostics.targetsRead).toBe(outcomes.length);
+    expect(store.completed[0]?.narrative.holds).toHaveLength(2);
   });
 
   it('refuses altered snapshot custody and stale profile timezone', async () => {
@@ -318,6 +370,7 @@ describe('explicit one-time RPC runner', () => {
       await runRecommendations(store, job, EXECUTION);
       expect(store.completed[0]?.proposals).toHaveLength(0);
       expect(store.completed[0]?.narrative.diagnostics[protection === 'stock' ? 'blockedOutOfStock' : 'suppressed']).toBe(1);
+      expect(store.completed[0]?.narrative.targetOutcomes?.[0]?.outcome).toBe(protection === 'stock' ? 'blocked' : 'unchanged');
     }
   });
 });
@@ -1393,4 +1446,6 @@ it.each([true, false])('counts a coordinated campaign hold once regardless of in
   expect(store.completed).toHaveLength(1);
   expect(store.completed[0]?.narrative.holds).toHaveLength(1);
   expect(store.completed[0]?.narrative.holds?.[0]?.affectedScope).toHaveLength(2);
+  expect(store.completed[0]?.narrative.targetOutcomes).toHaveLength(2);
+  expect(store.completed[0]?.narrative.targetOutcomes?.every((outcome) => outcome.outcome === 'blocked')).toBe(true);
 });

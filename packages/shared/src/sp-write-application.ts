@@ -8,14 +8,30 @@ import {
   SpWriteAuthorizationReceipt,
   SpWriteExecutionSnapshot,
   SpWriteObservedAction,
+  SpWriteAction,
+  SpWriteObservation,
+  SpWritePreDispatchDisposition,
+  SpWriteProviderPositionOutcome,
   SpWritePlan,
   SpWritePlanBinding,
   spWritePlanBinding,
+  SpWriteForwardRowIds,
+  SpWriteRetryOrigin,
 } from './sp-writes.js';
 
 /** Server authentication supplies this context; it is never part of request JSON. */
 export const SpWriteActor = OrgActor;
 export type SpWriteActor = z.infer<typeof SpWriteActor>;
+
+/** Public execution prerequisites, not a reading of the worker's current environment. */
+export const spWriteExecutionRequirements = Object.freeze({
+  executor: 'worker',
+  dispatchGate: Object.freeze({
+    environmentVariable: 'OPENSPELL_SP_WRITE_DISPATCH_ENABLED',
+    enabledByDefault: false,
+  }),
+  profileAuthorization: 'required',
+} as const);
 
 /** Forward and inverse plans can belong to the same execution cycle. */
 export const SpWriteOperationId = z.object({
@@ -28,7 +44,11 @@ export const SpWritePreviewRequest = z.object({
   requestId: Uuid,
   profileId: Uuid,
   applyBatchId: Uuid,
-}).strict();
+  forwardRowIds: SpWriteForwardRowIds.optional(),
+  retryOrigin: SpWriteRetryOrigin.optional(),
+}).strict().refine((request) => request.retryOrigin === undefined || request.forwardRowIds !== undefined, {
+  path: ['forwardRowIds'], message: 'retry requires the original unresolved row selection',
+});
 export type SpWritePreviewRequest = z.infer<typeof SpWritePreviewRequest>;
 
 export const SpWriteInversePreviewRequest = z.object({
@@ -89,6 +109,16 @@ export const SpWritePreview = z.object({
   }
 });
 export type SpWritePreview = z.infer<typeof SpWritePreview>;
+
+/** The server derives the retry population; a browser cannot assert eligibility. */
+export const OptimizerRetryRequest = z.object({ requestId: Uuid, profileId: Uuid, batchId: Uuid,
+  original: SpWriteOperationId }).strict();
+export type OptimizerRetryRequest = z.infer<typeof OptimizerRetryRequest>;
+export const OptimizerRetryPreview = z.object({
+  preview: SpWritePreview,
+  excludedSuccessfulRows: z.array(z.object({ applyRowId: Uuid, name: z.string() }).strict()),
+}).strict();
+export type OptimizerRetryPreview = z.infer<typeof OptimizerRetryPreview>;
 
 /** A known approval survives a lost or failed enqueue response and can be resumed. */
 export const SpWriteAdmission = z.object({
@@ -219,3 +249,70 @@ export const SpWriteOperationDetail = z.object({
   }
 });
 export type SpWriteOperationDetail = z.infer<typeof SpWriteOperationDetail>;
+
+/** Saved optimizer results use ledger evidence, never a provider-success guess. */
+/** Only irrevocable nonexecution evidence permits another original-row attempt. */
+export function spWriteRetryEvidenceAllows(input: {
+  refusal: Pick<SpWritePreDispatchDisposition, 'reason'> | null;
+  providerOutcome: SpWriteProviderPositionOutcome | null;
+  observation: Pick<SpWriteObservation, 'outcome'> | null;
+}): boolean {
+  return input.observation === null && (input.providerOutcome === 'authoritative_rejected'
+    || (input.providerOutcome === null && input.refusal !== null && [
+      'approval_expired', 'authorization_revoked', 'environment_gate_closed', 'profile_gate_closed', 'lease_unavailable',
+    ].includes(input.refusal.reason)));
+}
+
+export const OptimizerOperationRow = z.object({
+  actionId: Uuid,
+  action: SpWriteAction,
+  name: z.string(),
+  applyRowIds: z.array(Uuid),
+  before: z.string().nullable(),
+  requested: z.string().nullable(),
+  observed: z.string().nullable(),
+  status: z.enum(['pending', 'sending', 'accepted', 'observed', 'failed', 'refused', 'ambiguous', 'conflict']),
+  reason: z.string().nullable(),
+  providerOutcome: SpWriteProviderPositionOutcome.nullable(),
+  observation: SpWriteObservation.nullable(),
+  refusal: SpWritePreDispatchDisposition.nullable(),
+  retryEligible: z.boolean(),
+  retryReason: z.string(),
+}).strict().superRefine((row, context) => {
+  if (row.actionId !== row.action.actionId
+    || (row.observation !== null && row.observation.actionId !== row.actionId)
+    || (row.refusal !== null && row.refusal.actionId !== row.actionId)
+    || JSON.stringify(row.applyRowIds) !== JSON.stringify(row.action.sources.flatMap((source) =>
+      source.kind === 'apply_row' ? [source.applyRowId] : []))) {
+    context.addIssue({ code: 'custom', message: 'result row must retain its exact action and source identities' });
+  }
+  if (row.retryEligible && (row.applyRowIds.length === 0 || !spWriteRetryEvidenceAllows(row))) {
+    context.addIssue({ code: 'custom', path: ['retryEligible'], message: 'retry requires evidence that the original action did not succeed' });
+  }
+});
+export type OptimizerOperationRow = z.infer<typeof OptimizerOperationRow>;
+
+export const OptimizerOperation = z.object({
+  detail: SpWriteOperationDetail,
+  plan: SpWritePlan,
+  rows: z.array(OptimizerOperationRow),
+}).strict().superRefine((value, context) => {
+  if (value.plan.id !== value.detail.operation.planId
+    || value.rows.length !== value.plan.actions.length
+    || value.rows.some((row, index) => JSON.stringify(row.action) !== JSON.stringify(value.plan.actions[index]))) {
+    context.addIssue({ code: 'custom', message: 'optimizer results must cover the complete recorded plan in order' });
+  }
+  const counts = value.detail.snapshot.accounting;
+  if (value.rows.filter((row) => row.refusal !== null).length !== counts.refusedBeforeDispatch
+    || value.rows.filter((row) => row.providerOutcome !== null).length !== counts.intentCommitted
+    || value.rows.filter((row) => row.providerOutcome === 'accepted').length !== counts.providerAccepted
+    || value.rows.filter((row) => row.providerOutcome === 'authoritative_rejected').length !== counts.providerRejected
+    || value.rows.filter((row) => row.providerOutcome === 'ambiguous').length !== counts.providerAmbiguous
+    || value.rows.filter((row) => row.observation?.outcome === 'observed_requested').length !== counts.observedRequested
+    || value.rows.filter((row) => row.observation?.outcome === 'observed_expected_after_ambiguous').length !== counts.observedExpectedAfterAmbiguous
+    || value.rows.filter((row) => row.observation?.outcome === 'conflict').length !== counts.observationConflict
+    || value.rows.filter((row) => row.observation?.outcome === 'missing').length !== counts.observationMissing) {
+    context.addIssue({ code: 'custom', path: ['rows'], message: 'row outcomes must reconcile with the persisted operation accounting' });
+  }
+});
+export type OptimizerOperation = z.infer<typeof OptimizerOperation>;

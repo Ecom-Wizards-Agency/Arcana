@@ -361,14 +361,10 @@ test('grid charts up to four of eight KPI series and restores the shared view wi
 });
 
 /**
- * The operator's 2026-09-05 recording, on the surface it was recorded on.
- *
- * Scroll the whole campaign list, sort by spend, drag a header into the group
- * bar, nest a second level, then select campaigns across a filter and confirm
- * the count. The last step is the one WP-195 built and this conversion had to
- * keep: the header checkbox owns the complete filtered eligible population, not
- * the rows the virtualizer happens to have rendered, and narrowing or widening
- * the filter never touches what is already selected.
+ * The revised campaign chooser keeps the complete loaded population and the
+ * filtered selection semantics established by WP-195 and WP-209. Its four
+ * columns expose saved settings; expanding a row exposes its preview evidence.
+ * Narrowing or widening the filter never changes an existing selection.
  *
  * The campaigns are seeded here rather than in global setup, on a window far
  * outside the `/grid` default period, so this test cannot change what the
@@ -379,7 +375,7 @@ const OPTIMIZER_ENABLED_COUNT = 30;
 const OPTIMIZER_PREFIX = 'WP209 Optimizer Campaign';
 const OPTIMIZER_WINDOW = optimizerWindow();
 
-test('optimizer scrolls the whole campaign list, sorts by spend, nests dragged grouping levels, and keeps a filtered selection', async ({
+test('optimizer shows every campaign with saved settings and preserves eligible selections across filters and reader access', async ({
   page,
 }) => {
   const { fixtureProfileId } = await readState();
@@ -391,78 +387,65 @@ test('optimizer scrolls the whole campaign list, sorts by spend, nests dragged g
     to: OPTIMIZER_WINDOW.end,
   });
   await page.goto(`/optimizer?${query.toString()}`);
-  await expect(page.getByRole('heading', { name: 'Campaign Optimizer', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Optimize Now', exact: true })).toBeVisible();
 
-  // Full width, and no pagination anywhere: the whole set is one scroller.
-  const viewport = page.getByTestId('grid-viewport');
-  const viewportBox = await viewport.boundingBox();
-  const contentBox = await page.locator('main').boundingBox();
-  expect(viewportBox).not.toBeNull();
-  expect(contentBox).not.toBeNull();
-  expect(viewportBox!.width).toBeGreaterThanOrEqual(contentBox!.width - 2);
+  const table = page.getByRole('table');
+  const rows = table.locator('tbody tr');
+  const headers = table.getByRole('columnheader');
+  await expect(table).toBeVisible();
+  await expect(headers).toHaveCount(4);
+  await expect(headers.filter({ hasText: /^(Campaign|Saved goal|Target ACOS)$/ }))
+    .toHaveText(['Campaign', 'Saved goal', 'Target ACOS']);
+  await expect(headers.nth(3).getByRole('checkbox')).toHaveAccessibleName(
+    `Select all ${OPTIMIZER_ENABLED_COUNT + 1} eligible campaigns matching current filters`,
+  );
+  await expect(headers.nth(3)).not.toHaveAttribute('aria-sort', /.*/);
   await expect(page.getByRole('button', { name: 'Next →', exact: true })).toHaveCount(0);
   await expect(page.getByText(/\d+–\d+ of \d+/)).toHaveCount(0);
   const shown = page.locator('.wa-optimizer-campaigns__shown');
   await expect(shown).toHaveText(`${OPTIMIZER_CAMPAIGN_COUNT + 1} campaigns`);
+  await expect(rows).toHaveCount(OPTIMIZER_CAMPAIGN_COUNT + 1);
 
-  // Scroll the whole list. Spend descending is the default order, so the
-  // cheapest seeded campaign only exists at the far end of the scroller.
-  const scroller = page.getByTestId('grid-scroller');
-  const rows = page.getByTestId('grid-row');
-  await expect(rows.first()).toContainText(optimizerCampaignName(OPTIMIZER_CAMPAIGN_COUNT));
-  await expect(page.getByText(optimizerCampaignName(1), { exact: true })).toHaveCount(0);
-  await scroller.evaluate((element) => { element.scrollTop = element.scrollHeight; });
-  await expect(page.getByText(optimizerCampaignName(1), { exact: true })).toBeVisible();
-
-  // Sort by spend: click for ascending (it starts descending), click back.
-  const spend = page.getByRole('columnheader', { name: 'Spend', exact: true });
-  await expect(spend).toHaveAttribute('aria-sort', 'descending');
-  await spend.click();
-  await expect(spend).toHaveAttribute('aria-sort', 'ascending');
-  // Re-sorting returns the scroller to the top, so the cheapest campaigns are
-  // now the rendered ones and the most expensive is off-screen entirely.
-  await expect(page.getByText(optimizerCampaignName(1), { exact: true })).toBeVisible();
-  await expect(page.getByText(optimizerCampaignName(OPTIMIZER_CAMPAIGN_COUNT), { exact: true }))
-    .toHaveCount(0);
-  // Third state of the header cycle: descending, ascending, then no key at all.
-  await spend.click();
-  await expect(spend).toHaveAttribute('aria-sort', 'none');
-  await spend.click();
-  await expect(spend).toHaveAttribute('aria-sort', 'descending');
-  await expect(rows.first()).toContainText(optimizerCampaignName(OPTIMIZER_CAMPAIGN_COUNT));
-
-  // The selection and action columns never advertise an ordering.
-  await expect(page.getByRole('columnheader', { name: 'Select', exact: true }))
-    .not.toHaveAttribute('aria-sort', /.*/);
-  await expect(page.getByRole('columnheader', { name: 'Recommendation', exact: true }))
-    .not.toHaveAttribute('aria-sort', /.*/);
-
-  // Drag a header into the group bar, then drag a second to nest it.
-  const bar = page.getByTestId('grid-group-bar');
-  await expect(bar).toContainText('Drag a column header here');
-  await page.getByRole('columnheader', { name: 'State', exact: true }).dragTo(bar);
-  const levels = page.getByRole('list', { name: 'Ordered grouping levels' });
-  await expect(levels.getByRole('listitem')).toHaveCount(1);
-  await expect(page.getByRole('treegrid', { name: 'Results grouped by campaign_state' })).toBeVisible();
-
-  await page.getByRole('columnheader', { name: 'Bid strategy', exact: true }).dragTo(bar);
-  await expect(levels.getByRole('listitem')).toHaveCount(2);
-  await expect(levels.getByRole('listitem').nth(1)).toContainText('Bid strategy');
-  const tree = page.getByRole('treegrid', { name: 'Results grouped by campaign_state, bidding_strategy' });
-  await expect(tree).toBeVisible();
-  await expect(tree.locator('[role="row"][aria-level="1"]').first()).toBeVisible();
-  await expect(tree.locator('[role="row"][aria-level="2"]').first()).toBeVisible();
-
-  // Back to the flat list, which is where selection lives.
-  await page.getByRole('button', { name: 'Remove grouping level Bid strategy' }).click();
-  await page.getByRole('button', { name: 'Remove grouping level State' }).click();
-  await expect(levels.getByRole('listitem')).toHaveCount(0);
+  const firstSeeded = rows.filter({ has: page.getByRole('checkbox', {
+    name: `Select ${optimizerCampaignName(1)} for this preview`, exact: true,
+  }) });
+  const lastSeeded = rows.filter({ has: page.getByRole('checkbox', {
+    name: `Select ${optimizerCampaignName(OPTIMIZER_CAMPAIGN_COUNT)} for this preview`, exact: true,
+  }) });
+  await firstSeeded.scrollIntoViewIfNeeded();
+  await expect(firstSeeded).toBeVisible();
+  await lastSeeded.scrollIntoViewIfNeeded();
+  await expect(lastSeeded).toBeVisible();
+  await expect(rows).toHaveCount(OPTIMIZER_CAMPAIGN_COUNT + 1);
+  await expect(firstSeeded.getByRole('cell').nth(1)).toHaveText('No saved goal');
+  await expect(firstSeeded.getByRole('cell').nth(2)).toContainText('Missing target ACOS');
+  await expect(firstSeeded.getByRole('cell').nth(2)).toContainText('Temporary run field');
+  await firstSeeded.locator('summary').click();
+  await expect(firstSeeded.locator('details')).toHaveJSProperty('open', true);
+  await expect(firstSeeded.locator('details')).toContainText('SP · CPC · auto_for_sales');
+  await expect(firstSeeded.locator('details')).toContainText('sp.reference-efficiency · reference.1');
+  await expect(firstSeeded.locator('details')).toContainText('Reporting data available');
+  await expect(firstSeeded.locator('details')).toContainText('Experiment locks are checked when the preview is prepared.');
+  await expect(lastSeeded.getByRole('checkbox')).toBeDisabled();
+  await lastSeeded.locator('summary').click();
+  await expect(lastSeeded.locator('details')).toContainText('Campaign state is paused.');
+  await expect(page.getByRole('tablist', { name: 'Choose campaigns' }).getByRole('tab'))
+    .toHaveText(['Campaigns', 'Optimization groups', 'Search campaigns']);
+  await page.getByRole('tab', { name: 'Search campaigns', exact: true }).click();
+  await expect(page.getByRole('tab', { name: 'Search campaigns', exact: true })).toHaveAttribute('aria-selected', 'true');
+  const optimizerRequests: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname.startsWith('/api/optimizer/')) optimizerRequests.push(request.url());
+  });
 
   // Select across a filter: the header owns every filtered eligible campaign,
   // and widening the filter afterwards keeps every one of them selected.
   const search = page.getByRole('search', { name: 'Filter optimizer campaigns' });
   await search.getByLabel('Find campaign').fill(OPTIMIZER_PREFIX);
   await expect(shown).toHaveText(`${OPTIMIZER_CAMPAIGN_COUNT} of ${OPTIMIZER_CAMPAIGN_COUNT + 1} campaigns`);
+  await expect(rows).toHaveCount(OPTIMIZER_CAMPAIGN_COUNT);
+  await expect(rows.locator('input[type="checkbox"]:enabled')).toHaveCount(OPTIMIZER_ENABLED_COUNT);
+  await expect(rows.locator('input[type="checkbox"]:disabled')).toHaveCount(OPTIMIZER_CAMPAIGN_COUNT - OPTIMIZER_ENABLED_COUNT);
   const selectFiltered = page.getByTestId('optimizer-select-filtered');
   await expect(selectFiltered).toHaveAccessibleName(
     `Select all ${OPTIMIZER_ENABLED_COUNT} eligible campaigns matching current filters`,
@@ -471,6 +454,8 @@ test('optimizer scrolls the whole campaign list, sorts by spend, nests dragged g
   await expect(page.getByTestId('optimizer-selection-count')).toContainText(
     `${OPTIMIZER_ENABLED_COUNT} campaigns selected`,
   );
+  await expect(rows.locator('input[type="checkbox"]:checked')).toHaveCount(OPTIMIZER_ENABLED_COUNT);
+  await expect(rows.locator('input[type="checkbox"]:disabled:checked')).toHaveCount(0);
 
   await search.getByLabel('Find campaign').fill('');
   await expect(shown).toHaveText(`${OPTIMIZER_CAMPAIGN_COUNT + 1} campaigns`);
@@ -478,8 +463,31 @@ test('optimizer scrolls the whole campaign list, sorts by spend, nests dragged g
     `${OPTIMIZER_ENABLED_COUNT} campaigns selected`,
   );
   await expect(selectFiltered).toHaveJSProperty('indeterminate', true);
-  await expect(page.getByRole('radio', { name: `Selected campaigns (${OPTIMIZER_ENABLED_COUNT})`, exact: true }))
-    .toBeChecked();
+  await expect(rows).toHaveCount(OPTIMIZER_CAMPAIGN_COUNT + 1);
+  await expect(rows.locator('input[type="checkbox"]:checked')).toHaveCount(OPTIMIZER_ENABLED_COUNT);
+  await expect(page.getByTestId('optimizer-run-preview')).toHaveText('Get suggestions');
+
+  await search.getByLabel('Find campaign').fill(optimizerCampaignName(1));
+  await expect(rows).toHaveCount(1);
+  await expect(rows.getByRole('checkbox')).toBeChecked();
+  await expect(page.getByTestId('optimizer-selection-count')).toContainText(`${OPTIMIZER_ENABLED_COUNT} campaigns selected`);
+  await search.getByLabel('Find campaign').fill(optimizerCampaignName(OPTIMIZER_CAMPAIGN_COUNT));
+  await expect(rows).toHaveCount(1);
+  await expect(rows.getByRole('checkbox')).toBeDisabled();
+  await expect(rows.getByRole('checkbox')).not.toBeChecked();
+  await expect(selectFiltered).toBeDisabled();
+  await expect(page.getByTestId('optimizer-selection-count')).toContainText(`${OPTIMIZER_ENABLED_COUNT} campaigns selected`);
+  expect(optimizerRequests).toEqual([]);
+
+  await signIn(page, 'viewer');
+  await page.goto(`/optimizer?${query.toString()}`);
+  await expect(page.getByRole('heading', { name: 'Optimize Now', exact: true })).toBeVisible();
+  await expect(rows).toHaveCount(OPTIMIZER_CAMPAIGN_COUNT + 1);
+  await expect(rows.locator('input[type="checkbox"]:disabled')).toHaveCount(OPTIMIZER_CAMPAIGN_COUNT + 1);
+  await expect(selectFiltered).toBeDisabled();
+  await expect(page.getByTestId('optimizer-run-preview')).toBeDisabled();
+  await expect(page.getByText('Your role can view previews but cannot queue one.', { exact: true })).toBeVisible();
+  expect(optimizerRequests).toEqual([]);
 });
 
 function optimizerCampaignId(index: number): string {

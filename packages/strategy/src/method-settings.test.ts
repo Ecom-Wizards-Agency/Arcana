@@ -15,10 +15,10 @@ describe('method setting precedence', () => {
       expect(result.settings[key]).toEqual({ value: groupValues[key], source: 'group', sourceLabel: 'Synthetic group' });
     }
   });
-  it('uses run values with no group or with no defined group values', () => {
-    for (const group of [null, { name: 'Synthetic group', values: { bidFloor: null } }]) {
-      expect(resolveMethodBidSettings({ entity, group, run })).toEqual({ kind: 'resolved', settings: run });
-    }
+  it('uses run values with no group and requires an assigned group ACOS', () => {
+    expect(resolveMethodBidSettings({ entity, group: null, run })).toEqual({ kind: 'resolved', settings: run });
+    expect(resolveMethodBidSettings({ entity, group: { name: 'Synthetic group', values: { bidFloor: null } }, run }))
+      .toMatchObject({ kind: 'hold', hold: { reason: 'MISSING_SETTING' } });
   });
   it.each(Object.keys(run) as (keyof ResolvedBidSettings)[])(
     'holds a missing assigned-group %s instead of substituting a default', (field) => {
@@ -33,8 +33,10 @@ describe('method setting precedence', () => {
   );
   it.each(['run', 'tenant_strategy'] as const)('accepts an explicitly sourced %s fallback for missing group values', (source) => {
     const fallback = Object.fromEntries(Object.entries(run).map(([field, setting]) => [field, { ...setting, source }])) as ResolvedBidSettings;
+    expect(resolveMethodBidSettings({ entity, group: { name: 'Synthetic group', values: { targetAcos: groupValues.targetAcos } }, run: fallback }))
+      .toEqual({ kind: 'resolved', settings: { ...fallback, targetAcos: { value: groupValues.targetAcos, source: 'group', sourceLabel: 'Synthetic group' } } });
     expect(resolveMethodBidSettings({ entity, group: { name: 'Synthetic group', values: {} }, run: fallback }))
-      .toEqual({ kind: 'resolved', settings: fallback });
+      .toMatchObject({ kind: 'hold', hold: { reason: 'MISSING_SETTING' } });
   });
   it('preserves default provenance without an assigned group and lets supplied group fields replace defaults', () => {
     const fallback = Object.fromEntries(Object.entries(run).map(([field, setting]) => [field, { ...setting, source: 'default' }])) as ResolvedBidSettings;
@@ -52,7 +54,7 @@ describe('method setting precedence', () => {
     }
   });
   it('retains zero caps and refuses an invalid group value instead of using the run', () => {
-    expect(resolveMethodBidSettings({ entity, group: { name: 'Zero cap', values: { bidIncreaseCap: 0 } }, run })).toMatchObject({ kind: 'resolved', settings: { bidIncreaseCap: { value: 0, source: 'group' } } });
+    expect(resolveMethodBidSettings({ entity, group: { name: 'Zero cap', values: { targetAcos: groupValues.targetAcos, bidIncreaseCap: 0 } }, run })).toMatchObject({ kind: 'resolved', settings: { bidIncreaseCap: { value: 0, source: 'group' } } });
     expect(resolveMethodBidSettings({ entity, group: { name: 'Invalid ACOS', values: { targetAcos: 0 } }, run })).toMatchObject({ kind: 'hold', hold: { reason: 'MISSING_SETTING' } });
   });
   it('selects explicit campaign method, then group, then run default with its source', () => {

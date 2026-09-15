@@ -109,11 +109,13 @@ test('Home renders five KPIs and the two-column decision cards in both budget st
     await database.sql.end();
   }
 
-  // The optimizer retains its own chart surface; Home does not mount it.
+  // Optimize Now remains reachable from Home for the selected profile.
   await page.goto(`/optimizer?profile=${fixtureProfileId}`);
-  await expect(page.getByLabel('Spend display')).toBeVisible();
-  const period = page.locator('.wa-cockpit__period-hit').first();
-  await expect(period).toHaveAttribute('tabindex', '0');
-  await period.focus();
-  await expect(period).toBeFocused();
+  await expect(page.getByRole('heading', { name: 'Optimize Now', level: 1, exact: true })).toBeVisible({ timeout: 60_000 });
+  const steps = page.getByRole('list', { name: 'Optimization progress' });
+  await expect(steps).toBeVisible();
+  await expect(steps.getByRole('listitem')).toHaveText([
+    '1. Choose campaigns', '2. Review suggestions', '3. Confirm and results',
+  ]);
+  await expect(steps.getByRole('listitem').first()).toHaveAttribute('aria-current', 'step');
 });

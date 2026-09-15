@@ -3,6 +3,7 @@ import {
   OneTimeRpcConfiguration,
   OneTimeRpcPreviewRequest,
   OneTimeRpcSnapshot,
+  OptimizerSelectionExportResult,
 } from './one-time-optimization.js';
 
 const configuration = {
@@ -24,6 +25,25 @@ const request = {
 };
 
 describe('one-time RPC contract', () => {
+  it('requires exported and apply-row counts to reconcile with the saved forward rows', () => {
+    const result = {
+      requestId: request.clientRequestId,
+      batchId: '00000000-0000-4000-8000-000000000003',
+      applyBatchId: '00000000-0000-4000-8000-000000000004',
+      forwardRowIds: [
+        '00000000-0000-4000-8000-000000000005',
+        '00000000-0000-4000-8000-000000000006',
+      ],
+      counts: { offered: 2, accepted: 2, exported: 2, applyRows: 2 },
+    };
+    expect(OptimizerSelectionExportResult.parse(result)).toEqual(result);
+    expect(OptimizerSelectionExportResult.safeParse({
+      ...result,
+      forwardRowIds: result.forwardRowIds.slice(0, 1),
+      counts: { offered: 2, accepted: 2, exported: 2, applyRows: 1 },
+    }).success).toBe(false);
+  });
+
   it('accepts complete explicit settings without saved strategy or group assignment', () => {
     expect(OneTimeRpcPreviewRequest.parse(request)).toEqual(request);
     const selected = { ...request, scope: { mode: 'selected', campaignIds: ['synthetic-a', 'synthetic-b'] } };
@@ -63,6 +83,16 @@ describe('one-time RPC contract', () => {
   it('refuses unknown request fields and versions rather than discarding instructions', () => {
     expect(OneTimeRpcPreviewRequest.safeParse({ ...request, version: 2 }).success).toBe(false);
     expect(OneTimeRpcPreviewRequest.safeParse({ ...request, apply: true }).success).toBe(false);
+  });
+
+  it('accepts only registered campaign method pairs within the selected scope', () => {
+    const selected = { ...request, scope: { mode: 'selected', campaignIds: ['synthetic-a'] } };
+    const campaignMethods = { 'synthetic-a': { id: 'sp.coordinated-efficiency', version: 'candidate.1' } };
+    expect(OneTimeRpcPreviewRequest.parse({ ...selected, campaignMethods }).campaignMethods).toEqual(campaignMethods);
+    expect(OneTimeRpcPreviewRequest.safeParse({ ...selected, campaignMethods: { 'synthetic-b': campaignMethods['synthetic-a'] } }).success).toBe(false);
+    expect(OneTimeRpcPreviewRequest.safeParse({ ...request, campaignMethods: { ' synthetic-a': campaignMethods['synthetic-a'] } }).success).toBe(false);
+    expect(OneTimeRpcPreviewRequest.safeParse({ ...selected, campaignMethods: { 'synthetic-a': { id: 'sp.coordinated-efficiency', version: 'reference.1' } } }).success).toBe(false);
+    expect(OneTimeRpcPreviewRequest.safeParse({ ...selected, campaignMethods: { 'synthetic-a': { id: 'sp.discovery', version: 'candidate.1' } } }).success).toBe(false);
   });
 
   it('freezes completed reporting days independently of a later execution time', () => {

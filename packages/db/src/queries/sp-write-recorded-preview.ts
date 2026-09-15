@@ -138,6 +138,8 @@ export async function loadRecordedSpWritePreview(
         try {
           const current = await buildSpWriteLegacyPreview(sql, actor.orgId, {
             requestId: plan.id, profileId: plan.profileId, applyBatchId: plan.source.applyBatchId,
+            ...(plan.source.forwardRowIds === undefined ? {} : { forwardRowIds: plan.source.forwardRowIds }),
+            ...(plan.source.retryOrigin === undefined ? {} : { retryOrigin: plan.source.retryOrigin }),
           });
           if (JSON.stringify(current.evidence) !== JSON.stringify(source.evidence)) reasons.add('source_changed');
         } catch (error) {
@@ -154,9 +156,29 @@ export async function loadRecordedSpWritePreview(
             and recommendation.profile_id = apply_row.profile_id and recommendation.id = apply_row.recommendation_id
           where apply_row.org_id = ${plan.orgId}::uuid and apply_row.profile_id = ${plan.profileId}::uuid
             and apply_row.batch_id = ${plan.source.applyBatchId}::uuid
+            and (${plan.source.forwardRowIds ?? null}::uuid[] is null or apply_row.id = any(${plan.source.forwardRowIds ?? null}::uuid[]))
         `;
         if (!intact?.matches) reasons.add('source_changed');
       }
+    }
+    if (plan.schemaVersion === 'openspell.sp-write-plan.v1' && plan.direction === 'forward' && plan.source.kind === 'apply_batch') {
+      const parentPlanId = plan.source.retryOrigin?.planId ?? null;
+      const ids = plan.actions.flatMap((action) => action.sources.flatMap((item) => item.kind === 'apply_row' ? [item.applyRowId] : []));
+      const [ownership] = await sql<{ current: boolean }[]>`
+        with recursive ancestors(source_row_id,plan_id) as (
+          select unnest(${ids}::uuid[]),${parentPlanId}::uuid where ${parentPlanId}::uuid is not null
+          union
+          select a.source_row_id,e.parent_plan_id from ancestors a join app.sp_write_forward_lineage e
+            on e.org_id=${plan.orgId}::uuid and e.profile_id=${plan.profileId}::uuid
+              and e.source_row_id=a.source_row_id and e.retry_plan_id=a.plan_id
+        ) select not exists(select 1 from public.sp_write_cycle_plans c
+          join public.sp_write_plan_actions a on a.org_id=c.org_id and a.profile_id=c.profile_id and a.plan_id=c.plan_id
+          cross join lateral jsonb_array_elements(a.artifact->'sources') item
+          where c.org_id=${plan.orgId}::uuid and c.profile_id=${plan.profileId}::uuid and c.direction='forward'
+            and c.plan_id<>${plan.id}::uuid and item->>'kind'='apply_row'
+            and (item->>'applyRowId')::uuid=any(${ids}::uuid[])
+            and not exists(select 1 from ancestors where ancestors.plan_id=c.plan_id and ancestors.source_row_id::text=item->>'applyRowId')) as current`;
+      if (!ownership?.current) reasons.add('source_changed');
     }
     // A forward approval binds the frozen grant version. A newly approved inverse
     // uses the current grant, as the existing inverse admission contract specifies.

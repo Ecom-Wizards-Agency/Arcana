@@ -25,9 +25,18 @@ import { descriptor as grid_products } from './grid-products/descriptor';
 import { descriptor as grid_search_terms } from './grid-search-terms/descriptor';
 import { descriptor as grid_targets } from './grid-targets/descriptor';
 import { descriptor as market_position } from './market-position/descriptor';
+import { descriptor as methods } from './methods/descriptor';
 import { descriptor as ngrams } from './ngrams/descriptor';
 import { descriptor as optimizer } from './optimizer/descriptor';
+import { descriptor as optimizer_calculation } from './optimizer-calculation/descriptor';
+import { descriptor as optimizer_confirm } from './optimizer-confirm/descriptor';
+import { descriptor as optimizer_group } from './optimizer-group/descriptor';
+import { descriptor as optimizer_group_settings } from './optimizer-group-settings/descriptor';
 import { descriptor as optimizer_groups } from './optimizer-groups/descriptor';
+import { descriptor as optimizer_help } from './optimizer-help/descriptor';
+import { descriptor as optimizer_review } from './optimizer-review/descriptor';
+import { descriptor as optimizer_run } from './optimizer-run/descriptor';
+import { descriptor as optimizer_settings } from './optimizer-settings/descriptor';
 import { descriptor as queries } from './queries/descriptor';
 import { descriptor as query_intelligence } from './query-intelligence/descriptor';
 import { descriptor as recommendations } from './recommendations/descriptor';
@@ -76,9 +85,18 @@ export const SCREEN_REGISTRY: readonly ScreenMetadata[] = [
   grid_search_terms,
   grid_targets,
   market_position,
+  methods,
   ngrams,
   optimizer,
+  optimizer_calculation,
+  optimizer_confirm,
+  optimizer_group,
+  optimizer_group_settings,
   optimizer_groups,
+  optimizer_help,
+  optimizer_review,
+  optimizer_run,
+  optimizer_settings,
   queries,
   query_intelligence,
   recommendations,

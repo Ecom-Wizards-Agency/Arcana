@@ -86,10 +86,10 @@ describe('ordered coordinated execution through the real ledger', () => {
     const gateVersion = randomUUID();
     await database.sql`insert into public.sp_write_environment_gate_versions(version_id,enabled,max_unresolved_calls) values(${gateVersion},true,1)`;
     await database.sql`insert into public.sp_write_environment_gate_head(singleton,version_id) values(true,${gateVersion})`;
-    // Only this disposable database installs a pilot release. The runtime catalogue remains draft.
+    // Only this disposable database installs a pilot release. The runtime catalogue remains shadow.
     await database.sql`update app.sp_write_method_releases set release_state='pilot'
       where method_id=${COORDINATED_METHOD.id} and method_version=${COORDINATED_METHOD.version}`;
-    expect(resolveMethod(COORDINATED_METHOD.id, COORDINATED_METHOD.version).descriptor.releaseState).toBe('draft');
+    expect(resolveMethod(COORDINATED_METHOD.id, COORDINATED_METHOD.version).descriptor.releaseState).toBe('shadow');
     await database.sql`update public.keywords set bid=0.6 where org_id=${orgId} and profile_id=${profileId} and amazon_id='kw-1'`;
     await database.sql`update public.campaigns
       set bidding_strategy='manual',placement_bidding='{"topOfSearch":100,"restOfSearch":0,"productPages":0}'::jsonb

@@ -348,3 +348,18 @@ export const RecommendationRunAdmissionContext = z.union([
   z.object({ methodAdmission: MethodAdmissionSnapshot }),
 ]);
 export type RecommendationRunAdmissionContext = z.infer<typeof RecommendationRunAdmissionContext>;
+
+/** Missing reporting evidence stays null; measured zero remains a number. */
+export const OptimizationGroupPerformanceMetrics = z.object({
+  spend: z.number().nonnegative().nullable(), sales: z.number().nonnegative().nullable(),
+  orders: z.number().nonnegative().nullable(), acos: z.number().nonnegative().nullable(),
+});
+export type OptimizationGroupPerformanceMetrics = z.infer<typeof OptimizationGroupPerformanceMetrics>;
+export const OptimizationGroupPerformance = z.object({
+  groupId: Uuid, campaignIds: z.array(z.string().min(1)),
+  current: z.object({ start: IsoDate, end: IsoDate, metrics: OptimizationGroupPerformanceMetrics }),
+  previous: z.object({ start: IsoDate, end: IsoDate, metrics: OptimizationGroupPerformanceMetrics }),
+  days: z.array(OptimizationGroupPerformanceMetrics.extend({ date: IsoDate })),
+  reportingRows: z.number().int().nonnegative(), previousReportingRows: z.number().int().nonnegative(),
+});
+export type OptimizationGroupPerformance = z.infer<typeof OptimizationGroupPerformance>;

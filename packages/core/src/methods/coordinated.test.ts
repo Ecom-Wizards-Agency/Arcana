@@ -78,7 +78,7 @@ describe('SP coordinated efficiency candidate', () => {
     expect(providerChanges).toHaveLength(2);
     expect(providerChanges[1]?.expected).toEqual(providerChanges[0]?.requested);
     expect(providerChanges.map((change) => change.approvedPlacementKeys)).toEqual([['top_of_search'], ['rest_of_search']]);
-    expect(resolveMethod(COORDINATED_METHOD.id, COORDINATED_METHOD.version).descriptor.releaseState).toBe('draft');
+    expect(resolveMethod(COORDINATED_METHOD.id, COORDINATED_METHOD.version).descriptor.releaseState).toBe('shadow');
   });
   it('reproduces Example 2: the exposure and reduction bounds cannot intersect', () => {
     const maximum = maxPotentialCpc({ baseBid: 0.4, placementModifiers: [{ name: 'TOS', pct: 100 }],

@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 import { GUARDED_ROUTES } from '../src/e2e-guard-routes';
 import { signIn } from './support/auth';
 import { readState } from './support/fixture';
+import { guardRoutePath } from './support/guard-route-path';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -43,9 +44,10 @@ test('the same screens open once there is a session', async ({ page }) => {
   page.on('console', message => { if (message.type() === 'error') captureTimelineError(message.text()); });
   const landed: string[] = [];
   for (const { path, signedIn } of GUARDED_ROUTES) {
-    const expectedPath = new URL(path, 'https://example.test').pathname;
+    const requestedPath = guardRoutePath(path);
+    const expectedPath = new URL(requestedPath, 'https://example.test').pathname;
     const expectedFollowUp = signedIn.canonicalProfile === true;
-    await page.goto(path).catch((error: unknown) => {
+    await page.goto(requestedPath).catch((error: unknown) => {
       if (!expectedFollowUp || !String(error).includes('is interrupted by')) {
         throw error;
       }
@@ -80,10 +82,10 @@ test('the same screens open once there is a session', async ({ page }) => {
     landed.push(new URL(page.url()).pathname);
   }
 
-  // The legacy strategy URL still redirects to Home. Assert that intentional
-  // redirect exactly; every other route must stay on its requested pathname.
+  // Declared redirects retain their destination; every other route stays on
+  // its concrete requested pathname, counted against every descriptor.
   expect(landed).toEqual(GUARDED_ROUTES.map(({ path, signedIn }) => (
-    signedIn.kind === 'redirect' ? signedIn.pathname : path
+    signedIn.kind === 'redirect' ? signedIn.pathname : guardRoutePath(path)
   )));
   await expect(page.getByTestId('app-nav')).toBeVisible();
 });

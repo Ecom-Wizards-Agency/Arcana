@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import Loading from '../../../app/optimizer/groups/loading';
-import { verifyScreen } from '../render-test-support';
+import { expect, it } from 'vitest';
+import { rendered, verifyScreen } from '../render-test-support';
 import SharedError from '../shared-error';
 import { context } from '../synthetic-render-fixtures';
 import { descriptor } from './descriptor';
@@ -15,3 +16,10 @@ verifyScreen(descriptor, [
   { state: 'gated', name: 'explains missing organization membership', render: () => <Screen data={{ view: 'gated', props: { entry: { state: 'no-org', context: { ...context, active: null, memberships: [] } } } }} />, text: 'organisation' },
   { state: 'empty', name: 'shows an empty profile roster without invented data', render: () => <Screen data={{ view: 'empty', props: {} }} />, text: "profiles" }
 ]);
+
+it('identifies the canonical profile in the groups content after an account change', () => {
+  const profile = { ...ready.props.profile, id: 'synthetic-second-profile', label: 'Synthetic second account' };
+  const host = rendered(<Screen data={{ ...ready, props: { ...ready.props, profile } }} />);
+  expect(host.textContent).toContain(profile.label);
+  expect(host.textContent).not.toContain(ready.props.profile.label);
+});

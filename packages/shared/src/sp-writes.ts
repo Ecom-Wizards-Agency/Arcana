@@ -435,13 +435,37 @@ export const SpWriteRestoreProposalSource = z.object({
 });
 export type SpWriteRestoreProposalSource = z.infer<typeof SpWriteRestoreProposalSource>;
 
+/** Original apply-row identities, in canonical order; never newly minted retry rows. */
+export const SpWriteForwardRowIds = z.array(SpWriteUuid).min(1).max(500).refine(
+  (ids) => isCanonicalUniqueOrder(ids, (id) => id),
+  'forward rows must be sorted unique canonical UUIDs',
+);
+export type SpWriteForwardRowIds = z.infer<typeof SpWriteForwardRowIds>;
+
+export const SpWriteRetryOrigin = z.object({
+  executionId: SpWriteUuid,
+  planId: SpWriteUuid,
+  planFingerprint: SpWriteSha256,
+}).strict();
+export type SpWriteRetryOrigin = z.infer<typeof SpWriteRetryOrigin>;
+
 export const SpForwardWriteSource = z.object({
   kind: z.literal('apply_batch'),
   applyBatchId: SpWriteUuid,
   restoreProposal: SpWriteRestoreProposalSource.optional(),
+  forwardRowIds: SpWriteForwardRowIds.optional(),
+  retryOrigin: SpWriteRetryOrigin.optional(),
+  /** Complete original export, hash-verified before interpreting forwardRowIds. */
+  sourceArtifactText: z.string().min(1).optional(),
   guardrailSnapshotFingerprint: SpWriteSha256,
   provenanceSnapshotFingerprint: SpWriteSha256,
-}).strict();
+}).strict().superRefine((source, context) => {
+  if ((source.forwardRowIds === undefined) !== (source.sourceArtifactText === undefined)
+    || (source.retryOrigin !== undefined && source.forwardRowIds === undefined)
+    || (source.restoreProposal !== undefined && source.forwardRowIds !== undefined)) {
+    context.addIssue({ code: 'custom', message: 'forward narrowing requires its complete original artifact; retry requires narrowing and cannot restore' });
+  }
+});
 export type SpForwardWriteSource = z.infer<typeof SpForwardWriteSource>;
 
 export const SpInverseWriteSource = z.object({
@@ -595,6 +619,14 @@ export const SpWritePlan = z.object({
 }).strict().superRefine((plan, context) => {
   if ((plan.direction === 'forward') !== (plan.source.kind === 'apply_batch')) {
     context.addIssue({ code: 'custom', path: ['source'], message: 'plan direction and source disagree' });
+  }
+  if (plan.source.kind === 'apply_batch' && plan.source.forwardRowIds !== undefined) {
+    const ids = plan.actions.flatMap((action) => action.sources.flatMap((source) =>
+      source.kind === 'apply_row' ? [source.applyRowId] : [])).sort();
+    if (plan.schemaVersion !== 'openspell.sp-write-plan.v1'
+      || JSON.stringify(ids) !== JSON.stringify(plan.source.forwardRowIds)) {
+      context.addIssue({ code: 'custom', path: ['source', 'forwardRowIds'], message: 'forward narrowing must equal every original action source and cannot split dependency sets' });
+    }
   }
   if (plan.source.kind === 'apply_batch' && plan.source.restoreProposal) {
     const restore = plan.source.restoreProposal;

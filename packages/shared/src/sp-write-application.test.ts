@@ -10,6 +10,9 @@ import {
   SpWritePreviewRequest,
   SpWriteRecordedPreview,
   SpWriteRecordedPreviewRequest,
+  spWriteExecutionRequirements,
+  spWriteRetryEvidenceAllows,
+  OptimizerRetryRequest,
 } from './sp-write-application.js';
 import { spWritePlanBinding, SpWritePlan } from './sp-writes.js';
 
@@ -72,6 +75,14 @@ function recordedFixture() {
 }
 
 describe('write application boundary', () => {
+  it('describes worker prerequisites without treating approval as dispatch enablement', () => {
+    expect(spWriteExecutionRequirements).toEqual({
+      executor: 'worker',
+      dispatchGate: { environmentVariable: 'OPENSPELL_SP_WRITE_DISPATCH_ENABLED', enabledByDefault: false },
+      profileAuthorization: 'required',
+    });
+  });
+
   it('requires the exact Amazon logical-change count in a confirmed HTTP approval', () => {
     const receipt = operationFixture().receipt;
     const request = {
@@ -188,4 +199,29 @@ describe('write application boundary', () => {
       preapprovedInversePlan: { ...inverse.receipt.preapprovedInversePlan, profileId: id('99') },
     } }).success).toBe(false);
   });
+});
+
+it('accepts only canonical nonempty forward row sets and requires narrowing with retry origin', () => {
+  const request = { requestId: id('1'), profileId: id('2'), applyBatchId: id('3') };
+  expect(SpWritePreviewRequest.parse(request)).toEqual(request);
+  expect(SpWritePreviewRequest.parse({ ...request, forwardRowIds: [id('4'),id('5')] }).forwardRowIds).toEqual([id('4'),id('5')]);
+  const retryOrigin = { executionId:id('6'),planId:id('7'),planFingerprint:'a'.repeat(64) };
+  for (const forwardRowIds of [[],[id('5'),id('4')],[id('4'),id('4')],['invalid'],[id('4').replace('4000','A000')]]) {
+    expect(SpWritePreviewRequest.safeParse({ ...request,forwardRowIds }).success).toBe(false);
+  }
+  expect(SpWritePreviewRequest.safeParse({ ...request,retryOrigin }).success).toBe(false);
+  expect(SpWritePreviewRequest.safeParse({ ...request,retryOrigin,forwardRowIds:[id('4')] }).success).toBe(true);
+  expect(OptimizerRetryRequest.safeParse({requestId:id('1'),profileId:id('2'),batchId:id('3'),original:{executionId:id('6'),planId:id('7')},forwardRowIds:[id('4')]}).success).toBe(false);
+});
+it('never treats ambiguous expected-state observation as retry authority and requires terminal nonexecution evidence', () => {
+  expect(spWriteRetryEvidenceAllows({ refusal:null,providerOutcome:'authoritative_rejected',observation:null })).toBe(true);
+  expect(spWriteRetryEvidenceAllows({ refusal:{reason:'environment_gate_closed'},providerOutcome:null,observation:null })).toBe(true);
+  for (const providerOutcome of [null,'accepted','ambiguous'] as const) {
+    expect(spWriteRetryEvidenceAllows({refusal:null,providerOutcome,observation:null})).toBe(false);
+  }
+  for (const observation of ['observed_requested','observed_expected_after_ambiguous','conflict','missing'] as const) {
+    expect(spWriteRetryEvidenceAllows({refusal:null,providerOutcome:'ambiguous',observation:{outcome:observation}})).toBe(false);
+    expect(spWriteRetryEvidenceAllows({refusal:null,providerOutcome:'authoritative_rejected',observation:{outcome:observation}})).toBe(false);
+  }
+  expect(spWriteRetryEvidenceAllows({refusal:{reason:'stale_expected_state'},providerOutcome:null,observation:null})).toBe(false);
 });

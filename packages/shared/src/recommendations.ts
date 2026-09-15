@@ -9,7 +9,8 @@
  * audit is a black box with better manners.
  */
 import { z } from 'zod';
-import { CalculationTrace, DependencySet, Hold, MethodId, MethodVersion, MethodMetrics, SettingSources } from './methods.js';
+import { CalculationTrace, DependencySet, Hold, MethodEvaluatorInput, MethodId, MethodSelection, MethodVersion, MethodMetrics, SettingSources } from './methods.js';
+import { RecommendationPreviewDiagnostics } from './recommendation-preview.js';
 import { EntityRef, IsoDate, Uuid } from './primitives.js';
 import { DirectionalAdjustmentProvenance } from './optimization.js';
 
@@ -138,3 +139,29 @@ export const RecommendationPopulation = z.object({
   }
 });
 export type RecommendationPopulation = z.infer<typeof RecommendationPopulation>;
+
+export const OptimizerReviewIdentity = z.object({ orgId: Uuid, profileId: Uuid, batchId: Uuid }).strict();
+export type OptimizerReviewIdentity = z.infer<typeof OptimizerReviewIdentity>;
+
+/** One saved evaluator outcome per target, including unchanged bids and holds. */
+export const OptimizerTargetOutcome = z.object({
+  entityRef: EntityRef,
+  currentBid: z.number().nonnegative().nullable(),
+  method: MethodSelection,
+  outcome: z.enum(['suggestion', 'unchanged', 'blocked']),
+  reasonCode: z.string().min(1),
+  reason: z.string().min(1),
+  hold: Hold.optional(),
+}).strict();
+export type OptimizerTargetOutcome = z.infer<typeof OptimizerTargetOutcome>;
+
+/** Readable historical run evidence; absent optional fields remain unavailable. */
+export const OptimizerRunNarrative = z.object({
+  diagnostics: RecommendationPreviewDiagnostics.extend({
+    examples: z.array(z.object({ entity: z.string(), outcome: z.string(), detail: z.string() })).optional(),
+  }).optional(),
+  holds: z.array(Hold).optional(),
+  calculationSnapshots: z.array(MethodEvaluatorInput).optional(),
+  targetOutcomes: z.array(OptimizerTargetOutcome).optional(),
+});
+export type OptimizerRunNarrative = z.infer<typeof OptimizerRunNarrative>;
