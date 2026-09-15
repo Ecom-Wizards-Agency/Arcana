@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AmazonChangeEvent, ProductEligibilitySnapshot, ProductMetadataSnapshot, ValidationConfiguration } from '@wizard-ads/shared';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '../testing/harness.js';
-import { catalogueDigest, catalogueSourceEnabled, persistCatalogueCollection, readAmazonObservedChanges, readProductEvidence, resolveAmazonChangeEvents, readCampaignProductEvidence, readCurrentValidationConfiguration, readCatalogueSourceStatus, resumeCatalogueAcquisition, persistCataloguePage, readAdvertisedCatalogueProducts } from './ads-catalogue.js';
+import { catalogueDigest, catalogueSourceEnabled, recordCatalogueCursorFailure, persistCatalogueCollection, readAmazonObservedChanges, readProductEvidence, resolveAmazonChangeEvents, readCampaignProductEvidence, readCurrentValidationConfiguration, readCatalogueSourceStatus, resumeCatalogueAcquisition, persistCataloguePage, readAdvertisedCatalogueProducts } from './ads-catalogue.js';
 import { listChangeQueue } from './time-machine.js';
 import { readCreativeWorkspace } from './creative-workspace.js';
 import { readTimeline } from './timeline.js';
@@ -205,6 +205,55 @@ describe.skipIf(!available)('catalogue snapshots and Amazon event ledger',()=>{
     expect(restart.next).toBeNull();expect(restart.result).toMatchObject({replayed:true,counts:{writtenRows:0,existingRows:2,verifiedRows:2}});
     expect(await readProductEvidence(database,{scope,asins:['CRASH00001','CRASH00002'],adProduct:'SP',staleAfter:at(14)})).toHaveLength(2);
     await expect(resumeCatalogueAcquisition(database,{...request,requestFingerprint:catalogueDigest('changed')})).rejects.toThrow('fingerprint');
+  });
+
+  it('clears a reverified final receipt failure without advancing time or replacing newer status',async()=>{
+    const scope={orgId,profileId,marketplaceId:'STATUS-RECOVERY'},selectorKey='status-recovery';
+    const input={scope,family:'product_metadata' as const,selectorKey,
+      windowStart:at(14),windowEnd:at(15),acquiredAt:at(15),pages:1,finalCursor:null,
+      sourceRows:1,parsedRows:1,refusedRows:0,duplicates:0,rows:[metadata(scope.marketplaceId,15)]};
+    const checkpoint=async()=>{
+      const rows=await database.sql`select receipt_id,covered_from,covered_through,source_observed_at,cursor,cursor_failure
+        from public.ads_catalogue_source_checkpoints where org_id=${orgId} and profile_id=${profileId}
+        and marketplace_id=${scope.marketplaceId} and family=${input.family} and selector_key=${selectorKey}`;
+      expect(rows).toHaveLength(1);
+      return rows[0]!;
+    };
+    const original=await persistCatalogueCollection(database,input),before=await checkpoint();
+    await recordCatalogueCursorFailure(database,scope,input.family,selectorKey,'synthetic post-commit failure');
+    expect((await checkpoint())['cursor_failure']).toBe('synthetic post-commit failure');
+    const replay=await persistCatalogueCollection(database,input);
+    expect(replay).toMatchObject({receiptId:original.receiptId,replayed:true,counts:{writtenRows:0,existingRows:1,verifiedRows:1}});
+    expect(await checkpoint()).toEqual(before);
+
+    // A partial newer receipt leaves the old coverage pointer in place.
+    const partial={...input,acquiredAt:at(16),windowEnd:at(16),parsedRows:0,refusedRows:1,rows:[metadata(scope.marketplaceId,16)]};
+    await persistCatalogueCollection(database,partial);
+    const newerPartial=await checkpoint();
+    expect(newerPartial).toMatchObject({receipt_id:original.receiptId,cursor_failure:'incomplete collection'});
+    await persistCatalogueCollection(database,input);
+    expect(await checkpoint()).toEqual(newerPartial);
+    await persistCatalogueCollection(database,partial);
+    expect(await checkpoint()).toEqual(newerPartial);
+
+    const complete={...input,acquiredAt:at(17),windowEnd:at(17),rows:[metadata(scope.marketplaceId,17)]};
+    const newest=await persistCatalogueCollection(database,complete),newestBefore=await checkpoint();
+    await recordCatalogueCursorFailure(database,scope,input.family,selectorKey,'synthetic latest failure');
+    const newestFailed=await checkpoint();
+    expect(newestFailed['receipt_id']).toBe(newest.receiptId);
+    await persistCatalogueCollection(database,input);
+    expect(await checkpoint()).toEqual(newestFailed);
+    await persistCatalogueCollection(database,complete);
+    expect(await checkpoint()).toEqual(newestBefore);
+
+    // A newer acquisition can fail before it has a final receipt.
+    const id=randomUUID();
+    await resumeCatalogueAcquisition(database,{id,scope,family:input.family,selectorKey,
+      requestFingerprint:catalogueDigest({id}),proposedAcquiredAt:at(18),windowStart:null,windowEnd:null,requestedMembers:1});
+    await recordCatalogueCursorFailure(database,scope,input.family,selectorKey,'synthetic newer acquisition failure');
+    const unfinished=await checkpoint();
+    await persistCatalogueCollection(database,complete);
+    expect(await checkpoint()).toEqual(unfinished);
   });
 
   it('counts scoped Products rows for owned advertised identities',async()=>{
