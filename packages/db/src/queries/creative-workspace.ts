@@ -33,8 +33,8 @@ export async function readCreativeWorkspace(handle: QueryHandle, filter: Creativ
   const [catalogueSchema]=await handle.sql<{present:boolean}[]>`select to_regclass('public.ads_product_metadata_snapshots') is not null as present`;
   const listingPromise=catalogueSchema?.present?handle.sql<{ id:string;asin:string;marketplace_id:string;previous:unknown;current:unknown }[]>`with ordered as (
       select id,asin,marketplace_id,acquired_at,snapshot as current,
-        lag(snapshot) over(partition by marketplace_id,asin,ad_product order by acquired_at,retrieved_at,id) as previous
-      from public.ads_product_metadata_snapshots where org_id=${orgId} and profile_id=${profileId})
+        lag(snapshot) over(partition by marketplace_id,asin,coalesce(sku,''),ad_product order by acquired_at,retrieved_at,id) as previous
+      from public.ads_product_metadata_snapshots where org_id=${orgId} and profile_id=${profileId} and public.ads_catalogue_receipt_is_sealed(receipt_id))
       select id::text,asin,marketplace_id,previous,current from ordered where acquired_at>=${from}::date
         and acquired_at<${to}::date+interval '1 day' and previous is not null and previous<>current order by acquired_at desc,id desc`:Promise.resolve([]);
   const [performance, roster, links, campaignRows, groupRows, keywordRows, placements, history, eventRows, evidence, changes, listingRows] = await Promise.all([

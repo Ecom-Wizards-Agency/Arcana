@@ -560,7 +560,7 @@ async function loadProducts(handle: GridDataHandle, options: LoadGridOptions, li
       f.impressions,f.clicks,f.spend,f.sales,f.orders,f.units,f.c_days,f.c_impressions,f.c_clicks,f.c_spend,f.c_sales,f.c_orders,f.c_units
       from products p full join facts f on f.asin=coalesce(p.asin,f.asin)
       left join lateral(select marketplace_id,acquired_at,snapshot from public.ads_product_metadata_snapshots
-        where org_id=${orgId} and profile_id=${profileId} and asin=coalesce(p.asin,f.asin) and ad_product='SP'
+        where org_id=${orgId} and profile_id=${profileId} and asin=coalesce(p.asin,f.asin) and ad_product='SP' and public.ads_catalogue_receipt_is_sealed(receipt_id)
           and (select count(distinct scoped.marketplace_id) from public.ads_product_metadata_snapshots scoped
             where scoped.org_id=${orgId} and scoped.profile_id=${profileId} and scoped.asin=coalesce(p.asin,f.asin) and scoped.ad_product='SP')=1
         order by acquired_at desc,retrieved_at desc,id desc limit 1)m on true

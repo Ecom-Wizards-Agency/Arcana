@@ -491,3 +491,21 @@ time. Missing members create unavailable evidence, and signed image URLs are
 excluded. Product eligibility never establishes asset moderation approval.
 All four source gates and provisioned schedules remain disabled by default;
 reporting recovery evidence and explicit source authorization are prerequisites.
+
+### Product-evidence consumer handoff
+
+The DB reader `readCampaignProductEvidence(handle, request)` accepts an exact
+organization/profile/marketplace, advertised ASINs, ad product, optional SKU and
+staleness cutoff. It returns one product and one check per requested ASIN. Missing,
+refused, unknown, stale or ambiguous SKU evidence produces an unavailable check;
+fresh explicit eligible/ineligible evidence retains its provider reasons. The
+response explicitly carries `campaignCreationAuthority: false` and
+`assetModeration: 'unknown'`. Its DB contract tests cover eight evidence states
+and conflicting SKU candidates. Campaign-builder screen wiring remains deferred
+to that screen's owner.
+
+Change History keys include the pinned metadata discriminators (including
+`placementGroupPosition` and full targeting expressions before display
+truncation). They remain derived identities with `provider_id_unavailable`
+ambiguity. Identical simultaneous provider events cannot be proven distinct by
+this contract; conflicting payloads under a derived identity remain inspectable.

@@ -31,3 +31,10 @@ it('counts coordinated proposals separately from physical restore rows and refus
   expect(ChangeQueueRestoreBatchPreview.safeParse({...batch,dependencySetCount:null}).success).toBe(false);
   expect(ChangeQueueRestoreBatchPreview.safeParse({...batch,dependencySetCount:null,exportedProposals:2}).success).toBe(true);
 });
+
+it('requires imported provenance and refuses local authority on Amazon observations',()=>{
+  const imported={...entry,source:'amazon',amazonObservation:{marketplaceId:'synthetic-market',retrievedAt:'2026-09-15T00:00:00.000Z',identityQuality:'derived',identityAmbiguity:'provider_id_unavailable',identityConflict:true,resolution:'unresolved',resolvedEntityType:null,resolvedAmazonId:null}};
+  expect(ChangeQueueEntry.safeParse(imported).success).toBe(true);
+  expect(ChangeQueueEntry.safeParse({...imported,reviewHref:'/restore'}).success).toBe(false);
+  expect(ChangeQueueEntry.safeParse({...imported,amazonObservation:null}).success).toBe(false);
+});
