@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getTableConfig } from 'drizzle-orm/pg-core';
 import { spWriteRestoreProposals, spWriteRestoreReviews } from '../schema/restore-proposals.js';
 import { beforeAll, afterAll, expect, it } from 'vitest';
-import { COORDINATED_RESTORE_UNAVAILABLE, serializeApplyRows, type ApplyRow } from '@wizard-ads/shared';
+import { COORDINATED_RESTORE_UNAVAILABLE, OneTimeRpcSnapshot, serializeApplyRows, type ApplyRow } from '@wizard-ads/shared';
 import { SpWritePreview, spWriteConfirmation, type SpWriteConfirmedApprovalRequest } from '@wizard-ads/shared/sp-write-application';
 import { spWritePlanBinding, serializeSpWritePlanFingerprint, serializeSpWriteActionFingerprint } from '@wizard-ads/shared/sp-writes';
 import { serializeSpWritePreviewGuardrails, serializeSpWritePreviewProvenance } from '@wizard-ads/shared/sp-write-preview-evidence';
@@ -15,6 +15,8 @@ import { buildSpWriteLegacyPreview } from './sp-write-plan-builder.js';
 import { getReversionBatchPreview, listChangeQueue } from './time-machine.js';
 import { recordEntityChanges } from './entities.js';
 import { createRequestDatabase } from './request-client.js';
+import { exportOptimizerSelection, readOptimizerExportBinding } from './optimizer-export.js';
+import { readOptimizationWorkspace } from './optimization-groups.js';
 let db:TestDatabase, orgId:string,profileId:string,runId:string,otherOrg:string;
 const userId=randomUUID(),otherUser=randomUUID();
 const actor=()=>({orgId,userId});
@@ -368,4 +370,90 @@ it('refuses a generically staged restore without its exact restore proposal rece
     (select count(*)::int from public.sp_write_outbox where plan_id=${preview.plan.id}) as outbox,
     (select count(*)::int from app.sp_write_forward_admissions where plan_id=${preview.plan.id}) as rows`;
   expect(counts).toEqual({ receipts: 0, batches: 0, requests: 0, outbox: 0, rows: 0 });
+});
+
+it('approves a restore of a one-time export after its application is synchronized', async () => {
+  const snapshot = OneTimeRpcSnapshot.parse({ version: 1,
+    configuration: { version: 1, method: 'sp.reference-efficiency', targetAcos: 0.27, bidFloor: 0.13, bidCeiling: 3.1,
+      bidIncreaseCap: 0.17, bidDecreaseCap: 0.31, window: { start: '2026-08-01', end: '2026-08-28' } },
+    profileTimezone: 'UTC', admittedAt: '2026-09-10T12:00:00Z', profileToday: '2026-09-10' });
+  const batchId = randomUUID(), childRunId = randomUUID(), jobId = randomUUID(), recommendationId = randomUUID();
+  const keywordId = `synthetic-one-time-${randomUUID()}`;
+  const group = (await readOptimizationWorkspace(db, { orgId, profileId })).groups[0]!.group;
+  // Fixture-only definer records worker output while retaining its real session guard.
+  await db.sql`create function public.synthetic_restore_output(p_row jsonb) returns void
+    language sql security definer set search_path=pg_catalog,public as $$
+    insert into public.recommendations(id,run_id,org_id,profile_id,reason,entity_type,entity_id,
+      campaign_id,ad_group_id,ad_product,field,current_value,proposed_value,inputs,status)
+    select id,run_id,org_id,profile_id,reason,entity_type,entity_id,campaign_id,ad_group_id,ad_product,
+      field,current_value,proposed_value,inputs,status from jsonb_populate_record(null::public.recommendations,p_row)
+    $$`;
+  const session = await db.sql.reserve();
+  try {
+    await session`set session authorization service_role`;
+    await session`select public.block_recommendation_admission(0)`;
+    await session`select public.activate_recommendation_fenced_claims(1,${'c'.repeat(40)})`;
+    await session`select public.authorize_recommendation_scoped_admission(2,${'c'.repeat(40)})`;
+    await session`set session authorization openspell_recommendation_worker`;
+    await session`select public.report_recommendation_runtime('synthetic-restore-fixture',${'c'.repeat(40)},array[1,2],true)`;
+  } finally { await session`reset session authorization`; session.release(); }
+  await db.sql.begin(async (sql) => {
+    await sql`insert into public.recommendation_preview_batches(id,org_id,profile_id,client_request_id,selection_mode,
+      request_fingerprint,scope_count,scope_fingerprint,child_count,created_by,execution_snapshot)
+      values(${batchId},${orgId},${profileId},${randomUUID()},'selected',${'a'.repeat(64)},1,
+        app.recommendation_batch_scope_fingerprint(${profileId},array['c-1']),1,${userId},${JSON.stringify(snapshot)}::jsonb)`;
+    await sql`insert into public.sync_jobs(id,org_id,profile_id,job_type,payload,status,started_at,finished_at)
+      values(${jobId},${orgId},${profileId},'recommendations.run',jsonb_build_object('type','recommendations.run',
+        'orgId',${orgId}::text,'profileId',${profileId}::text,'runId',${childRunId}::text,'groupId',${group.id}::text,
+        'executionVersion',2,'snapshotFingerprint',app.one_time_rpc_snapshot_fingerprint(${JSON.stringify(snapshot)}::jsonb)),
+        'succeeded',now(),now())`;
+    await sql`insert into public.recommendation_runs(id,org_id,profile_id,batch_id,status,lookback_days,scope_version,
+      scope_count,scope_fingerprint,job_id,execution_snapshot,execution_lineage,proposals_count,group_id,group_role,group_snapshot)
+      values(${childRunId},${orgId},${profileId},${batchId},'succeeded',28,2,1,
+        app.recommendation_run_scope_fingerprint(${profileId},${group.id}::uuid,array['c-1']),${jobId},
+        ${JSON.stringify(snapshot)}::jsonb,'queue',1,${group.id},${group.role},${JSON.stringify(group)}::jsonb)`;
+    await sql`insert into public.recommendation_run_campaigns(org_id,profile_id,batch_id,run_id,campaign_id)
+      values(${orgId},${profileId},${batchId},${childRunId},'c-1')`;
+    await sql`insert into public.keywords(org_id,profile_id,amazon_id,ad_product,state,campaign_id,ad_group_id,keyword_text,match_type,bid,synced_at)
+      values(${orgId},${profileId},${keywordId},'SP','enabled','c-1','ag-1','Synthetic one-time restore','exact',0.91,clock_timestamp())`;
+    await sql`set local session authorization openspell_recommendation_worker`;
+    await sql`select public.synthetic_restore_output(${JSON.stringify({ id: recommendationId, run_id: childRunId, org_id: orgId,
+      profile_id: profileId, reason: 'high_acos', entity_type: 'keyword', entity_id: keywordId,
+      campaign_id: 'c-1', ad_group_id: 'ag-1', ad_product: 'SP', field: 'bid', current_value: 0.91, proposed_value: 0.67,
+      inputs: syntheticRecommendationMethodInputs(), status: 'accepted' })}::jsonb)`;
+    await sql`reset session authorization`;
+  });
+  const [run] = await db.sql`select scope_version,strategy_snapshot,strategy_goal,execution_snapshot
+    from public.recommendation_runs where id=${childRunId}`;
+  expect(run).toEqual({ scope_version: 2, strategy_snapshot: null, strategy_goal: null, execution_snapshot: snapshot });
+  const fingerprint = await withAuthenticatedReadSnapshot(db, actor(), tx => readOptimizerExportBinding(tx, { orgId, profileId, batchId }));
+  expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
+  const exported = await withAuthenticatedOrgEditor(db, actor(), tx => exportOptimizerSelection(tx, {
+    requestId: randomUUID(), profileId, batchId, reviewFingerprint: fingerprint!, recommendationIds: [recommendationId] }));
+  expect(exported.counts).toEqual({ offered: 1, accepted: 1, exported: 1, applyRows: 1 });
+  expect(exported.forwardRowIds).toHaveLength(1);
+  await recordEntityChanges(db, [{ orgId, profileId, entityType: 'keyword', amazonId: keywordId, field: 'bid',
+    oldValue: 0.91, newValue: 0.67, source: 'sync', observedAt: new Date() }]);
+  await db.sql`update public.keywords set bid=0.67,synced_at=clock_timestamp() where org_id=${orgId} and profile_id=${profileId} and amazon_id=${keywordId}`;
+  const source = await getReversionBatchPreview(db, { orgId, batchId: exported.applyBatchId });
+  expect(source?.rows).toHaveLength(1);
+  expect(source?.rows[0]).toMatchObject({ rowId: exported.forwardRowIds[0], state: 'ready', currentValue: 0.67, inverseValue: 0.91 });
+  const preview = await withAuthenticatedOrgEditor(db, actor(), tx => buildRestoreProposal(tx, {
+    requestId: randomUUID(), profileId, applyBatchId: exported.applyBatchId, sourceRowIds: exported.forwardRowIds }));
+  const evidence = preview.evidence;
+  if (evidence?.schemaVersion !== 'openspell.sp-write-preview-evidence.v1') throw new Error('Expected recorded restore source evidence');
+  expect(evidence.guardrails.policies).toEqual([expect.objectContaining({ strategyGoal: 'one_time', runId: childRunId })]);
+  expect(JSON.parse(evidence.guardrails.policies[0]!.strategySnapshotText)).toEqual(snapshot);
+  expect(preview.plan.actions).toHaveLength(1);
+  expect(preview.plan.actions[0]).toMatchObject({ entity: { keywordId }, changes: { bid: {
+    expected: { amount: '0.67' }, requested: { amount: '0.91' } } } });
+  const admission = await withAuthenticatedOrgEditor(db, actor(), tx => approveSpWriteForActor(tx, {
+    profileId, confirmation: spWriteConfirmation(1), approval: { approvalRequestId: randomUUID(), plan: preview.binding,
+      approvalMode: 'manual', confirmationVersion: 'openspell.amazon-sp-write-confirmation.v1', boundedAuthorization: null, preapprovedInversePlan: null } }));
+  expect(admission.kind).toBe('queued');
+  const [counts] = await db.sql`select
+    (select count(*)::int from app.sp_write_forward_admissions where plan_id=${preview.plan.id} and operation_kind='restore') as rows,
+    (select count(*)::int from public.sp_write_outbox where plan_id=${preview.plan.id}) as outbox,
+    (select count(*)::int from public.sp_write_provider_call_intents where plan_id=${preview.plan.id}) as calls`;
+  expect(counts).toEqual({ rows: 1, outbox: 1, calls: 0 });
 });
