@@ -29,6 +29,7 @@ export const INGESTION_SOURCES: readonly IngestionSource[] = [
   { jobType: 'sqp.request', source: 'amazon_spapi', reportType: 'GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT', laneAffinity: ['integrations'], counts: ['sourceRows', 'parsedRows', 'refusedRows', 'upserts'] },
   { jobType: 'crosscheck.ingest', source: 'secondary_import', laneAffinity: [], counts: ['rowsParsed', 'rowsKept', 'written'] },
   { jobType: 'marketing_stream.normalize', source: 'amazon_marketing_stream', laneAffinity: ['integrations'], counts: ['offered', 'normalized'] },
+  { jobType: 'marketing_stream.extensions.project', source: 'amazon_marketing_stream', laneAffinity: ['integrations'], counts: ['received', 'undecodable', 'decoded', 'accepted', 'deduplicated', 'stored', 'rejected', 'deadLettered', 'verifiedStored'] },
   { jobType: 'report.unified.advance', source: 'amazon_unified_reporting', laneAffinity: ['evo-report-unified'], counts: ['received', 'accepted', 'refused'] },
   ...(['sqp.categorize', 'history.bootstrap', 'report.promote'] as const).map((jobType) => ({
     jobType, source: 'unimplemented', laneAffinity: [], counts: ['offered', 'written'],

@@ -1,6 +1,6 @@
 import type { CreativeWorkspace, SpEvidence, SpParsedReport } from '@wizard-ads/shared';
-import { readListingEvidence, readCoreReportEvidence, readCreativeWorkspace, readSpReportEvidence, readSpListingHistory, readLatestCreativeSyncJobState, readLatestCreativeSyncSnapshot } from '@wizard-ads/db';
-import { readProviderEvidence } from '@wizard-ads/db';
+import { readListingEvidence, readCoreReportEvidence, readCreativeWorkspace, readSpReportEvidence, readSpListingHistory, readLatestCreativeSyncJobState, readLatestCreativeSyncSnapshot, readProviderEvidence } from '@wizard-ads/db';
+import { deriveAssetEligibility } from '@wizard-ads/core';
 import type { ScreenActor } from '../../server/page-read';
 import type { ScreenParams } from '../types';
 import type { CreativeLifecycleEvidence } from '../../creative/lifecycle';
@@ -40,6 +40,16 @@ export async function loadCreativeScreen(access: ScreenActor, input: ScreenParam
     measuredFields: ownListingEvidence.reduce((n,e)=>n+e.fields.filter((f)=>f.availability==='measured').length,0),
     staleFields: ownListingEvidence.reduce((n,e)=>n+e.fields.filter((f)=>f.availability==='stale').length,0),
   } };
+  const now = new Date().toISOString();
+  for (const asset of workspace.assets) {
+    asset.eligibility = [];
+    for (const evidence of asset.assetLibraryEvidence ?? []) {
+      const contexts = new Map((asset.moderationEvidence ?? []).map((row) => [JSON.stringify(row.observation.context), row.observation.context]));
+      for (const context of contexts.values()) asset.eligibility.push(deriveAssetEligibility({ context,
+        identity: evidence.observation.identity, now, asset: evidence, moderation: asset.moderationEvidence ?? [] }));
+    }
+    if (asset.eligibility.length === 1) asset.moderation = asset.eligibility[0]!.status;
+  }
   const pilot = creativeSyncPilotFromEnv();
   const evidence: CreativeLifecycleEvidence = {
     producerEligible: profile.syncEnabled && pilot.enabled && pilot.profileIds.includes(profile.id.toLowerCase()),

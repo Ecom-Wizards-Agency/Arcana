@@ -311,3 +311,9 @@ export {
   ExportFailedError,
   ReportFailedError,
 } from './errors.js';
+
+export { StreamSubscriptionsClient, validateStreamConfirmation, STREAM_SUBSCRIPTIONS_PATH, STREAM_SUBSCRIPTIONS_MEDIA_TYPE } from './stream-subscriptions.js';
+
+export * from './provider-graph.js';
+export * from './asset-library.js';
+export * from './moderation.js';

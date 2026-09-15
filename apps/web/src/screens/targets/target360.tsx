@@ -1,4 +1,3 @@
-'use client';
 import { AbaEvidencePanel } from '../grid/spapi-evidence';
 import { ProviderEvidencePanel } from '../recommendations/provider-evidence';
 import { ProductShelf } from './product-shelf';
@@ -7,8 +6,9 @@ import { BidCorridorChart, TrendChart } from '@wizard-ads/ui';
 import { corridorReading, corridorSummary, targetBidChecks } from '@wizard-ads/core';
 import { normalizeQueuedBidOverride, parseGridView, serializeGridView, type GridSavedView, type ListingFieldObservation } from '@wizard-ads/shared';
 import type { Target360Model } from './model';
-import styles from './target360.module.css';
 import { CoreReportEvidencePanel } from '../grid/core-report-evidence';
+'use client';
+import styles from './target360.module.css';
 const tabs = ['Corridor', 'Shelf', 'Rank', 'Changes', 'Performance'] as const;
 const defaultTarget: NonNullable<GridSavedView['target']> = { series: { bid: true, realisedCpc: true, suggestedBand: true, maxCpc: true, dailySpend: true, acos: true }, maxCpcExpanded: true };
 const seriesLabels = { bid: 'Bid', realisedCpc: 'Realised CPC', suggestedBand: 'Amazon suggested band', maxCpc: 'Max CPC', dailySpend: 'Daily spend', acos: 'ACOS' };
@@ -155,5 +155,18 @@ export function Target360({ model, currencyCode, back, savedView, onClose, showL
       return <section key={key}><button className="wa-btn" onClick={() => update({ ...view, compare: view.compare!.filter((c) => c !== p) })}>Remove {other?.payload.target.targeting ?? p.targetId}</button>{other ? <BidCorridorChart title={other.payload.target.targeting} ariaLabel={`Compare ${other.payload.target.targeting}`} currencyCode={other.currencyCode} points={other.payload.points} /> : <p aria-busy="true">Loading comparison {p.targetId}…</p>}</section>;
     })}</section> : null}
     <ProviderEvidencePanel evidence={model.providerEvidence} consumer="targets" />
+    <section className={styles.panel} aria-label="Provider associations" data-state={model.graph?.status ?? 'missing'}>
+      <h2>Provider associations</h2>
+      {!model.graph || model.graph.status === 'missing' ? <p>No provider associations measured for this target.</p> : <>
+        <p>{model.graph.status === 'stale' ? 'Provider association evidence is stale.' : model.graph.status === 'partial' ? 'Provider association evidence is partial.' : 'Observed provider associations.'}
+          {' '}{model.graph.rows.length} resolved · {model.graph.unresolvedCount} awaiting endpoint evidence.</p>
+        {model.graph.rows.length>0 ? <table><thead><tr><th>Association</th><th>Entity</th><th>Source</th><th>Observed</th></tr></thead>
+          <tbody>{model.graph.rows.map((row) => <tr key={`${row.relation}:${row.kind}:${row.providerId}:${row.version ?? ''}`}>
+            <td>{row.relation.replaceAll('_',' ')}</td><td>{row.kind.replaceAll('_',' ')} · {row.providerId}{row.version ? ` · ${row.version}` : ''}</td>
+            <td>{row.source === 'marketing_stream' ? 'Amazon Marketing Stream' : 'Amazon Ads API'}</td>
+            <td>{row.sourceEventAt.slice(0,10)}{row.stale ? ' · Stale' : ''}</td>
+          </tr>)}</tbody></table> : null}
+      </>}
+    </section>
   </article>;
 }

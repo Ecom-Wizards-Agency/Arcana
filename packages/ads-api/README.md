@@ -509,3 +509,43 @@ Change History keys include the pinned metadata discriminators (including
 truncation). They remain derived identities with `provider_id_unavailable`
 ambiguity. Identical simultaneous provider events cannot be proven distinct by
 this contract; conflicting payloads under a derived identity remain inspectable.
+## Stream, Asset Library and read graph evidence (WP-313)
+
+The additional clients are pure HTTP adapters with injected transports. Importing
+one does not install a worker source, acquire infrastructure authority or enable a
+schedule. Tests use synthetic fixtures and the public contracts listed below;
+they do not establish hosted capability.
+
+- `StreamSubscriptionsClient`: sponsored `/streams/subscriptions` list/create,
+  exact lookup and archive. The documented update supports status/notes, not a
+  destination change. SNS confirmation validates the approved challenge against
+  exact region/topic/destination and uses a fixed SNS host. Provisioning is a
+  separate default-denied worker authority; an uncertain create is never resent.
+- `AssetLibraryClient`: validated upload, single and asynchronous batch
+  registration, counted search, and exact ID/version lookup. URLs and upload
+  handles remain transient. Registration acceptance, processing, specification
+  checks and moderation are separate observations. No runtime upload/registration
+  admission is installed; campaign write authority cannot authorize these calls.
+- `ModerationClient`: v4 result reads and SD creative moderation. Ad and creative
+  versions require verified associations to Asset Library versions. The public
+  Unified Pre-moderation contract exposes submission; this implementation parses
+  supplied evidence but provides no implicit submission or claimed status reader.
+- `readProviderGraph`: eleven product-specific SB/SD resources, strict counted
+  pages and typed node/edge observations. It does not replace the existing entity
+  mirror or adopt Ads v1. Remaining SB target/negative and localization contracts
+  remain unsupported pending their prerequisites and a named consumer.
+
+The eight additional Stream datasets have a separate canonical fixture envelope
+and durable evidence path. Their provider wire adapters remain unsupported on
+this integration base. A `fixture.v1` binding is synthetic test evidence only;
+production intake does not enable that adapter. Diagnostics are source-labelled;
+SP budget advice awaits the WP-312 provider evidence contract. Clickstream has no
+person-level shape. Prompt/video extension report metadata is explicitly disabled
+and unsupported until provider IDs resolve and the report-family seam is present.
+
+Public contract references:
+
+- [Sponsored Stream subscriptions](https://dtrnk0o2zy01c.cloudfront.net/openapi/en-us/dest/AmazonMarketingStream_prod_3p.json)
+- [Asset Library v3](https://d3a0d0y2hgofx6.cloudfront.net/openapi/en-us/creative-asset-library/creative-asset-library-openapi.yaml)
+- [Moderation](https://d1y2lf8k3vrkfu.cloudfront.net/openapi/en-us/dest/Moderation_prod_3p.json)
+- [Unified Pre-moderation](https://d1y2lf8k3vrkfu.cloudfront.net/openapi/en-us/dest/PreModeration_prod_3p.json)
