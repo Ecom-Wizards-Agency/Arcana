@@ -1,4 +1,5 @@
 'use client';
+import { ProductShelf } from './product-shelf';
 import { useEffect, useRef, useState } from 'react';
 import { BidCorridorChart, TrendChart } from '@wizard-ads/ui';
 import { corridorReading, corridorSummary, targetBidChecks } from '@wizard-ads/core';
@@ -116,7 +117,7 @@ export function Target360({ model, currencyCode, back, savedView, onClose, showL
         <dt>Bid vs band</dt><dd>{summary.bandPosition}</dd><dt>Max CPC</dt><dd>{money(summary.maxCpc)}<small>{summary.bid !== null && maxPlacement ? `${money(summary.bid)} base × (1 + ${maxPlacement.pct}% ${maxPlacement.name.toLowerCase()})` : summary.bid !== null && zeroPlacements ? `${money(summary.bid)} base × (1 + 0% placement uplift)` : 'Placement formula not measured.'}</small></dd>
       </dl><strong>Reading</strong><p>{corridorReading(model.payload.points, money)}</p>{!hasSeries ? <p className={styles.honesty}>The bid series is empty. No reference values or invented numbers are plotted.</p> : null}</aside>
     </section> : <section id={`target-${tab}`} role="tabpanel" className={styles.tabContent}>
-      {tab === 'Shelf' ? <><h2>Shelf</h2><p>Not measured. Listing snapshots are not collected yet.</p></> : null}
+      {tab === 'Shelf' ? <ProductShelf products={model.shelf}/> : null}
       {tab === 'Rank' ? <section aria-label="Rank observations"><h2>Rank observations</h2>{model.ranks.length === 0 ? <p>No rank observations measured for this keyword and profile in this period.</p> : <table><thead><tr><th>Date</th><th>ASIN</th><th>Organic rank</th><th>Sponsored rank</th></tr></thead><tbody>{model.ranks.map((r,i) => <tr key={i}><td>{r.date}</td><td>{r.asin}</td><td>{r.organicRank ?? 'Not measured'}</td><td>{r.sponsoredRank ?? 'Not measured'}</td></tr>)}</tbody></table>}</section> : null}
       {tab === 'Changes' ? <><h2>Changes</h2>{model.changes.length === 0 ? <p>No entity changes recorded in this period.</p> : <table><thead><tr><th>Date</th><th>Field</th><th>Before</th><th>After</th><th>Source</th></tr></thead><tbody>{model.changes.map((r) => <tr key={r.id}><td>{r.date}</td><td>{r.field}</td><td>{r.oldValue ?? 'Not measured'}</td><td>{r.newValue ?? 'Not measured'}</td><td>{r.source}</td></tr>)}</tbody></table>}</> : null}
       {tab === 'Performance' ? <><h2>Performance</h2>{model.performance.length === 0 ? <p>No target facts measured in this period.</p> : <table><thead><tr><th>Date</th><th>Impressions</th><th>Clicks</th><th>Spend</th><th>Sales</th><th>Orders</th><th>ACOS</th><th>Top-of-search share</th></tr></thead><tbody>{model.performance.map((r) => <tr key={r.date}><td>{r.date}</td><td>{r.impressions ?? 'Not measured'}</td><td>{r.clicks ?? 'Not measured'}</td><td>{money(r.spend)}</td><td>{money(r.sales)}</td><td>{r.orders ?? 'Not measured'}</td><td>{percent(r.acos)}</td><td>{percent(r.topOfSearchShare)}</td></tr>)}</tbody></table>}</> : null}

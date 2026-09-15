@@ -36,5 +36,6 @@ export * from './timeline-events.js';
 export * from './sponsored-prompts.js';
 export * from './ad-group-products.js';
 export * from './creative-observations.js';
+export * from './ads-catalogue.js';
 export * from './campaign-builder.js';
 export * from './asset-library.js';

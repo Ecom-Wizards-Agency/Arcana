@@ -11,6 +11,8 @@ interface RegistryEntry {
   exports: readonly { barrel: string; order: number; clause: string; after: string }[];
 }
 export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
+  {"domain": "queries/ads-catalogue", "contract": null, "schema": null, "queries": "queries/ads-catalogue.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 104, "clause": "*", "after": ""}, {"barrel": "worker.ts", "order": 20, "clause": "{ catalogueDigest, catalogueSourceEnabled, persistCatalogueCollection, recordCatalogueCursorFailure, resolveAmazonChangeEvents }", "after": ""}]},
+  {"domain": "schema/ads-catalogue", "contract": null, "schema": "schema/ads-catalogue.ts", "queries": null, "migrationPrefix": "20260915340000", "exports": [{"barrel": "schema/index.ts", "order": 105, "clause": "*", "after": ""}]},
   {domain: "queries/sp-write-application-optimizer", contract: null, schema: null, queries: "queries/sp-write-application-optimizer.ts", migrationPrefix: null, exports: [{barrel: "index.ts", order: 106, clause: "{ prepareOptimizerRetry, readOptimizerRetryExclusions }", after: ""}]},
   {domain: "queries/optimizer-export", contract: null, schema: null, queries: "queries/optimizer-export.ts", migrationPrefix: "20260915190000", exports: [{barrel: "index.ts", order: 105, clause: "*", after: ""}]},
   {"domain": "queries/optimizer-run", "contract": null, "schema": null, "queries": "queries/optimizer-run.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 104, "clause": "*", "after": ""}]},

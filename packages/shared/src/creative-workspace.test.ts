@@ -3,7 +3,7 @@ import { CreativeChangeCertainty, CreativeWorkspace, CreativeWorkspaceCampaign, 
 
 describe('creative workspace contracts', () => {
   it('represents an unmeasured workspace without inventing policy or metrics', () => {
-    const workspace = CreativeWorkspace.parse({ assets: [], campaigns: [], placements: [], changes: [], history: [], events: [], minClicks: null, targetAcos: null });
+    const workspace = CreativeWorkspace.parse({ assets: [], campaigns: [], placements: [], changes: [], listingChanges: [], history: [], events: [], minClicks: null, targetAcos: null });
     expect(workspace.minClicks).toBeNull();
     expect(workspace.targetAcos).toBeNull();
   });

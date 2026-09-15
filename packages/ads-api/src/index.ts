@@ -16,6 +16,7 @@
  * budget usage — are closed here.
  */
 export const PACKAGE_NAME = '@wizard-ads/ads-api' as const;
+export * from './catalogue.js';
 
 // Client
 export { AdsApiClient, amazonAdProduct } from './client.js';

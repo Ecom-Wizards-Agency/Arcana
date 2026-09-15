@@ -2,7 +2,7 @@
 import { verifyScreen } from '../render-test-support';
 import Loading from '../shared-loading';
 import SharedError from '../shared-error';
-import { visualFixture } from '../creative/render-fixture';
+import { visualFixture, listingHistoryFixture } from '../creative/render-fixture';
 import Screen from './view';
 import { descriptor } from './descriptor';
 import { render, screen, within } from '@testing-library/react';
@@ -52,7 +52,7 @@ describe('Creative detail tabs', () => {
     expect(screen.getByRole('heading', { name: 'Placement facts are not measured' })).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Campaign placement facts' })).toBeNull();
   });
-  it('renders stored exact, window and first certainty while listing has no source', () => {
+  it('renders stored exact, window and first certainty while listing evidence is missing', () => {
     render(<Screen data={visualFixture('history')} />);
     const table = screen.getByRole('region', { name: 'Creative change history' });
     expect(within(table).getAllByRole('row')).toHaveLength(4);
@@ -60,8 +60,8 @@ describe('Creative detail tabs', () => {
     for (const text of ['exact', 'window · 4 days', 'first']) expect(within(table).getByText(text)).toBeTruthy();
     expect(within(table).queryByText('Listing')).toBeNull();
     expect(within(table).queryByText('Promotion')).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Needs ingestion: listing snapshots' })).toBeTruthy();
-    expect(screen.getByText('The judgement is made once when the change is recorded and stored, never recomputed on read.')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Listing changes not measured' })).toBeTruthy();
+    expect(screen.getByText(/Listing rows apply the same certainty rule/)).toBeTruthy();
   });
   it('renders recorded change values as prose in the profile currency, preserving unknowns and zero', () => {
     const data = visualFixture('history');
@@ -87,4 +87,13 @@ describe('Creative detail tabs', () => {
     expect(rows).toHaveLength(cases.length);
     expect(rows.map((row) => within(row).getAllByRole('cell')[3]!.textContent)).toEqual(cases.map((row) => row[3]));
   });
+});
+
+it('renders two actual adjacent listing changes with exact and window certainty',()=>{
+  render(<Screen data={listingHistoryFixture()}/>);
+  const region=screen.getByRole('region',{name:'Amazon listing observations'});
+  expect(within(region).getAllByRole('row')).toHaveLength(3);
+  expect(region.textContent).toContain('exact');expect(region.textContent).toContain('window');expect(region.textContent).toContain('4 days');
+  expect(within(region).getAllByText('Amazon Product Metadata v1 observation')).toHaveLength(2);
+  expect(region.textContent).toContain('Synthetic revision 0');expect(region.textContent).toContain('Synthetic revision 1');
 });

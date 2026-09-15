@@ -19,7 +19,7 @@ function date(value: string | undefined): string | null {
 }
 export function queueCursor(query: ScreenParams['searchParams']) {
   const observedAt = one(query['before_at']), id = one(query['before_id']);
-  if (!observedAt || !id || (!TimeMachineEntryId.safeParse(id).success && !/^(?:queued|restore):[0-9a-f-]{36}$/.test(id))) return null;
+  if (!observedAt || !id || (!TimeMachineEntryId.safeParse(id).success && !/^(?:amazon|queued|restore):[0-9a-f-]{36}$/.test(id))) return null;
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/.test(observedAt) || !date(observedAt.slice(0,10)) || !Number.isFinite(Date.parse(observedAt))) return null;
   const instant = TimeMachineInstant.safeParse(observedAt);
   return instant.success ? { observedAt: instant.data, id } : null;

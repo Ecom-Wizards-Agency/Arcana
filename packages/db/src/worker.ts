@@ -2,3 +2,4 @@
 export { getIntegrationSecret } from './queries/integrations.js';
 export * from './queries/amazon-connection-worker.js';
 export { lockPrivilegedOrgEditor } from './queries/privileged-actor.js';
+export { catalogueDigest, catalogueSourceEnabled, persistCatalogueCollection, recordCatalogueCursorFailure, resolveAmazonChangeEvents } from './queries/ads-catalogue.js';

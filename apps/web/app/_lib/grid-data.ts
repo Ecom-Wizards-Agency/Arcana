@@ -510,7 +510,9 @@ function bidCorridorPosition(
 
 async function loadProducts(handle: GridDataHandle, options: LoadGridOptions, limit: number): Promise<GridRow[]> {
   const { orgId, profileId, period, comparison } = options;
-  const rows = await handle.sql<(AggregateRow & { asin: string; product_name: string | null })[]>`
+  const rows = await handle.sql<(AggregateRow & { asin: string; product_name: string | null; catalogue_marketplace: string | null;
+    catalogue_observed_at: string | null; catalogue_title: string | null; catalogue_availability: string | null;
+    catalogue_price: number | null; catalogue_bsr: number | null })[]>`
     with products as (
       select asin,max(name) as product_name from public.product_ads
       where org_id=${orgId} and profile_id=${profileId} and asin is not null and deleted_at is null group by asin
@@ -522,7 +524,20 @@ async function loadProducts(handle: GridDataHandle, options: LoadGridOptions, li
       select m.asin, ${windowSums(handle, period, comparison)} from public.fact_sp_target_daily f
       join mapped m on m.campaign_id=f.campaign_id and m.ad_group_id=f.ad_group_id
       where f.org_id=${orgId} and f.profile_id=${profileId} and (date between ${period.start} and ${period.end} or date between ${comparison.start} and ${comparison.end}) group by m.asin
-    ) select p.asin,p.product_name,f.impressions,f.clicks,f.spend,f.sales,f.orders,f.units,f.c_days,f.c_impressions,f.c_clicks,f.c_spend,f.c_sales,f.c_orders,f.c_units from products p left join facts f on f.asin=p.asin order by p.asin limit ${limit}`;
+    ) select p.asin,coalesce(case when m.snapshot->'title'->>'state'='returned' then m.snapshot->'title'->>'value' end,p.product_name) as product_name,
+      m.marketplace_id as catalogue_marketplace,m.acquired_at::text as catalogue_observed_at,
+      case when m.snapshot->'title'->>'state'='returned' then m.snapshot->'title'->>'value' end as catalogue_title,
+      case when m.snapshot->'availability'->>'state'='returned' then m.snapshot->'availability'->>'value' end as catalogue_availability,
+      case when m.snapshot->'price'->>'state'='returned' then (m.snapshot#>>'{price,value,amount}')::float8 end as catalogue_price,
+      case when m.snapshot->'bestSellerRank'->>'state'='returned' then (m.snapshot#>>'{bestSellerRank,value}')::float8 end as catalogue_bsr,
+      f.impressions,f.clicks,f.spend,f.sales,f.orders,f.units,f.c_days,f.c_impressions,f.c_clicks,f.c_spend,f.c_sales,f.c_orders,f.c_units
+      from products p left join facts f on f.asin=p.asin
+      left join lateral(select marketplace_id,acquired_at,snapshot from public.ads_product_metadata_snapshots
+        where org_id=${orgId} and profile_id=${profileId} and asin=p.asin and ad_product='SP' and public.ads_catalogue_receipt_is_sealed(receipt_id)
+          and (select count(distinct scoped.marketplace_id) from public.ads_product_metadata_snapshots scoped
+            where scoped.org_id=${orgId} and scoped.profile_id=${profileId} and scoped.asin=p.asin and scoped.ad_product='SP')=1
+        order by acquired_at desc,retrieved_at desc,id desc limit 1)m on true
+      order by p.asin limit ${limit}`;
   const links = await listMarketPositionLinks(handle, orgId, profileId);
   const asins = [...new Set([...rows.map((row) => row.asin), ...links.flatMap((link) => [link.ownAsin, link.competitorAsin])])];
   const series = await readMarketRankSeries(handle, orgId, asins, period.end, period.end);
@@ -532,6 +547,9 @@ async function loadProducts(handle: GridDataHandle, options: LoadGridOptions, li
     const own = categories.length === 1 ? series.find((item) => item.asin === row.asin && item.category === categories[0]) : undefined;
     const competitors = series.filter((item) => tracked.some((link) => link.competitorAsin === item.asin && link.category === item.category));
     return { id: `product:${row.asin}`, dimensions: { asin: row.asin, product_name: row.product_name,
+      catalogue_marketplace: row.catalogue_marketplace, catalogue_observed_at: row.catalogue_observed_at,
+      catalogue_title: row.catalogue_title, catalogue_availability: row.catalogue_availability,
+      catalogue_price: row.catalogue_price, catalogue_bsr: row.catalogue_bsr,
       gap: own ? marketPositionGap(own, competitors, period.end) : null, ppc_measured: row.spend !== null },
       ...measurementOf(row), totals: totalsOf(row), comparison: comparisonOf(row), currencyCode: options.currencyCode };
   });

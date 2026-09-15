@@ -46,3 +46,4 @@ export * from './market-position.js';
 export * from './timeline-events.js';
 export * from './sponsored-prompts.js';
 export * from './campaign-builder.js';
+export * from './ads-catalogue.js';

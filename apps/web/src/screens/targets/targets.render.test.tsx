@@ -1,3 +1,4 @@
+import { catalogueEvidenceFixtures } from '../grid/catalogue-fixtures';
 // @vitest-environment jsdom
 import { expect, it } from 'vitest';
 import { serializeGridView } from '@wizard-ads/shared';
@@ -36,7 +37,8 @@ it('renders each data tab, shelf gap and all fact/change rows', () => {
   fireEvent.click(screen.getByRole('tab',{name:'Performance'}));
   expect(host.container.querySelectorAll('tbody tr')).toHaveLength(ready.performance.length);
   fireEvent.click(screen.getByRole('tab',{name:'Shelf'}));
-  expect(host.container.textContent).toContain('Listing snapshots are not collected');
+  expect(host.container.textContent).toContain('Product evidence is missing');
+  expect(host.container.textContent).toContain('does not establish asset moderation approval');
 });
 it('blocks a protected decrease until an override reason is recorded', () => {
   render(<Screen data={ready} />);
@@ -81,4 +83,17 @@ it('renders authoritative zero-uplift CPC separately from missing placement evid
   const maxCpc = Array.from(view.container.querySelectorAll('dt')).find((node) => node.textContent === 'Max CPC');
   expect(maxCpc?.nextElementSibling?.textContent).toContain('Not measured');
   expect(view.container.textContent).not.toContain('Placement uplifts: 0%.');
+});
+
+it('renders nine scoped Shelf evidence rows including refusal, stale verdicts and SKU ambiguity',()=>{
+  const products=catalogueEvidenceFixtures();
+  const host=render(<Screen data={{...ready,shelf:products}}/>);
+  fireEvent.click(screen.getByRole('tab',{name:'Shelf'}));
+  const rows=host.container.querySelectorAll('[aria-label="Product evidence"] tbody tr');
+  expect(rows).toHaveLength(9);
+  expect([...rows].map(row=>row.children[2]?.textContent)).toEqual(['missing','missing','partial','partial','measured','measured','stale','stale','partial']);
+  expect(rows[7]!.textContent).toContain('Unavailable (stale)');expect(rows[8]!.textContent).toContain('Ambiguous SKU evidence');
+  expect(rows[8]!.textContent).toContain('sku-a');expect(rows[8]!.textContent).toContain('sku-b');
+  expect(rows[5]!.textContent).toContain('Measured product reason 5');
+  expect(host.container.textContent).toContain('does not establish asset moderation approval');
 });

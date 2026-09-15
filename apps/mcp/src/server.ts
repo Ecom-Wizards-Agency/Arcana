@@ -20,6 +20,8 @@ import type { EntityLevel } from './catalog.js';
 import { toCsv } from './csv.js';
 import {
   getLatestRecommendations,
+  getAmazonChangeHistory,
+  getProductEvidence,
   getProfileContext,
   getSyncStatus,
   listProfiles,
@@ -425,6 +427,22 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
       };
     }),
   );
+
+  server.registerTool('get_product_evidence',{
+    title:'Product evidence',description:'Current Product Metadata and Product Eligibility for exact profile, marketplace, ASIN and ad-product scope. Missing and stale evidence remain explicit.',
+    inputSchema:{profile_id:profileIdSchema,marketplace_id:z.string().min(1),asins:z.array(z.string().min(1)).min(1).max(config.maxRows),ad_product:z.enum(['SP','SB','SD']),stale_after:z.iso.datetime()},annotations:{readOnlyHint:true},
+  },audited(context,'get_product_evidence',async(args:{profile_id:string;marketplace_id:string;asins:string[];ad_product:'SP'|'SB'|'SD';stale_after:string},operation)=>{
+    const profile=await resolveProfile(operation.handle,operation.scope,args.profile_id);const rows=await getProductEvidence(operation.handle,operation.scope,profile,{marketplaceId:args.marketplace_id,asins:args.asins,adProduct:args.ad_product,staleAfter:args.stale_after});
+    return {payload:{profileId:profile.id,marketplaceId:args.marketplace_id,rows},summary:{rows:rows.length},profileId:profile.id};
+  }));
+
+  server.registerTool('get_amazon_change_history',{
+    title:'Amazon observed change history',description:'Append-only Amazon Ads Change History observations with provider provenance, derived identity quality, resolution state and no local actor or restore authority.',
+    inputSchema:{profile_id:profileIdSchema,marketplace_id:z.string().min(1),from:z.iso.datetime().optional(),to:z.iso.datetime().optional(),limit:limitSchema},annotations:{readOnlyHint:true},
+  },audited(context,'get_amazon_change_history',async(args:{profile_id:string;marketplace_id:string;from?:string;to?:string;limit:number},operation)=>{
+    const profile=await resolveProfile(operation.handle,operation.scope,args.profile_id);const rows=await getAmazonChangeHistory(operation.handle,operation.scope,profile,{marketplaceId:args.marketplace_id,from:args.from,to:args.to,limit:args.limit});
+    return {payload:{profileId:profile.id,marketplaceId:args.marketplace_id,rows},summary:{rows:rows.length},profileId:profile.id};
+  }));
 
   server.registerTool(
     'get_entity_data',

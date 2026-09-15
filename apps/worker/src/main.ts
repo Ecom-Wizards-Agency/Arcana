@@ -3,6 +3,7 @@ import { registerTargetTranslation } from './translation/register.js';
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
 import { runSpApiConnectionPass } from './spapi-connections.js';
 import { registerIntegrationSources } from './integration-sources.js';
+import { CatalogueSourceRunner, registerCatalogueSources } from './catalogue-sources.js';
 import { createKeywordMirrorCapability, createSpWriteWorker } from './sp-write-outbox/composition.js';
 import { startSpWritePolling } from './sp-write-outbox/polling.js';
 import { spWritePolicyFromEnv } from './sp-write-outbox/policy.js';
@@ -58,6 +59,10 @@ const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
   'report.fetch',
   'report.unified.advance',
   'creative.sync',
+  'ads.product_metadata.sync',
+  'ads.product_eligibility.sync',
+  'ads.validation_configurations.sync',
+  'ads.change_history.sync',
 ]);
 
 const config = configFromEnv();
@@ -68,6 +73,7 @@ if (!Number.isFinite(reportStaleHours) || reportStaleHours <= 0) {
 const handle = createDb({ connectionString: config.databaseUrl, max: config.maxConcurrentJobs + 2 });
 const store = new PostgresWorkerStore(handle, undefined, {
   claimProtocol: config.claimProtocol,
+  catalogueDeploymentEnabled: () => config.catalogueSourcesEnabled,
   ...((config.spWrites.dispatchEnabled || config.spWrites.reconcileEnabled)
     ? { keywordMirror: createKeywordMirrorCapability(handle) } : {}),
 });
@@ -152,7 +158,13 @@ const worker = new SyncWorker({
   sbVideo,
   unifiedReporting,
   integrations: { marketingStreamNormalize: integrations.marketingStreamNormalize },
-  sources: (registry) => { if (adsApi) registerAssetLibrarySource(registry, handle, adsApi); registerIntegrationSources(registry, integrations); registerTargetTranslation(registry, handle); },
+  sources: (registry) => {
+    if (adsApi) registerAssetLibrarySource(registry, handle, adsApi);
+    registerIntegrationSources(registry, integrations);
+    registerCatalogueSources(registry, new CatalogueSourceRunner({ handle, client: adsApi,
+      deploymentEnabled: () => config.catalogueSourcesEnabled }));
+    registerTargetTranslation(registry, handle);
+  },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,
   pollIntervalMs: config.pollIntervalMs,
