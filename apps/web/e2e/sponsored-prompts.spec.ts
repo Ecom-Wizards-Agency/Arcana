@@ -70,6 +70,9 @@ test('prompt import preserves observations, detects returns and keeps visits per
     await page.goto(route);
     const returned = page.getByRole('row').filter({ hasText: 'Synthetic returning prompt' });
     await expect(returned).toContainText(/returned/i);
+    const dateWords = (daysAgo: number) => new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(new Date(stamp(daysAgo)));
+    await expect(returned).toContainText(`back ${dateWords(2)}`);
+    await expect(page.getByRole('heading', { name: `WHAT CHANGED SINCE ${dateWords(3)}`, exact: true })).toBeVisible();
     await expect(page.getByRole('row').filter({ hasText: 'Synthetic newly sponsored prompt' })).toContainText(/newly sponsored/i);
     await expect(page.getByRole('row').filter({ hasText: 'Synthetic unchanged prompt' })).toHaveCount(0);
     await page.getByRole('button', { name: /Expand/ }).click();

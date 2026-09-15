@@ -14,7 +14,7 @@ import { CreativeThumbnail } from './presentation';
 verifyScreen(descriptor, [
   { state: 'loading', name: 'renders the route loading boundary', render: () => <Loading />, text: '' },
   { state: 'error', name: 'renders the shared error boundary with its reference', render: () => <SharedError error={Object.assign(new Error('Synthetic failure'), { digest: 'synthetic-reference' })} reset={() => { }} />, text: 'synthetic-reference' },
-  { state: 'ready', name: 'renders the screen with synthetic data', render: () => <Screen data={ready} />, text: "Creative Performance" },
+  { state: 'ready', name: 'renders the screen with synthetic data', render: () => <Screen data={ready} />, text: "Creative Performance · 0 Sponsored Brands video creatives · 1 Aug 2026 – 29 Aug 2026" },
   { state: 'gated', name: 'explains an unavailable database', render: () => <Screen data={{ view: 'gated', props: { entry: { state: 'no-database' } } }} />, text: 'database' },
   { state: 'gated', name: 'explains missing organization membership', render: () => <Screen data={{ view: 'gated', props: { entry: { state: 'no-org', context: { ...context, active: null, memberships: [] } } } }} />, text: 'organisation' },
   { state: 'empty', name: 'shows an empty profile roster without invented data', render: () => <Screen data={{ view: 'empty', props: {} }} />, text: "profiles" },
@@ -22,6 +22,15 @@ verifyScreen(descriptor, [
 ]);
 
 describe('Creatives list and overview evidence', () => {
+  it('formats the window, first observation and sync evidence in words', () => {
+    render(renderVisualFixture('selected-asset'));
+    const host = screen.getByTestId('creative-screen');
+    expect(host.textContent).toContain('1 Aug 2026 – 29 Aug 2026');
+    expect(host.textContent).toContain('first seen 22 Jul 2026');
+    expect(host.textContent).toContain('Observed 29 Aug 2026, 12:00 UTC');
+    expect(host.textContent).toContain('Evidence date 1 Aug 2026 – 29 Aug 2026');
+    expect(host.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+  });
   it('names the hosted pilot gate and keeps its sync link', () => {
     render(renderVisualFixture('pilot-off'));
     expect(screen.getByTestId('creative-pilot-gated').textContent).toContain('creativeSyncPilotFromEnv');

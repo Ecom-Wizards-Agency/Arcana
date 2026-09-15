@@ -22,6 +22,9 @@ test('creative workspace preserves selection, filters, evidence and detail route
   const query = new URLSearchParams({ profile: state.fixtureProfileId, ...period });
   await page.goto(`/creative?${query}`);
   await expect(page.getByTestId('creative-screen')).toBeVisible();
+  const dateWords = (value: string) => new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(new Date(value));
+  const windowWords = period.from === period.to ? dateWords(period.from) : `${dateWords(period.from)} – ${dateWords(period.to)}`;
+  await expect(page.getByTestId('creative-screen')).toContainText(windowWords);
   await expect(page.getByRole('button', { name: /Open in-depth/ })).toBeDisabled();
   await expect(page.getByText('Destination not decided', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: /View on Amazon/ })).toBeDisabled();
@@ -64,6 +67,7 @@ test('creative workspace preserves selection, filters, evidence and detail route
   await page.getByRole('link', { name: 'Compare creatives', exact: true }).click();
   await expect(page).toHaveURL(new RegExp('/creative/campaign/' + CREATIVE_CAMPAIGN_ID));
   await expect(page.getByText(/1 keyword.*2 ad groups.*2 creatives/)).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Creative test', exact: true })).toContainText(windowWords);
   await expect(page.getByRole('heading', { name: /floor.*not yet measured|not yet measured.*floor/i })).toBeVisible();
   await page.goto(`/creative/eligibility?${query}`);
   await expect(page.getByText('Awaiting review', { exact: true })).toBeVisible();

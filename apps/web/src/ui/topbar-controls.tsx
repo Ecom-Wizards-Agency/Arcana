@@ -4,6 +4,8 @@
 import type { FreshnessAssessment } from '@wizard-ads/ui';
 import type { VerdictChip } from '@wizard-ads/crosscheck-cli/pure';
 import { addDays, periodFromParams, periodFromParamsThroughToday, precedingPeriod, todayIsoInTimeZone, type Period } from '../../app/_lib/periods';
+import { formatShellDate, validShellDate } from './date-format';
+export { formatShellDate } from './date-format';
 import { comparisonLengthState, dateRangeHref } from './date-range';
 import { DateRangePicker } from './date-range-picker';
 import { useShellEvidence, useShellEvidenceLoading } from './shell-evidence';
@@ -301,12 +303,6 @@ function EvidenceStatusChips() {
   return <ShellStatusChips freshness={evidence?.freshness ?? null} crosscheck={evidence?.crosscheck ?? null} loading={loading} />;
 }
 
-function validShellDate(value: string | undefined): value is string {
-  if (value === undefined || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const parsed = new Date(`${value}T00:00:00Z`);
-  return Number.isFinite(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
-}
-
 /** Match the existing screen loaders' complete-day and current-day windows. */
 export function resolveShellPeriod(path: string, params: Readonly<Record<string, string | undefined>>, today: string) {
   const from = validShellDate(params['from']) ? params['from'] : undefined;
@@ -321,11 +317,6 @@ export function resolveShellPeriod(path: string, params: Readonly<Record<string,
   return { period: includeToday ? periodFromParamsThroughToday(input, today) : periodFromParams(input, today), includeToday };
 }
 
-export function formatShellDate(value: string): string {
-  if (!validShellDate(value)) return 'Date unavailable';
-  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
-    .format(new Date(`${value}T00:00:00Z`));
-}
 const windowWords = (period: Period): string => `${formatShellDate(period.start)} – ${formatShellDate(period.end)}`;
 
 export function ShellDateControls({ path, period, comparison, today, preserved = {}, includeToday = false }: {

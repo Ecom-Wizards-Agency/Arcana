@@ -13,14 +13,21 @@ verifyScreen(descriptor, [
   { state: 'gated', name: 'explains the unavailable rollout and database', render: () => renderVisualFixture('gated'), text: 'hosted Sponsored prompts rollout' },
   { state: 'empty', name: 'renders absent profiles', render: () => renderVisualFixture('empty-profile'), text: 'No profiles yet' },
   { state: 'not-measured', name: 'renders empty before import without invented costs', render: () => renderVisualFixture('empty'), text: 'No prompt observations have been imported' },
-  { state: 'ready', name: 'renders newly sponsored', render: () => renderVisualFixture('newly-sponsored'), text: 'newly sponsored' },
-  { state: 'ready', name: 'renders returned with the return date', render: () => renderVisualFixture('returned'), text: 'back 2026-06-07' },
+  { state: 'ready', name: 'renders newly sponsored', render: () => renderVisualFixture('newly-sponsored'), text: 'Synthetic prompt 1newly sponsored5 Jun 2026' },
+  { state: 'ready', name: 'renders returned with the return date', render: () => renderVisualFixture('returned'), text: 'back 7 Jun 2026' },
   { state: 'ready', name: 'renders unchanged collapsed', render: () => renderVisualFixture('unchanged-collapsed'), text: 'Expand', absent: ['tbody'] },
-  { state: 'ready', name: 'renders unchanged expanded', render: () => renderVisualFixture('unchanged-expanded'), text: 'Synthetic prompt 3' },
+  { state: 'ready', name: 'renders unchanged expanded', render: () => renderVisualFixture('unchanged-expanded'), text: 'Synthetic prompt 3live2 Jun 2026' },
   { state: 'ready', name: 'renders the observation-derived loop cost', render: () => renderVisualFixture('loop-cost'), text: '2 returns per paused prompt' },
   { state: 'ready', name: 'renders the first visit without a fabricated marker', render: () => renderVisualFixture('first-visit'), text: 'first visit; no previous visit marker' },
 ]);
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+it('formats observation and visit dates while preserving the source timestamp', () => {
+  const host = rendered(renderVisualFixture('newly-sponsored'));
+  expect(host.querySelector('time')?.textContent).toBe('7 Jun 2026, 00:00 UTC');
+  expect(host.querySelector('time')?.getAttribute('datetime')).toBe(ready.snapshot.latestObservationAt);
+  expect(host.textContent).toContain('WHAT CHANGED SINCE 3 Jun 2026');
+  expect(host.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+});
 it('explains viewer access without attempting to save a visit or showing an error', () => {
   const fetcher = vi.fn(async () => new Response('{}', { status: 403 }));
   vi.stubGlobal('fetch', fetcher);

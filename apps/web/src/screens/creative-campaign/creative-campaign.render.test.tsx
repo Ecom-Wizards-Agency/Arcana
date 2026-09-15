@@ -13,7 +13,7 @@ verifyScreen(descriptor, [
   { state: 'gated', name: 'keeps the membership gate explicit', render: () => <Screen data={visualFixture('membership-gated')} />, text: 'database' },
   { state: 'empty', name: 'keeps the absent profile roster explicit', render: () => <Screen data={visualFixture('no-profiles')} />, text: 'No profiles yet' },
   { state: 'not-measured', name: 'renders missing source evidence', render: () => <Screen data={visualFixture('floor-unmeasured')} />, text: 'not yet measured' },
-  { state: 'ready', name: 'renders its complete synthetic state', render: () => <Screen data={visualFixture('campaign-clean')} />, text: 'Creative test —' },
+  { state: 'ready', name: 'renders its complete synthetic state', render: () => <Screen data={visualFixture('campaign-clean')} />, text: 'Creative test — synthetic comparison phraseSynthetic comparison campaign · 1 Aug 2026 – 29 Aug 2026' },
 ]);
 
 describe('Creative test evidence', () => {

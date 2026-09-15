@@ -1,3 +1,4 @@
+import { formatShellDateRange, formatShellTimestamp } from '../../ui/date-format';
 import type { readCreativePerformance } from '@wizard-ads/db';
 import { CreativePerformanceExplorer } from './attribution-evidence';
 import styles from '../../../app/creative/creative.module.css';
@@ -16,6 +17,7 @@ export function CreativeLifecycleStatusView({
   profileId: string;
 }) {
   const lifecycle = creativeLifecycle(evidence);
+  const [coverageStart, coverageEnd] = lifecycle.coverage?.split(' to ') ?? [];
   return (
     <section
       aria-label="Creative synchronization evidence"
@@ -45,10 +47,10 @@ export function CreativeLifecycleStatusView({
         {lifecycle.observedAt === null ? null : (
           <span>
             Observed{' '}
-            <time dateTime={lifecycle.observedAt}>{formatObserved(lifecycle.observedAt, timezone)}</time>
+            <time dateTime={lifecycle.observedAt}>{formatShellTimestamp(lifecycle.observedAt, timezone)}</time>
           </span>
         )}
-        {lifecycle.coverage === null ? null : <span>Evidence date {lifecycle.coverage}</span>}
+        {coverageStart === undefined ? null : <span>Evidence date {formatShellDateRange(coverageStart, coverageEnd ?? coverageStart)}</span>}
         <a href={`/sync-status?profile=${profileId}`}>Sync status →</a>
       </div>
     </section>
@@ -90,12 +92,4 @@ export function CreativeResultsView({
   ) : (
     <CreativePerformanceExplorer rows={resolved} currencyCode={currencyCode} />
   );
-}
-
-function formatObserved(value: string, timezone: string): string {
-  return new Intl.DateTimeFormat('en-US', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-    timeZone: timezone,
-  }).format(new Date(value));
 }

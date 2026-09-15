@@ -1,3 +1,4 @@
+import { formatShellDateRange } from '../../ui/date-format';
 import { evaluateCreativeTest } from '@wizard-ads/core';
 import type { CreativeMetricVerdict, CreativeWorkspace } from '@wizard-ads/shared';
 import { LinkButton } from '../../ui/primitives';
@@ -13,7 +14,7 @@ export function CreativeCampaignView({ workspace, campaignId, from, to, currency
   const total = (metric: 'impressions' | 'clicks' | 'purchases' | 'cost' | 'sales') => measured.length === test.rows.length && measured.length > 0 ? measured.reduce((sum, row) => sum + row.performance![metric], 0) : null;
   const verdict = (metric: CreativeMetricVerdict) => metric.separates === null ? `${metric.metric.toUpperCase()} is not yet measured` : `${metric.metric.toUpperCase()} ${metric.separates ? 'separates these creatives' : 'does not separate these creatives'}`;
   return <section aria-label="Creative test"><LinkButton size="sm" href={`/creative?${query}`}>← All creatives</LinkButton>
-    <div className={styles.sectionHeader}><h2>Creative test — {campaign.keywordText ?? 'Keyword unresolved'}</h2></div><p className={styles.muted}>{campaign.name ?? campaign.campaignId} · {from} – {to} · {test.structure.adGroupCount} ad groups · matched observational comparison</p>
+    <div className={styles.sectionHeader}><h2>Creative test — {campaign.keywordText ?? 'Keyword unresolved'}</h2></div><p className={styles.muted}>{campaign.name ?? campaign.campaignId} · {formatShellDateRange(from, to)} · {test.structure.adGroupCount} ad groups · matched observational comparison</p>
     <EvidenceCard title={`${test.structure.state} · ${integer(test.structure.keywordCount)} keyword${test.structure.keywordCount === 1 ? '' : 's'} · ${test.structure.adGroupCount} ad groups · ${test.structure.creativeCount} creatives`} tone={test.structure.state === 'clean' ? 'info' : 'warn'}>
       {test.structure.state === 'clean' ? <p>1 creative per ad group. The convention holds, so each row below is one creative and nothing else.</p> : <><p>{test.structure.state === 'unmeasured' ? 'The available evidence cannot establish the testing convention.' : 'The campaign has drifted from the testing convention.'} Every observed row remains visible.</p><ul>{test.structure.issues.map((issue) => <li key={issue}>{issue}</li>)}</ul></>}
     </EvidenceCard>
