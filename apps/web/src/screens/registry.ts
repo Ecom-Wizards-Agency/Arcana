@@ -3,6 +3,12 @@ import type { ScreenMetadata } from './types';
 import { descriptor as brand_lens } from './brand-lens/descriptor';
 import { descriptor as bugs } from './bugs/descriptor';
 import { descriptor as campaigns } from './campaigns/descriptor';
+import { descriptor as campaigns_assets } from './campaigns-assets/descriptor';
+import { descriptor as campaigns_draft } from './campaigns-draft/descriptor';
+import { descriptor as campaigns_eligibility } from './campaigns-eligibility/descriptor';
+import { descriptor as campaigns_naming } from './campaigns-naming/descriptor';
+import { descriptor as campaigns_new } from './campaigns-new/descriptor';
+import { descriptor as campaigns_update } from './campaigns-update/descriptor';
 import { descriptor as cockpit } from './cockpit/descriptor';
 import { descriptor as connect_claude } from './connect-claude/descriptor';
 import { descriptor as creative } from './creative/descriptor';
@@ -67,6 +73,12 @@ export const SCREEN_REGISTRY: readonly ScreenMetadata[] = [
   brand_lens,
   bugs,
   campaigns,
+  campaigns_assets,
+  campaigns_draft,
+  campaigns_eligibility,
+  campaigns_naming,
+  campaigns_new,
+  campaigns_update,
   cockpit,
   connect_claude,
   creative,

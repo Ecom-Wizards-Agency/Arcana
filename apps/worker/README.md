@@ -583,3 +583,12 @@ allowlist. Inject credentials through the approved runtime. The smoke limits its
 consumer to those two plan IDs, refuses stale/conflicting evidence, observes both
 legs and verifies that the bounded authorization closes. Its unit tests exercise
 only local-file refusal and validation; they never invoke the live entry.
+
+### Campaign builder asset snapshots
+
+`asset-library.search` runs on the general worker in the `integrations` lane. Include
+it in an explicit `WORKER_JOB_TYPES` list, or leave the general worker list unset.
+The campaign builder Refresh action admits this scoped read job. It reads the
+Creative Asset Library and current Sponsored Brands ads, persists an immutable
+snapshot, and verifies source, parsed and stored counts. It never uploads assets
+or creates campaigns. Queue replay reuses the original observation and timestamp.

@@ -1,3 +1,4 @@
+import { registerAssetLibrarySource } from './asset-library.js';
 import { registerTargetTranslation } from './translation/register.js';
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
 import { runSpApiConnectionPass } from './spapi-connections.js';
@@ -51,6 +52,7 @@ import type { JobType } from '@wizard-ads/shared';
 
 const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
   'entity.sync',
+  'asset-library.search',
   'report.request',
   'report.poll',
   'report.fetch',
@@ -150,7 +152,7 @@ const worker = new SyncWorker({
   sbVideo,
   unifiedReporting,
   integrations: { marketingStreamNormalize: integrations.marketingStreamNormalize },
-  sources: (registry) => { registerIntegrationSources(registry, integrations); registerTargetTranslation(registry, handle); },
+  sources: (registry) => { if (adsApi) registerAssetLibrarySource(registry, handle, adsApi); registerIntegrationSources(registry, integrations); registerTargetTranslation(registry, handle); },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,
   pollIntervalMs: config.pollIntervalMs,

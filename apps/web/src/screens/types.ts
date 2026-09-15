@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react';
 import type { ScreenActor } from '../server/page-read';
 
-export type ScreenState = 'loading' | 'empty' | 'error' | 'not-measured' | 'gated' | 'stale' | 'refused';
+export type ScreenState = 'loading' | 'empty' | 'error' | 'not-measured' | 'gated' | 'stale' | 'refused' | 'blocked';
 export type ScreenSearchParams = Record<string, string | string[] | undefined>;
 export interface ScreenParams {
   searchParams: ScreenSearchParams;

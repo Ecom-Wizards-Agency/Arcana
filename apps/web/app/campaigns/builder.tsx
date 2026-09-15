@@ -1,6 +1,7 @@
 'use client';
 
 /** Guided campaign planning, preflight, and export-only bulksheet handoff. */
+import { CampaignEndDateInput } from '../../src/screens/campaigns-update/date-input';
 import { useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import {
@@ -420,11 +421,11 @@ function UpdateFields({
               {BIDDING_STRATEGIES.map((strategy) => <option key={strategy}>{strategy}</option>)}
             </Select>
           </Field>
-          <Field label="End date" htmlFor="update-end-date" hint="Leave blank to keep the current date.">
-            <Input id="update-end-date" type="date" disabled={state.clearEndDate} value={state.endDate} onChange={(event) => update('endDate', event.target.value)} />
+          <Field label="End date" htmlFor="update-end-date" hint="Day, month name and year. Leave blank to keep the current date.">
+            <CampaignEndDateInput id="update-end-date" disabled={state.clearEndDate} value={state.endDate} onChange={(value) => update('endDate', value)} />
           </Field>
         </div>
-        <label className="wa-row" htmlFor="update-clear-date">
+        <label className="wa-row" style={{ display: 'flex', alignItems: 'center', gap: 8 }} htmlFor="update-clear-date">
           <Checkbox id="update-clear-date" checked={state.clearEndDate} onChange={(event) => update('clearEndDate', event.target.checked)} />
           <span>Explicitly clear the current end date</span>
         </label>
@@ -745,7 +746,7 @@ export function CampaignBuilder({
             <div className="wa-stack" style={{ gap: '0.75rem' }}>
               {advancedDocument === null && validationIssues.length > 0 ? (
                 <Banner tone="warn" role="status" data-testid="campaign-validation">
-                  {validationIssues.length} field {validationIssues.length === 1 ? 'needs' : 'fields need'} attention. First: {validationIssues[0]}
+                  {validationIssues.length} {validationIssues.length === 1 ? 'field needs' : 'fields need'} attention. First: {validationIssues[0]}
                 </Banner>
               ) : null}
               <div className="wa-row">
@@ -760,7 +761,7 @@ export function CampaignBuilder({
                   disabled={busy !== null || preview?.exportable !== true}
                   onClick={() => void request('xlsx')}
                 >
-                  {busy === 'xlsx' ? 'Building…' : 'Download bulksheet'}
+                  {busy === 'xlsx' ? 'Building…' : 'Export bulk sheet'}
                 </Button>
                 <span className="wa-hint">Manual upload file · no Amazon API write</span>
               </div>

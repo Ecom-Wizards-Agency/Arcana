@@ -803,6 +803,26 @@ begin
     insert into public.sponsored_prompt_visits(org_id,profile_id,user_id,last_visited_at)
     values(v_org,v_profile,p_user_id,least(p_date::timestamptz,statement_timestamp()));
   end if;
+  -- Inert WP-270 storage-policy rows. Application draft validation has separate
+  -- complete synthetic graphs; this placeholder cannot pass plan admission.
+  if to_regclass('public.campaign_drafts') is not null then
+    insert into public.campaign_drafts(org_id,profile_id,created_by,plan,recipe,rationale)
+      values(v_org,v_profile,p_user_id,jsonb_build_object('orgId',v_org,'profileId',v_profile),'{}','[]');
+    insert into public.naming_presets(org_id,name,naming,created_by)
+      values(v_org,'Synthetic fixture convention','{"variable_order":["Keyword"],"delimiter":" / "}',p_user_id);
+    insert into public.keyword_sets(org_id,profile_id,name,keywords)
+      values(v_org,v_profile,'Synthetic fixture keywords','["synthetic saved target"]');
+  end if;
+  if to_regclass('public.asset_library_snapshots') is not null then
+    with snapshot as (
+      insert into public.asset_library_snapshots(id,org_id,profile_id,observed_at,source_rows,persisted_rows)
+        values(gen_random_uuid(),v_org,v_profile,'2000-01-01T00:00:00Z',1,1) returning id
+    )
+    insert into public.asset_library_assets(org_id,profile_id,snapshot_id,amazon_asset_id,version,kind,name,used_in_campaign_ids,observation,observed_at)
+      select v_org,v_profile,id,'synthetic-fixture-asset','1','video','Synthetic fixture asset','{}',
+        '{"scope":{"region":"NA","amazonProfileId":"270"},"identity":{"assetId":"synthetic-fixture-asset","version":"1"},"observedAt":"2000-01-01T00:00:00Z","assetType":"video","name":"Synthetic fixture asset","processing":"unknown","specChecks":{"approvedPrograms":null,"failedSpecChecks":null}}'::jsonb,
+        '2000-01-01T00:00:00Z' from snapshot;
+  end if;
 
   return v_org;
 end;

@@ -12,6 +12,14 @@
  */
 import { MATCH_TYPE_LABELS, type MatchType } from './constants.js';
 import type { NamingSettings } from './types.js';
+import type { NamingStrategy } from '@wizard-ads/shared';
+
+/** Explicit tenant convention; never substitutes a built-in agency suffix. */
+export function namingSettingsFromStrategy(value: NamingStrategy): NamingSettings {
+  if (!value.variable_order?.length || !value.delimiter || (value.variable_order.includes('EW') && !value.suffix)) throw new Error('The naming convention needs tokens, a separator and values for its selected slots');
+  return { variableOrder: value.variable_order, delimiter: value.delimiter, suffix: value.suffix ?? '',
+    custom1Value: value.custom1_value ?? '', custom2Value: value.custom2_value ?? '' };
+}
 
 /** What a name slot is filled from. Every field is optional but `goal`. */
 export interface NamingContext {

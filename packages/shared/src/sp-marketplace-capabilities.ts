@@ -58,8 +58,22 @@ function rule(
 
 export const SpMarketplaceScope = z.object({ marketplaceId: z.string().min(1), region: Region, currencyCode: CurrencyCode });
 export type SpMarketplaceScope = z.infer<typeof SpMarketplaceScope>;
+/** Country-to-marketplace identity for builder mechanics, not provider observation. */
+export function spMarketplaceScopeForCountry(countryCode: string, region: SpMarketplaceScope['region'], currencyCode: string): SpMarketplaceScope | undefined {
+  const ids: Readonly<Record<string, string>> = { US: 'ATVPDKIKX0DER', UK: 'A1F83G8C2ARO7P', GB: 'A1F83G8C2ARO7P', DE: 'A1PA6795UKMFR9', CA: 'A2EUQ1WTGCTBG2', AU: 'A39IBJ37TRP1C6', FR: 'A13V1IB3VIYZZH', ES: 'A1RKKUPIHCS9HS', IT: 'APJ6JRA9NG5V4', JP: 'A1VC38T7YXB528', IN: 'A21TJRUUN4KGV', MX: 'A1AM78C64UM0Y8' };
+  const marketplaceId = ids[countryCode];
+  if (!marketplaceId) return undefined;
+  const scope = { marketplaceId, region, currencyCode };
+  return spMarketplaceBidCapability(scope) === null ? undefined : scope;
+}
 export const SpMarketplaceBidCapability = SpMarketplaceScope.extend({ bidMin: z.number().positive(), bidMax: z.number().positive(), decimalPlaces: z.number().int().min(0).max(6), verifiedOn: z.iso.date() });
 export type SpMarketplaceBidCapability = z.infer<typeof SpMarketplaceBidCapability>;
+
+export function spMarketplaceBudgetCapability(scope: SpMarketplaceScope | undefined): { minimum: number; maximum: number } | null {
+  if (spMarketplaceBidCapability(scope) === null || scope === undefined) return null;
+  const rule = SP_MARKETPLACE_MONEY_RULES[scope.marketplaceId]!;
+  return { minimum: Number(rule.budgetMin), maximum: Number(rule.budgetMax) };
+}
 
 /** Unknown identities or inconsistent profile currency/region fail closed. */
 export function spMarketplaceBidCapability(scope: SpMarketplaceScope | undefined): SpMarketplaceBidCapability | null {

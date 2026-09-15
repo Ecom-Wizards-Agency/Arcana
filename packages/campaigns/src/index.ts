@@ -32,3 +32,6 @@ export * from './export.js';
 export * from './update.js';
 export * from './util.js';
 export { columnIndex, columnName, readWorkbook, writeWorkbook } from './xlsx/index.js';
+export { buildCampaignRecipe, campaignRecipeCreationPlan } from './builder-plan.js';
+export { creationPlanToBulkWorkbook } from './creation-bulk.js';
+export { namingSettingsFromStrategy } from './naming.js';

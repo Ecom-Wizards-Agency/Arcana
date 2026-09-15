@@ -207,6 +207,8 @@ export type SvBandStrategy = z.infer<typeof SvBandStrategy>;
 
 /** Caps are ceilings, never steps. The optimizer clamps to them, it never aims at them. */
 export const CapStrategy = z.object({
+  /** Hard compounded starting-bid exposure limit, in the profile currency. No default. */
+  campaign_exposure_ceiling: z.number().positive().optional(),
   halo_keywords_per_campaign: z.number().int().positive().optional(),
   pat_asins_per_campaign: z.number().int().positive().optional(),
   max_bid_increase: z.number().optional(),

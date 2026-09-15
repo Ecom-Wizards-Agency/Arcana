@@ -16,7 +16,7 @@ const ACCOUNT_SURFACES = [
   { route: '/optimizer', heading: 'Optimize Now' },
   { route: '/creative', heading: 'Creatives' },
   { route: '/recommendations', heading: 'Recommendations' },
-  { route: '/campaigns', heading: 'Campaign Builder' },
+  { route: '/campaigns', heading: 'Create campaigns' },
   { route: '/optimizer/groups', heading: 'Optimization Groups' },
 ] as const;
 
