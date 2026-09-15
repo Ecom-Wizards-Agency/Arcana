@@ -1,7 +1,7 @@
 import { expect, type Page } from '@playwright/test';
 import { createDb } from '@wizard-ads/db';
 import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { resolve, join } from 'node:path';
 import { MOCK_PORT, readState } from './fixture';
 
 export async function exerciseSpApiReadOnlyRole(page: Page, role: 'viewer' | 'analyst'): Promise<void> {
@@ -16,14 +16,14 @@ export async function exerciseSpApiReadOnlyRole(page: Page, role: 'viewer' | 'an
     form: { org: state.orgId,label: 'Forbidden seller',binding: `${state.fixtureProfileId}:ATVPDKIKX0DER` },maxRedirects: 0,
   });
   expect(response.status()).toBe(403);
-  const scratch = process.env['WP_SCRATCH']; if (!scratch) throw new Error('WP_SCRATCH required for screenshots');
+  const scratch = process.env['WP_SCRATCH'] ?? resolve(process.cwd(), 'node_modules', '.cache', 'wp300-scratch');
   const directory = join(scratch,'tmp','screenshots'); await mkdir(directory,{ recursive: true });
   await section.screenshot({ path: join(directory,`spapi-${role}.png`) });
 }
 
 /** Extends the existing connected-account browser scenario through SP custody. */
 export async function exerciseSpApiOnboarding(page: Page): Promise<void> {
-  const scratch = process.env['WP_SCRATCH']; if (!scratch) throw new Error('WP_SCRATCH required for screenshots');
+  const scratch = process.env['WP_SCRATCH'] ?? resolve(process.cwd(), 'node_modules', '.cache', 'wp300-scratch');
   const screenshots = join(scratch,'tmp','screenshots'); await mkdir(screenshots,{ recursive: true });
   const capture = async (name: string): Promise<void> => { await page.getByTestId('spapi-connections').screenshot({ path: join(screenshots,`${name}.png`) }); };
   const mode = async (value: string): Promise<void> => {
