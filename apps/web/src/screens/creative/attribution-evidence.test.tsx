@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import type { CreativePerformanceAsset } from '@wizard-ads/db';
-import { CreativePerformanceExplorer } from './creative-performance';
+import type { CreativePerformanceAsset } from '@wizard-ads/shared';
+import { CreativePerformanceExplorer } from './attribution-evidence';
 
 function asset(overrides: Partial<CreativePerformanceAsset> = {}): CreativePerformanceAsset {
   return {

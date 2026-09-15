@@ -6,6 +6,9 @@ import { descriptor as campaigns } from './campaigns/descriptor';
 import { descriptor as cockpit } from './cockpit/descriptor';
 import { descriptor as connect_claude } from './connect-claude/descriptor';
 import { descriptor as creative } from './creative/descriptor';
+import { descriptor as creative_campaign } from './creative-campaign/descriptor';
+import { descriptor as creative_detail } from './creative-detail/descriptor';
+import { descriptor as creative_eligibility } from './creative-eligibility/descriptor';
 import { descriptor as creators_daily_queue } from './creators-daily-queue/descriptor';
 import { descriptor as creators_inbox_sweep } from './creators-inbox-sweep/descriptor';
 import { descriptor as creators_sample_shipments } from './creators-sample-shipments/descriptor';
@@ -48,6 +51,7 @@ import { descriptor as settings_integrations } from './settings-integrations/des
 import { descriptor as settings_members } from './settings-members/descriptor';
 import { descriptor as settings_profiles } from './settings-profiles/descriptor';
 import { descriptor as sponsored_prompts } from './sponsored-prompts/descriptor';
+import { descriptor as sponsored_prompts_redirect } from './sponsored-prompts/redirect/descriptor';
 import { descriptor as strategy } from './strategy/descriptor';
 import { descriptor as sync_status } from './sync-status/descriptor';
 import { descriptor as tags } from './tags/descriptor';
@@ -66,6 +70,9 @@ export const SCREEN_REGISTRY: readonly ScreenMetadata[] = [
   cockpit,
   connect_claude,
   creative,
+  creative_campaign,
+  creative_detail,
+  creative_eligibility,
   creators_daily_queue,
   creators_inbox_sweep,
   creators_sample_shipments,
@@ -108,6 +115,7 @@ export const SCREEN_REGISTRY: readonly ScreenMetadata[] = [
   settings_members,
   settings_profiles,
   sponsored_prompts,
+  sponsored_prompts_redirect,
   strategy,
   sync_status,
   tags,

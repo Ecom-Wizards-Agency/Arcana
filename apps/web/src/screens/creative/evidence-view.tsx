@@ -1,5 +1,5 @@
 import type { readCreativePerformance } from '@wizard-ads/db';
-import { CreativePerformanceExplorer } from '../../../app/creative/creative-performance';
+import { CreativePerformanceExplorer } from './attribution-evidence';
 import styles from '../../../app/creative/creative.module.css';
 import { creativeLifecycle, type CreativeLifecycleEvidence } from '../../creative/lifecycle';
 import { EmptyState } from '../../ui/primitives';

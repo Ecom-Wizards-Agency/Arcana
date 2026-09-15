@@ -9,6 +9,11 @@ test('timeline measures facts, filters and zooms events, records revisions and p
     const state = await readState();
     const db = createDb({ connectionString: state.connectionString });
     try {
+        // The shared fixture starts this experiment relative to today; anchor it
+        // inside this test's fixed window so calendar drift cannot remove a row.
+        const anchored = await db.sql`update public.experiments set start_at='2026-09-01T00:00:00Z'
+          where org_id=${state.orgId} and profile_id=${state.fixtureProfileId} returning id`;
+        expect(anchored).toHaveLength(1);
         await db.sql`select app.ensure_fact_partitions('2026-07-01'::date, 1)`;
         await db.sql`delete from public.fact_profile_daily where org_id=${state.orgId} and profile_id=${state.fixtureProfileId}`;
         await db.sql `insert into public.fact_profile_daily(org_id,profile_id,date,currency_code,impressions,clicks,cost,purchases_7d,sales_7d,units_sold_7d)

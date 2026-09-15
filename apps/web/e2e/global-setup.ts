@@ -33,6 +33,7 @@ import {
   STATE_KEY,
   USERS,
   WEB_ROOT,
+  readState,
   writeState,
 } from './support/fixture';
 
@@ -112,7 +113,8 @@ export default async function globalSetup(): Promise<void> {
     acquireServer: async (connectionString, mock) => {
       const worker = await spawnConnectionTestWorker(connectionString, mock.url);
       try {
-        const server = spawnWebServer(connectionString, mock);
+        const { fixtureProfileId } = await readState();
+        const server = spawnWebServer(connectionString, mock, fixtureProfileId);
         return { resource: server, cleanup: async () => {
           try { await stopProcess(server.child); } finally { await stopProcess(worker); }
         } };
@@ -334,7 +336,7 @@ async function spawnConnectionTestWorker(connectionString: string, mockOrigin: s
   } catch (error) { await stopProcess(worker); throw error; }
 }
 
-function spawnWebServer(connectionString: string, amazon: AmazonMock): SpawnedWebServer {
+function spawnWebServer(connectionString: string, amazon: AmazonMock, fixtureProfileId: string): SpawnedWebServer {
   const child = spawn(
     resolve(WEB_ROOT, 'node_modules/.bin/next'),
     // `--webpack` for the reason next.config.ts documents: Turbopack cannot
@@ -367,6 +369,14 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock): SpawnedWe
         AMAZON_OAUTH_STATE_KEY: STATE_KEY,
         AMAZON_LWA_AUTHORIZE_URL: amazon.authorizeUrl,
         OPENSPELL_AMAZON_CONNECTIONS_ENABLED: '1',
+        // This process owns only the synthetic suite database. The creative
+        // producer allowlist is confined to its seeded profile; no cron runs.
+        ...(process.env['WIZARD_ADS_E2E_SUITE'] === 'route-acceptance' ? {
+          OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '1',
+          OPENSPELL_EVO_REPORT_LANE_READY: '1',
+          OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST: fixtureProfileId,
+          WIZARD_ADS_PROMPTS_ENABLED: '1',
+        } : {}),
       },
     },
   );

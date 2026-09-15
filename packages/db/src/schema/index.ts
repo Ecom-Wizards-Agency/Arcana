@@ -33,3 +33,5 @@ export * from './restore-proposals.js';
 export * from './market-position.js';
 export * from './target-translations.js';
 export * from './timeline-events.js';
+export * from './sponsored-prompts.js';
+export * from './creative-observations.js';

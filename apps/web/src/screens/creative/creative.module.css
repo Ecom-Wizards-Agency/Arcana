@@ -1,0 +1,62 @@
+.page { max-width: 1200px; min-width: 0; margin: 0 auto; padding: 24px; color: var(--wa-text); }
+.split { display: grid; grid-template-columns: 420px minmax(0, 1fr); gap: 20px; align-items: start; }
+.pane { border: 1px solid var(--wa-border); border-radius: var(--wa-radius); overflow: hidden; min-width: 0; }
+.paneHeader { display: grid; gap: 10px; padding: 12px; background: var(--wa-surface-2); border-bottom: 1px solid var(--wa-border); }
+.paneTitle { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.filters label { display: grid; gap: 4px; color: var(--wa-text-muted); font-size: var(--wa-fs-xs); }
+.row { display: grid; width: 100%; grid-template-columns: 64px minmax(0, 1fr) auto; gap: 10px; padding: 14px 12px; align-items: center; border: 0; border-bottom: 1px solid var(--wa-border); background: var(--wa-surface); color: var(--wa-text); font: inherit; text-align: left; cursor: pointer; }
+.row:last-child { border-bottom: 0; }
+.row:hover { background: var(--wa-surface-2); }
+.row[aria-pressed="true"] { background: var(--wa-indigo-soft); }
+.rowCopy { display: grid; gap: 4px; min-width: 0; }
+.rowCopy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rowCopy small, .muted { color: var(--wa-text-muted); font-size: var(--wa-fs-xs); }
+.amount { font-weight: 600; font-variant-numeric: tabular-nums; }
+.thumbnail { width: 64px; height: 48px; flex-shrink: 0; object-fit: contain; border-radius: var(--wa-radius-sm); background: var(--wa-surface-2); }
+.thumbnailLarge { width: 180px; height: 112px; }
+.fallback { display: grid; place-items: center; text-align: center; white-space: normal; overflow-wrap: anywhere; border: 1px dashed var(--wa-border-strong); color: var(--wa-text-faint); font-size: var(--wa-fs-2xs); padding: 4px; box-sizing: border-box; }
+.detail { min-width: 0; }
+.detailHeader { display: flex; gap: 20px; align-items: flex-start; margin: 4px 0 24px; }
+.detailHeader h2 { font-size: var(--wa-fs-md); margin: 0 0 6px; }
+.detailHeader p { margin: 0 0 16px; overflow-wrap: anywhere; line-height: 1.5; }
+.actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
+.disabledAction { display: grid; gap: 4px; }
+.disabledAction small { max-width: 150px; color: var(--wa-text-faint); font-size: var(--wa-fs-2xs); }
+.metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin: 22px 0 30px; }
+.metric dt, .eyebrow { color: var(--wa-text-faint); font-size: var(--wa-fs-2xs); font-weight: 600; text-transform: uppercase; letter-spacing: .02em; }
+.metric dd { margin: 4px 0; font-size: var(--wa-fs-md); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.metric small { display: block; color: var(--wa-text-muted); font-size: var(--wa-fs-2xs); }
+.funnel { display: grid; gap: 12px; margin: 16px 0; }
+.funnelRow { display: grid; grid-template-columns: 110px minmax(40px, 1fr) 70px 52px; gap: 12px; align-items: center; font-size: var(--wa-fs-xs); font-variant-numeric: tabular-nums; }
+.bar { display: block; height: 16px; background: var(--wa-surface-2); border-radius: var(--wa-radius-sm); overflow: hidden; }
+.bar > span { display: block; height: 100%; background: var(--wa-indigo); border-radius: inherit; }
+.footnote { color: var(--wa-text-muted); font-size: var(--wa-fs-xs); line-height: 1.55; margin: 16px 0; }
+.card { border: 1px solid var(--wa-border); border-radius: var(--wa-radius); padding: 16px; margin: 20px 0; font-size: var(--wa-fs-sm); line-height: 1.6; }
+.card h3 { font-size: var(--wa-fs-sm); margin: 0 0 6px; }
+.card p { margin: 4px 0; }
+.info { background: var(--wa-info-bg); border-color: var(--wa-info-border); }
+.warn { background: var(--wa-warn-bg); border-color: var(--wa-warn-border); }
+.missing { border-style: dashed; background: var(--wa-surface-2); color: var(--wa-text-muted); }
+.tableWrap { overflow-x: auto; max-width: 100%; border: 1px solid var(--wa-border); border-radius: var(--wa-radius); margin: 16px 0; }
+.table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: var(--wa-fs-xs); font-variant-numeric: tabular-nums; }
+.table th { text-transform: uppercase; font-size: var(--wa-fs-2xs); color: var(--wa-text-muted); font-weight: 600; background: var(--wa-surface-2); text-align: left; }
+.table th, .table td { padding: 12px; border-bottom: 1px solid var(--wa-border); white-space: nowrap; }
+.table tfoot td { font-weight: 600; background: var(--wa-surface-2); border-bottom: 0; }
+.table td[data-thin="true"] { color: var(--wa-text-faint); }
+.table tr[data-thin="true"] { color: var(--wa-text-muted); }
+.table td.wrap { white-space: normal; min-width: 180px; }
+.table .creativeCell { display: flex; gap: 10px; align-items: center; min-width: 220px; }
+.creativeCell small { display: block; margin-top: 4px; color: var(--wa-text-faint); }
+.delivery { min-width: 110px; display: grid; grid-template-columns: 65px 40px; gap: 8px; align-items: center; }
+.legends { display: grid; gap: 8px; margin: 18px 0; }
+.legends p { display: flex; gap: 8px; align-items: baseline; margin: 0; font-size: var(--wa-fs-xs); color: var(--wa-text-muted); }
+.disclosure { padding: 12px; border-top: 1px solid var(--wa-border); color: var(--wa-text-muted); font-size: var(--wa-fs-xs); }
+.disclosure summary { cursor: pointer; }
+.disclosure p { line-height: 1.5; }
+.sectionHeader { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: baseline; margin: 20px 0 10px; }
+.sectionHeader h2 { font-size: var(--wa-fs-md); margin: 0; }
+.empty { border: 1px dashed var(--wa-border-strong); border-radius: var(--wa-radius); padding: 28px; margin: 18px 0; }
+.empty h2 { font-size: var(--wa-fs-md); }
+@media (max-width: 1150px) { .split { grid-template-columns: 340px minmax(0, 1fr); } .detailHeader { flex-direction: column; } .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 850px) { .split { grid-template-columns: minmax(0, 1fr); } .page { padding: 16px; } .funnelRow { grid-template-columns: 90px minmax(30px, 1fr) 55px 45px; gap: 6px; } }

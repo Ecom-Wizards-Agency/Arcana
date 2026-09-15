@@ -1,110 +1,44 @@
+import { readCreativeWorkspace, readLatestCreativeSyncJobState, readLatestCreativeSyncSnapshot } from '@wizard-ads/db';
 import type { ScreenActor } from '../../server/page-read';
-import { CreativeLifecycleStatusView, CreativeResultsView } from './evidence-view';
-
 import type { ScreenParams } from '../types';
-
-import {
-  readCreativePerformance,
-  readLatestCreativeSyncJobState,
-  readLatestCreativeSyncSnapshot
-} from '@wizard-ads/db';
-
 import type { CreativeLifecycleEvidence } from '../../creative/lifecycle';
-
 import { creativeSyncPilotFromEnv } from '../../server/sync-tick';
-
 import { periodFromParamsThroughToday, todayIsoInTimeZone } from '../../../app/_lib/periods';
-
 import { listProfiles } from '../../../app/_lib/profiles';
 
-interface PageProps {
-  searchParams: Promise<{
-    profile?: string | string[];
-    from?: string | string[];
-    to?: string | string[];
-    preset?: string | string[];
-  }>;
-}
+export type CreativeMode = 'list' | 'detail' | 'campaign' | 'eligibility';
+export const creativeTabs = ['overview', 'keywords', 'spend', 'placements', 'change-history'] as const;
+export type CreativeTab = typeof creativeTabs[number];
+const one = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] : value;
 
-function one(value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
-}
+export async function load(access: ScreenActor, input: ScreenParams) { return loadCreativeScreen(access, input, 'list'); }
 
-export async function load(access: ScreenActor, input: ScreenParams) {
-  const searchParams = Promise.resolve(input.searchParams) as PageProps['searchParams'];
-
+export async function loadCreativeScreen(access: ScreenActor, input: ScreenParams, mode: CreativeMode) {
   const entry = access.entry;
-  if (entry.state !== 'ok') {
-    return { view: 'gated' as const, props: { entry } };
-  }
-
-  const query = await searchParams;
-  const requested = await Promise.resolve(access.requestedProfile);
-  const from = one(query.from);
-  const to = one(query.to);
-  const selectedPresetId = one(query.preset);
+  if (entry.state !== 'ok') return { view: 'gated' as const, props: { entry } };
   const orgId = entry.context.active?.orgId ?? '';
   const profiles = await access.readSql((sql) => listProfiles({ sql }, orgId));
-  const profile = access.selectProfile(profiles, requested);
-
-  if (profile === null) {
-    return { view: 'empty' as const, props: {} };
-  }
-
+  const profile = access.selectProfile(profiles);
+  if (profile === null) return { view: 'empty' as const, props: {} };
   const profileToday = todayIsoInTimeZone(profile.timezone);
-  const period = periodFromParamsThroughToday(
-    {
-      ...(from === undefined ? {} : { from }),
-      ...(to === undefined ? {} : { to }),
-    },
-    profileToday,
-  );
-
-  const evidence = access.readSql(async (sql) => {
-    const handle = { sql };
-    const [rows, snapshot, latestJob] = await Promise.all([
-      readCreativePerformance(handle, { orgId, profileId: profile.id, from: period.start, to: period.end }),
-      readLatestCreativeSyncSnapshot(handle, { orgId, profileId: profile.id }),
-      readLatestCreativeSyncJobState(handle, { orgId, profileId: profile.id }),
-    ]);
-    return { rows, snapshot, latestJob };
-  });
-  const rows = evidence.then((value) => value.rows);
+  const from = one(input.searchParams['from']), to = one(input.searchParams['to']);
+  const period = periodFromParamsThroughToday({ ...(from === undefined ? {} : { from }), ...(to === undefined ? {} : { to }) }, profileToday);
+  const selectedPresetId = one(input.searchParams['preset']);
+  const [workspace, snapshot, latestJob] = await access.readSql(async (sql) => Promise.all([
+    readCreativeWorkspace({ sql }, { orgId, profileId: profile.id, from: period.start, to: period.end }),
+    readLatestCreativeSyncSnapshot({ sql }, { orgId, profileId: profile.id }),
+    readLatestCreativeSyncJobState({ sql }, { orgId, profileId: profile.id }),
+  ]));
   const pilot = creativeSyncPilotFromEnv();
-  const producerEligible = profile.syncEnabled
-    && pilot.enabled
-    && pilot.profileIds.includes(profile.id.toLowerCase());
-  const lifecycleEvidence = evidence.then(
-    ({ snapshot, latestJob }): CreativeLifecycleEvidence => ({
-      producerEligible,
-      latestJob,
-      snapshot,
-    }),
-  );
-
-  return {
-    view: 'ready' as const, props: {
-      profile, period, profileToday, selectedPresetId, slot1: (<CreativeLifecycleStatus
-        evidence={lifecycleEvidence}
-        timezone={profile.timezone}
-        profileId={profile.id}
-      />), slot2: (<CreativeResults
-        rows={rows}
-        evidence={lifecycleEvidence}
-        currencyCode={profile.currencyCode}
-        profileId={profile.id}
-      />)
-    }
+  const evidence: CreativeLifecycleEvidence = {
+    producerEligible: profile.syncEnabled && pilot.enabled && pilot.profileIds.includes(profile.id.toLowerCase()),
+    snapshot, latestJob,
   };
-}
-
-type CreativeRows = Awaited<ReturnType<typeof readCreativePerformance>>;
-
-async function CreativeLifecycleStatus(props: { evidence: Promise<CreativeLifecycleEvidence>; timezone: string; profileId: string; }) {
-  return <CreativeLifecycleStatusView {...props} evidence={await props.evidence} />;
-}
-
-async function CreativeResults(props: { rows: Promise<CreativeRows>; evidence: Promise<CreativeLifecycleEvidence>; currencyCode: string; profileId: string; }) {
-  const [rows, evidence] = await Promise.all([props.rows, props.evidence]);
-  return <CreativeResultsView {...props} rows={rows} evidence={evidence} />;
+  const requestedTab = one(input.searchParams['tab']);
+  const tab: CreativeTab = creativeTabs.find((value) => value === requestedTab) ?? 'overview';
+  return { view: 'ready' as const, props: { profile, period, profileToday, selectedPresetId, workspace, evidence, mode, tab,
+    selectedAssetId: input.params['assetId'] ?? one(input.searchParams['asset']) ?? null,
+    campaignId: input.params['campaignId'] ?? null,
+    sbKeywordSyncEnabled: process.env['OPENSPELL_SB_KEYWORD_SYNC_ENABLED'] === '1',
+  } };
 }

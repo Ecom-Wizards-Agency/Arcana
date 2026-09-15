@@ -51,7 +51,7 @@ async function exerciseEveryPreset({
 }: {
   page: Page;
   path: '/optimizer' | '/creative';
-  heading: 'Optimize Now' | 'Creative Performance';
+  heading: 'Optimize Now' | 'Creatives';
   profileId: string;
   includeToday?: boolean;
 }): Promise<void> {
@@ -124,7 +124,7 @@ test('creative exposes all date presets and preserves canonical account scope', 
   await exerciseEveryPreset({
     page,
     path: '/creative',
-    heading: 'Creative Performance',
+    heading: 'Creatives',
     profileId: fixtureProfileId,
     includeToday: true,
   });

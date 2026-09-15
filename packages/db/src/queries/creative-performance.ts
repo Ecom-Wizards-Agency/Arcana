@@ -26,6 +26,8 @@ import {
   type CreativeAttributionState,
   type CreativeDailyFact,
   type CreativeMappingProvenance,
+  type CreativePerformanceAsset,
+  type CreativePerformanceDrilldown,
   type Placement,
 } from '@wizard-ads/shared';
 import type { DbHandle, QueryHandle } from '../client.js';
@@ -743,53 +745,7 @@ function parseCreativeSnapshot(row: CreativeSnapshotRow): CreativeSyncSnapshot {
   });
 }
 
-export interface CreativePerformanceDrilldown {
-  keywordText: string | null;
-  keywordProvenance: 'synced' | 'from_campaign_name' | 'unresolved';
-  campaignId: string;
-  adGroupId: string;
-  adId: string;
-  creativeId: string | null;
-  creativeVersion: string | null;
-  mappingProvenance: CreativeMappingProvenance | null;
-  placement: Placement | null;
-  impressions: number;
-  clicks: number;
-  cost: number;
-  purchases: number;
-  sales: number;
-  videoFirstQuartileViews: number | null;
-  videoMidpointViews: number | null;
-  videoThirdQuartileViews: number | null;
-  videoCompleteViews: number | null;
-}
-
-export interface CreativePerformanceAsset {
-  assetId: string | null;
-  attributionState: CreativeAttributionState;
-  name: string | null;
-  assetType: string | null;
-  thumbnailUrl: string | null;
-  campaignTypes: string[];
-  mappingProvenances: CreativeMappingProvenance[];
-  campaignCount: number;
-  adGroupCount: number;
-  adCount: number;
-  placementCount: number;
-  impressions: number;
-  clicks: number;
-  ctr: number | null;
-  cost: number;
-  purchases: number;
-  sales: number;
-  acos: number | null;
-  roas: number | null;
-  videoFirstQuartileViews: number | null;
-  videoMidpointViews: number | null;
-  videoThirdQuartileViews: number | null;
-  videoCompleteViews: number | null;
-  drilldown: CreativePerformanceDrilldown[];
-}
+export type { CreativePerformanceDrilldown, CreativePerformanceAsset } from '@wizard-ads/shared';
 
 interface AggregateRow {
   amazon_asset_id: string | null;
@@ -936,8 +892,8 @@ export async function readCreativePerformance(
         on c.org_id = ${filter.orgId} and c.profile_id = ${filter.profileId}
        and c.amazon_id = f.campaign_id and c.ad_product = 'SB'
       left join public.keywords k
-        on k.org_id = ${filter.orgId} and k.profile_id = ${filter.profileId}
-       and k.campaign_id = f.campaign_id and k.ad_product = 'SB'
+       on k.org_id = ${filter.orgId} and k.profile_id = ${filter.profileId}
+       and k.campaign_id = f.campaign_id and k.ad_product = 'SB' and k.deleted_at is null
      group by f.campaign_id
   `;
   const keywordsByCampaign = new Map(campaignKeywords.map((row) => [row.campaign_id,

@@ -40,3 +40,7 @@ export { coordinatedPlacementChange } from './methods/placement-change.js';
 export * from './verdicts.js';
 export * from './derived-columns.js';
 export * from './bid-corridor.js';
+
+export * from './creative/performance.js';
+export * from './creative/certainty.js';
+export * from './creative/prompt-loop.js';
