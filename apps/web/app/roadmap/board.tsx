@@ -1,4 +1,5 @@
 'use client';
+import { EmptyState } from '@wizard-ads/ui';
 
 /**
  * Three columns, ordered by votes, with the vote toggle on the card.
@@ -148,7 +149,7 @@ export function RoadmapBoardView(initial: BoardProps) {
               aria-label={column.title}
               data-testid={column.testId}
               style={{
-                background: colors.subtle,
+                background: colors.surface,
                 border: `1px solid ${colors.border}`,
                 borderRadius: '0.5rem',
                 minWidth: 0,
@@ -171,7 +172,7 @@ export function RoadmapBoardView(initial: BoardProps) {
                   />
                 ))}
               </ul>
-              {items.length === 0 && <p style={muted}>Nothing here yet.</p>}
+              {items.length === 0 && <EmptyState title="Nothing here yet." body="New reports appear here when their status matches this column." />}
             </section>
           );
         })}
@@ -229,7 +230,7 @@ function RoadmapCard({
       }}
     >
       <div style={{ alignItems: 'baseline', display: 'flex', gap: '0.5rem' }}>
-        <button
+        <button className="wa-btn"
           type="button"
           aria-label={`Vote for ${item.title}`}
           data-testid="vote-button"

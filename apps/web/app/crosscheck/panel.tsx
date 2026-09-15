@@ -1,3 +1,4 @@
+import { formatShellDate } from '../../src/ui/date-format';
 /**
  * The crosscheck panel and its chip.
  *
@@ -41,11 +42,11 @@ export function CrosscheckChip({ chip }: { chip: VerdictChip }): ReactNode {
       title={
         chip.asOf === null
           ? 'No day has been cross-checked yet'
-          : `As of ${chip.asOf} · ${chip.verifiedStreak} consecutive verified day(s)`
+          : `As of ${formatShellDate(chip.asOf)} · ${chip.verifiedStreak} consecutive verified day(s)`
       }
     >
       {chip.label}
-      {chip.asOf === null ? '' : ` · ${chip.asOf}`}
+      {chip.asOf === null ? '' : ` · ${formatShellDate(chip.asOf)}`}
     </span>
   );
 }
@@ -122,7 +123,7 @@ function DayRow({ day }: { day: PanelDay }): ReactNode {
   const sales = figure(day.figures, 'ad_sales');
   return (
     <tr style={day.verdict === 'skipped_provisional' ? { opacity: 0.6 } : undefined}>
-      <td style={td}>{day.date}</td>
+      <td style={td}>{formatShellDate(day.date)}</td>
       <td style={td}>
         <VerdictText verdict={day.verdict} />
       </td>
@@ -140,7 +141,7 @@ function CampaignRow({ campaign }: { campaign: PanelCampaign }): ReactNode {
   const spend = figure(campaign.figures, 'ad_spend');
   return (
     <tr>
-      <td style={td}>{campaign.weekStart}</td>
+      <td style={td}>{formatShellDate(campaign.weekStart)}</td>
       <td style={td}>
         {campaign.campaignName ?? campaign.campaignId}
         <div style={muted}>{campaign.campaignId}</div>

@@ -1,3 +1,4 @@
+import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
 import { gateMessage } from '../../ui/gate-message';
 
 import { PageHeader } from '../../ui/primitives';
@@ -10,7 +11,7 @@ import type { load } from './load';
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
 
-export default function ScreenView({ data }: { data: ScreenData; }) {
+function ScreenContent({ data }: { data: ScreenData; }) {
   if (data === null) return null;
   switch (data.view) {
     case 'gated': return renderGated(data.props);
@@ -21,7 +22,7 @@ export default function ScreenView({ data }: { data: ScreenData; }) {
 function renderGated({ entry }: Extract<ScreenData, { view: 'gated'; }>['props']) {
   return (<main style={page}>
     <PageHeader title="Connect AI (MCP)" />
-    <p className="wa-page-sub">{gateMessage(entry.state)}</p>
+    <ScreenState variant="gated" title="Access unavailable" body={gateMessage(entry.state)} />
   </main>);
 }
 
@@ -32,12 +33,12 @@ function renderReady({ endpoint, keys, profiles, canManage, org }: Extract<Scree
       subtitle="Give any MCP client a read-only key to your advertising data over the Model Context Protocol."
     />
 
-    <div className="wa-stack">
-      {endpoint !== null ? <section className="wa-card">
-        <header className="wa-card__head">
-          <h2 className="wa-card__title">How it connects</h2>
+    <div className="wa-support-stack">
+      {endpoint !== null ? <section className="wa-support-panel">
+        <header className="wa-support-panel-head">
+          <h2 className="wa-support-panel-title">How it connects</h2>
         </header>
-        <div className="wa-card__body">
+        <div className="wa-support-panel-body">
           <ol style={{ margin: 0, paddingLeft: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
             <li>Issue a key below and copy it — it is shown once and never stored in full.</li>
             <li>
@@ -48,12 +49,12 @@ function renderReady({ endpoint, keys, profiles, canManage, org }: Extract<Scree
               the profiles selected when the key was issued.
             </li>
           </ol>
-          <p className="wa-hint" style={{ marginTop: '0.75rem' }}>
+          <p className="wa-support-note" style={{ marginTop: '0.75rem' }}>
             One key, any MCP client — Claude, Codex, ChatGPT, Cursor or Gemini all connect over the
             same endpoint and bearer token. The setup snippets below reference the environment
             variable by name and never contain its value.
           </p>
-          <p className="wa-hint" style={{ marginTop: '0.5rem' }}>
+          <p className="wa-support-note" style={{ marginTop: '0.5rem' }}>
             Every new key is read-only, expires automatically, and has a hard profile allowlist.
             Arcana currently exposes no Amazon write tools through MCP.
           </p>
@@ -69,4 +70,9 @@ function renderReady({ endpoint, keys, profiles, canManage, org }: Extract<Scree
       />
     </div>
   </main>);
+}
+
+export default function ScreenView({ data }: { data: ScreenData }) {
+  if (data === null) return null;
+  return <ScreenSurface title="Connect AI (MCP)">{ScreenContent({ data })}</ScreenSurface>;
 }

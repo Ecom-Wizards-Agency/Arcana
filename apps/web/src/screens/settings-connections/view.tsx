@@ -1,8 +1,11 @@
+import { formatTimestamp } from '../../ui/date-format';
+import { TableFrame } from '../../ui/primitives';
+import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
 import { ConnectionProgress } from '../../oauth/connection-progress';
 
 import { operatorFailureLabel } from '../../security/operator-failure';
 
-import { Shell } from '../../ui/shell';
+import { Shell } from '../settings/frame';
 
 import { banner, heading, muted, page, subheading, table, td, th } from '../../ui/tokens';
 
@@ -10,7 +13,7 @@ import type { load } from './load';
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
 
-export default function ScreenView({ data }: { data: ScreenData; }) {
+function ScreenContent({ data }: { data: ScreenData; }) {
   if (data === null) return null;
   switch (data.view) {
     case 'no-database': return renderNoDatabase(data.props);
@@ -22,19 +25,19 @@ export default function ScreenView({ data }: { data: ScreenData; }) {
 function renderNoDatabase(_props: Extract<ScreenData, { view: 'no-database'; }>['props']) {
   return (<main style={page}>
     <h1 style={heading}>Connections</h1>
-    <p style={banner('warn')}>
+    <ScreenState variant="gated" title="Access unavailable" body={<>
       <code>DATABASE_URL</code> is not set, so this instance cannot read its own database.
-    </p>
+    </>} />
   </main>);
 }
 
 function renderNoOrg(_props: Extract<ScreenData, { view: 'no-org'; }>['props']) {
   return (<main style={page}>
     <h1 style={heading}>Connections</h1>
-    <p style={banner('warn')}>
+    <ScreenState variant="gated" title="Access unavailable" body={<>
       Your account is not a member of any organisation yet. There is no self-service
       signup; ask an administrator to add you.
-    </p>
+    </>} />
   </main>);
 }
 
@@ -54,15 +57,13 @@ function renderReady({ context, query, operation, mayConnect, enabled, connectio
       ) : null}
 
       {operation ? <ConnectionProgress key={operation.operationId} initial={operation} mayCancel={mayConnect} /> : null}
-      {enabled && query.operation && !operation ? <p style={banner('warn')}>This connection is not available in the selected agency.</p> : null}
+      {enabled && query.operation && !operation ? <ScreenState variant="gated" title="Access unavailable" body={<>This connection is not available in the selected agency.</>} /> : null}
 
       <h2 style={subheading}>Amazon Ads</h2>
       {connections.length === 0 ? (
-        <p style={muted} data-testid="no-connection">
-          Not connected yet.
-        </p>
+        <ScreenState title="Not connected yet." body="Connect Amazon Ads to discover profiles." data-testid="no-connection" />
       ) : (
-        <table style={table}>
+        <TableFrame><table style={table}>
           <thead>
             <tr>
               <th style={th}>Label</th>
@@ -82,12 +83,12 @@ function renderReady({ context, query, operation, mayConnect, enabled, connectio
                 </td>
                 <td style={td}>{connection.hasCredential ? 'Stored' : 'Missing'}</td>
                 <td style={td}>{connection.profileCount}</td>
-                <td style={td}>{connection.connectedAt ?? '—'}</td>
+                <td style={td}>{formatTimestamp(connection.connectedAt)}</td>
                 <td style={td}>{connection.lastError ?? '—'}</td>
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></TableFrame>
       )}
 
       <p style={{ marginTop: '1rem' }}>
@@ -139,7 +140,7 @@ function renderReady({ context, query, operation, mayConnect, enabled, connectio
 
       <h2 style={subheading}>Profiles by region</h2>
       {roster.total === 0 ? (
-        <p style={muted}>No profiles yet.</p>
+        <ScreenState title="No profiles yet." body="Choose a connected profile or check again after the next sync." />
       ) : (
         <p style={muted} data-testid="region-summary">
           {Object.entries(roster.regionCounts)
@@ -150,4 +151,9 @@ function renderReady({ context, query, operation, mayConnect, enabled, connectio
       )}
     </Shell>
   </main>);
+}
+
+export default function ScreenView({ data }: { data: ScreenData }) {
+  if (data === null) return null;
+  return <ScreenSurface title="Connections">{ScreenContent({ data })}</ScreenSurface>;
 }

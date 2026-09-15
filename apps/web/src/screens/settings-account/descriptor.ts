@@ -4,6 +4,7 @@ import type ScreenView from './view';
 
 export const descriptor = {
   id: "settings-account",
+  title: "Account",
   path: "/settings/account",
   route: "page",
   nav: null,
@@ -12,7 +13,7 @@ export const descriptor = {
   rollout: { "enabled": true },
   states: ["loading", "error", "gated"],
   entry: "account-security",
-  specs: [],
+  specs: [{ file: "undesigned-routes.spec.ts", suite: "route-acceptance" }],
   load: (actor, params) => import('./load').then((module) => module.load(actor, params)),
   client: (): Promise<typeof ScreenView> => import('./view').then((module) => module.default),
 } satisfies ScreenDescriptor<Awaited<ReturnType<typeof load>>>;

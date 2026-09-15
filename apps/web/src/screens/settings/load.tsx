@@ -6,5 +6,5 @@ import { type ScreenParams } from '../types';
 
 export async function load(_actor: ScreenActor, _input: ScreenParams): Promise<never> {
   const query = '';
-  redirect('/settings/connections' + (query ? `?${query}` : ''));
+  redirect('/settings/account' + (query ? `?${query}` : ''));
 }

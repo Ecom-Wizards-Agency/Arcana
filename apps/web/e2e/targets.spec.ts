@@ -72,6 +72,7 @@ test('target page and goto restore the complete shared grid analysis', async ({ 
   await drawer.getByRole('link',{name:'Open full ↗',exact:true}).click();
   // Target detail compiles on first use in this suite.
   await expect(page.getByRole('heading', { name: 'widget', exact: true, level: 1 })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId('shell-title')).toHaveText('Target 360');
   const mainCorridor = page.getByRole('region', { name: 'Bid corridor chart' }).first();
   await expect(mainCorridor).toBeVisible();
   await expect(mainCorridor.locator('tbody tr')).toHaveCount(1);
@@ -95,4 +96,37 @@ test('target page and goto restore the complete shared grid analysis', async ({ 
   await page.goto(link.path);
   await expect(page.getByLabel('Row density')).toHaveValue('compact');
   expect(new URL(page.url()).searchParams.get('view')).toBe(analysis);
+  await test.step('assigns an advertised product and persists the banner recount', async () => {
+    const mappingDb = createDb({ connectionString, max: 1 });
+    try {
+      await mappingDb.sql`delete from public.ad_group_product_assignments where org_id=${orgId} and profile_id=${fixtureProfileId} and ad_group_id='ag-1'`;
+      await mappingDb.sql`insert into public.product_ads(org_id,profile_id,amazon_id,ad_product,state,campaign_id,ad_group_id,asin)
+        values(${orgId},${fixtureProfileId},'synthetic-mapping-second','SP','enabled','c-1','ag-1','B000000272')`;
+      await mappingDb.sql`insert into public.fact_sp_target_daily(org_id,profile_id,date,campaign_id,ad_group_id,target_id,target_kind,ad_product,cost)
+        values(${orgId},${fixtureProfileId},${date},'c-1','ag-1','synthetic-mapping-target','keyword','SP',20)`;
+      await page.goto(route);
+      const banner = page.getByTestId('grid-unattributed');
+      await expect(banner).toContainText('1 ad group advertises');
+      await expect(banner).toContainText('over 1 day needs');
+      await banner.getByRole('button',{ name: 'Link them' }).click();
+      const mapping = page.getByRole('dialog',{ name: 'Assign products to ad groups' });
+      await expect(mapping.getByTestId('product-assignment-row')).toHaveCount(1);
+      await mapping.getByRole('combobox').selectOption('B000000272');
+      await mapping.getByRole('button',{ name: 'Save assignment' }).click();
+      await expect(mapping).toContainText('Assigned: B000000272');
+      await expect(banner).toHaveCount(0);
+      for (const theme of ['light','dark']) {
+        await page.evaluate((theme) => { document.documentElement.dataset['theme']=theme; },theme);
+        await page.screenshot({ path:testInfo.outputPath(`product-assignment-${theme}.png`), fullPage:true });
+      }
+      await mapping.getByRole('button',{ name:'Close',exact:true }).click();
+      await page.reload();
+      await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready','true');
+      await expect(page.getByText('Checking product assignments')).toHaveCount(0);
+      await expect(banner).toHaveCount(0);
+      const assignments = await mappingDb.sql`select asin from public.ad_group_product_assignments where org_id=${orgId} and profile_id=${fixtureProfileId} and ad_group_id='ag-1'`;
+      expect(assignments).toEqual([{asin:'B000000272'}]);
+    } finally { await mappingDb.close(); }
+  });
+
 });

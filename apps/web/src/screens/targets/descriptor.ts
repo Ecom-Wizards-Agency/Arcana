@@ -2,7 +2,7 @@ import type { ScreenDescriptor } from '../types';
 import type { load } from './load';
 import type ScreenView from './view';
 export const descriptor = {
-  id: 'targets', path: '/targets/[id]', route: 'page', nav: null,
+  id: 'targets', title: 'Target 360', path: '/targets/[id]', route: 'page', nav: null,
   // Dynamic routes use a concrete fixture in their browser spec, like experiment detail.
   guard: null, prefetch: 'expensive',
   rollout: { enabled: true }, states: ['loading', 'error', 'gated', 'empty', 'not-measured'],

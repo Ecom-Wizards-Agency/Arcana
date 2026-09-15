@@ -4,6 +4,7 @@ import type ScreenView from './view';
 
 export const descriptor = {
   id: "bugs",
+  title: "Bugs",
   path: "/bugs",
   route: "page",
   nav: { "group": "utility", "label": "Bugs", "icon": "icon/inbox", "order": 5 },

@@ -1,4 +1,5 @@
 'use client';
+import { formatShellDate } from '../../../src/ui/date-format';
 
 import { useActionState, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -337,11 +338,4 @@ function InvitationRow({
   );
 }
 
-function shortDate(iso: string): string {
-  return new Intl.DateTimeFormat('en', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    timeZone: 'UTC',
-  }).format(new Date(iso));
-}
+function shortDate(iso: string): string { return formatShellDate(iso.slice(0, 10)); }

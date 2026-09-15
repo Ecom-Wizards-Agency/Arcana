@@ -1,4 +1,7 @@
 'use client';
+import { formatShellDate } from '../../src/ui/date-format';
+
+import { EmptyState } from '@wizard-ads/ui';
 
 /**
  * Issue expiring, profile-allowlisted MCP keys and reveal each plaintext once.
@@ -29,7 +32,7 @@ function statusOf(key: Row): Status {
 }
 
 function shortDate(iso: string | null): string {
-  return iso === null ? '—' : iso.slice(0, 10);
+  return iso === null ? '—' : formatShellDate(iso.slice(0, 10));
 }
 
 /** Claude configuration stores the variable reference, never its value. */
@@ -86,7 +89,7 @@ function Snippet({
     <div style={{ marginTop: '0.75rem' }} data-testid={testId}>
       <div className="wa-row" style={{ alignItems: 'baseline', justifyContent: 'space-between', gap: '0.5rem' }}>
         <span className="wa-label">
-          {title} <span className="wa-hint" style={{ fontWeight: 400 }}>{hint}</span>
+          {title} <span className="wa-support-note" style={{ fontWeight: 400 }}>{hint}</span>
         </span>
         <Button size="sm" onClick={onCopy} data-testid={`copy-${testId}`}>
           {copied ? 'Copied' : 'Copy'}
@@ -205,14 +208,14 @@ export function ConnectClaudeManager({
   }, []);
 
   return (
-    <section className="wa-card">
-      <header className="wa-card__head">
-        <h2 className="wa-card__title">MCP keys</h2>
-        <span className="wa-card__sub">{list.length} issued</span>
+    <section className="wa-support-panel">
+      <header className="wa-support-panel-head">
+        <h2 className="wa-support-panel-title">MCP keys</h2>
+        <span className="wa-support-note">{list.length} issued</span>
       </header>
-      <div className="wa-card__body">
+      <div className="wa-support-panel-body">
         {canManage ? (
-          <div className="wa-stack" style={{ gap: '0.75rem' }}>
+          <div className="wa-support-stack" style={{ gap: '0.75rem' }}>
             <div className="wa-row" style={{ alignItems: 'flex-end', gap: '0.5rem' }}>
               <Field label="Key label" htmlFor="mcp-key-label" grow>
                 <Input
@@ -247,7 +250,7 @@ export function ConnectClaudeManager({
             >
               <legend className="wa-label">Profiles this key may read</legend>
               {profiles.length === 0 ? (
-                <p className="wa-hint" style={{ margin: 0 }}>
+                <p className="wa-support-note" style={{ margin: 0 }}>
                   Connect an advertising profile before issuing an MCP key.
                 </p>
               ) : (
@@ -265,13 +268,13 @@ export function ConnectClaudeManager({
                   ))}
                 </div>
               )}
-              <p className="wa-hint" style={{ margin: '0.5rem 0 0' }}>
+              <p className="wa-support-note" style={{ margin: '0.5rem 0 0' }}>
                 At least one profile is required. The allowlist is enforced on every MCP read.
               </p>
             </fieldset>
           </div>
         ) : (
-          <p className="wa-hint" data-testid="issue-forbidden">
+          <p className="wa-support-note" data-testid="issue-forbidden">
             Issuing and revoking keys requires the admin or owner role. Your role is {role}; you can
             see issued key metadata but not change it.
           </p>
@@ -295,7 +298,7 @@ export function ConnectClaudeManager({
               </Button>
               <Button size="sm" variant="ghost" onClick={() => setToken(null)}>Done</Button>
             </div>
-            <p className="wa-hint" style={{ marginTop: '0.75rem', marginBottom: 0 }}>
+            <p className="wa-support-note" style={{ marginTop: '0.75rem', marginBottom: 0 }}>
               Store this value in <code>WIZARD_ADS_MCP_TOKEN</code> in your client&rsquo;s private
               environment. The reusable setup snippets below never include the value.
             </p>
@@ -303,7 +306,7 @@ export function ConnectClaudeManager({
         )}
 
         {endpoint !== null ? <div style={{ marginTop: '0.875rem', paddingTop: '0.125rem' }}>
-          <p className="wa-hint" style={{ margin: 0 }}>
+          <p className="wa-support-note" style={{ margin: 0 }}>
             Set <code>WIZARD_ADS_MCP_TOKEN</code> privately before using either setup. These
             instructions contain the variable name only.
           </p>
@@ -324,16 +327,14 @@ export function ConnectClaudeManager({
             onCopy={() => void copyText('codex', codexSnippet(endpoint))}
           />
         </div> : (
-          <p className="wa-hint" data-testid="mcp-endpoint-unavailable">
+          <p className="wa-support-note" data-testid="mcp-endpoint-unavailable">
             AI connection unavailable. Ask your installation administrator to configure the MCP service.
             You can still review and revoke existing keys here.
           </p>
         )}
 
         {list.length === 0 ? (
-          <p className="wa-hint" style={{ marginTop: '0.75rem' }} data-testid="mcp-key-empty">
-            No keys yet. {canManage ? 'Issue one above to connect your AI client.' : 'Ask an admin to issue one.'}
-          </p>
+          <EmptyState title="No keys yet." data-testid="mcp-key-empty" body={canManage ? 'Issue one above to connect your AI client.' : 'Ask an admin to issue one.'} />
         ) : (
           <div className="wa-tablewrap" style={{ marginTop: '0.75rem' }}>
             <table className="wa-table">
@@ -370,7 +371,7 @@ export function ConnectClaudeManager({
                       {canManage ? (
                         <td>
                           {status === 'revoked' ? (
-                            <span className="wa-hint">revoked</span>
+                            <span className="wa-support-note">revoked</span>
                           ) : (
                             <Button
                               size="sm"

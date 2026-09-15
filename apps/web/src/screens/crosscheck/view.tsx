@@ -1,3 +1,4 @@
+import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
 import type { CSSProperties } from 'react';
 
 import { gateMessage } from '../../ui/gate-message';
@@ -8,7 +9,7 @@ import type { load } from './load';
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
 
-export default function ScreenView({ data }: { data: ScreenData; }) {
+function ScreenContent({ data }: { data: ScreenData; }) {
   switch (data.view) {
     case 'gated': return renderGated(data.props);
     case 'no-database': return renderNoDatabase(data.props);
@@ -19,14 +20,14 @@ export default function ScreenView({ data }: { data: ScreenData; }) {
 function renderGated({ entry }: Extract<ScreenData, { view: 'gated'; }>['props']) {
   return (<main style={main}>
     <h1 style={heading}>Crosscheck</h1>
-    <p style={muted}>{gateMessage(entry.state)}</p>
+    <ScreenState variant="gated" title="Access unavailable" body={gateMessage(entry.state)} />
   </main>);
 }
 
 function renderNoDatabase(_props: Extract<ScreenData, { view: 'no-database'; }>['props']) {
   return (<main style={main}>
     <h1 style={heading}>Crosscheck</h1>
-    <p style={muted}>{gateMessage('no-database')}</p>
+    <ScreenState variant="gated" title="Access unavailable" body={gateMessage('no-database')} />
   </main>);
 }
 
@@ -57,7 +58,7 @@ function renderReady({ data }: Extract<ScreenData, { view: 'ready'; }>['props'])
     ) : null}
 
     {data.model === null ? (
-      <p style={muted}>Nothing has been cross-checked yet.</p>
+      <ScreenState title="Nothing has been cross-checked yet." body="Choose a connected profile or check again after the next sync." />
     ) : (
       <CrosscheckPanel model={data.model} />
     )}
@@ -84,3 +85,7 @@ const tab: CSSProperties = {
   padding: '0.25rem 0.625rem',
   textDecoration: 'none',
 };
+
+export default function ScreenView({ data }: { data: ScreenData }) {
+  return <ScreenSurface title="Crosscheck">{ScreenContent({ data })}</ScreenSurface>;
+}

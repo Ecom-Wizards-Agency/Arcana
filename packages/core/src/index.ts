@@ -44,3 +44,4 @@ export * from './bid-corridor.js';
 export * from './creative/performance.js';
 export * from './creative/certainty.js';
 export * from './creative/prompt-loop.js';
+export { timelineDates, timelineSummary, timelineValue, timelineEffect, timelinePretrend, shiftTimelineDate } from './timeline-effect.js';

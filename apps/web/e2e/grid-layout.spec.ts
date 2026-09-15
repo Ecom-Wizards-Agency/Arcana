@@ -24,12 +24,19 @@ test('performance frame preserves measured strips across density, theme and attr
     payload.performance = { ...payload.performance, unattributed: banner ? { adGroups: 3, spend: 174.25, days: 14 } : null };
     await route.fulfill({ response, json: payload });
   });
+  // The assignment read owns the reconciled banner after WP-272.
+  await page.route('**/targets/product-assignments?*', async (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    const items = [50,60,64.25].map((spend,index) => ({ adGroupId:`synthetic-layout-${index}`, campaignId:'synthetic-campaign', name:`Synthetic group ${index}`, asins:['B000SYN001','B000SYN002'], spend, assignedAsin:null }));
+    await route.fulfill({ json: { profileId:fixtureProfileId,start:query.get('start'),end:query.get('end'),days:14,canAssign:true,items,count:3,unassignedCount:3,unassignedSpend:174.25 } });
+  });
   for (const theme of ['light', 'dark']) for (const density of ['normal', 'compact']) for (const present of [true, false]) {
     banner = present;
     await page.goto(gridUrl);
     await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
     await page.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
     await page.getByLabel('Row density').selectOption(density);
+    if (present) await expect(page.getByTestId('grid-unattributed')).toBeVisible();
     const offset = present ? 0 : -120;
     for (const [id, y, height] of [['grid-provenance', 176, 120], ['grid-kpis', 296, 100], ['grid-performance-toolbar', 396, 47], ['grid-chip-rail', 443, 33]] as const) {
       const box = await page.getByTestId(id).boundingBox();

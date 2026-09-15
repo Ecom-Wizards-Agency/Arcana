@@ -1,8 +1,9 @@
+import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
 import { gateMessage } from '../../ui/gate-message';
 
-import { Banner, PageHeader } from '../../ui/primitives';
+import { PageHeader } from '../../ui/primitives';
 
-import { Shell } from '../../ui/shell';
+import { Shell } from '../settings/frame';
 
 import { page } from '../../ui/tokens';
 
@@ -12,7 +13,7 @@ import type { load } from './load';
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
 
-export default function ScreenView({ data }: { data: ScreenData; }) {
+function ScreenContent({ data }: { data: ScreenData; }) {
   if (data === null) return null;
   switch (data.view) {
     case 'gated': return renderGated(data.props);
@@ -24,7 +25,7 @@ export default function ScreenView({ data }: { data: ScreenData; }) {
 function renderGated({ entry }: Extract<ScreenData, { view: 'gated'; }>['props']) {
   return (<main style={page}>
     <PageHeader title="Members" />
-    <Banner tone="warn">{gateMessage(entry.state)}</Banner>
+    <ScreenState variant="gated" title="Access unavailable" body={<>{gateMessage(entry.state)}</>} />
   </main>);
 }
 
@@ -35,9 +36,9 @@ function renderForbidden({ context, active }: Extract<ScreenData, { view: 'forbi
         title="Members"
         subtitle="Invite people, assign access, and keep organisation ownership explicit."
       />
-      <Banner tone="warn" data-testid="members-forbidden">
+      <ScreenState variant="gated" title="Member management unavailable" data-testid="members-forbidden" body={<>
         Members are managed by admins and owners. Your role is <strong>{active.role}</strong>.
-      </Banner>
+      </>} />
     </Shell>
   </main>);
 }
@@ -56,4 +57,9 @@ function renderReady({ context, active, members, invitations }: Extract<ScreenDa
       />
     </Shell>
   </main>);
+}
+
+export default function ScreenView({ data }: { data: ScreenData }) {
+  if (data === null) return null;
+  return <ScreenSurface title="Members">{ScreenContent({ data })}</ScreenSurface>;
 }

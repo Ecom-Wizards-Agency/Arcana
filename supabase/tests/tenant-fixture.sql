@@ -130,6 +130,10 @@ begin
   insert into public.product_ads
     (org_id, profile_id, amazon_id, ad_product, state, campaign_id, ad_group_id, asin)
   values (v_org, v_profile, 'pa-1', 'SP', 'enabled', 'c-1', 'ag-1', 'B0TEST0001');
+  if to_regclass('public.ad_group_product_assignments') is not null then
+    insert into public.ad_group_product_assignments(org_id,profile_id,ad_group_id,asin,assigned_by)
+    values(v_org,v_profile,'ag-1','B0TEST0001',p_user_id);
+  end if;
   insert into public.keywords
     (org_id, profile_id, amazon_id, ad_product, state, campaign_id, ad_group_id, keyword_text, match_type, bid)
   values (v_org, v_profile, 'kw-1', 'SP', 'enabled', 'c-1', 'ag-1', 'widget', 'exact', 0.90);

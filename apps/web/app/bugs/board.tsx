@@ -1,4 +1,5 @@
 'use client';
+import { EmptyState } from '@wizard-ads/ui';
 
 import { useEffect, useState } from 'react';
 import { FeedbackTriageControls } from '../../src/feedback/triage-controls';
@@ -114,7 +115,7 @@ export function BugBoardView(initial: BugBoardProps) {
             aria-label={column.title}
             data-testid={column.testId}
             style={{
-              background: colors.subtle,
+              background: colors.surface,
               border: `1px solid ${colors.border}`,
               borderRadius: '0.5rem',
               // Grid children default to min-width auto; without 0 an overlong
@@ -140,7 +141,7 @@ export function BugBoardView(initial: BugBoardProps) {
                 />
               ))}
             </ul>
-            {board[column.key].length === 0 ? <p style={muted}>Nothing here yet.</p> : null}
+            {board[column.key].length === 0 ? <EmptyState title="Nothing here yet." body="New reports appear here when their status matches this column." /> : null}
           </section>
         ))}
       </div>
@@ -216,7 +217,7 @@ function BugCard({
       }}
     >
       <div style={{ alignItems: 'baseline', display: 'flex', gap: '0.5rem' }}>
-        <button
+        <button className="wa-btn"
           type="button"
           aria-label={`Vote for ${item.title}`}
           data-testid="vote-button"

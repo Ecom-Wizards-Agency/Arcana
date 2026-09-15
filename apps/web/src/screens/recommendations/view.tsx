@@ -1,3 +1,5 @@
+import { formatShellDate, formatTimestamp, formatDateWindow } from '../../ui/date-format';
+import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
 import type { CSSProperties } from 'react';
 
 import { EmptyState } from '../../ui/primitives';
@@ -10,7 +12,7 @@ import type { load } from './load';
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
 
-export default function ScreenView({ data }: { data: ScreenData; }) {
+function ScreenContent({ data }: { data: ScreenData; }) {
   switch (data.view) {
     case 'empty': return renderEmpty(data.props);
     case 'ready': return renderReady(data.props);
@@ -57,17 +59,17 @@ function renderReady({ run, proposals, profile, runs, role }: Extract<ScreenData
           ? 'no run selected'
           : run.finishedAt === null
             ? `run ${run.status}`
-            : `${proposals.length} proposal${proposals.length === 1 ? '' : 's'} · ${run.windowStart ?? '?'} to ${run.windowEnd ?? '?'}`}
+            : `${proposals.length} proposal${proposals.length === 1 ? '' : 's'} · ${run.windowStart !== null && run.windowEnd !== null ? formatDateWindow(run.windowStart, run.windowEnd) : 'Window unavailable'}`}
       </p>
       {run === null ? null : (
         <details className="wa-dashboard-context" style={{ marginTop: 0 }}>
           <summary>Run details</summary>
           <p>
             Engine {run.engineVersion ?? 'unversioned'} · status {run.status} · created{' '}
-            {run.createdAt.toISOString().replace('T', ' ').slice(0, 16)} UTC
+            {formatTimestamp(run.createdAt)}
             {run.executionSnapshot ? ' · one-time RPC preview' : run.groupSnapshot ? ` · group ${run.groupSnapshot.name} (${run.groupSnapshot.role})` : ' · legacy profile run'}
           </p>
-          {run.executionSnapshot ? <p>Confirmed target ACOS {run.executionSnapshot.configuration.targetAcos * 100}% · bids {run.executionSnapshot.configuration.bidFloor}–{run.executionSnapshot.configuration.bidCeiling} {profile.currencyCode} · maximum increase {run.executionSnapshot.configuration.bidIncreaseCap * 100}% / decrease {run.executionSnapshot.configuration.bidDecreaseCap * 100}% · {run.executionSnapshot.configuration.window.start} to {run.executionSnapshot.configuration.window.end} ({run.executionSnapshot.profileTimezone}).</p> : null}
+          {run.executionSnapshot ? <p>Confirmed target ACOS {run.executionSnapshot.configuration.targetAcos * 100}% · bids {run.executionSnapshot.configuration.bidFloor}–{run.executionSnapshot.configuration.bidCeiling} {profile.currencyCode} · maximum increase {run.executionSnapshot.configuration.bidIncreaseCap * 100}% / decrease {run.executionSnapshot.configuration.bidDecreaseCap * 100}% · {formatDateWindow(run.executionSnapshot.configuration.window.start, run.executionSnapshot.configuration.window.end)} ({run.executionSnapshot.profileTimezone}).</p> : null}
         </details>
       )}
       {runs.length > 1 ? (
@@ -80,7 +82,7 @@ function renderReady({ run, proposals, profile, runs, role }: Extract<ScreenData
                 href={`/recommendations?profile=${profile.id}&run=${option.id}`}
                 style={{ ...pill, fontWeight: option.id === run?.id ? 600 : 400 }}
               >
-                {option.executionSnapshot ? 'One-time RPC' : option.groupSnapshot?.name ?? 'Legacy profile'} · {option.createdAt.toISOString().slice(0, 10)} ·{' '}
+                {option.executionSnapshot ? 'One-time RPC' : option.groupSnapshot?.name ?? 'Legacy profile'} · {formatShellDate(option.createdAt.toISOString().slice(0, 10))} ·{' '}
                 {option.finishedAt === null ? option.status : option.proposalsCount}
               </a>
             ))}
@@ -90,7 +92,7 @@ function renderReady({ run, proposals, profile, runs, role }: Extract<ScreenData
     </header>
 
     {run === null ? (
-      <EmptyState
+      <EmptyState variant="not-measured"
         title="No recommendations run yet"
         body="The weekly engine has not finished a run for this profile, so there is nothing to review yet. The optimizer shows the current facts and when the next run can start."
         action={
@@ -100,7 +102,7 @@ function renderReady({ run, proposals, profile, runs, role }: Extract<ScreenData
         }
       />
     ) : run.finishedAt === null ? (
-      <EmptyState
+      <EmptyState variant="loading"
         title={run.status === 'running' ? 'Recommendations run in progress' : 'Recommendations run queued'}
         body={
           run.status === 'running'
@@ -109,7 +111,7 @@ function renderReady({ run, proposals, profile, runs, role }: Extract<ScreenData
         }
       />
     ) : run.status !== 'succeeded' ? (
-      <EmptyState
+      <EmptyState variant="error"
         title="Recommendations run failed"
         body="The worker recorded this run as failed. Queue a new preview after checking sync freshness and strategy settings."
       />
@@ -119,7 +121,7 @@ function renderReady({ run, proposals, profile, runs, role }: Extract<ScreenData
         body="The engine found no change worth proposing for this profile in this window. On a healthy account that can be the expected result."
         meta={
           <time dateTime={run.createdAt.toISOString()}>
-            Run created {run.createdAt.toISOString().replace('T', ' ').slice(0, 16)} UTC
+            Run created {formatTimestamp(run.createdAt)}
           </time>
         }
         action={
@@ -156,7 +158,7 @@ function renderReady({ run, proposals, profile, runs, role }: Extract<ScreenData
 function renderError({ message }: Extract<ScreenData, { view: 'error'; }>['props']) {
   return (<main style={main}>
     <h1 style={heading}>Recommendations</h1>
-    <p role="alert">{message}</p>
+    <ScreenState variant="error" title="Could not load this screen" body={message} />
   </main>);
 }
 
@@ -189,3 +191,7 @@ const pill: CSSProperties = {
   padding: '0.125rem 0.625rem',
   textDecoration: 'none',
 };
+
+export default function ScreenView({ data }: { data: ScreenData }) {
+  return <ScreenSurface title="Recommendations">{ScreenContent({ data })}</ScreenSurface>;
+}

@@ -56,6 +56,7 @@ export * from './primitives/Tabs.js';
 export * from './primitives/RouteTabs.js';
 export * from './primitives/StatusChip.js';
 export * from './primitives/EmptyState.js';
+export * from './primitives/ScreenSurface.js';
 export { TrendChart, niceTicks, windowBand, stackEndLabelYs } from './charts/TrendChart.js';
 export type { TrendChartProps, TrendPoint, TrendSeries, ChartWindow, ValueScale } from './charts/TrendChart.js';
 export * from './charts/BidCorridorChart.js';

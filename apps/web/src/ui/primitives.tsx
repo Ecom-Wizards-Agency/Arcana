@@ -20,6 +20,7 @@ import type {
   ButtonHTMLAttributes,
   InputHTMLAttributes,
   ReactNode,
+  Ref,
   SelectHTMLAttributes,
   TextareaHTMLAttributes,
 } from 'react';
@@ -37,6 +38,7 @@ const join = (...parts: (string | false | undefined)[]): string =>
 export type ButtonVariant = 'default' | 'primary' | 'ghost' | 'danger';
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  ref?: Ref<HTMLButtonElement>;
   variant?: ButtonVariant;
   size?: 'sm' | 'md';
 }

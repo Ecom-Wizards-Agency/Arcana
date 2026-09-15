@@ -4,9 +4,9 @@ import type ScreenView from './view';
 
 export const descriptor = {
   id: "experiments-new",
+  title: "New experiment",
   path: "/experiments/new",
   route: "page",
-  title: "New experiment",
   nav: null,
   guard: null,
   prefetch: "cheap",

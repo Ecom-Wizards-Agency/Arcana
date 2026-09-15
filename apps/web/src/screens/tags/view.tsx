@@ -1,3 +1,4 @@
+import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
 import type { JsonValue } from '@wizard-ads/db';
 
 import { TagManager } from '../../../app/tags/tag-manager';
@@ -6,7 +7,7 @@ import type { load } from './load';
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
 
-export default function ScreenView({ data }: { data: ScreenData; }) {
+function ScreenContent({ data }: { data: ScreenData; }) {
   switch (data.view) {
     case 'ready': return renderReady(data.props);
     case 'error': return renderError(data.props);
@@ -31,7 +32,7 @@ function renderReady({ role, query, tags, campaigns }: Extract<ScreenData, { vie
 function renderError({ message }: Extract<ScreenData, { view: 'error'; }>['props']) {
   return (<main style={{ maxWidth: 760, margin: '48px auto', fontFamily: 'var(--wa-font)' }}>
     <h1>Tags</h1>
-    <p role="alert">{message}</p>
+    <ScreenState variant="error" title="Could not load this screen" body={message} />
   </main>);
 }
 
@@ -42,4 +43,8 @@ function parseState(value: string | string[] | undefined): JsonValue | undefined
   } catch {
     return undefined;
   }
+}
+
+export default function ScreenView({ data }: { data: ScreenData }) {
+  return <ScreenSurface title="Tags">{ScreenContent({ data })}</ScreenSurface>;
 }

@@ -1,8 +1,9 @@
+import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
 import { gateMessage } from '../../ui/gate-message';
 
-import { Banner, PageHeader } from '../../ui/primitives';
+import { PageHeader } from '../../ui/primitives';
 
-import { Shell } from '../../ui/shell';
+import { Shell } from '../settings/frame';
 
 import { page } from '../../ui/tokens';
 
@@ -16,7 +17,7 @@ import type { load } from './load';
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
 
-export default function ScreenView({ data }: { data: ScreenData; }) {
+function ScreenContent({ data }: { data: ScreenData; }) {
   if (data === null) return null;
   switch (data.view) {
     case 'gated': return renderGated(data.props);
@@ -27,7 +28,7 @@ export default function ScreenView({ data }: { data: ScreenData; }) {
 function renderGated({ entry }: Extract<ScreenData, { view: 'gated'; }>['props']) {
   return (<main style={page}>
     <PageHeader title="Account" />
-    <Banner tone="warn">{gateMessage(entry.state)}</Banner>
+    <ScreenState variant="gated" title="Access unavailable" body={<>{gateMessage(entry.state)}</>} />
   </main>);
 }
 
@@ -45,4 +46,9 @@ function renderReady({ context, totp, next, config }: Extract<ScreenData, { view
       )}
     </Shell>
   </main>);
+}
+
+export default function ScreenView({ data }: { data: ScreenData }) {
+  if (data === null) return null;
+  return <ScreenSurface title="Account">{ScreenContent({ data })}</ScreenSurface>;
 }

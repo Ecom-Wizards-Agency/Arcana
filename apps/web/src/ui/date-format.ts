@@ -23,3 +23,14 @@ export function formatShellTimestamp(value: string, timeZone = 'UTC'): string {
     hourCycle: 'h23', timeZone, timeZoneName: 'short',
   }).format(parsed);
 }
+
+export function formatDateWindow(start: string, end: string): string {
+  return start === end ? formatShellDate(start) : `${formatShellDate(start)} – ${formatShellDate(end)}`;
+}
+export function formatTimestamp(value: string | Date | null): string {
+  if (value === null) return '—';
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.valueOf())) return 'Date unavailable';
+  const iso = date.toISOString();
+  return `${formatShellDate(iso.slice(0, 10))} ${iso.slice(11, 16)} UTC`;
+}

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import Loading from '../../../app/settings/account/loading';
-import { verifyScreen } from '../render-test-support';
-import SharedError from '../shared-error';
+import { verifyScreen } from '../settings/render-support';
+import SharedError from '../../../app/settings/account/error';
 import { context } from '../synthetic-render-fixtures';
 import { descriptor } from './descriptor';
 import { ready } from './render-fixture';

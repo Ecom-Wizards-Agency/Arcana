@@ -60,7 +60,7 @@ async function firstProposalId(page: Page): Promise<string> {
 }
 
 test.describe('recommendations review', () => {
-  test('shows every proposal in one full-width grid, with its work and its strategy', async ({ page }) => {
+  test('shows every proposal in one full-width grid, with its work and its strategy', async ({ page }, info) => {
     await openReview(page);
 
     // Full width, one continuous grid, and none of the nested tables the
@@ -78,6 +78,12 @@ test.describe('recommendations review', () => {
     await expect(page.getByTestId('queue-count')).toHaveText(
       `${PROPOSALS} of ${PROPOSALS} loaded rows shown`,
     );
+    for (const theme of ['light','dark']) {
+      await page.evaluate((theme) => { document.documentElement.dataset['theme']=theme; },theme);
+      const screenshot = info.outputPath(`recommendations-full-grid-${theme}.png`);
+      await page.screenshot({ path:screenshot,fullPage:true });
+      await info.attach(`Recommendations ${theme}`,{path:screenshot,contentType:'image/png'});
+    }
     // Decision-queue order survives the conversion: needs review leads, and the
     // lane the old sections carried is a column on the row.
     await expect(page.getByTestId('grid-row').first()).toContainText('Needs review');

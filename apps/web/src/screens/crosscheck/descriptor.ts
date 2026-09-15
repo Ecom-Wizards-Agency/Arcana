@@ -4,6 +4,7 @@ import type ScreenView from './view';
 
 export const descriptor = {
   id: "crosscheck",
+  title: "Crosscheck",
   path: "/crosscheck",
   route: "page",
   nav: { "group": "utility", "label": "Crosscheck", "icon": "icon/change-queue", "order": 2 },
