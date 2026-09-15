@@ -1,5 +1,6 @@
 import { registerAssetLibrarySource } from './asset-library.js';
 import { registerSpApiReportSources, postgresSpReportDependencies } from './spapi-report-sources.js';
+import { registerProviderEvidence, postgresProviderEvidenceDependencies } from "./provider-evidence.js";
 import { registerTargetTranslation } from './translation/register.js';
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
 import { exchangeSpApiAuthorizationCode, runSpApiConnectionPass } from './spapi-connections.js';
@@ -164,6 +165,7 @@ const worker = new SyncWorker({
     const { spApiClientId, spApiClientSecret: lwaKey } = config;
     if (spApiClientId && lwaKey) registerSpApiReportSources(registry, postgresSpReportDependencies({ handle, clientId: spApiClientId, clientSecret: lwaKey }));
     registerTargetTranslation(registry, handle);
+    registerProviderEvidence(registry, postgresProviderEvidenceDependencies(handle));
   },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,

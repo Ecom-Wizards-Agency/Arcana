@@ -1,4 +1,5 @@
 import { SpSourceStatus } from '../grid/spapi-evidence';
+import { ProviderEvidencePanel } from '../recommendations/provider-evidence';
 import { formatShellDate, formatTimestamp, formatDateWindow } from '../../ui/date-format';
 import { TableFrame } from '../../ui/primitives';
 import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
@@ -34,8 +35,8 @@ function renderGated({ result }: Extract<ScreenData, { view: 'gated'; }>['props'
   </main>);
 }
 
-function renderReady({ context, status, sources, coreEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
-  return (<main style={page}>
+function renderReady({ context, status, sources, coreEvidence, providerEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+  return (<main style={page}>{providerEvidence?.map((item) => <section key={item.profileId}><h2>Profile {item.profileId}</h2><ProviderEvidencePanel evidence={item.evidence} consumer="sync-status" /></section>)}
     <Shell context={context} current="sync">
       <h1 style={heading}>Sync status</h1>
       {coreEvidence ? <CoreReportEvidencePanel evidence={coreEvidence} title="Report family coverage" /> : null}

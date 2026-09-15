@@ -3,6 +3,7 @@ import type { CoreReportEvidence } from '@wizard-ads/shared';
 import { formatResearchPeriod } from './research-format';
 import { QueryResearch } from './research-view';
 import { AbaEvidencePanel } from '../grid/spapi-evidence';
+import { ProviderEvidencePanel } from '../recommendations/provider-evidence';
 import type { CSSProperties } from 'react';
 import { CoreReportEvidencePanel } from '../grid/core-report-evidence';
 
@@ -24,7 +25,7 @@ import styles from '../../../app/query-intelligence/query-intelligence.module.cs
 
 import type { load } from './load';
 
-export type ScreenData = Awaited<ReturnType<typeof load>> | {view:'not-measured';props:{profile:OrgProfile;coreEvidence?:CoreReportEvidence[]}};
+export type ScreenData = Awaited<ReturnType<typeof load>> | {view:'not-measured';props:{profile:OrgProfile;coreEvidence?:CoreReportEvidence[];providerEvidence?:import("@wizard-ads/shared").ProviderEvidenceReadResult}};
 
 export default function ScreenView({ data }: { data: ScreenData; }) {
   switch (data.view) {
@@ -46,8 +47,9 @@ function renderEmpty(_props: Extract<ScreenData, { view: 'empty'; }>['props']) {
   </main>);
 }
 
-function renderNotMeasured({ profile, coreEvidence }: Extract<ScreenData, { view: 'not-measured'; }>['props']) {
+function renderNotMeasured({ providerEvidence, profile, coreEvidence }: Extract<ScreenData, { view: 'not-measured'; }>['props']) {
   return (<main className="wa-stack">
+    <ProviderEvidencePanel evidence={providerEvidence} consumer="query-intelligence" />
     {coreEvidence ? <CoreReportEvidencePanel evidence={coreEvidence} title="Sponsored Brands paid queries" /> : null}
     <header className="wa-page-head">
       <div>
@@ -69,8 +71,9 @@ function renderNotMeasured({ profile, coreEvidence }: Extract<ScreenData, { view
   </main>);
 }
 
-function renderReady({ aba, profile, scope, scopes, category, search, model, contextualReview, contextualExports, role, coreEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ providerEvidence, aba, profile, scope, scopes, category, search, model, contextualReview, contextualExports, role, coreEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main className="wa-stack" data-interactive="true">
+    <ProviderEvidencePanel evidence={providerEvidence} consumer="query-intelligence" />
     {coreEvidence ? <CoreReportEvidencePanel evidence={coreEvidence} title="Sponsored Brands paid queries" /> : null}
     <header className="wa-page-head">
       <div>

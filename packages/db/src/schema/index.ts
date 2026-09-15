@@ -37,6 +37,7 @@ export * from './sponsored-prompts.js';
 export * from './ad-group-products.js';
 export * from './research.js';
 export * from './creative-observations.js';
+export * from './provider-evidence.js';
 export * from './report-families.js';
 export * from './spapi-reports.js';
 export * from './campaign-builder.js';

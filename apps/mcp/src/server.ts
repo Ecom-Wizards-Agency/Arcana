@@ -1,3 +1,5 @@
+import { readProviderEvidence } from '@wizard-ads/db';
+import { providerEvidenceSnapshot } from '@wizard-ads/core';
 /**
  * The MCP server: tools, resources, and the audit wrapper around both.
  *
@@ -771,6 +773,20 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
     ),
   );
 
+  server.registerTool(
+    'get_provider_evidence',
+    {
+      title: 'Amazon provider evidence', description: 'Read source-labeled Amazon recommendations and estimates. This tool confers no approval or execution authority.',
+      inputSchema: { profile_id: profileIdSchema, limit: limitSchema }, annotations: { readOnlyHint: true },
+    },
+    audited(context, 'get_provider_evidence', async (args: { profile_id: string; limit: number }, operation) => {
+      const { handle, scope } = operation;
+      const profile = await resolveProfile(handle, scope, args.profile_id);
+      const evidence = await readProviderEvidence(handle, { orgId: scope.orgId, profileId: profile.id, consumer: 'sync-status', limit: args.limit });
+      const snapshot = providerEvidenceSnapshot(evidence, 'sync-status', new Date().toISOString());
+      return { payload: snapshot, summary: { rows: snapshot.returnedCount, total: snapshot.totalCount }, profileId: profile.id };
+    }),
+  );
   server.registerTool(
     'get_recommendations',
     {

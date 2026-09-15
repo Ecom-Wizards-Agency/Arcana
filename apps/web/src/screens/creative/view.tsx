@@ -1,5 +1,6 @@
 import { CoreReportEvidencePanel } from '../grid/core-report-evidence';
 import { ListingEvidencePanel } from '../grid/spapi-evidence';
+import { ProviderEvidencePanel } from '../recommendations/provider-evidence';
 import { formatShellDateRange } from '../../ui/date-format';
 import { gateMessage } from '../../ui/gate-message';
 import { EmptyState, PageHeader } from '../../ui/primitives';
@@ -19,6 +20,7 @@ export default function ScreenView({ data }: { data: ScreenData }) {
   const query = new URLSearchParams({ profile: profile.id, from: period.start, to: period.end });
   if (selectedPresetId !== undefined) query.set('preset', selectedPresetId);
   return <main className={styles.page} data-testid="creative-screen" data-profile-id={profile.id} data-profile-label={profile.label}>
+    <ProviderEvidencePanel evidence={data.props.providerEvidence} consumer="creative" />
     <PageHeader title={title} subtitle={mode === 'eligibility' ? 'Whether a video can run, and what is stopping it when it cannot.' : `Creative Performance · ${workspace.assets.filter((asset) => asset.assetId !== null).length} Sponsored Brands video creatives · ${formatShellDateRange(period.start, period.end)} · ad-grain facts from sbAds · current asset mappings do not establish historical attachment`} />
     {data.props.coreEvidence ? <CoreReportEvidencePanel evidence={data.props.coreEvidence} title="Reported ad video and new-to-brand measurements" /> : null}
     <ListingEvidencePanel evidence={data.props.listingEvidence} reports={data.props.listingReports} timezone={profile.timezone} />

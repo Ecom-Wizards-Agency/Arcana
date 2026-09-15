@@ -1,4 +1,6 @@
 import { provisionSpApiReportJobs } from './spapi-report-scheduler.js';
+import { ProviderCollectionConfig } from '@wizard-ads/shared';
+import { providerEvidenceSchedule } from './schedules.js';
 import type { ReportCoverageObservation } from '@wizard-ads/shared';
 import { mergeControlMirror, mergeKeywordMirror, readKeywordMirrorStart } from '@wizard-ads/db/sp-write-worker';
 import type { ControlMirrorMergeCounts, KeywordMirrorMergeCounts, KeywordMirrorMergeRequest } from '@wizard-ads/shared/sp-write-mirror';
@@ -855,6 +857,7 @@ export class PostgresWorkerStore implements WorkerStore {
    * them, while a later reactivation enables the same rows again.
    */
   async ensureIntegrationSchedules(): Promise<number> {
+    await this.ensureProviderEvidenceSchedules();
     const [relation] = await this.handle.sql<{ relation: string | null }[]>`
       select to_regclass('public.integration_connections')::text as relation
     `;
@@ -932,6 +935,28 @@ export class PostgresWorkerStore implements WorkerStore {
     `;
     const spapi = await provisionSpApiReportJobs(this.handle);
     return Number(result?.changed ?? 0) + spapi.enqueued + spapi.disabledScopes;
+  }
+
+  private async ensureProviderEvidenceSchedules(): Promise<void> {
+    if (process.env['OPENSPELL_PROVIDER_EVIDENCE_SCHEDULE_OWNER'] !== '1') return;
+    const [relation] = await this.handle.sql<{ relation: string | null }[]>`select to_regclass('public.provider_evidence_configs')::text as relation`;
+    if (!relation?.relation) return;
+    const enabled = process.env['OPENSPELL_PROVIDER_EVIDENCE_ENABLED'] === '1';
+    const rows = await this.handle.sql<{ config: unknown; enabled: boolean }[]>`select config,enabled from public.provider_evidence_configs`;
+    const keep: string[] = [];
+    for (const row of rows) {
+      const config = ProviderCollectionConfig.parse(row.config);
+      const spec = providerEvidenceSchedule(config, enabled && row.enabled);
+      if (!spec) continue;
+      keep.push(spec.variant);
+      const written = await this.handle.sql`insert into public.sync_schedules(org_id,profile_id,job_type,report_type,variant,cadence,payload,enabled)
+        values(${config.scope.orgId},${config.scope.profileId},'provider.evidence.collect',null,${spec.variant},${spec.cadence}::interval,${JSON.stringify(spec.payload)}::jsonb,true)
+        on conflict(profile_id,job_type,report_type,variant) do update set cadence=excluded.cadence,payload=excluded.payload,enabled=true returning id`;
+      if (written.length !== 1) throw new Error('Provider collection schedule count mismatch');
+    }
+    await this.handle.sql`update public.sync_schedules set enabled=false where job_type='provider.evidence.collect' and enabled and not (variant=any(${keep}))`;
+    const verified = await this.handle.sql<{ variant: string }[]>`select variant from public.sync_schedules where job_type='provider.evidence.collect' and enabled`;
+    if (verified.length !== keep.length || verified.some((row) => !keep.includes(row.variant))) throw new Error('Provider collection schedule readback mismatch');
   }
 
   async unscheduledProfiles(): Promise<{ orgId: string; profileId: string }[]> {

@@ -173,3 +173,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     ),
   };
 }
+/** Explicit source gate; credentials and existing connections never enable it. */
+export function providerEvidenceEnabledFromEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env['OPENSPELL_PROVIDER_EVIDENCE_ENABLED'] === '1';
+}
