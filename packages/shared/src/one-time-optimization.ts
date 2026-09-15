@@ -112,7 +112,8 @@ export const OptimizerSelectionExportResult = z.strictObject({
   counts: z.strictObject({ offered: z.number().int().positive(), accepted: z.number().int().positive(),
     exported: z.number().int().positive(), applyRows: z.number().int().positive() }),
 }).refine((result) => result.counts.offered === result.counts.accepted
-  && result.counts.accepted === result.counts.exported && result.counts.applyRows === result.forwardRowIds.length
+  && result.counts.accepted === result.counts.exported && result.counts.exported === result.counts.applyRows
+  && result.counts.applyRows === result.forwardRowIds.length
   && new Set(result.forwardRowIds).size === result.forwardRowIds.length, 'export counts must reconcile');
 export type OptimizerSelectionExportResult = z.infer<typeof OptimizerSelectionExportResult>;
 
