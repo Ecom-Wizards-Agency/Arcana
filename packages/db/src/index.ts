@@ -89,4 +89,8 @@ export { buildRestoreProposal, readRestoreProposal, reviewRestoreProposal } from
 export * from './queries/market-position.js';
 export * from './queries/translation.js';
 export * from './queries/timeline.js';
+export * from './queries/optimization-group-performance.js';
 export * from './queries/ad-group-products.js';
+export * from './queries/optimizer-run.js';
+export * from './queries/optimizer-export.js';
+export { prepareOptimizerRetry, readOptimizerRetryExclusions } from './queries/sp-write-application-optimizer.js';
