@@ -10,6 +10,7 @@ import { restoreCounts } from '../../../../../packages/core/src/restore-preview'
 import { attribution, displayValue, queueModel, QUEUE_COLUMNS, SOURCE_LABEL } from './model';
 import { restoreQueueView, saveQueueView, queueViewStore } from './saved-view';
 import type { load } from './load';
+import { optimizerBatchHref } from '../optimizer/navigation';
 export type ScreenData = Awaited<ReturnType<typeof load>>;
 export default function ScreenView({ data }: { data: ScreenData }) {
   if (data.view === 'empty') return <main className="cq"><p role="status">No changes recorded in this range</p><p>This organisation has no advertising profiles yet.</p></main>;
@@ -64,21 +65,18 @@ function Queue({ data }: { data: Extract<ScreenData,{view:'ready'}>['props'] }) 
     try {
       const response=await fetch('/api/time-machine/restore',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
       const receipt:unknown=await response.json();
-      if(!response.ok || !receipt || typeof receipt!=='object' || !('planId' in receipt) || typeof receipt.planId!=='string') throw new Error('The proposal could not be confirmed. Reload the preview before trying again.');
-      refreshShell();router.push(href({batch:null,proposal:receipt.planId}));router.refresh();
+      if (!response.ok || !receipt || typeof receipt !== 'object') throw new Error('The proposal could not be confirmed. Reload the preview before trying again.');
+      const sourceBatchId = data.preview?.batchId;
+      if (!sourceBatchId) throw new Error('The source batch is unavailable.');
+      const destination = 'kind' in receipt && receipt.kind === 'export_only' && 'batchId' in receipt && receipt.batchId === sourceBatchId
+        ? optimizerBatchHref('confirm', sourceBatchId, data.profileId, { restoreExport: '1' })
+        : 'planId' in receipt && typeof receipt.planId === 'string'
+          ? optimizerBatchHref('confirm', sourceBatchId, data.profileId, { plan: receipt.planId }) : null;
+      if (!destination) throw new Error('The proposal response identifies another source.');
+      refreshShell();router.push(destination);
     } catch(error) {setMessage(error instanceof Error ? error.message : 'Proposal unavailable');}
     finally {setSaving(null);}
   };
-  if(data.proposal) {
-    const {preview:proposal,approved}=data.proposal;
-    const source=proposal.plan.source;
-    if(source.kind!=='apply_batch'||!source.restoreProposal) throw new Error('Restore source unavailable');
-    return <main className="cq" data-interactive={hydrated?'true':'false'}><header><h1>Review restore proposal</h1><p>{proposal.plan.counts.providerRows} changes from recorded old values. Approval does not send changes to Amazon.</p></header>
-      <div className="cq-table-wrap"><table className="cq-restore"><thead><tr>{['ROW','CURRENT','READ AT','RESTORE TO'].map(label=><th key={label}>{label}</th>)}</tr></thead><tbody>{source.restoreProposal.rows.map(row=><tr key={row.sourceRowId}><td>{row.entityId}</td><td>{displayValue(row.current.amount,'bid',data.currencyCode)}</td><td>{row.readAt}</td><td>{displayValue(row.restoreTo.amount,'bid',data.currencyCode)}</td></tr>)}</tbody></table></div>
-      <p>Profile: {data.profileId}. The saved source, selected rows and preview evidence are immutable. Current values and profile access are checked again on approval.</p>
-      <button className="cq-primary" disabled={!hydrated||approved||saving!==null||!['owner','admin'].includes(data.role)} onClick={()=>void mutateProposal({profileId:data.profileId,planId:proposal.plan.id,fingerprint:proposal.plan.fingerprint})}>{approved?'Approved':'Approve after checks pass'}</button>
-      {message?<p role="alert">{message}</p>:null}<a href={href({proposal:null})}>Back to Change queue</a></main>;
-  }
   const preview = data.preview;
   if (preview !== null) {
     const counts = restoreCounts(preview.rows);

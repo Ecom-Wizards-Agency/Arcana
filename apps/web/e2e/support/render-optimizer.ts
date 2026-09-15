@@ -11,6 +11,7 @@ import { operationFixture } from '../../src/screens/optimizer-run/render-fixture
 import { workedPlacementInputs, workedPlacementRow, workedPeakExposures } from '../../src/screens/optimizer-review/worked-example';
 import { spWriteApprovalFixtures, spWriteTwoChangeApprovalFixture } from '../../src/writes/approval-fixtures';
 import { chooserReady, chooserRows } from '../../src/screens/optimizer/choose-fixture';
+import { restoreApprovalFixture, restoreExportFixture, restoreOperationFixture, type RestoreResultState } from '../../src/writes/approval-fixtures';
 
 Object.assign(globalThis, { React });
 const styles = new Map<string, string>();
@@ -29,6 +30,7 @@ const { OptimizerFrame, OptimizerUnavailable } = await import('../../src/screens
 const { OptimizationHelp } = await import('../../src/screens/optimizer-help/view');
 const { RunDetails } = await import('../../src/screens/optimizer-review/details');
 const { ConfirmContent } = await import('../../src/screens/optimizer-confirm/view');
+const { RestoreExportContent } = await import('../../src/screens/optimizer-confirm/restore-export');
 const { RetryReview, PreparedRetryReview } = await import('../../src/screens/optimizer-run/view');
 const { default: Loading } = await import('../../src/screens/shared-loading');
 const { default: ErrorView } = await import('../../src/screens/shared-error');
@@ -53,6 +55,7 @@ const result = (state: Parameters<typeof operationFixture>[0], retry = false) =>
   }), 3);
 };
 const approvals = await spWriteApprovalFixtures();
+const restoreApproval = await restoreApprovalFixture();
 const confirm = (recorded: SpWriteRecordedPreview, retry = false) => createElement(ConfirmContent, { recorded, proposals: confirmationProposals(recorded), batchId: review.batchId, onConfirm: noop, onRefresh: noop, ...(retry ? { retry: { excludedSuccessfulNames: ['Synthetic earlier success'] } } : {}) });
 const views: Record<string, ReactElement> = {
   'choose-campaigns': createElement(ChooseScreen, { data: chooserReady }),
@@ -83,6 +86,18 @@ const views: Record<string, ReactElement> = {
     proposals: confirmationProposals(approvals.ready), onBack: noop, onReview: noop,
   }), 2), 'retry-confirm': confirm(approvals.ready, true), 'retry-result': result('retry', true),
   help: createElement(OptimizationHelp, { profileId: syntheticProfile.id }), 'worked-example': createElement(OptimizationHelp, { profileId: syntheticProfile.id, example: true }),
+  'restore-confirm': confirm(restoreApproval),
+  'restore-stale': confirm({ ...restoreApproval, freshness: { ...restoreApproval.freshness, status: 'stale', reasons: ['current_value_changed'] } }),
+  'restore-unavailable': confirm({ ...restoreApproval, freshness: { ...restoreApproval.freshness, status: 'unavailable', reasons: ['entity_unavailable'] } }),
+  'restore-environment-disabled': confirm({ ...restoreApproval, gates: { environmentEnabled: false, profileAllowlisted: true }, freshness: { ...restoreApproval.freshness, status: 'stale', reasons: ['gate_disabled'] } }),
+  'restore-profile-disabled': confirm({ ...restoreApproval, gates: { environmentEnabled: true, profileAllowlisted: false }, freshness: { ...restoreApproval.freshness, status: 'stale', reasons: ['grant_changed'] } }),
+  'restore-export': createElement(RestoreExportContent, { data: await restoreExportFixture(), currencyCode: 'USD' }),
+  ...Object.fromEntries((['queued', 'applying', 'partial', 'single', 'retry', 'ambiguous', 'failed', 'refused', 'conflict'] satisfies RestoreResultState[]).map((state) => {
+    const operation = restoreOperationFixture(state);
+    return [`restore-${state}`, frame(state === 'retry' ? 'Retry results' : 'Restore results', createElement(ResultsContent, { ...operation, rows: operation.rows.map((row) => ({ ...row, reason: row.reason ?? undefined })), profileId: operation.plan.profileId, batchId: review.batchId, onRetry: noop, ...(state === 'retry' ? { retry: { excludedSuccessfulNames: ['Synthetic completed restore'] } } : {}) }), 3)];
+  })),
+  'restore-retry-confirm': confirm(restoreApproval, true),
+  'restore-retry-preview': frame('Review unresolved change', createElement(PreparedRetryReview, { saved: { preview: restoreApproval.preview, excludedSuccessfulRows: [{ applyRowId: '77777777-7777-4777-8777-777777777777', name: 'Synthetic completed restore' }] }, onBack: noop, onReview: noop }), 2),
 };
 const markup = Object.fromEntries(Object.entries(views).map(([state, view]) => [state, renderToStaticMarkup(createElement(AppRouterContext.Provider, { value: router, children: view }))]));
 const css = readFileSync(new URL('../../../../packages/ui/src/tokens.css', import.meta.url), 'utf8') + '\n' + [...styles.values()].join('\n');

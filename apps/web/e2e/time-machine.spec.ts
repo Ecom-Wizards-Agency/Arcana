@@ -1,5 +1,6 @@
 /** Legacy Time Machine behavior through its query-preserving compatibility route. */
 import { expect, test, type Page } from '@playwright/test';
+import { createDb, readRestoreExportPreview, withAuthenticatedReadSnapshot } from '@wizard-ads/db';
 const BRIDGE=process.env['WIZARD_ADS_AUTH_BRIDGE_SECRET']??'';
 const ORG_B=process.env['WIZARD_ADS_E2E_ORG_B']??'';
 const USER_B=process.env['WIZARD_ADS_E2E_USER_B']??'';
@@ -46,12 +47,28 @@ test('reviews uniquely synchronized evidence and exports an exact inverse file',
   await expect(preview.getByTestId('reversion-row')).toHaveAttribute('data-state','ready');
   await expect(preview).toContainText('$0.90');await expect(preview).toContainText('$0.71');
   await expect(preview).toContainText('Nothing is sent to Amazon from this screen.');
-  // Preserve the legacy export API regression check while the new UI uses proposals.
   const batchId=new URL(page.url()).searchParams.get('batch');
-  const data={batchId,profileId:PROFILE_A,expectedRows:1,note:'Synthetic E2E reversion review',confirmation:'Yes, export reversion'};
-  const response=await page.request.post('/api/time-machine/reversion',{data});
+  expect(batchId).not.toBeNull();
+  const connectionString = process.env['DATABASE_URL'];
+  if (!connectionString) throw new Error('The isolated production browser database is required.');
+  const database = createDb({ connectionString, max: 1 });
+  let fingerprint: string;
+  try {
+    // This production harness supplies request headers, while optimizer pages
+    // require the real session exercised by the separate authenticated suite.
+    const saved = await withAuthenticatedReadSnapshot(database, { orgId: process.env['WIZARD_ADS_E2E_ORG_A']!, userId: process.env['WIZARD_ADS_E2E_USER_A']! }, context => readRestoreExportPreview(context, { profileId: PROFILE_A, batchId: batchId! }));
+    expect(saved.preview.readyRows).toBe(1);
+    fingerprint = saved.fingerprint;
+  } finally { await database.close(); }
+  const response = await page.request.post('/api/time-machine/restore/export', {
+    data: {
+      batchId, profileId: PROFILE_A, expectedRows: 1,
+      note: 'Synthetic E2E reversion review',
+      confirmation: 'Export restore proposal (1 changes)', fingerprint,
+    },
+  });
   expect(response.status()).toBe(201);const result=await response.json();
-  expect(result.rows).toBe(1);expect(result.amazonUpdated).toBe(false);expect(result.downloads.rows).toMatch(/\/api\/recommendations\/export\/.+\?format=rows/);
+  expect(result.rows).toBe(1);expect(result.amazonUpdated).toBe(false);expect(result.downloads.rows).toMatch(/\/api\/recommendations\/export\/.+\?format=rows/);expect(result.sourceBatchId).toBe(batchId);
 });
 test('filters narrow by source, entity type and field',async({page})=>{
   await open(page,{source:'apply'});await expect(page.getByText(MARKER)).toHaveCount(0);await expect(page.getByTestId('entry-source').filter({hasText:'changed at Amazon'})).toHaveCount(0);

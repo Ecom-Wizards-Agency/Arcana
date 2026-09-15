@@ -27,7 +27,7 @@ it.each([false,true])('loads every physical row and propagates active-reversion 
   expect(data.view).toBe('ready');
   if(data.view!=='ready') throw new Error('Expected a complete restore preview');
   expect(data.props.preview?.rows).toHaveLength(2);
-  expect(data.props.preview?.blockedReason).toBe(activeReversion?'This batch already has an active reversion export.':null);
+  expect(data.props.preview?.blockedReason).toBe(activeReversion?'This batch already has an active restore batch.':null);
   for(const result of data.props.preview!.rows) expect(result).toMatchObject({state:'unsupported',why:COORDINATED_RESTORE_UNAVAILABLE,now:null});
   expect(read).toHaveBeenCalledTimes(1);
 });
