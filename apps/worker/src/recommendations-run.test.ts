@@ -340,6 +340,23 @@ describe('explicit one-time RPC runner', () => {
     expect(store.completed[0]?.narrative.holds).toHaveLength(2);
   });
 
+  it('excludes one campaign from proposals while its sibling remains eligible', async () => {
+    const store=explicitStore();
+    const original=store.inputs.targets[0]!;
+    store.inputs.targets.push({...original,entityRef:{...original.entityRef,entityId:'synthetic-sibling-target',campaignId:'synthetic-sibling-campaign'}});
+    store.inputs.campaigns.push({...store.inputs.campaigns[0]!,campaignId:'synthetic-sibling-campaign'});
+    const group:ScheduledOptimizationGroup={version:2,id:GROUP_ID,orgId:ORG_ID,profileId:PROFILE_ID,name:'Synthetic exclusion group',
+      role:'profit',
+      targetAcos:0.43,bidFloor:0.23,bidCeiling:3.7,bidIncreaseCap:0.17,bidDecreaseCap:0.63,placementIncreaseCap:0,placementDecreaseCap:0,
+      exclusions:[original.entityRef.campaignId!],prioritization:'efficiency_first',
+      enabled:true,reviewSchedule:{version:2,weekdays:['thursday']}};
+    store.startResult.groupRun={group,dueAt:snapshot.admittedAt,scheduleContext:null};
+    await runRecommendations(store,{...job,groupId:GROUP_ID},EXECUTION);
+    const proposals=store.completed[0]!.proposals;
+    expect(proposals.filter(p=>p.entityRef.campaignId===original.entityRef.campaignId)).toHaveLength(0);
+    expect(proposals.filter(p=>p.entityRef.campaignId==='synthetic-sibling-campaign')).toHaveLength(1);
+  });
+
   it('refuses altered snapshot custody and stale profile timezone', async () => {
     const store = explicitStore();
     await expect(runRecommendations(store, { ...job, snapshotFingerprint: 'b'.repeat(64) }, EXECUTION)).rejects.toThrow(/integrity/);

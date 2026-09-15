@@ -23,7 +23,7 @@ function renderEmpty(_props: Extract<ScreenData, { view: 'empty'; }>['props']) {
   </main>);
 }
 
-function renderReady({ profile, period, payload, scopes }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ profile, period, payload, scopes, negativeOptions }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main style={main} data-interactive="true">
     <header style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
       <h1 style={heading}>N-gram explorer</h1>
@@ -48,6 +48,7 @@ function renderReady({ profile, period, payload, scopes }: Extract<ScreenData, {
     <div className="wa-embed" style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
       <NgramExplorer
         rows={payload.rows}
+        negativeOptions={negativeOptions}
         scopes={scopes}
         profileId={profile.id}
         currencyCode={profile.currencyCode}

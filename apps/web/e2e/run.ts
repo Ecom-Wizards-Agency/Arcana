@@ -255,6 +255,9 @@ async function seedRecommendations(
     throw new Error(`Seeded ${proposals.length} proposals, wrote ${written}`);
   }
 
+  const configured = await database.sql`update public.ad_profiles set target_acos=0.37 where org_id=${orgId} and id=${profileId} returning id`;
+  if(configured.length!==1) throw new Error('Expected one synthetic research profile setting');
+
   const terms = ['blue widget online', 'blue widget set', 'cheap blue widget'];
   let termRows = 0;
   for (const [index, term] of terms.entries()) {
@@ -263,7 +266,7 @@ async function seedRecommendations(
         (org_id, profile_id, date, ad_product, campaign_id, ad_group_id, target_id, search_term,
          match_type, impressions, clicks, cost, purchases_7d, sales_7d, units_sold_7d)
       values (${orgId}, ${profileId}, (current_date - 1), 'SP', 'c-1', 'ag-1', 'kw-1', ${term},
-              'exact', ${100 + index * 10}, ${5 + index}, ${2.5 + index}, ${index === 0 ? 1 : 0},
+              'exact', ${100 + index * 10}, ${5 + index}, ${37 + index}, ${index === 0 ? 1 : 0},
               ${index === 0 ? 25 : 0}, ${index === 0 ? 1 : 0})
       returning search_term
     `;

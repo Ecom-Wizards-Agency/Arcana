@@ -45,4 +45,4 @@ export * from './time-machine.js';
 export * from './market-position.js';
 export * from './timeline-events.js';
 export * from './sponsored-prompts.js';
-export * from './campaign-builder.js';
+export * from './brand-lens.js';

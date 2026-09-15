@@ -1,4 +1,4 @@
-import { descriptor } from '../../src/screens/query-intelligence/descriptor';
+import { descriptor } from '../../src/screens/queries/descriptor';
 import { pageRead } from '../../src/server/page-read';
 import type { ScreenSearchParams } from '../../src/screens/types';
 

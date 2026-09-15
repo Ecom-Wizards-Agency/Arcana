@@ -1,3 +1,4 @@
+import type { AuthenticatedEditorTransaction } from './authenticated-actor.js';
 /**
  * Tenant-scoped optimization-group workspace and atomic internal writes.
  *
@@ -511,4 +512,20 @@ function numberOrNull(value: string | number | null): number | null {
 
 function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+/** Change one membership atomically; never overwrite a concurrent exclusion edit. */
+export async function setCampaignOptimizationExclusion(
+  context: AuthenticatedEditorTransaction,
+  input: {profileId:string;campaignId:string;excluded:boolean},
+): Promise<{groupId:string;exclusions:string[]}> {
+  const [row] = await context.sql<{id:string;exclusions:string[]}[]>`update public.optimization_groups g set
+    exclusions=case when ${input.excluded} then array(select distinct unnest(g.exclusions || array[${input.campaignId}]::text[]) order by 1)
+      else array_remove(g.exclusions,${input.campaignId}) end, updated_at=now()
+    from public.campaign_optimization_assignments a where g.id=a.group_id and g.org_id=a.org_id and g.profile_id=a.profile_id
+    and a.org_id=${context.actor.orgId} and a.profile_id=${input.profileId} and a.campaign_id=${input.campaignId}
+    returning g.id,g.exclusions`;
+  if(!row) throw new Error('Assign to a group first');
+  if(row.exclusions.includes(input.campaignId)!==input.excluded) throw new Error('Exclusion readback mismatch');
+  return {groupId:row.id,exclusions:row.exclusions};
 }

@@ -87,6 +87,7 @@ function mount(rows: readonly SearchTermRow[]): HTMLElement {
         currencyCode: 'USD',
         period: { start: '2026-08-01', end: '2026-08-30' },
         initialGridRect: VIEWPORT,
+        negativeOptions: {targetAcos:0.37,aov:17},
       }),
     ),
   );
@@ -221,21 +222,25 @@ describe('n-gram drill-down', () => {
     act(() => checkbox!.click());
 
     const propose = [...host.querySelectorAll('button')].find(
-      (button) => button.textContent === 'Propose selected as negatives',
+      (button) => button.textContent === 'Review negative keyword',
     );
     expect(propose).toBeDefined();
     await act(async () => {
       propose!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
+    const add=[...host.querySelectorAll('button')].find(button=>button.textContent==='Add 1 negatives to change queue');
+    expect(add).toBeDefined();
+    await act(async()=>{add!.click();});
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [, init] = fetchMock.mock.calls[0] ?? [];
     const body = JSON.parse(String(init?.body)) as {
-      proposals: Array<{ searchTerm: string }>;
+      proposals: Array<{ searchTerm: string }>; selectedTerms:string[];
     };
-    expect(body.proposals.map((proposal) => proposal.searchTerm)).toEqual(['blue widget large']);
+    expect(body.proposals.map((proposal) => proposal.searchTerm)).toEqual(['blue widget']);
+    expect(body.selectedTerms).toEqual(['campaign-001|adgroup-001|blue widget large']);
     expect(host.querySelector('[data-testid="propose-result"]')?.textContent).toContain(
-      'Proposed 1 of 1 negatives',
+      '1 negative keyword proposals added',
     );
   });
 });

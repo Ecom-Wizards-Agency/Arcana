@@ -62,7 +62,10 @@ export async function load(access: ScreenActor, input: ScreenParams) {
         loadScopes(database, { orgId: actor.orgId, profileId: profile.id }),
       ]);
 
-      return { view: 'ready' as const, props: { profile, period, payload, scopes } };
+      const orders=payload.rows.reduce((n,r)=>n+r.purchases7d,0);
+      const sales=payload.rows.reduce((n,r)=>n+r.sales7d,0);
+      const negativeOptions=profile.targetAcos!==null&&profile.targetAcos>0&&orders>0?{targetAcos:profile.targetAcos,aov:sales/orders}:null;
+      return { view: 'ready' as const, props: { profile, period, payload, scopes, negativeOptions } };
     });
   } catch (error) {
     // A page, not an API: an anonymous visitor gets the login screen rather

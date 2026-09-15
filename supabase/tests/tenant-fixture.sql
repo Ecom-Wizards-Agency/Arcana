@@ -35,6 +35,7 @@ declare
   v_report uuid;
   v_recommendation uuid;
   v_group uuid;
+  v_research_schedule uuid;
   v_creative_snapshot uuid;
   v_sponsored_prompt uuid;
   v_unified_binding uuid;
@@ -822,6 +823,18 @@ begin
       select v_org,v_profile,id,'synthetic-fixture-asset','1','video','Synthetic fixture asset','{}',
         '{"scope":{"region":"NA","amazonProfileId":"270"},"identity":{"assetId":"synthetic-fixture-asset","version":"1"},"observedAt":"2000-01-01T00:00:00Z","assetType":"video","name":"Synthetic fixture asset","processing":"unknown","specChecks":{"approvedPrograms":null,"failedSpecChecks":null}}'::jsonb,
         '2000-01-01T00:00:00Z' from snapshot;
+  end if;
+
+  if to_regclass('public.brand_lens_overrides') is not null then
+    insert into public.brand_lens_overrides(org_id,profile_id,normalized_keyword,bucket,decision,decided_by)
+      values(v_org,v_profile,'synthetic fixture research component','generic','kept',p_user_id);
+  end if;
+  if to_regclass('public.dayparting_schedules') is not null then
+    insert into public.dayparting_schedules(org_id,profile_id,name,timezone,modifiers)
+      select v_org,v_profile,'Synthetic fixture schedule',timezone,to_jsonb(array_fill(0,array[7,24]))
+      from public.ad_profiles where id=v_profile returning id into v_research_schedule;
+    insert into public.dayparting_schedule_campaigns(org_id,profile_id,schedule_id,campaign_id)
+      values(v_org,v_profile,v_research_schedule,'c-1');
   end if;
 
   return v_org;

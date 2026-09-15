@@ -1,0 +1,28 @@
+.research { display:flex; flex-direction:column; gap:24px; min-width:0; font-family:var(--wa-font); color:var(--wa-text); }
+.research h1 { margin:0; font-size:var(--wa-fs-xl); } .research h2 { font-size:18px; margin:0 0 12px; } .research p { margin:8px 0; line-height:1.5; }
+.research .muted { color:var(--wa-text-muted); font-size:13px; }
+.research-actions { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
+.research-action { background:var(--wa-surface); border:1px solid var(--wa-border); border-radius:8px; padding:12px 16px; color:var(--wa-text); font:600 14px/20px var(--wa-font); cursor:pointer; text-decoration:none; }
+.research-action.primary { background:var(--wa-accent); border-color:var(--wa-accent); color:var(--wa-accent-contrast,var(--wa-text)); }
+.research-action:disabled { opacity:.55; cursor:not-allowed; } .research-action:focus-visible,.research button:focus-visible { outline:2px solid var(--wa-accent); outline-offset:3px; }
+.research-card { border:1px solid var(--wa-border); border-radius:8px; padding:20px; }
+.research-card.warn { background:var(--wa-warn-bg); color:var(--wa-warn-text); } .research-card.good { background:var(--wa-good-bg); color:var(--wa-good-text); } .research-card.info { background:var(--wa-info-bg); }
+.research-table-scroll { overflow-x:auto; } .research-table { width:100%; border-collapse:collapse; font-size:14px; }
+.research-table th { background:var(--wa-surface-alt,var(--wa-bg)); color:var(--wa-text-muted); text-align:left; font-weight:600; }
+.research-table th,.research-table td { padding:15px 16px; border-bottom:1px solid var(--wa-border); white-space:nowrap; }
+.research-table .numeric { text-align:right; font-variant-numeric:tabular-nums; }
+.research-chip { display:inline-flex; gap:6px; align-items:center; border:0; border-radius:4px; padding:4px 8px; background:var(--wa-bg); color:var(--wa-text-muted); font-size:12px; }
+.research-chip.branded { background:var(--wa-info-bg); color:var(--wa-info-text); } .research-chip.competitor { background:var(--wa-bad-bg); color:var(--wa-bad-text); } .research-chip.kept,.research-chip.confirmed { background:var(--wa-warn-bg); color:var(--wa-warn-text); }
+.research-chip.selected { outline:1px solid var(--wa-accent); } .research-chip.good { background:var(--wa-good-bg); color:var(--wa-good-text); } .research-chip.bad { background:var(--wa-bad-bg); color:var(--wa-bad-text); }
+.research-charts { display:grid; grid-template-columns:1fr 1fr; gap:16px; } .research-chart-bars { height:270px; display:flex; gap:14px; align-items:flex-end; padding-top:38px; }
+.research-chart-group { flex:1; min-width:0; height:100%; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; font-size:11px; text-align:center; }
+.research-bar-pair { display:flex; gap:5px; height:190px; width:100%; align-items:flex-end; justify-content:center; border-bottom:1px solid var(--wa-border); }
+.research-bar { width:40%; min-height:1px; background:var(--wa-text-muted); position:relative; } .research-bar.accent { background:var(--wa-accent); } .research-bar-label { position:absolute; bottom:100%; left:50%; transform:translateX(-50%); padding-bottom:5px; white-space:nowrap; }
+.research-info { display:inline-block; position:relative; } .research-popover { position:absolute; top:100%; left:0; z-index:20; width:min(480px,75vw); padding:20px; background:var(--wa-surface); border:1px solid var(--wa-border); border-radius:8px; box-shadow:0 8px 30px var(--wa-border); }
+.research-tabs { display:flex; gap:12px; } .research-field { display:flex; flex-direction:column; gap:6px; font-size:13px; } .research input,.research select { border:1px solid var(--wa-border); border-radius:6px; background:var(--wa-surface); color:var(--wa-text); padding:8px; }
+.research-share { height:4px; background:var(--wa-border); min-width:60px; } .research-share span { height:4px; display:block; background:var(--wa-accent); }
+@media(max-width:900px) { .research-charts { grid-template-columns:1fr; } }
+
+.research-table th button { font:inherit; color:inherit; border:0; padding:0; background:transparent; cursor:pointer; }
+.query-performance { font-size:12px; }
+.query-performance th,.query-performance td { padding:12px 8px; }

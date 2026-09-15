@@ -7,40 +7,8 @@
  * unrelated word.
  */
 
-const COMBINING_MARK = /\p{M}+/gu;
-const NON_ALPHANUMERIC = /[^\p{L}\p{N}]+/gu;
-
-function joinSpelledTokens(tokens: string[]): string[] {
-  const output: string[] = [];
-  for (let index = 0; index < tokens.length; ) {
-    if ([...(tokens[index] ?? '')].length !== 1) {
-      output.push(tokens[index] as string);
-      index += 1;
-      continue;
-    }
-
-    let end = index;
-    while (end < tokens.length && [...(tokens[end] ?? '')].length === 1) end += 1;
-    if (end - index >= 3) output.push(tokens.slice(index, end).join(''));
-    else output.push(tokens[index] as string);
-    index = end;
-  }
-  return output;
-}
-
-/** Normalize a customer query or vocabulary entry without stemming it. */
-export function normalizeQuery(value: string): string {
-  const tokens = value
-    .normalize('NFKD')
-    .replace(COMBINING_MARK, '')
-    .toLocaleLowerCase('und')
-    .replace(NON_ALPHANUMERIC, ' ')
-    .trim()
-    .split(/\s+/u)
-    .filter(Boolean);
-
-  return joinSpelledTokens(tokens).join(' ');
-}
+import { normalizeResearchQuery } from '@wizard-ads/shared';
+export const normalizeQuery = normalizeResearchQuery;
 
 export function queryTokens(value: string): string[] {
   const normalized = normalizeQuery(value);

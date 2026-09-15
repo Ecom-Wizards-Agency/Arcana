@@ -1,3 +1,4 @@
+import { DaypartingWorkspaceView } from './workspace';
 import type { CSSProperties, ReactNode } from 'react';
 
 import type { DaypartingScheduleProposal } from '@wizard-ads/shared';
@@ -25,7 +26,7 @@ export default function ScreenView({ data }: { data: ScreenData; }) {
   switch (data.view) {
     case 'gated': return renderGated(data.props);
     case 'empty': return renderEmpty(data.props);
-    case 'ready': return renderReady(data.props);
+    case 'ready': return <DaypartingWorkspaceView data={data.props} measurement={<HourlyMeasurement {...data.props}/>}/>;
   }
 }
 
@@ -44,7 +45,7 @@ function renderEmpty(_props: Extract<ScreenData, { view: 'empty'; }>['props']) {
   </main>);
 }
 
-function renderReady({ profile, summary, workspace, campaignId, campaignChoices, metric, showAllEvidence, from, to, selectedFacts, evidence, cellMap, proposals }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+export function HourlyMeasurement({ profile, summary, workspace, campaignId, campaignChoices, metric, showAllEvidence, from, to, selectedFacts, evidence, cellMap, proposals }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main style={page}>
     <PageHeader
       title="Dayparting"
@@ -54,7 +55,7 @@ function renderReady({ profile, summary, workspace, campaignId, campaignChoices,
 
     <div className="wa-stack">
       <Banner tone="info" role="status">
-        Marketing Stream evidence is read-only. Schedules below are proposals for export; Arcana does not apply bid or budget changes in the current release.
+        Marketing Stream evidence is read-only. Schedules below are proposals for export; this surface does not apply bid or budget changes.
       </Banner>
       {!workspace.maturityPolicyConfigured ? (
         <Banner tone="warn" role="status">

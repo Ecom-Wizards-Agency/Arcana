@@ -5,7 +5,7 @@ import { decideContextualNegativeProposals, exportAcceptedContextualNegatives, l
 
 const request = vi.hoisted(() => ({ headers: new Headers() }));
 vi.mock('next/headers', () => ({ headers: async () => request.headers, cookies: async () => ({ get: () => undefined }) }));
-import QueryIntelligencePage from '../../app/query-intelligence/page';
+import QueryIntelligencePage from '../../app/queries/page';
 import * as requestContext from '../server/request-context';
 
 const available = await databaseAvailable();
@@ -162,7 +162,7 @@ describe.skipIf(!available)('actual Query Intelligence agency page', () => {
   });
 
   it('preserves exact authentication continuation before acquiring the page database', async () => {
-    const location = '/mfa?next=' + encodeURIComponent('/query-intelligence');
+    const location = '/mfa?next=' + encodeURIComponent('/queries');
     const identify = vi.spyOn(requestContext, 'requestActor').mockRejectedValue(new requestContext.RequestAuthError('Challenge required', 403, 'additional_authentication_required', location));
     const open = vi.spyOn(requestContext, 'openWebDatabase');
     try {

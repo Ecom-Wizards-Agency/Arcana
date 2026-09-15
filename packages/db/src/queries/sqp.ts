@@ -1,3 +1,5 @@
+import type { AuthenticatedReadSnapshot, AuthenticatedEditorTransaction } from './authenticated-actor.js';
+import type { QueryVocabularyMutation as QueryVocabularyMutationInput } from '@wizard-ads/shared';
 /**
  * Counted, tenant-scoped persistence for weekly Search Query Performance.
  *
@@ -1052,3 +1054,53 @@ function groupVocabularyKeys(entries: readonly QueryVocabularyEntryType[]): Map<
 // Keep these imported contract unions exercised in this package's public API.
 export type SqpVocabularyKind = QueryVocabularyKind;
 export type SqpVocabularySource = QueryVocabularySource;
+
+/** Actor-bound vocabulary access shared by Queries and Brand lens. */
+export async function readResearchProfile(
+  handle: AuthenticatedReadSnapshot | AuthenticatedEditorTransaction,
+  profileId: string,
+) {
+  const [profile] = await handle.sql<{id:string; countryCode:string; timezone:string; currencyCode:string}[]>`
+    select id,country_code as "countryCode",timezone,currency_code as "currencyCode"
+    from public.ad_profiles where org_id=${handle.actor.orgId} and id=${profileId}`;
+  if (!profile) throw new SqpPersistenceError('Profile not found');
+  const { queryMarketplaceIdForCountry } = await import('@wizard-ads/shared');
+  const marketplaceId = queryMarketplaceIdForCountry(profile.countryCode);
+  if (!marketplaceId) throw new SqpPersistenceError('Marketplace mapping is unavailable');
+  return {...profile, marketplaceId};
+}
+export async function listQueryVocabularyForActor(
+  handle: AuthenticatedReadSnapshot | AuthenticatedEditorTransaction,
+  profileId: string,
+): Promise<QueryVocabularyEntryType[]> {
+  const {marketplaceId} = await readResearchProfile(handle, profileId);
+  const rows = await handle.sql`select id,org_id as "orgId",marketplace_id as "marketplaceId",kind,value,
+    normalized_value as "normalizedValue",source,approved,reviewed_at as "reviewedAt"
+    from public.query_vocabulary where org_id=${handle.actor.orgId} and marketplace_id=${marketplaceId} order by kind,normalized_value`;
+  return rows.map((row) => QueryVocabularyEntry.parse({...row, reviewedAt: row['reviewedAt']===null?null:new Date(row['reviewedAt']).toISOString()}));
+}
+export async function mutateQueryVocabularyForActor(
+  context: AuthenticatedEditorTransaction,
+  raw: QueryVocabularyMutationInput,
+) {
+  const { QueryVocabularyMutation, normalizeResearchQuery } = await import('@wizard-ads/shared');
+  const input = QueryVocabularyMutation.parse(raw);
+  const {marketplaceId} = await readResearchProfile(context,input.profileId);
+  const {sql,actor} = context;
+  let written;
+  if (input.action==='add') {
+    const normalized = normalizeResearchQuery(input.value);
+    if (!normalized) throw new SqpPersistenceError('Enter a word or phrase');
+    written = await sql`insert into public.query_vocabulary(org_id,marketplace_id,kind,value,normalized_value,source,approved)
+      values(${actor.orgId},${marketplaceId},${input.kind},${input.value},${normalized},'operator',false)
+      on conflict(org_id,marketplace_id,kind,normalized_value) do update set value=query_vocabulary.value returning id`;
+  } else if (input.action==='approve') {
+    written = await sql`update public.query_vocabulary set approved=true,reviewed_by=${actor.userId},reviewed_at=now(),updated_at=now()
+      where org_id=${actor.orgId} and marketplace_id=${marketplaceId} and id=${input.id} returning id`;
+  } else {
+    written = await sql`delete from public.query_vocabulary where org_id=${actor.orgId} and marketplace_id=${marketplaceId} and id=${input.id} returning id`;
+  }
+  if (written.length!==1) throw new SqpPersistenceError('Vocabulary entry not found');
+  const entries = await listQueryVocabularyForActor(context,input.profileId);
+  return {changed:written.length,entries,count:entries.length};
+}

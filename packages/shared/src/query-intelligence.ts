@@ -100,3 +100,78 @@ export const SqpIngestionCounts = z.object({
   upserts: count,
 });
 export type SqpIngestionCounts = z.infer<typeof SqpIngestionCounts>;
+
+export const QueryVocabularyMutation = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('add'), profileId: Uuid, kind: QueryVocabularyKind, value: z.string().trim().min(1).max(300) }).strict(),
+  z.object({ action: z.literal('approve'), profileId: Uuid, id: Uuid }).strict(),
+  z.object({ action: z.literal('remove'), profileId: Uuid, id: Uuid }).strict(),
+]);
+export type QueryVocabularyMutation = z.infer<typeof QueryVocabularyMutation>;
+
+/** Public Amazon marketplace identifiers keyed by Ads profile country code. */
+const QUERY_MARKETPLACE_IDS: Readonly<Record<string, string>> = {
+  CA: 'A2EUQ1WTGCTBG2',
+  US: 'ATVPDKIKX0DER',
+  MX: 'A1AM78C64UM0Y8',
+  BR: 'A2Q3Y263D00KWC',
+  IE: 'A28R8C7NBKEWEA',
+  ES: 'A1RKKUPIHCS9HS',
+  UK: 'A1F83G8C2ARO7P',
+  GB: 'A1F83G8C2ARO7P',
+  FR: 'A13V1IB3VIYZZH',
+  BE: 'AMEN7PMS3EDWL',
+  NL: 'A1805IZSGTT6HS',
+  DE: 'A1PA6795UKMFR9',
+  IT: 'APJ6JRA9NG5V4',
+  SE: 'A2NODRKZP88ZB9',
+  ZA: 'AE08WJ6YKNBMC',
+  PL: 'A1C3SOZRARQ6R3',
+  EG: 'ARBP9OOSHTCHU',
+  TR: 'A33AVAJ2PDY3EV',
+  SA: 'A17E79C6D8DWNP',
+  AE: 'A2VIGQ35RCS4UG',
+  IN: 'A21TJRUUN4KGV',
+  SG: 'A19VAU5U5O7RUS',
+  AU: 'A39IBJ37TRP1C6',
+  JP: 'A1VC38T7YXB528',
+};
+
+/** Amazon marketplace string id for a profile country code. */
+export function queryMarketplaceIdForCountry(countryCode: string): string | null {
+  return QUERY_MARKETPLACE_IDS[countryCode.trim().toUpperCase()] ?? null;
+}
+
+const COMBINING_MARK = /\p{M}+/gu;
+const NON_ALPHANUMERIC = /[^\p{L}\p{N}]+/gu;
+
+function joinSpelledTokens(tokens: string[]): string[] {
+  const output: string[] = [];
+  for (let index = 0; index < tokens.length; ) {
+    if ([...(tokens[index] ?? '')].length !== 1) {
+      output.push(tokens[index] as string);
+      index += 1;
+      continue;
+    }
+
+    let end = index;
+    while (end < tokens.length && [...(tokens[end] ?? '')].length === 1) end += 1;
+    if (end - index >= 3) output.push(tokens.slice(index, end).join(''));
+    else output.push(tokens[index] as string);
+    index = end;
+  }
+  return output;
+}
+
+/** Normalize a customer query or vocabulary entry without stemming it. */
+export function normalizeResearchQuery(value: string): string {
+  const tokens = value
+    .normalize('NFKD')
+    .replace(COMBINING_MARK, '')
+    .toLocaleLowerCase('und')
+    .replace(NON_ALPHANUMERIC, ' ')
+    .trim()
+    .split(/\s+/u)
+    .filter(Boolean);
+
+  return joinSpelledTokens(tokens).join(' ');
+}

@@ -5,6 +5,7 @@ import type { ScreenParams } from '../types';
 import { redirect } from 'next/navigation';
 
 import {
+  readResearchProfile,
   listContextualNegativeExports,
   loadContextualNegativeReviewSnapshot
 } from '@wizard-ads/db';
@@ -67,15 +68,17 @@ export async function load(access: ScreenActor, input: ScreenParams) {
         orgId: actor.orgId,
         profileId: profile.id,
       });
-      const scope = selectedScope(scopes, one(query['scope']));
+
+      const researchProfile = await readResearchProfile(snapshot, profile.id);
+      const { periodFromParams, todayIso } = await import('../../../app/_lib/periods');
+      const period = periodFromParams({from:one(query['from']),to:one(query['to'])},todayIso());
+      const inWindow = one(query['from']) || one(query['to']) ? scopes.filter(s => s.weekStart >= period.start && s.weekEnd <= period.end) : scopes;
+      const selected = selectedScope(inWindow, one(query['scope']));
+      const scope = selected ?? {marketplaceId:researchProfile.marketplaceId,weekStart:period.start,weekEnd:period.end,factRows:0,asinCount:0,queryCount:0,loadedAt:new Date().toISOString()};
       const rawCategory = one(query['category']);
       const categoryResult = QueryCategory.safeParse(rawCategory);
       const category = categoryResult.success ? categoryResult.data : null;
       const search = one(query['q'])?.slice(0, 160) ?? '';
-
-      if (scope === null) {
-        return { view: 'not-measured' as const, props: { profile } };
-      }
 
       const reviewScope = {
         orgId: actor.orgId,

@@ -166,7 +166,7 @@ describe('pageRead admission and lifetime', () => {
     const query = { profile: 'synthetic-profile', filter: ['one', 'two'], q: 'space & slash/' };
     const encoded = new URLSearchParams([['profile', query.profile], ['filter', 'one'], ['filter', 'two'], ['q', query.q]]).toString();
     await expect(pageRead(homeAlias, query)).rejects.toThrow(`redirect:/?${encoded}`);
-    await expect(pageRead(queriesAlias, query)).rejects.toThrow(`redirect:/query-intelligence?${encoded}`);
+    await expect(pageRead(queriesAlias, query)).rejects.toThrow(`redirect:/queries?${encoded}`);
     expect(mocks.requestActor).not.toHaveBeenCalled();
   });
   it('leaves compatibility redirects and the fragment bridge unauthenticated until they read', async () => {
