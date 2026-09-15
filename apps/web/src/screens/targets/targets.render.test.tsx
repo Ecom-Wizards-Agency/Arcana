@@ -36,7 +36,8 @@ it('renders each data tab, shelf gap and all fact/change rows', () => {
   fireEvent.click(screen.getByRole('tab',{name:'Performance'}));
   expect(host.container.querySelectorAll('tbody tr')).toHaveLength(ready.performance.length);
   fireEvent.click(screen.getByRole('tab',{name:'Shelf'}));
-  expect(host.container.textContent).toContain('Listing snapshots are not collected');
+  expect(host.container.textContent).toContain('Product evidence is missing');
+  expect(host.container.textContent).toContain('does not establish asset moderation approval');
 });
 it('blocks a protected decrease until an override reason is recorded', () => {
   render(<Screen data={ready} />);

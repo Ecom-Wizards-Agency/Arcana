@@ -21,7 +21,7 @@ export const ChangeQueueRestoreBatchPreview = z.object({
 });
 export type ChangeQueueRestoreBatchPreview = z.infer<typeof ChangeQueueRestoreBatchPreview>;
 
-export const ChangeQueueSource = z.enum(['apply', 'sync', 'queued', 'restore']);
+export const ChangeQueueSource = z.enum(['apply', 'sync', 'amazon', 'queued', 'restore']);
 export type ChangeQueueSource = z.infer<typeof ChangeQueueSource>;
 export const ChangeQueueState = z.enum(['confirmed', 'exported', 'observed', 'unattributed', 'awaiting review', 'approved', 'acknowledged', 'requested', 'admitted', 'attempted', 'succeeded', 'failed']);
 export type ChangeQueueState = z.infer<typeof ChangeQueueState>;

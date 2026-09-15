@@ -4,6 +4,10 @@ import { IngestionSource, type IngestionLane, type JobType } from '@wizard-ads/s
 export const INGESTION_SOURCES: readonly IngestionSource[] = [
   { jobType: 'asset-library.search', source: 'amazon_ads', reportType: 'asset_library_assets', laneAffinity: ['integrations'], counts: ['sourceRows', 'parsedRows', 'loadedRows', 'refusedRows'] },
   { jobType: 'translation.request', source: 'target_translation', laneAffinity: ['integrations'], counts: ['requested', 'completed', 'superseded', 'alreadyCompleted'] },
+  { jobType: 'ads.product_metadata.sync', source: 'amazon_ads_product_metadata', laneAffinity: ['integrations'], counts: ['requestedMembers','pages','sourceRows','parsedRows','refusedRows','duplicates','canonicalRows','writtenRows','existingRows','verifiedRows'] },
+  { jobType: 'ads.product_eligibility.sync', source: 'amazon_ads_product_eligibility', laneAffinity: ['integrations'], counts: ['requestedMembers','pages','sourceRows','parsedRows','refusedRows','duplicates','canonicalRows','writtenRows','existingRows','verifiedRows'] },
+  { jobType: 'ads.validation_configurations.sync', source: 'amazon_ads_validation_configurations', laneAffinity: ['integrations'], counts: ['requestedMembers','pages','sourceRows','parsedRows','refusedRows','duplicates','canonicalRows','writtenRows','existingRows','verifiedRows'] },
+  { jobType: 'ads.change_history.sync', source: 'amazon_ads_change_history', laneAffinity: ['integrations'], counts: ['requestedMembers','pages','sourceRows','parsedRows','refusedRows','duplicates','canonicalRows','writtenRows','existingRows','verifiedRows'] },
   { jobType: 'entity.sync', source: 'amazon_ads', laneAffinity: ['vercel-default', 'vercel-reduced'], counts: ['listed', 'upserted', 'duplicates'] },
   { jobType: 'creative.sync', source: 'amazon_ads', laneAffinity: ['evo-report', 'evo-report-unified'], counts: ['adsReceived', 'adsPersisted'] },
   ...(['report.request', 'report.poll', 'report.fetch'] as const).map((jobType) => ({

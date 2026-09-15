@@ -122,7 +122,7 @@ test('target stages an immutable change and review records approval without outb
     await expect(page.getByText('The bid series is empty.',{exact:false})).toBeVisible();
     await captureThemes('empty-series');
     await page.getByRole('tab',{name:'Shelf',exact:true}).click();
-    await expect(page.getByText('Not measured. Listing snapshots are not collected yet.')).toBeVisible();
+    await expect(page.getByText("Product evidence is missing for this target's advertised ASINs.")).toBeVisible();
     await captureThemes('not-measured');
   } finally { await db.close(); }
 });

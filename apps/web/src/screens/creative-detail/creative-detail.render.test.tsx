@@ -52,7 +52,7 @@ describe('Creative detail tabs', () => {
     expect(screen.getByRole('heading', { name: 'Placement facts are not measured' })).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Campaign placement facts' })).toBeNull();
   });
-  it('renders stored exact, window and first certainty while listing has no source', () => {
+  it('renders stored exact, window and first certainty while listing evidence is missing', () => {
     render(<Screen data={visualFixture('history')} />);
     const table = screen.getByRole('region', { name: 'Creative change history' });
     expect(within(table).getAllByRole('row')).toHaveLength(4);
@@ -60,8 +60,8 @@ describe('Creative detail tabs', () => {
     for (const text of ['exact', 'window · 4 days', 'first']) expect(within(table).getByText(text)).toBeTruthy();
     expect(within(table).queryByText('Listing')).toBeNull();
     expect(within(table).queryByText('Promotion')).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Needs ingestion: listing snapshots' })).toBeTruthy();
-    expect(screen.getByText('The judgement is made once when the change is recorded and stored, never recomputed on read.')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Listing changes not measured' })).toBeTruthy();
+    expect(screen.getByText(/Listing rows apply the same certainty rule/)).toBeTruthy();
   });
   it('renders recorded change values as prose in the profile currency, preserving unknowns and zero', () => {
     const data = visualFixture('history');

@@ -92,6 +92,7 @@ export * from './queries/timeline.js';
 export * from './queries/optimization-group-performance.js';
 export * from './queries/creative-workspace.js';
 export * from './queries/ad-group-products.js';
+export * from './queries/ads-catalogue.js';
 export * from './queries/optimizer-run.js';
 export * from './queries/creative-change-history.js';
 export * from './queries/optimizer-export.js';

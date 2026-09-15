@@ -11,6 +11,7 @@ interface RegistryEntry {
   exports: readonly { barrel: string; order: number; clause: string; after: string }[];
 }
 export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
+  {"domain": "ads-catalogue", "contract": "ads-catalogue.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 103, "clause": "*", "after": ""}]},
   {"domain": "sponsored-prompts", "contract": "sponsored-prompts.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 102, "clause": "*", "after": ""}]},
   {"domain":"campaign-builder","contract":"campaign-builder.ts","schema":null,"queries":null,"migrationPrefix":null,"exports":[{"barrel":"index.ts","order":102,"clause":"*","after":""}]},
   {"domain": "timeline-events", "contract": "timeline-events.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 101, "clause": "*", "after": ""}]},

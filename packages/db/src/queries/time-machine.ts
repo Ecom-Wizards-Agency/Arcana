@@ -892,6 +892,12 @@ export async function listChangeQueue(
       left join public.sp_write_restore_reviews review on review.org_id=p.org_id and review.profile_id=p.profile_id and review.plan_id=p.plan_id
       where p.org_id=${input.orgId}::uuid and p.profile_id=${input.profileId}::uuid
         and plan.artifact #>> '{source,restoreProposal,kind}'='restore_proposal'
+      union all
+      select 'amazon:'||e.id::text,e.occurred_at,lower(e.entity_type),e.entity_id,e.entity_id,e.change_type,
+        e.sanitized_payload->'previousValue',e.sanitized_payload->'newValue','amazon','observed',
+        null::uuid,null::text,null::integer,false,0,null::timestamptz,null::uuid,null::text
+      from public.amazon_change_events e
+      where e.org_id=${input.orgId}::uuid and e.profile_id=${input.profileId}::uuid
     ) select jsonb_build_object('id',id,'when',to_char(at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
       'entity',entity,'entityType',entity_type,'entityId',entity_id,'field',field,'oldValue',old_value,'newValue',new_value,
       'source',source,'state',state,'batchId',batch_id,'batchLabel',batch_label,'batchCount',batch_count,
@@ -949,7 +955,8 @@ export async function countChangeQueue(handle: TimeMachineReadHandle, scope: { o
     +(select count(*) from public.sp_write_restore_proposals p where p.org_id=${scope.orgId}::uuid and p.profile_id=${scope.profileId}::uuid
       and not exists(select 1 from public.sp_write_restore_reviews r where r.org_id=p.org_id and r.profile_id=p.profile_id and r.plan_id=p.plan_id))
     +(select count(*) from public.entity_changes ec where ec.org_id=${scope.orgId}::uuid and ec.profile_id=${scope.profileId}::uuid
-      and ec.source='sync' and ec.acknowledged_at is null))::int as count`;
+      and ec.source='sync' and ec.acknowledged_at is null)
+    +(select count(*) from public.amazon_change_events e where e.org_id=${scope.orgId}::uuid and e.profile_id=${scope.profileId}::uuid))::int as count`;
   if (row === undefined) throw new Error('Change queue count unavailable');
   return row.count;
 }

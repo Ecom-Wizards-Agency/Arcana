@@ -35,6 +35,8 @@ export interface WorkerConfig {
   spApiConnectionsEnabled: boolean;
   spApiConnectionRedirects: readonly string[];
   sbKeywordSyncEnabled: boolean;
+  /** Master gate for all four WP-311 read sources. Defaults off. */
+  catalogueSourcesEnabled: boolean;
   /** Default-off WP-181 cohort. Account bindings remain database-owned. */
   unifiedReporting: UnifiedReportingDualRunPolicy;
   /**
@@ -147,6 +149,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     spApiConnectionsEnabled,
     spApiConnectionRedirects,
     sbKeywordSyncEnabled: sbKeywordSyncEnabledFromEnv(env),
+    catalogueSourcesEnabled: env['OPENSPELL_ADS_CATALOGUE_SOURCES_ENABLED'] === '1',
     unifiedReporting,
     crosscheckInboxDir: env['CROSSCHECK_INBOX_DIR'] || undefined,
     authHealthcheckIntervalMs:

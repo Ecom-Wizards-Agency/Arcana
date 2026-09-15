@@ -71,6 +71,8 @@ export interface SyncStatus {
   freshness: ProfileFreshness[];
   jobs: JobRow[];
   reports: ReportRow[];
+  catalogue: Array<{ profileLabel:string;marketplaceId:string;family:string;enabled:boolean;reportingRecoveryVerified:boolean;
+    coveredFrom:string|null;coveredThrough:string|null;observedAt:string|null;sourceRows:number;loadedRows:number;cursorFailure:string|null }>;
 }
 
 const JOB_LIMIT = 100;
@@ -194,6 +196,15 @@ export async function loadSyncStatus(
      limit ${REPORT_LIMIT}
   `;
 
+  const catalogue = await handle.sql<{label:string;marketplace_id:string;family:string;enabled:boolean;reporting_recovery_verified:boolean;
+    covered_from:string|null;covered_through:string|null;observed_at:string|null;source_rows:string|null;loaded_rows:string|null;cursor_failure:string|null}[]>`
+    select coalesce(p.account_name,p.amazon_profile_id) as label,s.marketplace_id,s.family,s.enabled,
+      s.reporting_recovery_verified_at is not null as reporting_recovery_verified,c.covered_from::text,c.covered_through::text,
+      c.source_observed_at::text as observed_at,r.counts->>'sourceRows' as source_rows,r.counts->>'verifiedRows' as loaded_rows,c.cursor_failure
+      from public.ads_catalogue_source_settings s join public.ad_profiles p on p.org_id=s.org_id and p.id=s.profile_id
+      left join public.ads_catalogue_source_checkpoints c on c.org_id=s.org_id and c.profile_id=s.profile_id and c.marketplace_id=s.marketplace_id and c.family=s.family
+      left join public.ads_catalogue_source_receipts r on r.id=c.receipt_id
+      where s.org_id=${orgId} and (${scope}::uuid is null or s.profile_id=${scope}::uuid) order by label,s.marketplace_id,s.family`;
   const { deadLetters, lifecycle } = await loadReportLifecycle(handle, orgId, scope);
   return {
     deadLetters: deadLetters.map((job) => ({ ...job, lastError: reportFailureLabel(job.lastError) })),
@@ -241,6 +252,9 @@ export async function loadSyncStatus(
       accountingComplete: row.accounting_complete,
       error: reportFailureLabel(row.error),
     })),
+    catalogue: catalogue.map((row)=>({profileLabel:row.label,marketplaceId:row.marketplace_id,family:row.family,enabled:row.enabled,
+      reportingRecoveryVerified:row.reporting_recovery_verified,coveredFrom:row.covered_from,coveredThrough:row.covered_through,
+      observedAt:row.observed_at,sourceRows:Number(row.source_rows??0),loadedRows:Number(row.loaded_rows??0),cursorFailure:row.cursor_failure})),
   };
 }
 
