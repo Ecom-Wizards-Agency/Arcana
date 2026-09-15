@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import { serializeApplyRows, type ApplyRow } from '@wizard-ads/shared';
 import { createDb, recordEntityChanges } from '@wizard-ads/db';
 import { signIn } from './support/auth';
@@ -34,10 +35,12 @@ test('acknowledging an observed change retains a visible receipt',async({page})=
   await expect(row.getByLabel('Actions for Synthetic queue acknowledgement')).toHaveCount(0);
   await expect(badge).toHaveText(String(before-1));
 });
-test('captures both screens at 1440 by 1024 in light and dark themes',async({page},testInfo)=>{
+test('captures both screens at 1440 by 1024 in light and dark themes',async({page})=>{
   await signIn(page,'admin');
   const {fixtureProfileId:profile}=await readState();
-  await page.setViewportSize({width:1440,height:1024});await mkdir(testInfo.outputDir,{recursive:true});
+  const scratch=process.env['WP_SCRATCH'];if(!scratch)throw new Error('WP_SCRATCH is required for browser artifacts');
+  const screenshotDirectory=join(scratch,'tmp','wp265-screenshots');
+  await page.setViewportSize({width:1440,height:1024});await mkdir(screenshotDirectory,{recursive:true});
   await page.goto(`/change-queue?${new URLSearchParams({profile})}`);
   await expect(page.locator('[data-badge-source="change-queue"]')).not.toHaveText('—');
   await expect(page.locator('main[data-interactive="true"]')).toBeVisible();

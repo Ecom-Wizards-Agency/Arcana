@@ -39,6 +39,10 @@ export const JobType = z.enum([
   'prompts.collect',
   'budget_usage.collect',
   'budget_usage.stream',
+  'ads.product_metadata.sync',
+  'ads.product_eligibility.sync',
+  'ads.validation_configurations.sync',
+  'ads.change_history.sync',
 ]);
 export type JobType = z.infer<typeof JobType>;
 
@@ -305,6 +309,20 @@ export const BudgetUsageCollectJob = z.object({ ...jobBase, type: z.literal('bud
 export type BudgetUsageCollectJob = z.infer<typeof BudgetUsageCollectJob>;
 export const BudgetUsageStreamJob = z.object({ ...jobBase, type: z.literal('budget_usage.stream') });
 export type BudgetUsageStreamJob = z.infer<typeof BudgetUsageStreamJob>;
+const catalogueJobBase = {
+  ...jobBase, marketplaceId: AmazonId,
+  /** Explicit admission remains false unless an operator provisioner sets it. */
+  sourceEnabled: z.literal(true),
+};
+export const ProductMetadataSyncJob = z.strictObject({ ...catalogueJobBase,
+  type: z.literal(JobType.enum['ads.product_metadata.sync']), asins: z.array(AmazonId).min(1).max(300), adProduct: AdProduct });
+export const ProductEligibilitySyncJob = z.strictObject({ ...catalogueJobBase,
+  type: z.literal(JobType.enum['ads.product_eligibility.sync']), asins: z.array(AmazonId).min(1), adProduct: AdProduct });
+export const ValidationConfigurationsSyncJob = z.strictObject({ ...catalogueJobBase,
+  type: z.literal(JobType.enum['ads.validation_configurations.sync']), countryCode: z.string().regex(/^[A-Z]{2}$/),
+  entityType: z.enum(['SELLER', 'VENDOR']), adProducts: z.array(AdProduct).min(1).max(3) });
+export const AdsChangeHistorySyncJob = z.strictObject({ ...catalogueJobBase,
+  type: z.literal(JobType.enum['ads.change_history.sync']), from: z.iso.datetime(), to: z.iso.datetime() });
 
 export const JobPayload = z.discriminatedUnion('type', [
   RetailReportJob, AbaReportJob, CatalogueReportJob,
@@ -330,6 +348,10 @@ export const JobPayload = z.discriminatedUnion('type', [
   MarketingStreamNormalizeJob,
   UnifiedReportAdvanceJob,
   TargetTranslationJob,
+  ProductMetadataSyncJob,
+  ProductEligibilitySyncJob,
+  ValidationConfigurationsSyncJob,
+  AdsChangeHistorySyncJob,
 ]);
 export type JobPayload = z.infer<typeof JobPayload>;
 
@@ -359,3 +381,7 @@ export type HistoryBootstrapJob = z.infer<typeof HistoryBootstrapJob>;
 export type ReportPromoteJob = z.infer<typeof ReportPromoteJob>;
 export type MarketingStreamNormalizeJob = z.infer<typeof MarketingStreamNormalizeJob>;
 export type UnifiedReportAdvanceJob = z.infer<typeof UnifiedReportAdvanceJob>;
+export type ProductMetadataSyncJob = z.infer<typeof ProductMetadataSyncJob>;
+export type ProductEligibilitySyncJob = z.infer<typeof ProductEligibilitySyncJob>;
+export type ValidationConfigurationsSyncJob = z.infer<typeof ValidationConfigurationsSyncJob>;
+export type AdsChangeHistorySyncJob = z.infer<typeof AdsChangeHistorySyncJob>;

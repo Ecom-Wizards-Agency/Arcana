@@ -8,7 +8,7 @@
  * them. That is why WP-09's acceptance check demands a negative test at the
  * tool layer rather than only in the database.
  */
-import type { QueryHandle } from '@wizard-ads/db';
+import { readAmazonObservedChanges, readProductEvidence, type QueryHandle } from '@wizard-ads/db';
 import { ToolError } from './errors.js';
 import { jsonText } from './json.js';
 import { buildFactQuery, buildProductCoverageQuery } from './sql.js';
@@ -18,6 +18,18 @@ export interface KeyScopeContext {
   orgId: string;
   /** Null means every profile in the org. */
   profileIds: string[] | null;
+}
+
+export async function getProductEvidence(handle: QueryHandle, scope: KeyScopeContext, profile: ProfileRecord,
+  input:{marketplaceId:string;asins:readonly string[];adProduct:'SP'|'SB'|'SD';staleAfter:string}) {
+  if (scope.profileIds !== null && !scope.profileIds.includes(profile.id)) throw new ToolError('not_found','Profile not found');
+  return readProductEvidence(handle,{scope:{orgId:scope.orgId,profileId:profile.id,marketplaceId:input.marketplaceId},asins:input.asins,adProduct:input.adProduct,staleAfter:input.staleAfter});
+}
+
+export async function getAmazonChangeHistory(handle: QueryHandle, scope: KeyScopeContext, profile: ProfileRecord,
+  input:{marketplaceId:string;from?:string;to?:string;limit?:number}) {
+  if (scope.profileIds !== null && !scope.profileIds.includes(profile.id)) throw new ToolError('not_found','Profile not found');
+  return readAmazonObservedChanges(handle,{orgId:scope.orgId,profileId:profile.id,...input});
 }
 
 export interface ProfileRecord {

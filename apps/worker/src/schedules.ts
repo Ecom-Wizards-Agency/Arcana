@@ -117,6 +117,8 @@ export const DEFAULT_CADENCES = {
    * request/poll/fetch pipeline land fresher facts before the preview runs.
    */
   recommendations: RECOMMENDATION_CADENCE,
+  /** Provisioned only as disabled rows after explicit profile/marketplace binding. */
+  catalogue: { metadata: '1 day', eligibility: '1 day', validation: '1 day', changeHistory: '1 hour', enabled: false },
 } as const;
 
 export function defaultSchedules(

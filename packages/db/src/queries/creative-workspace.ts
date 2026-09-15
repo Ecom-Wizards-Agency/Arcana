@@ -1,7 +1,7 @@
 import { type NamingSettings } from '@wizard-ads/campaigns';
 import {
   CreativeWorkspace, NamingStrategy, TimelineDaily, TimelineEvent,
-  type CreativeWorkspaceAsset, type CreativeWorkspaceCampaign,
+  ProductMetadataSnapshot, type CreativeWorkspaceAsset, type CreativeWorkspaceCampaign,
 } from '@wizard-ads/shared';
 import type { QueryHandle } from '../client.js';
 import { readCreativePerformance, resolveCreativeKeyword } from './creative-performance.js';
@@ -30,7 +30,14 @@ export async function readCreativeWorkspace(handle: QueryHandle, filter: Creativ
     select doc->'naming' as naming from public.profile_strategy where org_id=${orgId}
       and (profile_id=${profileId} or profile_id is null) order by profile_id nulls last,updated_at desc limit 1`;
   const naming = namingSettings(strategy?.naming);
-  const [performance, roster, links, campaignRows, groupRows, keywordRows, placements, history, eventRows, evidence, changes] = await Promise.all([
+  const [catalogueSchema]=await handle.sql<{present:boolean}[]>`select to_regclass('public.ads_product_metadata_snapshots') is not null as present`;
+  const listingPromise=catalogueSchema?.present?handle.sql<{ id:string;asin:string;marketplace_id:string;previous:unknown;current:unknown }[]>`with ordered as (
+      select id,asin,marketplace_id,acquired_at,snapshot as current,
+        lag(snapshot) over(partition by marketplace_id,asin,ad_product order by acquired_at,retrieved_at,id) as previous
+      from public.ads_product_metadata_snapshots where org_id=${orgId} and profile_id=${profileId})
+      select id::text,asin,marketplace_id,previous,current from ordered where acquired_at>=${from}::date
+        and acquired_at<${to}::date+interval '1 day' and previous is not null and previous<>current order by acquired_at desc,id desc`:Promise.resolve([]);
+  const [performance, roster, links, campaignRows, groupRows, keywordRows, placements, history, eventRows, evidence, changes, listingRows] = await Promise.all([
     readCreativePerformance(handle, filter, naming),
     handle.sql<{ asset_id: string; name: string | null; kind: string; url: string | null; first_seen_at: Date | string; metrics: Record<string, unknown> }[]>`
       select amazon_asset_id as asset_id,name,kind,url,first_seen_at,metrics from public.creative_assets
@@ -82,6 +89,7 @@ export async function readCreativeWorkspace(handle: QueryHandle, filter: Creativ
         and (applied_on is not null or applied_at is not null)`,
     handle.sql<{ min_clicks: string | number | null }[]>`select min_clicks from public.timeline_evidence_settings where org_id=${orgId} and profile_id=${profileId}`,
     readCreativeChangeHistory(handle, filter),
+    listingPromise,
   ]);
   const metadataById = new Map(roster.map((asset) => [asset.asset_id, asset]));
   const assets: CreativeWorkspaceAsset[] = performance.map((fact) => {
@@ -134,7 +142,9 @@ export async function readCreativeWorkspace(handle: QueryHandle, filter: Creativ
       placementCampaignIds: unique(usage.filter((link) => link.is_placement).map((link) => link.campaign_id)),
       campaignIds: unique(usage.map((link) => link.campaign_id)), adGroupIds: unique(usage.flatMap((link) => link.ad_group_id === null ? [] : [link.ad_group_id])), performance: null });
   }
-  return CreativeWorkspace.parse({ assets, campaigns, changes,
+  const listingChanges = listingRows.map((row) => ({ id:`listing:${row.id}`,asin:row.asin,marketplaceId:row.marketplace_id,
+    previous:ProductMetadataSnapshot.parse(row.previous),current:ProductMetadataSnapshot.parse(row.current) }));
+  return CreativeWorkspace.parse({ assets, campaigns, changes, listingChanges,
     placements: placements.map((row) => {
       const modifiers = campaigns.find((campaign) => campaign.campaignId === row.campaignId)?.modifiers;
       return { ...row, modifier: row.placement === 'top_of_search' ? modifiers?.topOfSearch ?? null

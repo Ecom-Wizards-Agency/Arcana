@@ -1699,6 +1699,7 @@ export class ScheduleProvisioner extends PeriodicPass {
       : 0;
     const repaired = await this.store.repairOverlongLookbacks();
     const integrations = await this.store.ensureIntegrationSchedules();
+    const catalogue = await this.store.ensureCatalogueSchedules?.() ?? 0;
     const sqp = await this.sqpSchedules?.enqueueDueSqpRequests();
     if (written > 0) {
       this.provisionLogger.info('provisioned default schedules', { profiles: profiles.length, schedules: written });
@@ -1712,6 +1713,7 @@ export class ScheduleProvisioner extends PeriodicPass {
     if (integrations > 0) {
       this.provisionLogger.info('reconciled integration schedules', { schedules: integrations });
     }
+    if (catalogue > 0) this.provisionLogger.info('reconciled disabled catalogue schedules', { schedules: catalogue });
     if (sqp && sqp.enqueuedJobs > 0) {
       this.provisionLogger.info('enqueued weekly SQP requests', {
         jobs: sqp.enqueuedJobs,

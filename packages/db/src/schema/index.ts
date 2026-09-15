@@ -38,6 +38,7 @@ export * from './sponsored-prompts.js';
 export * from './ad-group-products.js';
 export * from './research.js';
 export * from './creative-observations.js';
+export * from './ads-catalogue.js';
 export * from './provider-evidence.js';
 export * from './own-collectors.js';
 export * from './report-families.js';
