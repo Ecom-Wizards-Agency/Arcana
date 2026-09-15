@@ -98,7 +98,7 @@ export const E2E_SUITE_DEFINITIONS = [
     config: 'playwright.auth-oauth.config.ts',
     project: 'auth-oauth',
     expectedSpecFiles: specsFor('auth-oauth'),
-    expectedTests: 7,
+    expectedTests: 8,
   },
   {
     name: 'auth-roles',

@@ -1,8 +1,8 @@
 import {
   SpApiConnectionBegin, SpApiConnectionSubmit, SpApiConnectionOperation, SpApiConnectionClaim, SpApiAttachmentContext, Uuid,
-  type ProviderConnectionLifecycle, type OrgActor,
+  type ProviderConnectionLifecycle, type OrgActor, type SpApiConsentRefusal,
 } from '@wizard-ads/shared';
-import { withAuthenticatedActor } from './authenticated-actor.js';
+import { withAuthenticatedActor, AgencyAccessDenied } from './authenticated-actor.js';
 import { providerConnectionHealth } from './connections.js';
 /**
  * SP-API authorization metadata and weekly SQP scheduling inputs.
@@ -345,7 +345,19 @@ export async function listSqpScheduleScopes(
 /** No bound code, refresh value, query parameters or raw cause escapes this boundary. */
 export class SpApiConnectionCommandError extends Error {
   override readonly name = 'SpApiConnectionCommandError';
-  constructor() { super('SP-API connection command could not be completed'); }
+  constructor(readonly reason: SpApiConsentRefusal = 'submission_uncertain') { super('SP-API connection command could not be completed'); }
+}
+
+function consentRefusal(error: unknown): SpApiConsentRefusal {
+  if (error instanceof AgencyAccessDenied) return 'authority_changed';
+  const codes: Record<string, SpApiConsentRefusal> = {
+    SC001: 'mismatch', SC002: 'expired', SC003: 'reused', SC004: 'wrong_actor',
+    SC005: 'operation_not_pending', SC006: 'authority_changed', SC007: 'invalid_consent',
+    '42501': 'authority_changed',
+  };
+  const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
+  return typeof code === 'string' && Object.hasOwn(codes, code)
+    ? codes[code]! : 'submission_uncertain';
 }
 
 function spApiOperation(rows: { result: unknown }[]): SpApiConnectionOperation {
@@ -380,13 +392,15 @@ export function createSpApiConnectionLifecycle(
       `));
     },
     submit: async (actor, raw) => {
-      gate();
+      if (!enabled()) throw new SpApiConnectionCommandError('not_configured');
+      const parsed = SpApiConnectionSubmit.safeParse(raw);
+      if (!parsed.success) throw new SpApiConnectionCommandError('invalid_consent');
       try {
-        const input = SpApiConnectionSubmit.parse(raw);
+        const input = parsed.data;
         return await withAuthenticatedActor(handle, actor, async (sql) => spApiOperation(await sql<{ result: unknown }[]>`
           select app.submit_spapi_connection(${actor.orgId},${input.operationId},${input.nonceHash},${input.code},${input.sellingPartnerId}) as result
         `));
-      } catch { throw new SpApiConnectionCommandError(); }
+      } catch (error) { throw new SpApiConnectionCommandError(consentRefusal(error)); }
     },
     cancel: (actor, operationId) => {
       const id = Uuid.parse(operationId);

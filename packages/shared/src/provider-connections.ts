@@ -55,6 +55,13 @@ export const SpApiConnectionSubmit = AmazonConnectionSubmit.extend({
   sellingPartnerId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$/),
 }).strict();
 export type SpApiConnectionSubmit = z.infer<typeof SpApiConnectionSubmit>;
+/** Public callback outcomes contain only fixed reason codes, never provider text. */
+export const SpApiConsentRefusal = z.enum([
+  'missing', 'mismatch', 'expired', 'not_yet_valid', 'reused', 'wrong_actor',
+  'authority_changed', 'operation_not_pending', 'invalid_consent', 'not_configured',
+  'submission_uncertain', 'provider_refused',
+]);
+export type SpApiConsentRefusal = z.infer<typeof SpApiConsentRefusal>;
 export const SpApiConnectionOperation = z.object({
   operationId: Uuid, orgId: Uuid, connectionId: Uuid.nullable(),
   state: z.enum(['awaiting_consent', 'queued', 'exchanging', 'completed', 'reconnect_required', 'cancelled']),

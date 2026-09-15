@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ProviderConnectionHealth, SpApiConnectionOperation } from '@wizard-ads/shared';
+import { ProviderConnectionHealth, SpApiConnectionOperation, SpApiConsentRefusal } from '@wizard-ads/shared';
 import type { SpApiConnectionSummary, SpApiSelectableProfile } from '../data/connections';
 import { TableFrame } from '../ui/primitives';
 import { banner, input, muted, subheading, table, td, th } from '../ui/tokens';
@@ -19,9 +19,24 @@ const reasons: Record<NonNullable<SpApiConnectionOperation['reason']>, string> =
   expired: 'The authorization expired. Start a new connection.', operator_cancelled: 'An agency manager cancelled this connection.',
 };
 
+const callbackMessages: Record<SpApiConsentRefusal, string> = {
+  missing: 'Authorization state or browser cookie is missing. Start again.',
+  mismatch: 'Authorization state does not match this request. Start again.',
+  expired: 'The authorization expired. Start a new connection.',
+  not_yet_valid: 'The authorization time is invalid. Start again.',
+  reused: 'This authorization was already used for different consent. Start a new connection.',
+  wrong_actor: 'This authorization belongs to a different signed-in user.',
+  authority_changed: 'Account security or agency authority changed. Verify access and start again.',
+  operation_not_pending: 'This connection is no longer accepting authorization. Check its saved status.',
+  invalid_consent: 'The returned seller consent does not match the selected account. Start again.',
+  not_configured: 'Seller connections are unavailable. Contact your installation operator.',
+  submission_uncertain: 'Authorization receipt could not be confirmed. Check the saved connection status before starting again.',
+  provider_refused: 'Seller authorization was declined. Start again when ready.',
+};
+
 export function SpApiConnections({ orgId, mayManage, enabled, connections, profiles, initial, callbackError }: {
   orgId: string; mayManage: boolean; enabled: boolean; connections: SpApiConnectionSummary[];
-  profiles: SpApiSelectableProfile[]; initial: SpApiConnectionOperation | null; callbackError: boolean;
+  profiles: SpApiSelectableProfile[]; initial: SpApiConnectionOperation | null; callbackError: string | null;
 }) {
   const router = useRouter();
   const [operation, setOperation] = useState(initial);
@@ -79,13 +94,21 @@ export function SpApiConnections({ orgId, mayManage, enabled, connections, profi
     } catch { if (!signal?.aborted) setError('The action could not be confirmed. Refresh to check the saved connection.'); }
   }
 
+  const callbackRefusal = SpApiConsentRefusal.safeParse(callbackError);
+  const linked = connections.find((connection) => connection.id === operation?.connectionId);
+  const currentHealth = health?.connectionId === operation?.connectionId ? health : null;
+  const connected = linked?.status === 'active' && linked.hasCredential
+    && (!currentHealth || (currentHealth.state === 'active' && currentHealth.hasCredential));
+  const completedLabel = currentHealth?.state === 'revoked' || linked?.status === 'revoked'
+    ? 'Seller connection revoked' : 'Seller authorization completed previously';
+
   return <section data-testid="spapi-connections">
     <h2 style={subheading}>Seller Central</h2>
     <p style={muted}>Connect a seller account for the selected profiles. Reporting stays disabled until it is separately enabled.</p>
-    {callbackError ? <p role="alert" style={banner('bad')}>Seller authorization could not be verified. Start again from Connections.</p> : null}
+    {callbackError ? <p role="alert" style={banner('bad')}>{callbackRefusal.success ? callbackMessages[callbackRefusal.data] : 'Seller authorization could not be verified. Start again from Connections.'}</p> : null}
     {error ? <p role="alert">{error}</p> : null}
-    {operation ? <div aria-live="polite" style={banner(operation.state === 'completed' ? 'good' : 'warn')} data-testid="spapi-progress">
-      <strong>{labels[operation.state]}</strong>
+    {operation ? <div aria-live="polite" style={banner(operation.state === 'completed' && connected ? 'good' : 'warn')} data-testid="spapi-progress">
+      <strong>{operation.state === 'completed' && !connected ? completedLabel : labels[operation.state]}</strong>
       {operation.reason ? <p>{reasons[operation.reason]}</p> : null}
       <p>{operation.attachedBindings} of {operation.requestedBindings} selected profiles attached.</p>
       {operation.state === 'completed' ? <p>Reporting was left disabled when this connection completed.</p> : null}

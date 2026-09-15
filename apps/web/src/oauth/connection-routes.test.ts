@@ -4,7 +4,7 @@ import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizar
 import { cancelAmazonConnection } from '@wizard-ads/db';
 import { AmazonConnectionOperation } from '@wizard-ads/shared';
 import { GET as start } from '../../app/api/amazon/oauth/start/route';
-import { GET as callback } from '../../app/api/amazon/oauth/callback/route';
+import { receiveAmazonConsent as callback } from './ads-callback';
 import { GET as status, POST as cancel } from '../../app/api/amazon/connections/[operationId]/route';
 import { createState, nonceCookieName, verifyState } from './state';
 import { ORG_COOKIE } from '../cookies';

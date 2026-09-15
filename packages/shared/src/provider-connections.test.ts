@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SpApiConnectionBegin, SpApiConnectionSubmit, SpApiConnectionOperation } from './provider-connections.js';
+import { SpApiConnectionBegin, SpApiConnectionSubmit, SpApiConnectionOperation, SpApiConsentRefusal } from './provider-connections.js';
 
 const id = '11111111-1111-4111-8111-111111111111';
 const hiddenValue = ['synthetic', 'refresh'].join('-');
@@ -17,6 +17,13 @@ describe('SP consent contracts', () => {
     const mixed = 'a1111111-1111-4111-8111-111111111111';
     expect(SpApiConnectionBegin.parse({ ...begin,bindings: [{ ...begin.bindings[0],profileId: mixed.toUpperCase() }] }).bindings[0]!.profileId).toBe(mixed);
     expect(SpApiConnectionBegin.safeParse({ ...begin,bindings: [mixed,mixed.toUpperCase()].map((profileId) => ({ ...begin.bindings[0],profileId })) }).success).toBe(false);
+  });
+  it('admits only enumerated callback refusal codes', () => {
+    expect(SpApiConsentRefusal.options).toHaveLength(12);
+    for (const reason of ['mismatch', 'expired', 'reused', 'wrong_actor', 'operation_not_pending']) {
+      expect(SpApiConsentRefusal.parse(reason)).toBe(reason);
+    }
+    expect(SpApiConsentRefusal.safeParse('synthetic provider message').success).toBe(false);
   });
   it('requires seller-returned identity and confines consent to submission', () => {
     const input = { operationId: id, nonceHash: begin.nonceHash, code: 'synthetic-code' };

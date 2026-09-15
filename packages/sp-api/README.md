@@ -161,6 +161,20 @@ provider redirect. `operations/[operationId]` reads or cancels saved progress.
 `connections/[connectionId]` reads health or revokes custody. Status, cancellation and
 revocation remain available when new consent admission is disabled.
 
+Both Amazon callback routes consume their queries from request-local memory. Web
+instrumentation removes the entire query and referrer at Node's
+`http.server.request.start` boundary, before Next's routing, request logging and
+tracing. The route consumes the saved values once; an adapter that bypasses that
+boundary cannot submit consent. A redirect in the route alone would leave the
+original query in Next's request log.
+
+Callbacks return enumerated `spapi_error` reasons. `reused` means a different
+consent value was submitted for an already-used operation; an identical submission
+returns `spapi_submission=already_received` without queuing another exchange.
+`submission_uncertain` retains the operation's progress link after a readback and
+never causes an automatic resubmission. A completed operation is historical: the
+connected banner also requires a currently active credential.
+
 The test-only consent endpoint override requires the non-production browser fixture
 gate and a loopback URL. Fake worker transport maps the fixed LWA endpoint to its
 local server. Neither override is a hosted setup instruction.
@@ -174,5 +188,14 @@ Keep both connection gates and all source/binding gates off until a bounded cons
 test is authorized. Verify custody counts and cross-agency isolation, then authorize
 any selected binding/source enablement separately. Live consent and marketplace access
 are not proved by the offline fixtures.
+
+Before live consent, redact the full query and referrer for both callback paths in
+CDN, WAF, load balancer, reverse-proxy, platform access/error logs and APM collectors
+that observe requests before the Node hook. Suppress response Location values from
+consent-start tracing because they contain signed state. Verify the deployed adapter
+uses the pre-routing custody hook (including cold starts); an adapter that creates
+Requests without a Node HTTP event requires an equivalent ingress boundary. Exercise
+that boundary with synthetic markers and inspect actual logs and traces before
+allowing a seller consent. Application tests cannot establish upstream redaction.
 
 Protocol reference: [Amazon website authorization workflow](https://developer-docs.amazon/sp-api/docs/website-authorization-workflow).

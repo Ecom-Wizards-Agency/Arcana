@@ -31,7 +31,7 @@ const NONCE_LENGTH = 43;
 const MAX_STATE_LENGTH = 1024;
 const MIN_KEY_BYTES = 32;
 
-/** Claims carried across the Amazon redirect. Nothing secret, all of it signed. */
+/** Signed browser/operation claims. Keep serialized state out of logs and traces. */
 export interface OAuthStateClaims {
   /** The durable operation created before leaving this installation. */
   operationId: string;

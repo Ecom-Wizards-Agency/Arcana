@@ -190,6 +190,36 @@ describe.skipIf(!available)('SP onboarding transaction and authority', () => {
     await f.lifecycle.revoke(f.actor,completed.connectionId!);
     expect(await getSpApiRefreshToken(db,{ orgId: f.actor.orgId,connectionId: completed.connectionId! })).toBeNull();
   });
+  it.each(['mismatch','expired','reused','wrong_actor','operation_not_pending','authority_changed'] as const)('returns sanitized %s from the locked submission boundary', async (reason) => {
+    const f = await fixture(1);
+    const operation = await f.lifecycle.begin(f.actor, f.input);
+    const submission = { operationId: operation.operationId, nonceHash: f.input.nonceHash, code: 'synthetic-reason-code', sellingPartnerId: f.seller };
+    let actor = f.actor;
+    if (reason === 'mismatch') submission.nonceHash = 'c'.repeat(64);
+    if (reason === 'expired') await db.sql`update app.spapi_connection_operations set expires_at=clock_timestamp()-interval '1 second' where id=${operation.operationId}`;
+    if (reason === 'operation_not_pending') await f.lifecycle.cancel(f.actor, operation.operationId);
+    if (reason === 'reused') {
+      await f.lifecycle.submit(f.actor, submission);
+      submission.code += '-changed';
+    }
+    if (reason === 'wrong_actor') {
+      const userId = randomUUID();
+      await db.sql`insert into auth.users(id) values (${userId})`;
+      await db.sql`insert into public.org_members(org_id,user_id,role) values (${f.actor.orgId},${userId},'admin')`;
+      actor = { ...f.actor, userId };
+    }
+    if (reason === 'authority_changed') {
+      await db.sql`delete from public.org_members where org_id=${f.actor.orgId} and user_id=${f.actor.userId}`;
+      await db.sql`insert into public.org_members(org_id,user_id,role,created_at) values (${f.actor.orgId},${f.actor.userId},'owner',clock_timestamp()+interval '1 second')`;
+    }
+    const error = await f.lifecycle.submit(actor, submission).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(SpApiConnectionCommandError);
+    expect(error).toMatchObject({ reason });
+    expect(JSON.stringify(error) + String(error)).not.toContain(submission.code);
+    expect(await db.sql`select id from public.audit_log where org_id=${f.actor.orgId} and action='spapi.consent_submitted'`).toHaveLength(reason === 'reused' ? 1 : 0);
+    expect(await db.sql`select id from vault.secrets where name=${'openspell:spapi-consent:' + operation.operationId}`).toHaveLength(reason === 'reused' ? 1 : 0);
+    await f.lifecycle.cancel(f.actor, operation.operationId);
+  });
   it('upgrades existing custody and binding states without enabling a source', async () => {
     const old = await createTestDatabase('spapi_upgrade', { throughMigration: '20260915260000_ad_group_product_assignments.sql',applyFixture: false });
     try {

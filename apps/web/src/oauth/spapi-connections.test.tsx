@@ -9,7 +9,7 @@ const orgId = '11111111-1111-4111-8111-111111111111';
 const id = '22222222-2222-4222-8222-222222222222';
 const operation: SpApiConnectionOperation = { operationId: id,orgId,connectionId: null,state: 'awaiting_consent',reason: null,
   requestedBindings: 2,attachedBindings: 0,createdAt: '2026-01-01T00:00:00Z',updatedAt: '2026-01-01T00:00:00Z' };
-const base = { orgId,mayManage: true,enabled: true,connections: [],profiles: [{ id,name: 'Synthetic seller',marketplaceId: 'ATVPDKIKX0DER',countryCode: 'US',connectionLabel: null }],initial: null,callbackError: false };
+const base = { orgId,mayManage: true,enabled: true,connections: [],profiles: [{ id,name: 'Synthetic seller',marketplaceId: 'ATVPDKIKX0DER',countryCode: 'US',connectionLabel: null }],initial: null,callbackError: null };
 afterEach(() => { vi.restoreAllMocks(); });
 describe('seller connection controls', () => {
   it('shows exact profile selection only to an enabled manager', () => {
@@ -39,12 +39,30 @@ describe('seller connection controls', () => {
     expect(screen.queryAllByRole('button',{ name: 'Cancel seller connection' })).toHaveLength(['awaiting_consent','queued','exchanging'].includes(state) ? 1 : 0);
     if (state === 'completed') expect(screen.getByText(/Reporting was left disabled/)).toBeDefined();
   });
+  it('reconciles a completed banner with the current revoked connection', () => {
+    const completed = { ...operation, state: 'completed' as const, connectionId: id, attachedBindings: 2 };
+    const connection = { id, label: 'Synthetic seller', status: 'active' as const, hasCredential: true, bindingCount: 2, enabledBindings: 0 };
+    const view = render(<SpApiConnections {...base} initial={completed} connections={[connection]} />);
+    expect(screen.getByText('Seller account connected')).toBeDefined();
+    view.rerender(<SpApiConnections {...base} initial={completed} connections={[{ ...connection, status: 'revoked', hasCredential: false }]} />);
+    expect(screen.queryByText('Seller account connected')).toBeNull();
+    expect(screen.getByText('Seller connection revoked')).toBeDefined();
+    expect(screen.getByTestId('spapi-progress').style.background).toContain('warn');
+  });
+  it('shows sanitized callback reasons without echoing arbitrary query text', () => {
+    const view = render(<SpApiConnections {...base} callbackError="reused" />);
+    expect(screen.getByRole('alert').textContent).toContain('already used');
+    view.rerender(<SpApiConnections {...base} callbackError="synthetic-untrusted-provider-text" />);
+    expect(screen.getByRole('alert').textContent).not.toContain('synthetic-untrusted-provider-text');
+  });
   it('requires explicit revocation confirmation and shows the saved revoked state', async () => {
     const fetch = vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({ health: { connectionId: id,state: 'revoked',hasCredential: false } }));
-    render(<SpApiConnections {...base} enabled={false} connections={[{ id,label: 'Synthetic seller',status: 'active',hasCredential: true,bindingCount: 2,enabledBindings: 0 }]} />);
+    render(<SpApiConnections {...base} initial={{ ...operation, state: 'completed', connectionId: id, attachedBindings: 2 }} enabled={false} connections={[{ id,label: 'Synthetic seller',status: 'active',hasCredential: true,bindingCount: 2,enabledBindings: 0 }]} />);
     fireEvent.click(screen.getByRole('button',{ name: 'Revoke seller connection' })); expect(fetch).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button',{ name: 'Yes, revoke seller connection' }));
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('revoked'));
+    expect(screen.queryByText('Seller account connected')).toBeNull();
+    expect(screen.getByText('Seller connection revoked')).toBeDefined();
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch.mock.calls[0]![1]).toMatchObject({ method: 'POST' });
   });

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
-import { createSpApiConnectionLifecycle } from '@wizard-ads/db';
+import { createSpApiConnectionLifecycle, SpApiConnectionCommandError } from '@wizard-ads/db';
 import { startSpApiConsent, receiveSpApiConsent, spApiOperationRoute, spApiHealthRoute } from './spapi-routes';
 import { createNonce, createState, nonceCookieName, verifyState } from './state';
 import { createSpApiState, verifySpApiState, spApiNonceName } from './spapi-state';
@@ -63,7 +63,9 @@ describe.skipIf(!available)('SP routes on authenticated database authority', () 
   it('queues once, returns only saved metadata, and leaves Ads browser custody untouched', async () => {
     const f = await begin(); const params = new URLSearchParams({ state: f.state,spapi_oauth_code: code,selling_partner_id: 'synthetic-seller' });
     const response = await receiveSpApiConsent(callbackRequest(params,f.nonce));
-    await receiveSpApiConsent(callbackRequest(params,f.nonce));
+    const repeated = await receiveSpApiConsent(callbackRequest(params,f.nonce));
+    expect(new URL(response.headers.get('location')!).searchParams.get('spapi_submission')).toBe('received');
+    expect(new URL(repeated.headers.get('location')!).searchParams.get('spapi_submission')).toBe('already_received');
     expect(response.headers.get('set-cookie')).toContain(spApiNonceName(false) + '=;');
     expect(response.headers.get('set-cookie')).not.toContain(nonceCookieName(false) + '=');
     expect(response.headers.get('cache-control')).toContain('no-store');
@@ -115,12 +117,82 @@ describe.skipIf(!available)('SP routes on authenticated database authority', () 
     if (kind === 'forged-redirect') params.set('redirect_uri','https://foreign.test');
     if (kind === 'mixed-error') params.set('error','access_denied');
     const response = await receiveSpApiConsent(callbackRequest(params,nonce));
+    const expectedReasons: Record<typeof denialCases[number], string> = {
+      altered: 'mismatch', expired: 'expired', future: 'not_yet_valid', 'missing-state': 'missing',
+      'missing-nonce': 'missing', 'mismatched-nonce': 'mismatch', 'wrong-user': 'wrong_actor',
+      'wrong-org': 'authority_changed', 'ads-state': 'mismatch', 'forged-redirect': 'mismatch',
+      'missing-seller': 'invalid_consent', 'conflicting-seller': 'invalid_consent', 'duplicate-seller': 'invalid_consent',
+      'missing-code': 'invalid_consent', 'duplicate-code': 'invalid_consent', 'duplicate-state': 'missing',
+      'mixed-error': 'invalid_consent', viewer: 'authority_changed', analyst: 'authority_changed',
+      'lost-assurance': 'authority_changed', 'membership-readded': 'authority_changed',
+      'gate-off': 'not_configured', 'security-unavailable': 'authority_changed',
+    };
+    const destination = new URL(response.headers.get('location')!);
+    expect(destination.searchParams.get('spapi_error')).toBe(expectedReasons[kind]);
+    expect(destination.searchParams.has('spapi_submission')).toBe(false);
     expect(response.headers.get('set-cookie')).toContain('Max-Age=0');
     expect(response.headers.get('referrer-policy')).toBe('no-referrer');
     expect(new URL(response.headers.get('location')!).origin).toBe(origin);
     expect(await db.sql`select id from app.spapi_connection_operations where org_id=${f.actor.orgId} and code_hash is not null`).toHaveLength(0);
     expect(await db.sql`select id from public.spapi_connections where org_id=${f.actor.orgId}`).toHaveLength(0);
     expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+  it('distinguishes reused consent from identical resubmission without queuing another exchange', async () => {
+    const f = await begin();
+    const params = new URLSearchParams({ state: f.state, spapi_oauth_code: code, selling_partner_id: 'synthetic-seller' });
+    await receiveSpApiConsent(callbackRequest(params, f.nonce));
+    params.set('spapi_oauth_code', code + '-different');
+    const refused = await receiveSpApiConsent(callbackRequest(params, f.nonce));
+    expect(new URL(refused.headers.get('location')!).searchParams.get('spapi_error')).toBe('reused');
+    expect(await db.sql`select id from vault.secrets where name=${'openspell:spapi-consent:' + f.operationId}`).toHaveLength(1);
+    expect(await db.sql`select id from public.audit_log where org_id=${f.actor.orgId} and action='spapi.consent_submitted'`).toHaveLength(1);
+    const lifecycle = createSpApiConnectionLifecycle(db, () => true);
+    expect((await lifecycle.custody.claim(randomUUID()))?.operation.operationId).toBe(f.operationId);
+    expect(await lifecycle.custody.claim(randomUUID())).toBeNull();
+    await lifecycle.cancel(f.actor, f.operationId);
+  });
+  it.each(['cancelled', 'expired-operation', 'wrong-initiator'] as const)('names %s refusal without queuing consent', async (kind) => {
+    const f = await begin();
+    if (kind === 'cancelled') await createSpApiConnectionLifecycle(db).cancel(f.actor, f.operationId);
+    if (kind === 'expired-operation') await db.sql`update app.spapi_connection_operations set expires_at=clock_timestamp()-interval '1 second' where id=${f.operationId}`;
+    if (kind === 'wrong-initiator') {
+      const userId = randomUUID();
+      await db.sql`insert into auth.users(id) values (${userId})`;
+      await db.sql`insert into public.org_members(org_id,user_id,role) values (${f.actor.orgId},${userId},'admin')`;
+      await db.sql`update app.spapi_connection_operations set initiated_by=${userId} where id=${f.operationId}`;
+    }
+    const response = await receiveSpApiConsent(callbackRequest(new URLSearchParams({ state: f.state, spapi_oauth_code: code, selling_partner_id: 'synthetic-seller' }), f.nonce));
+    expect(new URL(response.headers.get('location')!).searchParams.get('spapi_error')).toBe(kind === 'cancelled' ? 'operation_not_pending' : kind === 'expired-operation' ? 'expired' : 'wrong_actor');
+    expect(await db.sql`select id from app.spapi_connection_operations where org_id=${f.actor.orgId} and code_hash is not null`).toHaveLength(0);
+    expect(await db.sql`select id from public.audit_log where org_id=${f.actor.orgId} and action='spapi.consent_submitted'`).toHaveLength(0);
+  });
+  it.each([false, true])('preserves uncertain response recovery with committed=%s and never resubmits', async (committed) => {
+    const f = await begin();
+    const realDb = db;
+    let submissions = 0;
+    const wrapped = { sql: { begin: async (run: (sql: unknown) => Promise<unknown>) => {
+      let submitted = false;
+      const result = await realDb.sql.begin(async (sql) => run(new Proxy(sql, { apply(target, thisArg, args: [TemplateStringsArray, ...unknown[]]) {
+        if (args[0].join('').includes('app.submit_spapi_connection')) {
+          submitted = true; submissions++;
+          if (!committed) throw new Error('synthetic lost request');
+        }
+        return Reflect.apply(target, thisArg, args);
+      } })));
+      if (submitted) throw new SpApiConnectionCommandError();
+      return result;
+    } } };
+    db = wrapped as unknown as TestDatabase;
+    try {
+      const response = await receiveSpApiConsent(callbackRequest(new URLSearchParams({ state: f.state, spapi_oauth_code: code, selling_partner_id: 'synthetic-seller' }), f.nonce));
+      const destination = new URL(response.headers.get('location')!);
+      expect(destination.searchParams.get('spapi_error')).toBe('submission_uncertain');
+      expect(destination.searchParams.get('spapi_operation')).toBe(f.operationId);
+      expect(destination.searchParams.has('spapi_submission')).toBe(false);
+    } finally { db = realDb; }
+    expect(submissions).toBe(1);
+    expect(await db.sql`select id from app.spapi_connection_operations where org_id=${f.actor.orgId} and code_hash is not null`).toHaveLength(committed ? 1 : 0);
+    await createSpApiConnectionLifecycle(db).cancel(f.actor, f.operationId);
   });
   it('keeps cancellation and health available with admission off and denies foreign operations', async () => {
     const f = await begin(); vi.stubEnv('OPENSPELL_SPAPI_CONNECTIONS_ENABLED','0');

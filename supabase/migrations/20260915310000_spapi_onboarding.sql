@@ -151,21 +151,32 @@ declare v app.spapi_connection_operations; v_secret uuid; v_hash text;
 begin
   perform app.lock_org_manager(p_org);
   select * into v from app.spapi_connection_operations where id = p_id and org_id = p_org;
-  if not found or v.initiated_by <> auth.uid() or v.nonce_hash is distinct from p_nonce then
-    raise exception 'Resource not found' using errcode = '42501'; end if;
+  if not found then raise exception 'Consent refused' using errcode = 'SC005'; end if;
+  if v.initiated_by <> auth.uid() then raise exception 'Consent refused' using errcode = 'SC004'; end if;
+  if v.nonce_hash is distinct from p_nonce then raise exception 'Consent refused' using errcode = 'SC001'; end if;
   v := app.lock_spapi_connection(p_id);
-  if p_code is null or length(p_code) not between 1 and 8192 or p_seller is null
-    or p_seller is distinct from v.expected_selling_partner_id then
-    raise exception 'Invalid SP-API consent' using errcode = '22023'; end if;
+  if not exists (select 1 from public.org_members where org_id = p_org and user_id = auth.uid()
+    and created_at = v.membership_created_at and role in ('owner','admin')) then
+    raise exception 'Consent refused' using errcode = 'SC006'; end if;
+  if v.reason = 'expired' then raise exception 'Consent refused' using errcode = 'SC002'; end if;
+  if v.reason = 'authority_changed' then raise exception 'Consent refused' using errcode = 'SC006'; end if;
+  if v.state not in ('awaiting_consent','queued','exchanging','completed')
+    or (v.state = 'completed' and not exists (select 1 from public.spapi_connections
+      where id = v.connection_id and status = 'active')) then
+    raise exception 'Consent refused' using errcode = 'SC005'; end if;
+  if p_code is null or length(p_code) not between 1 and 8192 or p_seller is null then
+    raise exception 'Consent refused' using errcode = 'SC007'; end if;
   v_hash := encode(sha256(convert_to(p_code,'UTF8')),'hex');
   if v.code_hash is not null then
     if v.code_hash <> v_hash or v.selling_partner_id is distinct from p_seller then
-      raise exception 'Consent already submitted' using errcode = '22023'; end if;
+      raise exception 'Consent refused' using errcode = 'SC003'; end if;
     return app.spapi_connection_view(v);
   end if;
-  if v.state <> 'awaiting_consent' then return app.spapi_connection_view(v); end if;
+  if p_seller is distinct from v.expected_selling_partner_id then
+    raise exception 'Consent refused' using errcode = 'SC007'; end if;
+  if v.state <> 'awaiting_consent' then raise exception 'Consent refused' using errcode = 'SC005'; end if;
   if app.spapi_selection_seller(p_org,v.installation) is distinct from p_seller then
-    raise exception 'SP-API association changed' using errcode = '42501'; end if;
+    raise exception 'Consent refused' using errcode = 'SC006'; end if;
   v_secret := vault.create_secret('pending','openspell:spapi-consent:' || p_id::text,'One-use SP-API consent');
   perform vault.update_secret(v_secret,p_code);
   update app.spapi_connection_operations set state = 'queued',code_hash = v_hash,code_secret_id = v_secret,
