@@ -1,11 +1,11 @@
 import { normalizeSponsoredPrompt, SponsoredPromptImport, SponsoredPromptImportResult, SponsoredPromptObservation, SponsoredPromptSnapshot, SponsoredPromptVisit } from '@wizard-ads/shared';
 import { createHash } from 'node:crypto';
-import { CollectorReceipt, StoredCollectorExport } from '@wizard-ads/shared';
+import { CollectorReceipt, StoredCollectorExport, type CollectorRefusalCode } from '@wizard-ads/shared';
 import type { DbHandle, QueryHandle } from '../client.js';
 import type { AuthenticatedEditorTransaction } from './authenticated-actor.js';
 
 export class SponsoredPromptInputError extends Error {
-  constructor(message: string) { super(message); this.name = 'SponsoredPromptInputError'; }
+  constructor(message: string, readonly refusalCode: CollectorRefusalCode = 'malformed_content') { super(message); this.name = 'SponsoredPromptInputError'; }
 }
 
 export async function importSponsoredPrompts(context: AuthenticatedEditorTransaction, raw: SponsoredPromptImport): Promise<SponsoredPromptImportResult> {
@@ -87,7 +87,7 @@ export async function readSponsoredPrompts(handle: QueryHandle, scope: { orgId: 
   const imports = await handle.sql<{ referenceId:string; observedAt:Date|string; collectedAt:Date|string }[]>`select distinct on(reference_id) reference_id as "referenceId",observed_at as "observedAt",collected_at as "collectedAt"
     from public.collector_import_receipts r where r.org_id=${scope.orgId} and r.profile_id=${scope.profileId}
     and exists(select 1 from public.collector_export_references e where e.id=r.reference_id and e.org_id=r.org_id and e.profile_id=r.profile_id and e.family='prompts') order by reference_id,observed_at desc,collected_at desc`;
-  return { ...SponsoredPromptSnapshot.parse(row.snapshot),scheduledImports:imports.map((r)=>({ referenceId:r.referenceId,observedAt:new Date(r.observedAt).toISOString(),collectedAt:new Date(r.collectedAt).toISOString() })) };
+  return SponsoredPromptSnapshot.parse({ ...SponsoredPromptSnapshot.parse(row.snapshot),scheduledImports:imports.map((r)=>({ referenceId:r.referenceId,observedAt:new Date(r.observedAt).toISOString(),collectedAt:new Date(r.collectedAt).toISOString() })) });
 }
 
 export async function recordSponsoredPromptVisit(context: AuthenticatedEditorTransaction, raw: SponsoredPromptVisit): Promise<SponsoredPromptVisit> {
@@ -105,14 +105,14 @@ export async function recordSponsoredPromptVisit(context: AuthenticatedEditorTra
 /** Scheduled imports have worker scope, never an interactive actor or visit write. */
 export async function importScheduledPrompts(handle: DbHandle, reference: StoredCollectorExport, fingerprint: string, raw: SponsoredPromptImport, collectedAt: string): Promise<CollectorReceipt> {
   const ref = StoredCollectorExport.parse(reference); const input = SponsoredPromptImport.parse(raw);
-  if (ref.family !== 'prompts' || !ref.enabled || input.profileId !== ref.scope.profileId || !/^[a-f0-9]{64}$/.test(fingerprint)) throw new SponsoredPromptInputError('Invalid scheduled prompt authority');
+  if (ref.family !== 'prompts' || !ref.enabled || input.profileId !== ref.scope.profileId || !/^[a-f0-9]{64}$/.test(fingerprint)) throw new SponsoredPromptInputError('Invalid scheduled prompt authority', 'unauthorized_reference');
   return handle.sql.begin(async (sql) => {
     const [role] = await sql<{ allowed: boolean }[]>`select current_user not in ('authenticated','anon') as allowed`;
-    if (!role?.allowed) throw new SponsoredPromptInputError('Scheduled imports require worker authority');
+    if (!role?.allowed) throw new SponsoredPromptInputError('Scheduled imports require worker authority', 'unauthorized_reference');
     const refs = await sql`select r.id from public.collector_export_references r join public.ad_profiles p on p.org_id=r.org_id and p.id=r.profile_id
       where r.id=${ref.id} and r.org_id=${ref.scope.orgId} and r.profile_id=${ref.scope.profileId} and r.marketplace=${ref.scope.marketplace}
       and p.country_code=r.marketplace and p.sync_enabled and r.enabled and r.family='prompts' and r.object_key=${ref.objectKey} for share of r,p`;
-    if (refs.length !== 1) throw new SponsoredPromptInputError('Scheduled export reference no longer authorized');
+    if (refs.length !== 1) throw new SponsoredPromptInputError('Scheduled export reference no longer authorized', 'unauthorized_reference');
     const result = await persistSponsoredPrompts({ sql },ref.scope.orgId,input);
     const id = createHash('sha256').update(`${ref.id}:${fingerprint}`).digest('hex');
     const observedAt = input.rows.map((r) => r.observedAt).sort()[0]!;

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it } from 'vitest';
-import { serializeGridView } from '@wizard-ads/shared';
+import { serializeGridView, type EffectiveBidProjection } from '@wizard-ads/shared';
 import { rendered, verifyScreen } from '../render-test-support';
 import { descriptor } from './descriptor';
 import Screen from './view';
@@ -111,4 +111,22 @@ it('renders partial and stale listing facts without inventing unavailable checks
   expect(host.container.textContent).toContain('Moderation unavailable.');
   expect(host.container.textContent).not.toContain('Owns Buy Box');
   expect(host.container.textContent).toContain(provenance.observedAt);
+});
+
+it('shows inherited default origin and source time beside the observed bid', () => {
+  const point = { ...ready.payload.points[0]!, bid:3 };
+  const at = `${point.date}T12:00:00.000Z`;
+  const provenance = {source:'synthetic',sourceIdentity:'default',observedAt:at,collectedAt:at};
+  const own:EffectiveBidProjection={date:point.date,observedBid:3,configuredExposure:null,composition:'incomplete',scenarios:[],observation:{
+    scope:{orgId:'00000000-0000-4000-8000-000000000001',profileId:ready.profileId,marketplace:'US'},sourceIdentity:'inherited',
+    campaignId:'c',adGroupId:'g',targetId:ready.payload.target.targetId,targetKind:'keyword',observedAt:at,collectedAt:at,
+    bid:{value:3,provenance},bidOrigin:'inherited',inheritance:{targetBidAbsentAt:at,defaultBidObservedAt:at},
+    bidding:null,placementProvenance:null,audienceProvenance:null}};
+  const data={...ready,payload:{...ready.payload,points:[point],ownBidEvidence:[own]}};
+  const host=render(<Screen data={data} />);
+  const bid=Array.from(host.container.querySelectorAll('dt')).find((node)=>node.textContent==='Bid')!.nextElementSibling!;
+  expect(bid.textContent).toContain('$3.00');
+  expect(bid.textContent).toContain(`Inherited ad-group default · observed ${at}`);
+  host.rerender(<Screen data={{...data,payload:{...data.payload,ownBidEvidence:[{...own,observation:{...own.observation,bidOrigin:'explicit'}}]}}} />);
+  expect(host.container.textContent).not.toContain('Inherited ad-group default');
 });

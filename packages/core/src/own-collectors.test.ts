@@ -29,7 +29,7 @@ it('replay does not invent days and separates target kinds', () => {
 const field: ListingFieldObservation = { field: 'price', value: 2, provenance };
 it('uses actual boundaries for first/exact/window and source switches', () => {
   const run = (previous: ListingFieldObservation | null, day: string, source = 'synthetic', hasEarlierObservation = false) => listingFieldChange({ id: 'x', scope, asin: 'B000000001', previous,
-    current: { ...field, value: 3, provenance: { ...provenance, observedAt: `2026-09-${day}T12:00:00Z`, source } }, timezone: 'UTC', hasEarlierObservation });
+    current: { ...field, value: 3, provenance: { ...provenance, observedAt: `2026-09-${day}T12:00:00Z`, collectedAt: `2026-09-${day}T12:00:00Z`, source } }, timezone: 'UTC', hasEarlierObservation });
   expect(run(null, '02')?.certainty.kind).toBe('first');
   expect(run(field, '02')?.certainty.kind).toBe('exact');
   expect(run(field, '05')?.certainty).toMatchObject({ kind: 'window', widthDays: 4 });

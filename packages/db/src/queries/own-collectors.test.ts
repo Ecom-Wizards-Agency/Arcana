@@ -1,9 +1,10 @@
-import { beforeAll,afterAll,expect,it } from 'vitest';
+import type { QueryHandle } from '../client.js';
+import { beforeAll,afterAll,expect,it,vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import type { CollectorScope,EffectiveBidObservation,ListingSnapshot,StoredCollectorExport } from '@wizard-ads/shared';
 import { createTestDatabase,type TestDatabase } from '../testing/harness.js';
 import { asUser } from '../testing/rls.js';
-import { readOwnBidMirrors,persistEffectiveBidObservations,persistListingSnapshots,readListingChanges,readListingEvidence,readEffectiveBidObservations } from './own-collectors.js';
+import { collectorProfile,readOwnBidMirrors,persistEffectiveBidObservations,persistListingSnapshots,readListingChanges,readListingEvidence,readEffectiveBidObservations } from './own-collectors.js';
 import { importScheduledPrompts,readSponsoredPrompts } from './sponsored-prompts.js';
 import { readTimeline } from './timeline.js';
 let db:TestDatabase,scope:CollectorScope,foreign:CollectorScope,asin:string,campaignId:string,adGroupId:string;
@@ -118,4 +119,34 @@ it('retains saved listing certainty and counts a linked application once on Time
   expect(after.events.some((event)=>event.id===batch!.id)).toBe(true);
   for(const bid of bids)expect(after.events.some((event)=>event.id===`bid:${bid.id}`)).toBe(bid.apply_batch_id===null);
   expect(new Set(after.events.map((event)=>event.id)).size).toBe(after.events.length);
+});
+
+it('places near-midnight bid and listing markers on the profile fact day',async()=>{
+  await db.sql`update public.ad_profiles set timezone='America/Los_Angeles' where id=${scope.profileId}`;
+  const observedAt='2026-06-02T01:00:00.000Z';
+  const snapshot:ListingSnapshot={scope,asin,sourceIdentity:'near-midnight',collectedAt:at(10),fields:[
+    {field:'title',value:'Synthetic midnight title',provenance:{source:'synthetic',sourceIdentity:'midnight-title',observedAt,collectedAt:at(10)}}]};
+  const saved=await persistListingSnapshots(db,scope,[snapshot],derive);
+  const [bid]=await db.sql<{id:string}[]>`insert into public.entity_changes(org_id,profile_id,entity_type,amazon_id,field,old_value,new_value,source,observed_at)
+    values(${scope.orgId},${scope.profileId},'keyword','midnight-keyword','bid','1','2','sync',${observedAt}) returning id::text`;
+  await db.sql`select app.ensure_fact_partitions('2026-06-01'::date,0)`;
+  await db.sql`insert into public.fact_profile_daily(org_id,profile_id,date,currency_code,cost,sales_7d,clicks,purchases_7d,impressions)
+    values(${scope.orgId},${scope.profileId},'2026-06-01','USD',2,10,1,1,10) on conflict do nothing`;
+  const timeline=await readTimeline(db,scope.orgId,scope.profileId);
+  for(const id of [`listing:${saved.outputIdentities[0]}`,`bid:${bid!.id}`]) {
+    const event=timeline.events.find((row)=>row.id===id)!;
+    expect(event.start).toBe('2026-06-01');expect(event.end).toBe('2026-06-01');
+    expect(timeline.profile.some((row)=>row.date===event.start)).toBe(true);
+  }
+});
+
+it('parses complete profile/history envelopes and scheduled-import provenance',async()=>{
+  const sql=vi.fn().mockResolvedValueOnce([{marketplace:'US',timezone:'UTC',enabled:'true'}])
+    .mockResolvedValueOnce([{marketplace:'US',timezone:'Invalid/Timezone',present:false}]);
+  const handle={sql} as unknown as QueryHandle;
+  await expect(collectorProfile(handle,scope)).rejects.toThrow();
+  await expect(readEffectiveBidObservations(handle,{...scope,from:'2026-06-01',to:'2026-06-10'})).rejects.toThrow('Invalid profile timezone');
+  const snapshot=await readSponsoredPrompts(db,{...scope,userId:owner});
+  sql.mockResolvedValueOnce([{snapshot}]).mockResolvedValueOnce([{referenceId:'invalid-reference',observedAt:at(3),collectedAt:at(4)}]);
+  await expect(readSponsoredPrompts(handle,{...scope,userId:owner})).rejects.toThrow();
 });

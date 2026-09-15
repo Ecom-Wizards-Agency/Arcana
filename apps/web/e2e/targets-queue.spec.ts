@@ -146,5 +146,16 @@ test('target stages an immutable change and review records approval without outb
     await page.goto(targetUrl);
     await expect(page.getByText('Latest own observation:', { exact: false })).toBeVisible();
     await captureThemes('own-bid-without-band');
+    const defaultObservedAt = new Date().toISOString();
+    const inheritedProvenance = { ...provenance, observedAt: defaultObservedAt, collectedAt: defaultObservedAt };
+    const inherited = { ...bidObservation, sourceIdentity: 'own-inherited-bid', observedAt: defaultObservedAt, collectedAt: defaultObservedAt,
+      bidOrigin: 'inherited', bid: { value: 5, provenance: inheritedProvenance }, placementProvenance: inheritedProvenance, audienceProvenance: inheritedProvenance,
+      inheritance: { targetBidAbsentAt: defaultObservedAt, defaultBidObservedAt: defaultObservedAt } };
+    const inheritedRows = await db.sql`insert into public.own_effective_bid_observations(id,org_id,profile_id,marketplace,target_id,observed_at,collected_at,observation)
+      values(${orgId}::text||':browser:inherited',${orgId},${fixtureProfileId},'US','kw-1',${defaultObservedAt},${defaultObservedAt},${JSON.stringify(inherited)}::jsonb) returning id`;
+    expect(inheritedRows).toHaveLength(1);
+    await page.goto(targetUrl);
+    await expect(page.getByText(`Inherited ad-group default · observed ${defaultObservedAt}`)).toBeVisible();
+    await captureThemes('own-inherited-bid');
   } finally { await db.close(); }
 });

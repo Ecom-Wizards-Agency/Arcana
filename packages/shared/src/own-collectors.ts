@@ -68,7 +68,7 @@ export const StoredCollectorExport = z.object({ id: Uuid, scope: CollectorScope,
     .refine((v) => !v.split('/').some((p) => p === '..' || p === '.' || p === ''), 'Invalid object key'),
 }).strict();
 export type StoredCollectorExport = z.infer<typeof StoredCollectorExport>;
-export const CollectorReceipt = z.object({ counts: IngestionCounts,
+const CollectorReceiptAccounting = z.object({ counts: IngestionCounts,
   inserted: z.number().int().nonnegative(), alreadyPresent: z.number().int().nonnegative(),
   outputIdentities: z.array(identity), observedAt: instant.nullable(),
   state: z.enum(['measured', 'partial', 'missing', 'disabled', 'unconfigured']),
@@ -77,8 +77,37 @@ export const CollectorReceipt = z.object({ counts: IngestionCounts,
     || new Set(v.outputIdentities).size !== v.outputIdentities.length) ctx.addIssue({ code: 'custom', message: 'Output identities do not reconcile' });
   if (v.state === 'measured' && (v.observedAt === null || v.counts.loadedRows === 0 || v.counts.refusedRows > 0)) ctx.addIssue({ code: 'custom', message: 'Measured coverage requires evidence' });
 });
+export const CollectorReceipt = CollectorReceiptAccounting.safeExtend({
+  /** Import accounting is distinct from the stable coverage readback grain. */
+  sourceImports: z.array(z.object({ referenceId: Uuid, receipt: CollectorReceiptAccounting }).strict()).optional(),
+});
 export type CollectorReceipt = z.infer<typeof CollectorReceipt>;
 export const ListingEvidence = z.object({ scope: CollectorScope, asin: z.string(), fields: z.array(z.object({
   observation: ListingFieldObservation, availability: z.enum(['measured', 'stale']),
 })), availability: z.enum(['absent', 'partial', 'measured', 'stale']), moderation: z.literal('unavailable') });
 export type ListingEvidence = z.infer<typeof ListingEvidence>;
+
+/** Validated at every collector reader boundary. */
+export const CollectorTimezone = z.string().min(1).refine((value) => {
+  try { new Intl.DateTimeFormat('en-US', { timeZone: value }); return true; } catch { return false; }
+}, 'Invalid profile timezone');
+export const CollectorProfile = z.object({ scope: CollectorScope, timezone: CollectorTimezone, enabled: z.boolean() }).strict();
+export type CollectorProfile = z.infer<typeof CollectorProfile>;
+export const EffectiveBidHistory = z.object({ timezone: CollectorTimezone, observations: z.array(EffectiveBidObservation) }).strict();
+export type EffectiveBidHistory = z.infer<typeof EffectiveBidHistory>;
+export const ListingEvidenceCollection = z.array(ListingEvidence);
+export type ListingEvidenceCollection = z.infer<typeof ListingEvidenceCollection>;
+export const ListingChanges = z.array(ListingChange);
+export type ListingChanges = z.infer<typeof ListingChanges>;
+export const CollectorExportReferences = z.array(StoredCollectorExport);
+export type CollectorExportReferences = z.infer<typeof CollectorExportReferences>;
+export const ListingChangeInput = z.object({
+  id: identity, scope: CollectorScope, asin: z.string().regex(/^[A-Z0-9]{10}$/),
+  previous: ListingFieldObservation.nullable(), current: ListingFieldObservation,
+  timezone: CollectorTimezone, hasEarlierObservation: z.boolean(),
+}).strict().refine((value) => value.previous === null || value.previous.field === value.current.field, 'Listing boundary fields differ');
+export type ListingChangeInput = z.infer<typeof ListingChangeInput>;
+export const CollectorRefusalCode = z.enum(['malformed_content', 'scope_mismatch', 'unauthorized_reference', 'invalid_file_bounds']);
+export type CollectorRefusalCode = z.infer<typeof CollectorRefusalCode>;
+export const CollectorRefusal = z.object({ code: CollectorRefusalCode, detail: z.string().min(1).max(500) }).strict();
+export type CollectorRefusal = z.infer<typeof CollectorRefusal>;

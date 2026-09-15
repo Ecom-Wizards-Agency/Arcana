@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
-import { CollectorScope, CollectorReceipt, EffectiveBidObservation, ListingSnapshot, ListingFieldObservation, ListingChange, ListingEvidence, StoredCollectorExport } from '@wizard-ads/shared';
+import { CollectorProfile, EffectiveBidHistory, ListingChangeInput, ListingChanges, ListingEvidenceCollection, CollectorExportReferences, type CollectorScope, CollectorReceipt, EffectiveBidObservation, ListingSnapshot, ListingFieldObservation, ListingChange, ListingEvidence, type StoredCollectorExport } from '@wizard-ads/shared';
 import type { DbHandle, QueryHandle } from '../client.js';
 
 export class OwnCollectorConflictError extends Error {}
+export class OwnCollectorReferenceError extends Error {}
 
 function key(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 /** Collection time is receipt metadata; replay must compare provider evidence. */
@@ -10,10 +11,10 @@ function canonical(value: unknown): string {
   return JSON.stringify(value, (k, v: unknown) => k === 'collectedAt' ? undefined : v);
 }
 function equalScope(a: CollectorScope, b: CollectorScope): boolean { return a.orgId === b.orgId && a.profileId === b.profileId && a.marketplace === b.marketplace; }
-export async function collectorProfile(handle: QueryHandle, input: { orgId: string; profileId: string }): Promise<{ scope: CollectorScope; timezone: string; enabled: boolean }> {
+export async function collectorProfile(handle: QueryHandle, input: { orgId: string; profileId: string }): Promise<CollectorProfile> {
   const [p] = await handle.sql<{ marketplace: string; timezone: string; enabled: boolean }[]>`select country_code as marketplace, timezone, sync_enabled as enabled from public.ad_profiles where org_id=${input.orgId} and id=${input.profileId}`;
   if (!p) throw new Error('Collector profile not found');
-  return { scope: CollectorScope.parse({ ...input, marketplace: p.marketplace }), timezone: p.timezone, enabled: p.enabled };
+  return CollectorProfile.parse({ scope: { ...input, marketplace: p.marketplace }, timezone: p.timezone, enabled: p.enabled });
 }
 async function workerScope(handle: QueryHandle, scope: CollectorScope): Promise<void> {
   const [role] = await handle.sql<{ allowed: boolean }[]>`select current_user not in ('authenticated','anon') as allowed`;
@@ -47,19 +48,17 @@ export async function persistEffectiveBidObservations(handle: DbHandle, scope: C
     return receipt(rows.length, [...ids], inserted, rows.flatMap((r) => [r.observedAt, ...[r.bid?.provenance,r.placementProvenance,r.audienceProvenance].flatMap((p) => p ? [p.observedAt] : [])]).sort()[0] ?? null);
   });
 }
-export async function readEffectiveBidObservations(handle: QueryHandle, filter: { orgId: string; profileId: string; targetId?: string; from: string; to: string }): Promise<{ timezone: string; observations: EffectiveBidObservation[] }> {
+export async function readEffectiveBidObservations(handle: QueryHandle, filter: { orgId: string; profileId: string; targetId?: string; from: string; to: string }): Promise<EffectiveBidHistory> {
   const available = await handle.sql<{ timezone: string; marketplace: string; present: boolean }[]>`select timezone,country_code as marketplace,to_regclass('public.own_effective_bid_observations') is not null as present from public.ad_profiles where org_id=${filter.orgId} and id=${filter.profileId}`;
-  if (!available[0]?.present) return { timezone: available[0]?.timezone ?? 'UTC', observations: [] };
+  if (!available[0]?.present) return EffectiveBidHistory.parse({ timezone: available[0]?.timezone ?? 'UTC', observations: [] });
   const profile = { timezone: available[0].timezone, scope: { marketplace: available[0].marketplace } };
   const rows = await handle.sql<{ observation: unknown }[]>`select observation from public.own_effective_bid_observations
     where org_id=${filter.orgId} and profile_id=${filter.profileId} and marketplace=${profile.scope.marketplace}
       and (${filter.targetId ?? null}::text is null or target_id=${filter.targetId ?? null})
       and (observed_at at time zone ${profile.timezone})::date between ${filter.from}::date and ${filter.to}::date order by observed_at,id`;
-  return { timezone: profile.timezone, observations: rows.map((r) => EffectiveBidObservation.parse(r.observation)) };
+  return EffectiveBidHistory.parse({ timezone: profile.timezone, observations: rows.map((r) => r.observation) });
 }
-export async function persistListingSnapshots(handle: DbHandle, scope: CollectorScope, input: readonly ListingSnapshot[], derive: (input: {
-  id: string; scope: CollectorScope; asin: string; previous: ListingFieldObservation | null; current: ListingFieldObservation; timezone: string; hasEarlierObservation: boolean;
-}) => ListingChange | null): Promise<CollectorReceipt> {
+export async function persistListingSnapshots(handle: DbHandle, scope: CollectorScope, input: readonly ListingSnapshot[], derive: (input: ListingChangeInput) => ListingChange | null): Promise<CollectorReceipt> {
   const rows = input.map((r) => ListingSnapshot.parse(r));
   if (rows.some((r) => !equalScope(r.scope, scope))) throw new Error('Cross-profile listing observation');
   return handle.sql.begin(async (sql) => {
@@ -80,7 +79,7 @@ export async function persistListingSnapshots(handle: DbHandle, scope: Collector
       if (written.length) {
         const previous = await sql<{ observation: unknown }[]>`select observation from public.own_listing_observations where org_id=${scope.orgId} and profile_id=${scope.profileId}
           and marketplace=${scope.marketplace} and asin=${asin} and field=${current.field} and observed_at<${p.observedAt} order by observed_at desc,id desc limit 1`;
-        const change = derive({ id, scope, asin, previous: previous[0] ? ListingFieldObservation.parse(previous[0].observation) : null, current, timezone, hasEarlierObservation: false });
+        const change = derive(ListingChangeInput.parse({ id, scope, asin, previous: previous[0]?.observation ?? null, current, timezone, hasEarlierObservation: false }));
         if (change) {
           const parsed = ListingChange.parse(change);
           await sql`insert into public.own_listing_changes(id,org_id,profile_id,marketplace,asin,observed_at,change)
@@ -102,7 +101,7 @@ export async function readListingChanges(handle: QueryHandle, filter: { orgId: s
   const profile = { timezone: available[0].timezone, scope: { marketplace: available[0].marketplace } };
   const rows = await handle.sql<{ change: unknown }[]>`select change from public.own_listing_changes where org_id=${filter.orgId} and profile_id=${filter.profileId}
     and marketplace=${profile.scope.marketplace} and (observed_at at time zone ${profile.timezone})::date between ${filter.from}::date and ${filter.to}::date order by observed_at,id`;
-  return rows.map((r) => ListingChange.parse(r.change));
+  return ListingChanges.parse(rows.map((r) => r.change));
 }
 /** Explicit age bound belongs to the caller; price never supplies eligibility booleans. */
 export async function readListingEvidence(handle: QueryHandle, input: { orgId: string; profileId: string; asins?: readonly string[]; asOf: string; maxAgeMs: number }): Promise<ListingEvidence[]> {
@@ -113,7 +112,7 @@ export async function readListingEvidence(handle: QueryHandle, input: { orgId: s
     and exists(select 1 from public.product_ads p where p.org_id=${scope.orgId} and p.profile_id=${scope.profileId} and p.asin=own_listing_observations.asin and p.deleted_at is null)
     and (${input.asins ? [...input.asins] : null}::text[] is null or asin=any(${input.asins ? [...input.asins] : null}::text[])) order by asin,field,observed_at desc,id desc`;
   const asins = input.asins ?? [...new Set(rows.map((r) => r.asin))];
-  return asins.map((asin) => {
+  return ListingEvidenceCollection.parse(asins.map((asin) => {
     const fields = rows.filter((r) => r.asin === asin).map((r) => {
       const observation = ListingFieldObservation.parse(r.observation);
       return { observation, availability: Date.parse(input.asOf)-Date.parse(observation.provenance.observedAt)>input.maxAgeMs ? 'stale' as const : 'measured' as const };
@@ -121,12 +120,14 @@ export async function readListingEvidence(handle: QueryHandle, input: { orgId: s
     const measured = fields.filter((f) => f.availability === 'measured');
     return ListingEvidence.parse({ scope, asin, fields, availability: fields.length === 0 ? 'absent' : measured.length === 0 ? 'stale'
       : ['inStock','ownsBuyBox','suppressed'].every((name) => measured.some((f) => f.observation.field === name)) ? 'measured' : 'partial', moderation: 'unavailable' });
-  });
+  }));
 }
 export async function readCollectorExports(handle: QueryHandle, scope: CollectorScope, family: StoredCollectorExport['family']): Promise<StoredCollectorExport[]> {
   const rows = await handle.sql<{ id: string; object_key: string; enabled: boolean; marketplace: string }[]>`select id,object_key,enabled,marketplace from public.collector_export_references
     where org_id=${scope.orgId} and profile_id=${scope.profileId} and family=${family} order by id`;
-  return rows.map((r) => StoredCollectorExport.parse({ id: r.id, scope: { ...scope, marketplace: r.marketplace }, family, enabled: r.enabled, objectKey: r.object_key }));
+  const result = CollectorExportReferences.safeParse(rows.map((r) => ({ id: r.id, scope: { ...scope, marketplace: r.marketplace }, family, enabled: r.enabled, objectKey: r.object_key })));
+  if (!result.success) throw new OwnCollectorReferenceError('Invalid stored export reference');
+  return result.data;
 }
 
 /** Mirror timestamps are provider observation times; the collector clock is never substituted. */
@@ -166,4 +167,19 @@ export async function readOwnListingAsins(handle: QueryHandle, scope: CollectorS
   const rows = await handle.sql<{ asin: string }[]>`select distinct asin from public.product_ads
     where org_id=${scope.orgId} and profile_id=${scope.profileId} and deleted_at is null and state<>'archived' and asin is not null order by asin`;
   return rows.map((r) => r.asin);
+}
+
+/** Coverage readback is separate from imports: an ASIN is counted once on every replay. */
+export async function readListingCollectorCoverage(handle: QueryHandle, scope: CollectorScope, asOf: string): Promise<CollectorReceipt> {
+  const asins = await readOwnListingAsins(handle, scope);
+  const rows = await handle.sql<{ id: string; asin: string; observation: unknown }[]>`select distinct on (asin,field) id,asin,observation
+    from public.own_listing_observations where org_id=${scope.orgId} and profile_id=${scope.profileId} and marketplace=${scope.marketplace}
+    and asin=any(${asins}::text[]) and observed_at<=${asOf} order by asin,field,observed_at desc,id desc`;
+  const fields = rows.map((row) => ListingFieldObservation.parse(row.observation));
+  const represented = new Set(rows.map((row) => row.asin)).size;
+  const refusedRows = asins.length - represented;
+  return CollectorReceipt.parse({ counts: { sourceRows: asins.length, parsedRows: represented, refusedRows,
+    loadedRows: rows.length, verifiedLoadedRows: fields.length }, inserted: 0, alreadyPresent: rows.length,
+    outputIdentities: rows.map((row) => row.id), observedAt: fields.map((field) => field.provenance.observedAt).sort()[0] ?? null,
+    state: !rows.length ? 'missing' : refusedRows ? 'partial' : 'measured' });
 }

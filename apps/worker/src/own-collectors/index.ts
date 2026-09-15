@@ -1,11 +1,11 @@
-import { CollectorReceipt, ListingExport, SponsoredPromptImport, type JobType } from '@wizard-ads/shared';
+import { CollectorScope, CollectorReceipt, ListingExport, SponsoredPromptImport, type JobType } from '@wizard-ads/shared';
 import type { DbHandle } from '@wizard-ads/db';
-import { SponsoredPromptInputError, readListingEvidence } from '@wizard-ads/db';
-import { OwnCollectorConflictError, collectorProfile, readOwnBidMirrors, readOwnListingAsins, readCollectorExports, persistEffectiveBidObservations, persistListingSnapshots, importScheduledPrompts } from '@wizard-ads/db/worker';
+import { SponsoredPromptInputError } from '@wizard-ads/db';
+import { OwnCollectorReferenceError, OwnCollectorConflictError, collectorProfile, readOwnBidMirrors, readListingCollectorCoverage, readCollectorExports, persistEffectiveBidObservations, persistListingSnapshots, importScheduledPrompts } from '@wizard-ads/db/worker';
 import { collectorDate, listingFieldChange } from '@wizard-ads/core';
 import type { IngestionRegistry, IngestionContext } from '../ingestion-registry.js';
 import { ingestionSource } from '../ingestion-sources.js';
-import { PermanentJobError } from '../permanent-job-error.js';
+import { CollectorRefusalError } from './refusal.js';
 import { readCollectorExport } from './exports.js';
 
 type CollectorJob = Extract<JobType,'own_bids.collect'|'own_listings.collect'|'prompts.collect'>;
@@ -20,7 +20,9 @@ export function registerOwnCollectors(registry: Pick<IngestionRegistry,'register
     execute: async (plan) => {
       try { return { receipt:CollectorReceipt.parse(await deps.collect(type,plan.context,plan.at)) }; }
       catch (error) {
-        if (error instanceof OwnCollectorConflictError || error instanceof SponsoredPromptInputError) throw new PermanentJobError(error.message);
+        if (error instanceof OwnCollectorReferenceError) throw new CollectorRefusalError('unauthorized_reference', error.message);
+        if (error instanceof SponsoredPromptInputError) throw new CollectorRefusalError(error.refusalCode, error.message);
+        if (error instanceof OwnCollectorConflictError) throw new CollectorRefusalError('malformed_content', error.message);
         throw error;
       }
     },
@@ -50,7 +52,7 @@ function combine(receipts: CollectorReceipt[]): CollectorReceipt {
 export function postgresOwnCollectors(handle: DbHandle, root: string | undefined, enabled = false): OwnCollectorDependencies {
   return { now:()=>new Date(), collect:async (type,context,at) => {
     if (!enabled) return empty('disabled');
-    if (context.payload.orgId !== context.job.orgId || context.payload.profileId !== context.job.profileId) throw new PermanentJobError('Collector job scope mismatch');
+    if (context.payload.orgId !== context.job.orgId || context.payload.profileId !== context.job.profileId) throw new CollectorRefusalError('scope_mismatch', 'Collector job scope mismatch');
     const { scope,enabled:profileEnabled } = await collectorProfile(handle,{ orgId:context.job.orgId,profileId:context.job.profileId });
     if (!profileEnabled) return empty('disabled');
     if (type === 'own_bids.collect') {
@@ -59,35 +61,44 @@ export function postgresOwnCollectors(handle: DbHandle, root: string | undefined
       return rows.some((r)=>r.bid===null || r.bidding===null || r.placementProvenance===null || r.audienceProvenance===null || Object.values(r.bidding.placements).some((value)=>value===null)) ? { ...result,state:'partial' } : result;
     }
     const receipts: CollectorReceipt[] = [];
-    if (type === 'own_listings.collect') {
-      const asins = await readOwnListingAsins(handle,scope);
-      const evidence = await readListingEvidence(handle,{ ...scope,asins,asOf:at,maxAgeMs:0 });
-      const snapshots = evidence.filter((r)=>r.fields.length>0).map((r)=>({ scope,asin:r.asin,sourceIdentity:`scoped:${r.asin}`,
-        collectedAt:r.fields.map((f)=>f.observation.provenance.collectedAt).sort().at(-1)!,fields:r.fields.map((f)=>f.observation) }));
-      if (asins.length) {
-        const persisted = await persistListingSnapshots(handle,scope,snapshots,listingFieldChange);
-        const refusedRows=asins.length-snapshots.length;
-        receipts.push(CollectorReceipt.parse({ ...persisted,counts:{...persisted.counts,sourceRows:asins.length,parsedRows:snapshots.length,refusedRows},
-          state:refusedRows>0 ? 'partial':persisted.state }));
-      }
-    }
+    const sourceImports: NonNullable<CollectorReceipt['sourceImports']> = [];
     const refs = await readCollectorExports(handle,scope,type==='prompts.collect' ? 'prompts':'listing');
-    if (!refs.length && !receipts.length) return empty('unconfigured');
+    if (!refs.length && type === 'prompts.collect') return empty('unconfigured');
     for (const ref of refs) {
       if (!ref.enabled) { receipts.push(empty('disabled')); continue; }
-      if (ref.scope.marketplace !== scope.marketplace) throw new PermanentJobError('Cross-market export reference');
+      if (ref.scope.marketplace !== scope.marketplace) throw new CollectorRefusalError('scope_mismatch', 'Cross-market export reference');
       const file = await readCollectorExport(root,ref);
       if (!file) { receipts.push(empty(root ? 'missing':'unconfigured')); continue; }
       if (type==='prompts.collect') {
         const parsed = SponsoredPromptImport.safeParse(file.value);
-        if (!parsed.success || parsed.data.profileId !== scope.profileId) throw new PermanentJobError('Malformed or cross-profile prompt export');
-        receipts.push(await importScheduledPrompts(handle,ref,file.fingerprint,parsed.data,at));
+        if (!parsed.success) throw new CollectorRefusalError('malformed_content', 'Malformed prompt export');
+        if (parsed.data.profileId !== scope.profileId) throw new CollectorRefusalError('scope_mismatch', 'Cross-profile prompt export');
+        const imported = await importScheduledPrompts(handle,ref,file.fingerprint,parsed.data,at);
+        receipts.push(imported); sourceImports.push({ referenceId: ref.id, receipt: imported });
       } else {
+        assertListingScope(file.value, scope);
         const parsed = ListingExport.safeParse(file.value);
-        if (!parsed.success || JSON.stringify(parsed.data.scope)!==JSON.stringify(scope)) throw new PermanentJobError('Malformed or cross-profile listing export');
-        receipts.push(await persistListingSnapshots(handle,scope,parsed.data.rows,listingFieldChange));
+        if (!parsed.success) throw new CollectorRefusalError('malformed_content', 'Malformed listing export');
+        const imported = await persistListingSnapshots(handle,scope,parsed.data.rows,listingFieldChange);
+        receipts.push(imported); sourceImports.push({ referenceId: ref.id, receipt: imported });
       }
     }
-    return combine(receipts);
+    if (type === 'own_listings.collect') {
+      // Imports already verify their own offered/output counts. Coverage reads the
+      // persisted field identities once; it never feeds output back into imports.
+      const coverage = await readListingCollectorCoverage(handle, scope, at);
+      return CollectorReceipt.parse({ ...coverage, sourceImports, state: receipts.some((receipt) => receipt.state !== 'measured') ? 'partial' : coverage.state });
+    }
+    return CollectorReceipt.parse({ ...combine(receipts), sourceImports });
   } };
+}
+
+function assertListingScope(value: unknown, scope: CollectorScope): void {
+  if (value === null || typeof value !== 'object') return;
+  const envelopes = [value, ...('rows' in value && Array.isArray(value.rows) ? value.rows : [])];
+  for (const envelope of envelopes) {
+    if (envelope === null || typeof envelope !== 'object' || !('scope' in envelope)) continue;
+    const parsed = CollectorScope.safeParse(envelope.scope);
+    if (parsed.success && JSON.stringify(parsed.data) !== JSON.stringify(scope)) throw new CollectorRefusalError('scope_mismatch', 'Cross-profile listing export');
+  }
 }

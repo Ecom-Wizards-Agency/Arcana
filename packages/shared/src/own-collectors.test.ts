@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CollectorReceipt, ListingSnapshot, StoredCollectorExport } from './own-collectors.js';
+import { CollectorReceipt, ListingSnapshot, StoredCollectorExport, CollectorProfile, EffectiveBidHistory, ListingChangeInput, CollectorRefusalCode } from './own-collectors.js';
 const scope = { orgId: '00000000-0000-4000-8000-000000000001', profileId: '00000000-0000-4000-8000-000000000002', marketplace: 'US' };
 const provenance = { source: 'synthetic', sourceIdentity: 'one', observedAt: '2026-09-01T00:00:00Z', collectedAt: '2026-09-02T00:00:00Z' };
 describe('own collector contracts', () => {
@@ -18,4 +18,15 @@ describe('own collector contracts', () => {
   it.each(['../escape', '/absolute', 'a/../../escape', 'a//b', './x'])('refuses unsafe export key %s', (objectKey) => {
     expect(StoredCollectorExport.safeParse({ id: scope.orgId, scope, family: 'prompts', enabled: true, objectKey }).success).toBe(false);
   });
+});
+
+it('validates complete reader envelopes and derivation inputs', () => {
+  expect(CollectorProfile.parse({ scope, timezone: 'America/Los_Angeles', enabled: true }).enabled).toBe(true);
+  expect(CollectorProfile.safeParse({ scope, timezone: 'Invalid/Timezone', enabled: true }).success).toBe(false);
+  expect(CollectorProfile.safeParse({ scope, timezone: 'UTC', enabled: 'true' }).success).toBe(false);
+  expect(EffectiveBidHistory.safeParse({ timezone: 'Invalid/Timezone', observations: [] }).success).toBe(false);
+  const current = { field: 'price', value: 12, provenance };
+  expect(ListingChangeInput.safeParse({ id: 'one', scope, asin: 'B000000001', previous: null, current, timezone: 'UTC', hasEarlierObservation: false }).success).toBe(true);
+  expect(ListingChangeInput.safeParse({ id: 'one', scope, asin: 'B000000001', previous: { ...current, field: 'rating' }, current, timezone: 'UTC', hasEarlierObservation: false }).success).toBe(false);
+  expect(CollectorRefusalCode.options).toEqual(['malformed_content', 'scope_mismatch', 'unauthorized_reference', 'invalid_file_bounds']);
 });
