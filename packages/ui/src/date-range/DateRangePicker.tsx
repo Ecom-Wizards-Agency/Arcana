@@ -9,6 +9,7 @@ export interface DateRangePickerProps {
   period: DateRange; comparison: DateRange; today: string; includeToday?: boolean;
   mode?: ComparisonMode; factsThrough?: string | null; factsComplete?: boolean;
   trigger?: ReactNode; selectedPresetId?: string;
+  hiddenFields?: Readonly<Record<string, string | undefined>>;
   presetHref: (period: DateRange, preset: string) => string;
   onApply: (selection: DateRangeSelection) => void;
 }
@@ -66,6 +67,7 @@ export function DateRangePicker(props: DateRangePickerProps): ReactNode {
         </div>
       </div>
       <form onSubmit={(event) => { event.preventDefault(); if (valid) { props.onApply({ period, comparison, mode, ...(preset ? { preset } : {}) }); close(); } }}>
+        {Object.entries(props.hiddenFields ?? {}).map(([name, value]) => value === undefined ? null : <input key={name} type="hidden" name={name} value={value} />)}
         <div style={{ display: 'flex', gap: tokens.space(2), marginBlock: tokens.space(3) }}>
           <label>From<input name="from" type="date" required value={period.start} onChange={(event) => { setPreset(undefined); setPeriod({ ...period, start: event.target.value }); }} /></label>
           <label>To<input name="to" type="date" required value={period.end} onChange={(event) => { setPreset(undefined); setPeriod({ ...period, end: event.target.value }); }} /></label>
@@ -76,7 +78,7 @@ export function DateRangePicker(props: DateRangePickerProps): ReactNode {
         </fieldset>
         {valid ? <div style={{ paddingBlock: tokens.space(3) }}><div>Selected {rangeWords(period)} · {rangeDays(period)} days · {completeness(period)}</div>
           {comparison === null ? <div>Comparison: None</div> : <div>Comparison {rangeWords(comparison)} · {rangeDays(comparison)} days · {completeness(comparison)}</div>}
-          {comparison !== null && rangeDays(period) !== rangeDays(comparison) ? <p role="status" style={{ padding: tokens.space(2), background: tokens.color.warnSoft, color: tokens.color.warn }}>Date ranges differ: {rangeDays(period)} days compared with {rangeDays(comparison)} days. At the same daily rate, totals differ by {Number(mismatchPercentage(period, comparison).toFixed(1))}%. Totals would be compared, not rates.</p> : null}
+          {comparison !== null && rangeDays(period) !== rangeDays(comparison) ? <p role="status" style={{ padding: tokens.space(2), background: tokens.color.warnSoft, color: tokens.color.warn }}><span>Date ranges differ: {rangeDays(period)} days compared with {rangeDays(comparison)} days.</span> At the same daily rate, totals differ by {Number(mismatchPercentage(period, comparison).toFixed(1))}%. Totals would be compared, not rates.</p> : null}
         </div> : <p role="alert">Choose valid dates with the start on or before the end.</p>}
         <footer style={{ display: 'flex', gap: tokens.space(2), alignItems: 'center' }}><small style={{ flex: 1 }}>{props.factsThrough == null ? 'Facts coverage unavailable.' : `Facts load through ${dateWords(props.factsThrough)}. Later days are selectable but return nothing.`}</small><button type="button" style={button} onClick={close}>Cancel</button><button type="submit" style={button} disabled={!valid} aria-label="Apply range">Apply</button></footer>
       </form>

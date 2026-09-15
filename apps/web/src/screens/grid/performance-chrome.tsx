@@ -83,7 +83,7 @@ export function PerformanceToolbar(props: GridToolbarProps & { view: SavedView; 
       <p>Quick filters are saved conditions on the Diagnosis column. Choosing one adds an ordinary chip you can remove.</p><h3>QUICK FILTERS</h3>
       {props.entity === 'targets' ? PerformanceVerdict.shape.diagnosis.options.map((diagnosis) => <button key={diagnosis} data-quick-verdict={diagnosis} style={{ ...button, display: 'flex', width: '100%', whiteSpace: 'normal', textAlign: 'left', marginBottom: tokens.space(2), gap: tokens.space(2) }} onClick={() => { props.onFilterChange(verdictFilter(props.filter, diagnosis)); setPanel(null); }}>
         <span aria-hidden style={{ color: diagnosis === 'Efficient' ? tokens.color.good : diagnosis === 'Insufficient evidence' ? tokens.color.textMuted : tokens.color.warn }}>●</span>
-        <span style={{ flex: 1 }}><strong>{diagnosis}</strong><small style={{ display: 'block' }}>{VERDICT_DEFINITIONS[diagnosis]}</small></span><span>({counts.get(diagnosis) ?? 0})</span>
+        <span style={{ flex: 1 }}><strong>{diagnosis}</strong><small style={{ display: 'block' }}>{VERDICT_DEFINITIONS[diagnosis]}</small></span><span data-quick-count style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{counts.get(diagnosis) ?? 0}</span>
       </button>) : null}
       <button style={button} onClick={() => setPanel('advanced')}>+ Add a condition on any column</button>
     </section> : null}

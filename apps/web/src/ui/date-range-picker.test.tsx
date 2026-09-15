@@ -1,14 +1,22 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { DateRangePicker } from './date-range-picker.js';
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+const push = vi.hoisted(() => vi.fn());
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }));
 
-it('renders a warning for a 30-day window compared with 28 days and clears it for equal lengths', () => {
-  const period = { start: '2026-04-01', end: '2026-04-30' };
-  const props = { path: '/grid', today: '2026-05-01', period };
-  const { rerender } = render(<DateRangePicker {...props} comparison={{ start: '2026-02-01', end: '2026-02-28' }} />);
-  expect(screen.getByRole('status').textContent).toBe('Date ranges differ: 30 days compared with 28 days.');
-  rerender(<DateRangePicker {...props} comparison={{ start: '2026-03-01', end: '2026-03-30' }} />);
-  expect(screen.queryByRole('status')).toBeNull();
+it('routes shared picker Apply with both periods and preserves screen scope; Cancel leaves the URL alone', () => {
+  render(<DateRangePicker path="/grid" today="2026-05-01" period={{ start: '2026-04-01', end: '2026-04-30' }}
+    preserved={{ profile: 'profile-synthetic', entity: 'targets', compareFrom: '2026-02-01', compareTo: '2026-02-28' }} />);
+  fireEvent.click(document.querySelector('summary')!);
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(push).not.toHaveBeenCalled();
+  fireEvent.click(document.querySelector('summary')!);
+  fireEvent.click(screen.getByRole('button', { name: 'Apply range' }));
+  expect(push).toHaveBeenLastCalledWith(`/grid?${new URLSearchParams({ profile: 'profile-synthetic', entity: 'targets', compareFrom: '2026-02-01', compareTo: '2026-02-28', comparison: 'custom', from: '2026-04-01', to: '2026-04-30' })}`);
+  fireEvent.click(document.querySelector('summary')!);
+  fireEvent.click(screen.getByRole('link', { name: 'Last 7 days' }));
+  fireEvent.click(screen.getByRole('button', { name: 'None' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Apply range' }));
+  expect(push).toHaveBeenLastCalledWith(`/grid?${new URLSearchParams({ profile: 'profile-synthetic', entity: 'targets', preset: 'last_7', comparison: 'none', from: '2026-04-24', to: '2026-04-30' })}`);
 });

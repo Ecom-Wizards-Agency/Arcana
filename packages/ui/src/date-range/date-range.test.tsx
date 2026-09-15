@@ -60,3 +60,16 @@ describe('date and comparison picker', () => {
     expect(comparisonRange({ start: '2024-02-29', end: '2024-03-02' }, 'year', comparison)).toEqual({ start: '2023-02-28', end: '2023-03-02' });
   });
 });
+
+// Migrated from the screen wrapper: both warning assertions belong to the shared UI.
+it('renders a warning for a 30-day window compared with 28 days and clears it for equal lengths', () => {
+  const period = { start: '2026-04-01', end: '2026-04-30' };
+  const props = { today: '2026-05-01', period, mode: 'custom' as const, presetHref: () => '/grid', onApply: vi.fn() };
+  const { rerender } = render(<DateRangePicker {...props} comparison={{ start: '2026-02-01', end: '2026-02-28' }} />);
+  fireEvent.click(document.querySelector('summary')!);
+  expect(screen.getByRole('status').querySelector('span')?.textContent).toBe('Date ranges differ: 30 days compared with 28 days.');
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  rerender(<DateRangePicker {...props} comparison={{ start: '2026-03-01', end: '2026-03-30' }} />);
+  fireEvent.click(document.querySelector('summary')!);
+  expect(screen.queryByRole('status')).toBeNull();
+});

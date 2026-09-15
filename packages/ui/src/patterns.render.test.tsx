@@ -114,9 +114,23 @@ it('retains ancestor values and counts, tints depths, and draws a group share fr
   render(<><GridCell row={child} column={available.find((column) => column.id === 'campaign_name')!} {...environment} /><GridCell row={child} column={available.find((column) => column.id === 'match_type')!} {...environment} /></>);
   expect(screen.getByText('Synthetic campaign').querySelector('sup')?.textContent).toBe('1');
   expect(screen.getByRole('meter').getAttribute('aria-valuenow')).toBe('25');
+  expect(screen.getByText('25%')).toBeTruthy();
   const state = { height: 30, index: 0, clickable: false, selected: false, focused: false };
   expect(bodyRowStyle({ ...state, group: { depth: 0, isLeaf: false } }).background).not.toBe(bodyRowStyle({ ...state, group: { depth: 1, isLeaf: true } }).background);
   cleanup();
   render(<GridCell row={child} column={available.find((column) => column.id === 'match_type')!} {...environment} totalsRow={null} />);
   expect(screen.queryByRole('meter')).toBeNull();
+  expect(screen.getByLabelText('Share of total spend unavailable').textContent).toBe('—');
+});
+
+it.each(['zero', 'missing'] as const)('discloses an unavailable group share for a %s total', (measurement) => {
+  const rows = syntheticSearchTermRows(2).map((row) => ({ ...row, totals: { ...row.totals, spend: 0 },
+    ...(measurement === 'missing' ? { measurement: { missing: ['spend' as const], comparisonMissing: [] } } : {}),
+  }));
+  const model = buildGridModel(rows, { groupBy: ['campaign_name'], totals: 'sum' });
+  render(<GridCell row={model.rows[0]!} column={available.find((column) => column.id === 'campaign_name')!}
+    context={{ currencyCode: 'USD' }} collapsedGroupIds={new Set()} onToggleGroup={vi.fn()} totalsRow={model.totalsRow} />);
+  expect(screen.getByLabelText('Share of total spend unavailable').textContent).toBe('—');
+  expect(screen.queryByRole('meter')).toBeNull();
+  expect(document.querySelector('[data-group-share]')?.textContent).not.toContain('0.00');
 });

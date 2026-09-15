@@ -325,19 +325,17 @@ export interface BodyRowState {
  * zebra striping. A top-level group also draws a stronger rule above it.
  */
 export function bodyRowStyle(state: BodyRowState): CSSProperties {
+  // Composite the translucent tint onto the surface before pinned cells inherit it.
+  // Otherwise numeric cells scrolling underneath remain visible through the pin.
+  const tint = state.selected || state.group?.depth === 0 ? tokens.color.indigoSoft
+    : state.group !== null || state.index % 2 !== 0 ? tokens.color.surfaceAlt : tokens.color.surface;
   return {
     ...bodyRow,
     height: state.height,
     cursor: state.clickable ? 'pointer' : 'default',
     outline: state.focused ? `2px solid ${tokens.color.indigo}` : 'none',
     outlineOffset: -2,
-    background: state.selected
-      ? tokens.color.indigoSoft
-      : state.group !== null
-        ? state.group.depth === 0 ? tokens.color.indigoSoft : tokens.color.surfaceAlt
-        : state.index % 2 === 0
-          ? tokens.color.surface
-          : tokens.color.surfaceAlt,
+    background: `linear-gradient(${tint}, ${tint}), ${tokens.color.surface}`,
     ...(state.group?.depth === 0 ? { borderTop: `1px solid ${tokens.color.borderStrong}` } : {}),
   };
 }

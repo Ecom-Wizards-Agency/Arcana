@@ -57,7 +57,7 @@ test('performance frame preserves measured strips across density, theme and attr
   await expect.poll(() => new URL(page.url()).searchParams.get('asin')).toBeNull();
   await page.getByRole('button', { name: /^Filter \(/ }).click();
   const verdict = page.locator('[data-quick-verdict="Insufficient evidence"]');
-  await expect(verdict).toContainText('(1)');
+  await expect(verdict.locator('[data-quick-count]')).toHaveText('1');
   await verdict.click();
   await expect(page.getByRole('button', { name: 'Remove filter VERDICT' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Export CSV (1 of 1)', exact: true })).toBeVisible();
@@ -134,6 +134,14 @@ test('performance frame preserves measured strips across density, theme and attr
   const catalog = columnsFor('targets');
   await expect(manager.locator('input[type=checkbox]')).toHaveCount(catalog.length);
   await capture('columns');
+  for (const [subject, label] of [['SQP', 'SQP'], ['BRAND ANALYTICS', 'Brand Analytics']] as const) {
+    await manager.getByRole('button', { name: new RegExp(`^${label} `) }).click();
+    const expected = catalog.filter((column) => column.subject === subject).length;
+    await expect(manager.getByText('needs ingestion', { exact: true })).toHaveCount(expected);
+    for (const tag of await manager.getByText('needs ingestion', { exact: true }).all()) await expect(tag).toBeVisible();
+    await capture(`columns-${subject === 'SQP' ? 'sqp' : 'brand-analytics'}`);
+  }
+  await manager.getByRole('button', { name: /^All / }).click();
   const chosenBid = manager.locator('[data-chosen-column="bid"]');
   const transfer = await page.evaluateHandle(() => new DataTransfer());
   await chosenBid.dispatchEvent('dragstart', { dataTransfer: transfer });
@@ -161,7 +169,15 @@ test('performance frame preserves measured strips across density, theme and attr
   await expect(page.getByTestId('grid-group-chip')).toHaveCount(2);
   await capture('grouping-two-levels');
   await expect(page.locator('[data-share-bar]').first()).toBeVisible();
+  await expect(page.locator('[data-group-share]')).toHaveText(['100%', '100%']);
+  for (const share of await page.locator('[data-group-share]').all()) await expect(share.getByText('100%', { exact: true })).toBeInViewport({ ratio: 1 });
   await capture('grouped-result');
+  measurement = 'zero';
+  await page.reload();
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await expect(page.locator('[data-group-share]')).toHaveText(['—', '—']);
+  await expect(page.locator('.wa-shell-chips')).toHaveAttribute('aria-busy', 'false');
+  await capture('grouped-zero-total');
   await page.getByRole('button', { name: 'Collapse all', exact: true }).click();
   await capture('grouping-collapsed');
   await page.getByRole('button', { name: 'Expand all', exact: true }).click();

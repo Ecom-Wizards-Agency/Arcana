@@ -24,8 +24,8 @@ it('shows every quick condition with a live count, adds/removes its ordinary chi
   fireEvent.click(screen.getByRole('button', { name: 'Filter (0)' }));
   const menu = screen.getByRole('region', { name: 'Quick filters' });
   expect(menu.querySelectorAll('[data-quick-verdict]')).toHaveLength(PerformanceVerdict.shape.diagnosis.options.length);
-  expect(menu.querySelector('[data-quick-verdict="Efficient"]')?.textContent).toContain('(1)');
-  expect(menu.querySelector('[data-quick-verdict="Insufficient evidence"]')?.textContent).toContain('(1)');
+  expect(menu.querySelector('[data-quick-verdict="Efficient"] [data-quick-count]')?.textContent).toBe('1');
+  expect(menu.querySelector('[data-quick-verdict="Insufficient evidence"] [data-quick-count]')?.textContent).toBe('1');
   fireEvent.click(within(menu).getByRole('button', { name: /Efficient/ }));
   expect(screen.getByText('VERDICT equals Efficient')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Remove filter VERDICT' }));
