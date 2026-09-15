@@ -859,10 +859,11 @@ export async function readMarketingStreamHourlyFacts(
   return rows.map(rowToFact);
 }
 
-/** Budget snapshots reuse verified Stream projections and current binding authority. */
+/** Budget snapshots reuse verified Stream projections and current binding authority.
+ * Saved identities bypass campaign recency selection, never revision or projection checks. */
 export async function readMarketingStreamBudgetUsage(
   handle: QueryHandle,
-  input: { orgId: string; profileId: string; fromProviderTime: string },
+  input: { orgId: string; profileId: string; fromProviderTime: string; sourceIdentities?: readonly string[] },
 ): Promise<BudgetUsageObservation[]> {
   const settings = await handle.sql<{ config: unknown }[]>`select config from public.budget_usage_settings where org_id=${input.orgId} and profile_id=${input.profileId}`;
   const config = BudgetUsageConfig.parse(settings[0]?.config ?? {});
@@ -873,7 +874,8 @@ export async function readMarketingStreamBudgetUsage(
       where e.org_id=${input.orgId} and e.profile_id=${input.profileId}
       order by e.dataset,e.message_id,e.revision desc,e.received_at desc,e.id desc
     ), candidates as (
-      select e.*,m.metric,coalesce((m.metric->>'budgetObservedAt')::timestamptz,e.event_time) as provider_time,
+      select e.*,m.metric,case when ${input.sourceIdentities !== undefined} then e.id::text else '' end as identity_key,
+        coalesce((m.metric->>'budgetObservedAt')::timestamptz,e.event_time) as provider_time,
         f.currency_code,f.budget_usage_percent,f.settling_state
       from latest e
       join public.marketing_stream_subscription_bindings b on b.org_id=e.org_id and b.profile_id=e.profile_id and b.id=e.binding_id
@@ -886,9 +888,11 @@ export async function readMarketingStreamBudgetUsage(
         and f.loaded_at >= (select max(l.received_at) from latest l where l.ad_product=e.ad_product and date_trunc('hour',l.event_time)=f.utc_hour)
         and not exists (select 1 from public.marketing_stream_projection_blocks block where block.org_id=e.org_id and block.profile_id=e.profile_id)
     ), selected as (
-      select distinct on (ad_product,metric->>'campaignId') * from candidates
+      select distinct on (ad_product,metric->>'campaignId',identity_key) * from candidates
       where provider_time >= ${input.fromProviderTime}::timestamptz
-      order by ad_product,metric->>'campaignId',provider_time desc,event_time desc,revision desc,id desc
+        and (${input.sourceIdentities ? [...input.sourceIdentities] : null}::text[] is null
+          or id::text||':'||(metric->>'campaignId')=any(${input.sourceIdentities ? [...input.sourceIdentities] : null}::text[]))
+      order by ad_product,metric->>'campaignId',identity_key,provider_time desc,event_time desc,revision desc,id desc
     )
     select jsonb_build_object('orgId',org_id,'profileId',profile_id,'adProduct',ad_product,'campaignId',metric->>'campaignId',
       'source','amazon_marketing_stream','sourceIdentity',id::text||':'||(metric->>'campaignId'),
@@ -896,7 +900,7 @@ export async function readMarketingStreamBudgetUsage(
       'usagePercent',(metric->>'budgetUsagePercent')::numeric,'providerUpdatedAt',provider_time,
       'receivedAt',received_at,'completeness','complete') as observation
     from selected where (metric->>'budgetUsagePercent')::numeric=budget_usage_percent
-    order by ad_product,metric->>'campaignId' limit ${config.maxCampaigns}`;
+    order by ad_product,metric->>'campaignId' limit ${input.sourceIdentities?.length ?? config.maxCampaigns}`;
   return rows.map((row) => BudgetUsageObservation.parse(row.observation));
 }
 

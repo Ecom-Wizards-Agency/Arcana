@@ -1,12 +1,13 @@
 /** Scoped budget snapshots, durable accounting, and existing-period spend evidence. */
 import {
   BudgetUsageCampaign, BudgetUsageConfig, BudgetUsageObservation, BudgetUsageRunCounts,
-  BudgetUsageRunInput, BudgetUsageScope, PortfolioSpendEvidence, ReportCoverageObservation,
-  type BudgetUsageCampaignPage, type BudgetUsageEvidence, type BudgetUsageIdentity, type BudgetUsagePersistedRun,
+  BudgetUsageRunInput, BudgetUsageScope, BudgetUsageEvidence, BudgetUsagePersistedRun, PortfolioSpendEvidence, ReportCoverageObservation,
+  type BudgetUsageCampaignPage, type BudgetUsageIdentity,
 } from '@wizard-ads/shared';
 import type postgres from 'postgres';
 import type { QueryHandle } from '../client.js';
 import { readMarketingStreamBudgetUsage } from './dayparting.js';
+import { upsertReportCoverage } from './report-coverage.js';
 
 const identity = (row: BudgetUsageIdentity) => `${row.adProduct}|${row.campaignId}`;
 const canonical = (value: unknown): string => JSON.stringify(value, (_key, item: unknown) =>
@@ -75,7 +76,7 @@ export async function persistBudgetUsageRun(handle: QueryHandle, raw: BudgetUsag
     if ([...selected].some((key) => !valid.has(key))) throw new Error('Budget usage selected campaign is outside profile scope');
     let existingRows = 0;
     let streamRows: BudgetUsageObservation[] = [];
-    if (input.source === 'amazon_marketing_stream') streamRows = await readMarketingStreamBudgetUsage(transaction, { ...input.scope, fromProviderTime: '1970-01-01T00:00:00.000Z' });
+    if (input.source === 'amazon_marketing_stream') streamRows = await readMarketingStreamBudgetUsage(transaction, { ...input.scope, fromProviderTime: '1970-01-01T00:00:00.000Z', sourceIdentities: input.observations.map((row) => row.sourceIdentity) });
     for (const observation of input.observations) {
       if (input.source === 'amazon_marketing_stream') {
         if (!streamRows.some((stored) => stored.sourceIdentity === observation.sourceIdentity && observationPayload(stored) === observationPayload(observation))) throw new Error('Budget usage Stream projection verification failed');
@@ -119,7 +120,7 @@ export async function readBudgetUsageRun(handle: QueryHandle, scope: BudgetUsage
   const input = BudgetUsageRunInput.parse(rows[0].input);
   const counts = BudgetUsageRunCounts.parse(rows[0].counts);
   let verified = 0;
-  const stream = input.source === 'amazon_marketing_stream' ? await readMarketingStreamBudgetUsage(handle, { ...scope, fromProviderTime: '1970-01-01T00:00:00.000Z' }) : [];
+  const stream = input.source === 'amazon_marketing_stream' ? await readMarketingStreamBudgetUsage(handle, { ...scope, fromProviderTime: '1970-01-01T00:00:00.000Z', sourceIdentities: input.observations.map((row) => row.sourceIdentity) }) : [];
   for (const observation of input.observations) {
     const stored = input.source === 'amazon_ads_api'
       ? (await handle.sql<{ observation: BudgetUsageObservation }[]>`select observation from public.budget_usage_observations where org_id=${scope.orgId} and profile_id=${scope.profileId} and ad_product=${observation.adProduct} and campaign_id=${observation.campaignId} and source_identity=${observation.sourceIdentity}`).map((row) => row.observation)
@@ -153,20 +154,19 @@ async function markBudgetCoverageUnavailable(sql: postgres.TransactionSql, run: 
   if (input.observations.length !== 0 || counts.loadedRows !== 0 || counts.verifiedLoadedRows !== 0) throw new Error('Budget usage failure coverage requires zero verified observations');
   const [latest] = await sql<{ id: string }[]>`select id from public.budget_usage_runs where org_id=${input.scope.orgId} and profile_id=${input.scope.profileId} and source=${input.source} order by received_at desc,id desc limit 1`;
   if (latest?.id !== input.runId) return { exists: false, written: 0 };
-  const before = await sql<{ observed_at: Date | string | null; covered_through: string | null }[]>`select observed_at,latest_loaded_date::text as covered_through from public.report_coverage where org_id=${input.scope.orgId} and profile_id=${input.scope.profileId} and source=${input.source} and report_type='campaign_budget_usage' and grain='campaign_budget_usage' for update`;
+  const before = await sql<{ observed_at: Date | string | null; earliest_date: string | null; covered_through: string | null; settled_through: string | null }[]>`select observed_at,earliest_requested_date::text as earliest_date,latest_loaded_date::text as covered_through,latest_settled_date::text as settled_through from public.report_coverage where org_id=${input.scope.orgId} and profile_id=${input.scope.profileId} and source=${input.source} and report_type='campaign_budget_usage' and grain='campaign_budget_usage' for update`;
   if (before.length === 0) return { exists: false, written: 0 };
-  if (before.length !== 1) throw new Error('Budget usage failure coverage scope is ambiguous');
-  const written = await sql<{ id: string }[]>`update public.report_coverage set status='partial',source_rows=${counts.sourceRows},parsed_rows=${counts.parsedRows},loaded_rows=0,refused_rows=${counts.refusedRows},counts_match=true
-    where org_id=${input.scope.orgId} and profile_id=${input.scope.profileId} and source=${input.source} and report_type='campaign_budget_usage' and grain='campaign_budget_usage'
-      and (status,source_rows,parsed_rows,loaded_rows,refused_rows,counts_match) is distinct from ('partial'::public.historical_bootstrap_status,${counts.sourceRows}::bigint,${counts.parsedRows}::bigint,0::bigint,${counts.refusedRows}::bigint,true)
-    returning id`;
-  const rows = await sql<{ status: string; source_rows: string; parsed_rows: string; loaded_rows: string; refused_rows: string; counts_match: boolean; observed_at: Date | string | null; covered_through: string | null }[]>`select status,source_rows::text,parsed_rows::text,loaded_rows::text,refused_rows::text,counts_match,observed_at,latest_loaded_date::text as covered_through from public.report_coverage where org_id=${input.scope.orgId} and profile_id=${input.scope.profileId} and source=${input.source} and report_type='campaign_budget_usage' and grain='campaign_budget_usage'`;
-  const row = rows[0];
-  const time = (value: Date | string | null) => value === null ? null : new Date(value).toISOString();
-  if (written.length > 1 || rows.length !== 1 || row!.status !== 'partial' || !row!.counts_match
-    || time(row!.observed_at) !== time(before[0]!.observed_at) || row!.covered_through !== before[0]!.covered_through
-    || [row!.source_rows,row!.parsed_rows,row!.loaded_rows,row!.refused_rows].some((value,index) => Number(value) !== [counts.sourceRows,counts.parsedRows,0,counts.refusedRows][index])) throw new Error('Budget usage failure coverage readback does not reconcile');
-  return { exists: true, written: written.length };
+  if (before.length !== 1 || before[0]!.observed_at === null) throw new Error('Budget usage failure coverage scope is ambiguous');
+  const prior = before[0]!;
+  const receipt = await upsertReportCoverage({ sql }, ReportCoverageObservation.parse({
+    ...input.scope, source: input.source, sourceRunId: input.runId,
+    reportType: 'campaign_budget_usage', grain: 'campaign_budget_usage', status: 'partial',
+    observedAt: new Date(prior.observed_at!).toISOString(), earliestDate: prior.earliest_date,
+    coveredThrough: prior.covered_through, settledThrough: prior.settled_through,
+    sourceRows: counts.sourceRows, parsedRows: counts.parsedRows, loadedRows: 0,
+    refusedRows: counts.refusedRows, countsMatch: true,
+  }), counts.verifiedLoadedRows, { accounting: 'verified_budget_run' });
+  return { exists: true, written: receipt.written };
 }
 
 /** Provider time is freshness; the latest verified run owns source accounting. */
@@ -197,33 +197,7 @@ export async function publishBudgetUsageCoverage(handle: QueryHandle, raw: Repor
     // A delayed older job may finish coverage for the newest verified run, never
     // overwrite its counts. Repeated provider timestamps do not renew freshness.
     const input = coverageForBudgetRun(latestRun, profile!.timezone);
-    const written = await sql<{ id: string }[]>`
-      insert into public.report_coverage(org_id,profile_id,report_type,grain,source,status,
-        earliest_requested_date,latest_loaded_date,latest_settled_date,source_rows,parsed_rows,loaded_rows,refused_rows,counts_match,observed_at)
-      values(${input.orgId},${input.profileId},${input.reportType},${input.grain},${input.source},${input.status},
-        ${input.earliestDate},${input.coveredThrough},null,${input.sourceRows},${input.parsedRows},${input.loadedRows},${input.refusedRows},true,${input.observedAt})
-      on conflict(profile_id,report_type,grain,source) do update set status=excluded.status,
-        earliest_requested_date=least(report_coverage.earliest_requested_date,excluded.earliest_requested_date),
-        latest_loaded_date=excluded.latest_loaded_date,latest_settled_date=null,
-        source_rows=excluded.source_rows,parsed_rows=excluded.parsed_rows,loaded_rows=excluded.loaded_rows,refused_rows=excluded.refused_rows,
-        counts_match=excluded.counts_match,observed_at=excluded.observed_at
-      where report_coverage.org_id=excluded.org_id and
-        (report_coverage.status,report_coverage.latest_loaded_date,report_coverage.source_rows,report_coverage.parsed_rows,
-          report_coverage.loaded_rows,report_coverage.refused_rows,report_coverage.counts_match,report_coverage.observed_at)
-        is distinct from
-        (excluded.status,excluded.latest_loaded_date,excluded.source_rows,excluded.parsed_rows,
-          excluded.loaded_rows,excluded.refused_rows,excluded.counts_match,excluded.observed_at)
-      returning id`;
-    const rows = await sql<{ org_id: string; status: string; source_rows: string; parsed_rows: string; loaded_rows: string; refused_rows: string; counts_match: boolean; observed_at: Date | string; covered_through: string }[]>`
-      select org_id,status,source_rows::text,parsed_rows::text,loaded_rows::text,refused_rows::text,counts_match,observed_at,latest_loaded_date::text as covered_through
-      from public.report_coverage where org_id=${input.orgId} and profile_id=${input.profileId} and report_type=${input.reportType} and grain=${input.grain} and source=${input.source}`;
-    const row = rows[0];
-    if (written.length > 1 || rows.length !== 1 || row!.org_id !== input.orgId || row!.status !== input.status
-      || new Date(row!.observed_at).toISOString() !== input.observedAt || row!.covered_through !== input.coveredThrough || !row!.counts_match
-      || [row!.source_rows,row!.parsed_rows,row!.loaded_rows,row!.refused_rows].some((value,index) => Number(value) !== [input.sourceRows,input.parsedRows,input.loadedRows,input.refusedRows][index])) {
-      throw new Error('Budget usage coverage persisted readback does not reconcile');
-    }
-    return { offered: 1, written: written.length, unchanged: 1 - written.length };
+    return upsertReportCoverage(transaction, input, latestRun.counts.verifiedLoadedRows, { accounting: 'verified_budget_run' });
   };
   return 'savepoint' in handle.sql ? handle.sql.savepoint(write) : handle.sql.begin(write);
 }
@@ -237,19 +211,24 @@ export async function readBudgetUsageEvidence(handle: QueryHandle, scope: Budget
     const page = await readBudgetUsageCampaignPage(handle, { ...scope, cursor, limit: Math.min(config.pageSize, config.maxCampaigns - campaigns.length) });
     campaigns.push(...page.campaigns); cursor = page.nextCursor; totalCampaigns = page.totalCampaigns;
   } while (cursor && campaigns.length < config.maxCampaigns);
-  const apiRows = config.apiEnabled ? await handle.sql<{ observation: BudgetUsageObservation }[]>`
+  const apiRows = config.apiEnabled ? await handle.sql<{ observation: unknown }[]>`
     select distinct on (ad_product,campaign_id) observation from public.budget_usage_observations
     where org_id=${scope.orgId} and profile_id=${scope.profileId} and campaign_id=any(${campaigns.map((row) => row.campaignId)}::text[])
     order by ad_product,campaign_id,provider_updated_at desc,received_at desc,source_identity desc` : [];
   const streamRows = config.streamEnabled ? await readMarketingStreamBudgetUsage(handle, { ...scope, fromProviderTime: '1970-01-01T00:00:00.000Z' }) : [];
-  const runs = await handle.sql<{ source: string; input: BudgetUsageRunInput; counts: BudgetUsageRunCounts }[]>`select distinct on (source) source,input,counts from public.budget_usage_runs where org_id=${scope.orgId} and profile_id=${scope.profileId} order by source,received_at desc,id desc`;
-  const failedApi = new Set(runs.find((row) => row.source === 'amazon_ads_api')?.input.failures.map(identity) ?? []);
-  return { ...scope, config, campaigns, totalCampaigns, observations: [...apiRows.map((row) => BudgetUsageObservation.parse(row.observation)).filter((row) => !failedApi.has(identity(row))), ...streamRows], sources: (['amazon_ads_api', 'amazon_marketing_stream'] as const).map((source) => {
-    const run = runs.find((row) => row.source === source);
+  const rawRuns = await handle.sql<{ source: unknown; input: unknown; counts: unknown }[]>`select distinct on (source) source,input,counts from public.budget_usage_runs where org_id=${scope.orgId} and profile_id=${scope.profileId} order by source,received_at desc,id desc`;
+  const runs = rawRuns.map((row) => {
+    const run = BudgetUsagePersistedRun.parse(row);
+    if (run.input.source !== row.source || run.input.scope.orgId !== scope.orgId || run.input.scope.profileId !== scope.profileId) throw new Error('Budget usage persisted run is outside evidence scope');
+    return run;
+  });
+  const failedApi = new Set(runs.find((row) => row.input.source === 'amazon_ads_api')?.input.failures.map(identity) ?? []);
+  return BudgetUsageEvidence.parse({ ...scope, config, campaigns, totalCampaigns, observations: [...apiRows.map((row) => BudgetUsageObservation.parse(row.observation)).filter((row) => !failedApi.has(identity(row))), ...streamRows], sources: (['amazon_ads_api', 'amazon_marketing_stream'] as const).map((source) => {
+    const run = runs.find((row) => row.input.source === source);
     return { source, enabled: source === 'amazon_ads_api' ? config.apiEnabled : config.streamEnabled,
       complete: run?.input.populationComplete === true && run.counts.failed === 0 && cursor === null,
       requested: run?.counts.requested ?? 0, failed: run?.counts.failed ?? 0 };
-  }) };
+  }) });
 }
 
 /** Period evidence remains explicit. Daily usage snapshots do not enter spend aggregation. */
