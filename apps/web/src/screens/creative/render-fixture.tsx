@@ -1,3 +1,4 @@
+import { catalogueMetadata } from '../grid/catalogue-fixtures';
 import type { CreativeWorkspaceChange, CreativeWorkspace, CreativeWorkspaceAsset, CreativePerformanceAsset, CreativeSyncSnapshot } from '@wizard-ads/shared';
 import { period, profile } from '../synthetic-render-fixtures';
 import Loading from '../shared-loading';
@@ -65,4 +66,17 @@ export function renderVisualFixture(state: string) {
   if (state === 'loading') return <Loading />;
   if (state === 'error') return <SharedError error={Object.assign(new Error('Synthetic failure'), { digest: 'synthetic-reference' })} reset={() => {}} />;
   return <Screen data={visualFixture(state)} />;
+}
+
+export function listingHistoryFixture() {
+  const data=visualFixture('history');
+  if(data.view!=='ready') throw new Error('Expected synthetic creative');
+  const first=catalogueMetadata('SYNTHETIC4');
+  data.props.workspace.assets[0]!.advertisedAsin=first.asin;
+  data.props.workspace.listingChanges=[1,4].map((gap,index)=>{
+    const previous={...first,sku:`synthetic-sku-${index}`,provenance:{...first.provenance,acquiredAt:'2026-09-10T00:00:00.000Z'}};
+    const current={...previous,title:{state:'returned' as const,value:`Synthetic revision ${index}`,sourceField:'title'},provenance:{...first.provenance,acquiredAt:`2026-09-${10+gap}T00:00:00.000Z`}};
+    return {id:`listing-${index}`,asin:first.asin,marketplaceId:first.scope.marketplaceId,previous,current};
+  });
+  return data;
 }

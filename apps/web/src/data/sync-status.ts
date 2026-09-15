@@ -72,7 +72,7 @@ export interface SyncStatus {
   jobs: JobRow[];
   reports: ReportRow[];
   catalogue: Array<{ profileLabel:string;marketplaceId:string;family:string;enabled:boolean;reportingRecoveryVerified:boolean;
-    coveredFrom:string|null;coveredThrough:string|null;observedAt:string|null;sourceRows:number;loadedRows:number;cursorFailure:string|null }>;
+    coveredFrom:string|null;coveredThrough:string|null;observedAt:string|null;sourceRows:number|null;loadedRows:number|null;selectorKey?:string|null;cursorFailure:string|null }>;
 }
 
 const JOB_LIMIT = 100;
@@ -196,9 +196,9 @@ export async function loadSyncStatus(
      limit ${REPORT_LIMIT}
   `;
 
-  const catalogue = await handle.sql<{label:string;marketplace_id:string;family:string;enabled:boolean;reporting_recovery_verified:boolean;
+  const catalogue = await handle.sql<{label:string;marketplace_id:string;family:string;selector_key:string|null;enabled:boolean;reporting_recovery_verified:boolean;
     covered_from:string|null;covered_through:string|null;observed_at:string|null;source_rows:string|null;loaded_rows:string|null;cursor_failure:string|null}[]>`
-    select coalesce(p.account_name,p.amazon_profile_id) as label,s.marketplace_id,s.family,s.enabled,
+    select coalesce(p.account_name,p.amazon_profile_id) as label,s.marketplace_id,s.family,c.selector_key,s.enabled,
       s.reporting_recovery_verified_at is not null as reporting_recovery_verified,c.covered_from::text,c.covered_through::text,
       c.source_observed_at::text as observed_at,r.counts->>'sourceRows' as source_rows,r.counts->>'verifiedRows' as loaded_rows,c.cursor_failure
       from public.ads_catalogue_source_settings s join public.ad_profiles p on p.org_id=s.org_id and p.id=s.profile_id
@@ -254,7 +254,7 @@ export async function loadSyncStatus(
     })),
     catalogue: catalogue.map((row)=>({profileLabel:row.label,marketplaceId:row.marketplace_id,family:row.family,enabled:row.enabled,
       reportingRecoveryVerified:row.reporting_recovery_verified,coveredFrom:row.covered_from,coveredThrough:row.covered_through,
-      observedAt:row.observed_at,sourceRows:Number(row.source_rows??0),loadedRows:Number(row.loaded_rows??0),cursorFailure:row.cursor_failure})),
+      observedAt:row.observed_at,sourceRows:row.source_rows===null?null:Number(row.source_rows),loadedRows:row.loaded_rows===null?null:Number(row.loaded_rows),selectorKey:row.selector_key,cursorFailure:row.cursor_failure})),
   };
 }
 

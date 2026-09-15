@@ -94,7 +94,8 @@ export async function readTimeline(handle: QueryHandle, orgId: string, profileId
       from public.apply_batches b left join public.apply_rows r on r.batch_id=b.id and r.org_id=b.org_id and r.profile_id=b.profile_id
       where b.org_id=${orgId} and b.profile_id=${profileId} and b.status in ('applied','reverted') and (b.applied_on is not null or b.applied_at is not null)
       group by b.id order by start,b.id`,
-        handle.sql `select e.id,e.entity_type,e.entity_id,e.change_type,e.occurred_at,e.retrieved_at,e.identity_quality,
+        handle.sql `select e.id,e.entity_type,e.entity_id,e.change_type,e.occurred_at,e.retrieved_at,e.identity_quality,e.marketplace_id,
+          exists(select 1 from public.amazon_change_events c where c.org_id=e.org_id and c.profile_id=e.profile_id and c.marketplace_id=e.marketplace_id and c.source_namespace=e.source_namespace and c.source_event_key=e.source_event_key and c.payload_digest<>e.payload_digest) as identity_conflict,
           e.sanitized_payload,case when r.event_id is null then false else true end as resolved
           from public.amazon_change_events e left join lateral(select event_id from public.amazon_change_event_resolutions
             where event_id=e.id order by resolved_at desc,id desc limit 1)r on true
@@ -123,8 +124,8 @@ export async function readTimeline(handle: QueryHandle, orgId: string, profileId
         ...batches.map((b) => TimelineEvent.parse({ ...b, kind: 'apply_batch', end: b['start'], status: b['status'], scope: { campaignIds: b['campaigns'], adGroupIds: b['groups'], targetIds: b['targets'] }, scopeText: 'Applied advertising entities', focus: 'acos', supersedesId: null })),
         ...amazonChanges.map((e) => TimelineEvent.parse({ id:`amazon:${e['id']}`,name:`Amazon observed ${String(e['change_type']).toLowerCase()}`,
           kind:'amazon_change',start:new Date(e['occurred_at'] as string|Date).toISOString().slice(0,10),end:new Date(e['occurred_at'] as string|Date).toISOString().slice(0,10),
-          status:e['resolved']?'resolved entity':'unresolved entity',scope:{},scopeText:`${e['entity_type']} ${e['entity_id']} · provider scope`,focus:'acos',
-          note:`Amazon Ads Change History v1 · ${e['identity_quality']} identity · retrieved ${new Date(e['retrieved_at'] as string|Date).toISOString()} · no local actor or restore authority`,
+          status:e['identity_conflict']?'identity conflict':e['resolved']?'resolved entity':'unresolved entity',scope:{},scopeText:`${e['entity_type']} ${e['entity_id']} · ${e['marketplace_id']} · provider scope`,focus:'acos',
+          note:`Amazon Ads Change History v1 · ${e['identity_quality']} identity (provider ID unavailable) · retrieved ${new Date(e['retrieved_at'] as string|Date).toISOString()} · no local actor or restore authority`,
           actorId:null,createdAt:new Date(e['retrieved_at'] as string|Date).toISOString(),supersedesId:null }))];
     const scoped = Object.fromEntries(await Promise.all(events.map(async (event) => [event.id, await readScopeDays(handle, orgId, profileId, event)])));
     const ranks = new Map<string, TimelineRank>();

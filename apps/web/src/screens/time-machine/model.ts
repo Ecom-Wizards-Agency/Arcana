@@ -5,7 +5,10 @@ export function attribution(row: ChangeQueueEntry): string {
   const batch = row.batchLabel === null ? null : (/^Batch\s/i.test(row.batchLabel) ? row.batchLabel : `Batch ${row.batchLabel}`);
   if (row.candidateCount > 1) return `${batch === null ? '' : `${batch} · `}${row.candidateCount === 2 ? 'two' : row.candidateCount} rows could explain it`;
   if ((row.source === 'queued' || row.source === 'restore')) return 'Review proposal';
-  if (row.source === 'amazon') return 'Provider history · no local actor';
+  if (row.source === 'amazon') {
+    const evidence=row.amazonObservation;
+    return `Provider history · no local actor · ${evidence?.marketplaceId??'marketplace unavailable'} · ${evidence?.resolution??'unresolved'}${evidence?.resolvedAmazonId?` ${evidence.resolvedEntityType} ${evidence.resolvedAmazonId}`:''} · derived identity (provider ID unavailable)${evidence?.identityConflict?' · identity conflict':''}`;
+  }
   if (batch === null) return row.source === 'apply' ? 'Approved application' : 'not ours';
   return `${batch} · ${row.experimentStart ? 'experiment start' : row.batchCount === null ? '— changes' : `${row.batchCount} changes`}`;
 }

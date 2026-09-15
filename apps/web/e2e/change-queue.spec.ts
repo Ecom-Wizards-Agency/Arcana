@@ -35,11 +35,10 @@ test('acknowledging an observed change retains a visible receipt',async({page})=
   await expect(row.getByLabel('Actions for Synthetic queue acknowledgement')).toHaveCount(0);
   await expect(badge).toHaveText(String(before-1));
 });
-test('captures both screens at 1440 by 1024 in light and dark themes',async({page})=>{
+test('captures both screens at 1440 by 1024 in light and dark themes',async({page},testInfo)=>{
   await signIn(page,'admin');
   const {fixtureProfileId:profile}=await readState();
-  const scratch=process.env['WP_SCRATCH'];if(!scratch)throw new Error('WP_SCRATCH is required for browser artifacts');
-  const screenshotDirectory=join(scratch,'tmp','wp265-screenshots');
+  const screenshotDirectory=testInfo.outputPath('wp265-screenshots');
   await page.setViewportSize({width:1440,height:1024});await mkdir(screenshotDirectory,{recursive:true});
   await page.goto(`/change-queue?${new URLSearchParams({profile})}`);
   await expect(page.locator('[data-badge-source="change-queue"]')).not.toHaveText('—');
@@ -73,6 +72,20 @@ test('captures both screens at 1440 by 1024 in light and dark themes',async({pag
       }
     }
   }
+  const catalogueMarkup=JSON.parse(execFileSync('node',['--import','tsx','e2e/support/render-catalogue-states.ts'],{encoding:'utf8'})) as Record<string,string>;
+  const catalogueCases=[['products','[data-testid="catalogue-product-row"]',9],['shelf','[aria-label="Product evidence"] tbody tr',9],['creative','[aria-label="Amazon listing observations"] tbody tr',2],['sync','[data-testid="catalogue-source-row"]',4],['time-machine','[data-testid="timeline-entry"]',4],['timeline','[data-testid="timeline-event"]',4]] as const;
+  expect(Object.keys(catalogueMarkup)).toHaveLength(catalogueCases.length);
+  for(const [name,selector,count] of catalogueCases) {
+    await page.goto(`/change-queue?${new URLSearchParams({profile})}`);
+    await page.locator('main.cq').evaluate((element,html)=>{element.outerHTML=`<main id="catalogue-proof" style="padding:20px;overflow:auto">${html}</main>`;},catalogueMarkup[name]!);
+    await expect(page.locator(`#catalogue-proof ${selector}`)).toHaveCount(count);
+    if(name==='time-machine') await expect(page.locator('#catalogue-proof [data-source="amazon"] a, #catalogue-proof [data-source="amazon"] button')).toHaveCount(0);
+    for(const theme of ['light','dark']) {
+      await page.evaluate(value=>document.documentElement.dataset['theme']=value,theme);
+      await page.screenshot({path:testInfo.outputPath(`catalogue-${name}-${theme}.png`),fullPage:true});
+    }
+  }
+
 });
 
 test('persists Change queue filters and density with URL precedence',async({page})=>{

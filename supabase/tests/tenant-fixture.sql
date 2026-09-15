@@ -159,6 +159,16 @@ begin
   values
     (v_org, v_profile, 'ATVPDKIKX0DER', 'campaigns', 'US', 'SELLER', 'SP',
      repeat('c',64), '{"fixture":true}'::jsonb, now(), now(), v_validation_receipt);
+  insert into public.ads_validation_configuration_observations
+    (org_id,profile_id,configuration_id,acquisition_key,acquired_at,retrieved_at,contract_version,receipt_id)
+    select v_org,v_profile,id,v_validation_receipt::text,now(),now(),'validation_configurations:v1:fixture',v_validation_receipt
+    from public.ads_validation_configurations where org_id=v_org and profile_id=v_profile;
+  insert into public.ads_catalogue_acquisitions
+    (id,org_id,profile_id,marketplace_id,family,selector_key,request_fingerprint,acquired_at,window_start,window_end,requested_members,next_position,final_receipt_id)
+    values(v_catalogue_receipt,v_org,v_profile,'ATVPDKIKX0DER','product_metadata','fixture',repeat('a',64),now(),now(),now(),1,null,v_catalogue_receipt);
+  insert into public.ads_catalogue_pages
+    (org_id,profile_id,acquisition_id,page_number,expected_position,next_position,page_fingerprint,evidence,receipt_id)
+    values(v_org,v_profile,v_catalogue_receipt,0,'{"page":0,"unit":0,"token":null}'::jsonb,null,repeat('a',64),'{}'::jsonb,v_catalogue_receipt);
   insert into public.amazon_change_events
     (id, org_id, profile_id, marketplace_id, source_namespace, source_event_key,
      identity_quality, payload_digest, entity_type, entity_id, change_type,

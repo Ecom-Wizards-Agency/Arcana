@@ -1,4 +1,4 @@
-import { type CSSProperties } from 'react';
+import { Suspense, type CSSProperties } from 'react';
 
 import {
   ENTITY_LABELS,
@@ -47,11 +47,12 @@ function renderEmpty({ data }: Extract<ScreenData, { view: 'empty'; }>['props'])
   </main>);
 }
 
-function renderReady({ entity, profile, period, comparison, params, slot1: _slot1, actor, freshness: _freshness }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ catalogue, entity, profile, period, comparison, params, slot1: _slot1, actor, freshness: _freshness }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main style={main}>
     <h1 className="wa-sr-only">{ENTITY_LABELS[entity]}</h1>
     <p className="wa-sr-only">{profile.label} · {profile.countryCode} · {profile.currencyCode} · {period.start} to {period.end}</p>
 
+    {catalogue?<Suspense fallback={<p>Loading current catalogue facts…</p>}>{catalogue}</Suspense>:null}
     <GridWorkspace
       key={`${profile.id}:${entity}:${period.start}:${period.end}:${params.campaign ?? ''}:${params.view ?? ''}:${params.asin ?? ''}`}
       actor={actor}

@@ -23,7 +23,7 @@ export interface KeyScopeContext {
 export async function getProductEvidence(handle: QueryHandle, scope: KeyScopeContext, profile: ProfileRecord,
   input:{marketplaceId:string;asins:readonly string[];adProduct:'SP'|'SB'|'SD';staleAfter:string}) {
   if (scope.profileIds !== null && !scope.profileIds.includes(profile.id)) throw new ToolError('not_found','Profile not found');
-  return readProductEvidence(handle,{scope:{orgId:scope.orgId,profileId:profile.id,marketplaceId:input.marketplaceId},asins:input.asins,adProduct:input.adProduct,staleAfter:input.staleAfter});
+  return readProductEvidence(handle,{scope:{orgId:scope.orgId,profileId:profile.id,marketplaceId:input.marketplaceId},asins:[...input.asins],adProduct:input.adProduct,staleAfter:input.staleAfter});
 }
 
 export async function getAmazonChangeHistory(handle: QueryHandle, scope: KeyScopeContext, profile: ProfileRecord,

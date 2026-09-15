@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   AmazonChangeEvent, CatalogueCollectionCounts, CatalogueReaderStatus, ProductEligibilitySnapshot,
   ProductEvidence, ProductMetadataSnapshot, ValidationConfiguration,
-  AdsCatalogueScope, type AdsCatalogueFamily,
+  AdsCatalogueScope, CatalogueAcquisitionRequest, CataloguePosition, CampaignProductEvidence, ProductEvidenceRequest, type AdsCatalogueFamily,
 } from '@wizard-ads/shared';
 import type postgres from 'postgres';
 import type { QueryHandle } from '../client.js';
@@ -13,8 +13,10 @@ export interface PersistCatalogueCollectionInput {
   windowStart: string; windowEnd: string; acquiredAt: string; pages: number; finalCursor: string | null;
   sourceRows: number; parsedRows: number; refusedRows: number; duplicates: number; requestedMembers?: number;
   rows: readonly CatalogueEvidenceRow[];
+  checkpoint?: boolean;
+  acquisitionId?: string;
 }
-export interface PersistCatalogueCollectionResult { receiptId: string; counts: CatalogueCollectionCounts }
+export interface PersistCatalogueCollectionResult { receiptId: string; counts: CatalogueCollectionCounts; replayed?: boolean }
 
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -22,36 +24,54 @@ function canonical(value: unknown): string {
   return JSON.stringify(value);
 }
 export function catalogueDigest(value: unknown): string { return createHash('sha256').update(canonical(value)).digest('hex'); }
+/** Canonical destination membership ignores retrieval time, retaining original acquisition time. */
+export function catalogueRowIdentity(row: CatalogueEvidenceRow): string {
+  if ('sourceEventKey' in row) return catalogueDigest({key:row.sourceEventKey,previousValue:row.previousValue,newValue:row.newValue,metadata:row.metadata});
+  return catalogueDigest({...row,provenance:{...row.provenance,retrievedAt:null}});
+}
 function sameScope(scope: AdsCatalogueScope, row: CatalogueEvidenceRow): boolean { return row.scope.orgId === scope.orgId && row.scope.profileId === scope.profileId && row.scope.marketplaceId === scope.marketplaceId; }
 
 export async function persistCatalogueCollection(handle: QueryHandle, raw: PersistCatalogueCollectionInput): Promise<PersistCatalogueCollectionResult> {
-  const input = { ...raw, scope: AdsCatalogueScope.parse(raw.scope), family: raw.family };
+  const schema = raw.family === 'product_metadata' ? ProductMetadataSnapshot : raw.family === 'product_eligibility' ? ProductEligibilitySnapshot : raw.family === 'validation_configurations' ? ValidationConfiguration : AmazonChangeEvent;
+  const input = { ...raw, scope: AdsCatalogueScope.parse(raw.scope), rows: raw.rows.map(row => schema.parse(row)) };
+  const fingerprint = catalogueDigest(input);
+  const acquisitionKey = input.acquisitionId??catalogueDigest({scope:input.scope,family:input.family,selectorKey:input.selectorKey,windowStart:input.windowStart,windowEnd:input.windowEnd,acquiredAt:input.acquiredAt});
+  CatalogueCollectionCounts.parse({requestedMembers:input.requestedMembers ?? input.sourceRows, pages:input.pages, sourceRows:input.sourceRows,parsedRows:input.parsedRows,refusedRows:input.refusedRows,duplicates:input.duplicates,canonicalRows:input.rows.length,writtenRows:input.rows.length,existingRows:0,verifiedRows:input.rows.length});
   if (input.rows.some((row) => !sameScope(input.scope, row))) throw new Error('catalogue row is outside collection scope');
   if (input.sourceRows !== input.parsedRows + input.refusedRows) throw new Error('catalogue source counts do not reconcile');
   if (input.rows.length !== input.parsedRows + input.refusedRows - input.duplicates) throw new Error('catalogue canonical rows do not reconcile');
   const transaction = async (sql: postgres.TransactionSql): Promise<PersistCatalogueCollectionResult> => {
-    const receiptId = randomUUID();
-    const created=await sql<{id:string}[]>`insert into public.ads_catalogue_source_receipts(id,org_id,profile_id,marketplace_id,family,selector_key,window_start,window_end,acquired_at,counts,page_count,final_cursor)
-      values(${receiptId},${input.scope.orgId},${input.scope.profileId},${input.scope.marketplaceId},${input.family},${input.selectorKey},${input.windowStart},${input.windowEnd},${input.acquiredAt},'{}'::jsonb,${input.pages},${input.finalCursor})
-      on conflict(profile_id,marketplace_id,family,selector_key,window_start,window_end,acquired_at) do nothing returning id`;
-    if(created.length===0){const replay=await sql<{id:string;counts:unknown}[]>`select id,counts from public.ads_catalogue_source_receipts where org_id=${input.scope.orgId} and profile_id=${input.scope.profileId} and marketplace_id=${input.scope.marketplaceId} and family=${input.family} and selector_key=${input.selectorKey} and window_start=${input.windowStart} and window_end=${input.windowEnd} and acquired_at=${input.acquiredAt}`;if(replay.length!==1)throw new Error('catalogue replay receipt readback failed');return{receiptId:replay[0]!.id,counts:CatalogueCollectionCounts.parse(replay[0]!.counts)};}
+    let receiptId: string = randomUUID();
+    const created=await sql<{id:string}[]>`insert into public.ads_catalogue_source_receipts(id,org_id,profile_id,marketplace_id,family,selector_key,window_start,window_end,acquired_at,counts,page_count,final_cursor,collection_fingerprint,acquisition_key)
+      values(${receiptId},${input.scope.orgId},${input.scope.profileId},${input.scope.marketplaceId},${input.family},${input.selectorKey},${input.windowStart},${input.windowEnd},${input.acquiredAt},'{}'::jsonb,${input.pages},${input.finalCursor},${fingerprint},${acquisitionKey})
+      on conflict(profile_id,marketplace_id,family,selector_key,window_start,window_end,acquired_at,acquisition_key) do nothing returning id`;
+    const replayed = created.length === 0;
+    if (replayed) {
+      const replay = await sql<{id:string;collection_fingerprint:string}[]>`select id,collection_fingerprint from public.ads_catalogue_source_receipts where org_id=${input.scope.orgId} and profile_id=${input.scope.profileId} and marketplace_id=${input.scope.marketplaceId} and family=${input.family} and selector_key=${input.selectorKey} and window_start=${input.windowStart} and window_end=${input.windowEnd} and acquired_at=${input.acquiredAt} and acquisition_key=${acquisitionKey}`;
+      if(replay.length!==1 || replay[0]!.collection_fingerprint!==fingerprint) throw new Error('catalogue replay fingerprint mismatch');
+      receiptId=replay[0]!.id;
+    }
     let writtenRows = 0;
-    for (const rawRow of input.rows) {
+    if (!replayed) for (const rawRow of input.rows) {
       if (input.family === 'product_metadata') {
-        const row = ProductMetadataSnapshot.parse(rawRow), digest = catalogueDigest(row);
+        const row = ProductMetadataSnapshot.parse(rawRow), digest = catalogueRowIdentity(row);
         const inserted = await sql<{ id: string }[]>`insert into public.ads_product_metadata_snapshots(org_id,profile_id,marketplace_id,asin,sku,ad_product,acquired_at,retrieved_at,provider_observed_at,contract_version,snapshot,payload_digest,receipt_id)
           values(${row.scope.orgId},${row.scope.profileId},${row.scope.marketplaceId},${row.asin},${row.sku},${row.adProduct},${row.provenance.acquiredAt},${row.provenance.retrievedAt},${row.provenance.providerObservedAt},${row.provenance.contractVersion},${JSON.stringify(row)}::jsonb,${digest},${receiptId}) on conflict do nothing returning id`;
         writtenRows += inserted.length;
       } else if (input.family === 'product_eligibility') {
-        const row = ProductEligibilitySnapshot.parse(rawRow), digest = catalogueDigest(row);
+        const row = ProductEligibilitySnapshot.parse(rawRow), digest = catalogueRowIdentity(row);
         const inserted = await sql<{ id: string }[]>`insert into public.ads_product_eligibility_snapshots(org_id,profile_id,marketplace_id,asin,sku,ad_product,verdict,reasons,acquired_at,retrieved_at,provider_observed_at,contract_version,payload_digest,receipt_id)
           values(${row.scope.orgId},${row.scope.profileId},${row.scope.marketplaceId},${row.asin},${row.sku},${row.adProduct},${row.verdict},${JSON.stringify(row.reasons)}::jsonb,${row.provenance.acquiredAt},${row.provenance.retrievedAt},${row.provenance.providerObservedAt},${row.provenance.contractVersion},${digest},${receiptId}) on conflict do nothing returning id`;
         writtenRows += inserted.length;
       } else if (input.family === 'validation_configurations') {
         const row = ValidationConfiguration.parse(rawRow);
         const jsonConfiguration = JSON.parse(JSON.stringify(row.configuration));
-        const inserted = await sql<{ id: string }[]>`insert into public.ads_validation_configurations(org_id,profile_id,marketplace_id,resource,country_code,entity_type,ad_product,provider_version,content_digest,configuration,acquired_at,retrieved_at,receipt_id)
-          values(${row.scope.orgId},${row.scope.profileId},${row.scope.marketplaceId},${row.resource},${row.countryCode},${row.entityType},${row.adProduct},${row.providerVersion},${row.contentDigest},${JSON.stringify(jsonConfiguration)}::jsonb,${row.provenance.acquiredAt},${row.provenance.retrievedAt},${receiptId}) on conflict do nothing returning id`;
+        await sql`insert into public.ads_validation_configurations(org_id,profile_id,marketplace_id,resource,country_code,entity_type,ad_product,provider_version,content_digest,configuration,acquired_at,retrieved_at,receipt_id)
+          values(${row.scope.orgId},${row.scope.profileId},${row.scope.marketplaceId},${row.resource},${row.countryCode},${row.entityType},${row.adProduct},${row.providerVersion},${row.contentDigest},${JSON.stringify(jsonConfiguration)}::jsonb,${row.provenance.acquiredAt},${row.provenance.retrievedAt},${receiptId}) on conflict do nothing`;
+        const contents=await sql<{id:string;configuration:unknown}[]>`select id,configuration from public.ads_validation_configurations where org_id=${row.scope.orgId} and profile_id=${row.scope.profileId} and marketplace_id=${row.scope.marketplaceId} and resource=${row.resource} and country_code=${row.countryCode} and entity_type=${row.entityType} and ad_product=${row.adProduct} and content_digest=${row.contentDigest}`;
+        if(contents.length!==1 || catalogueDigest(contents[0]!.configuration)!==catalogueDigest(jsonConfiguration) || row.contentDigest!==catalogueDigest(jsonConfiguration)) throw new Error('configuration content digest mismatch');
+        const inserted=await sql<{id:string}[]>`insert into public.ads_validation_configuration_observations(org_id,profile_id,configuration_id,acquisition_key,acquired_at,retrieved_at,provider_observed_at,contract_version,receipt_id)
+          values(${row.scope.orgId},${row.scope.profileId},${contents[0]!.id},${acquisitionKey},${row.provenance.acquiredAt},${row.provenance.retrievedAt},${row.provenance.providerObservedAt},${row.provenance.contractVersion},${receiptId}) on conflict do nothing returning id`;
         writtenRows += inserted.length;
       } else {
         const row = AmazonChangeEvent.parse(rawRow), payload = { previousValue: row.previousValue, newValue: row.newValue, metadata: row.metadata }, digest = catalogueDigest(payload);
@@ -60,23 +80,23 @@ export async function persistCatalogueCollection(handle: QueryHandle, raw: Persi
         writtenRows += inserted.length;
       }
     }
-    const table = input.family === 'product_metadata' ? 'ads_product_metadata_snapshots' : input.family === 'product_eligibility' ? 'ads_product_eligibility_snapshots' : input.family === 'validation_configurations' ? 'ads_validation_configurations' : 'amazon_change_events';
+    const table = input.family === 'product_metadata' ? 'ads_product_metadata_snapshots' : input.family === 'product_eligibility' ? 'ads_product_eligibility_snapshots' : input.family === 'validation_configurations' ? 'ads_validation_configuration_observations' : 'amazon_change_events';
     const verified = await sql<{ count: string }[]>`select count(*)::text as count from ${sql(table)} where receipt_id=${receiptId}`;
     const verifiedRows = Number(verified[0]?.count ?? -1), canonicalRows = input.rows.length, existingRows = canonicalRows - writtenRows;
-    if (verifiedRows !== writtenRows) throw new Error(`catalogue destination readback expected ${writtenRows}, read ${verifiedRows}`);
+    if (!replayed && verifiedRows !== writtenRows) throw new Error(`catalogue destination readback expected ${writtenRows}, read ${verifiedRows}`);
     let reconciledRows = 0;
     for (const rawRow of input.rows) {
       if (input.family === 'product_metadata') {
-        const row=ProductMetadataSnapshot.parse(rawRow),digest=catalogueDigest(row);
+        const row=ProductMetadataSnapshot.parse(rawRow),digest=catalogueRowIdentity(row);
         const found=await sql<{found:boolean}[]>`select exists(select 1 from public.ads_product_metadata_snapshots where org_id=${row.scope.orgId} and profile_id=${row.scope.profileId} and marketplace_id=${row.scope.marketplaceId} and asin=${row.asin} and coalesce(sku,'')=coalesce(${row.sku},'') and ad_product=${row.adProduct} and acquired_at=${row.provenance.acquiredAt} and payload_digest=${digest}) as found`;
         if(found[0]?.found) reconciledRows++;
       } else if(input.family==='product_eligibility') {
-        const row=ProductEligibilitySnapshot.parse(rawRow),digest=catalogueDigest(row);
+        const row=ProductEligibilitySnapshot.parse(rawRow),digest=catalogueRowIdentity(row);
         const found=await sql<{found:boolean}[]>`select exists(select 1 from public.ads_product_eligibility_snapshots where org_id=${row.scope.orgId} and profile_id=${row.scope.profileId} and marketplace_id=${row.scope.marketplaceId} and asin=${row.asin} and coalesce(sku,'')=coalesce(${row.sku},'') and ad_product=${row.adProduct} and acquired_at=${row.provenance.acquiredAt} and payload_digest=${digest}) as found`;
         if(found[0]?.found) reconciledRows++;
       } else if(input.family==='validation_configurations') {
         const row=ValidationConfiguration.parse(rawRow);
-        const found=await sql<{found:boolean}[]>`select exists(select 1 from public.ads_validation_configurations where org_id=${row.scope.orgId} and profile_id=${row.scope.profileId} and marketplace_id=${row.scope.marketplaceId} and resource=${row.resource} and country_code=${row.countryCode} and entity_type=${row.entityType} and ad_product=${row.adProduct} and content_digest=${row.contentDigest}) as found`;
+        const found=await sql<{found:boolean}[]>`select exists(select 1 from public.ads_validation_configurations c join public.ads_validation_configuration_observations o on o.configuration_id=c.id and o.org_id=c.org_id and o.profile_id=c.profile_id where c.org_id=${row.scope.orgId} and c.profile_id=${row.scope.profileId} and c.marketplace_id=${row.scope.marketplaceId} and c.resource=${row.resource} and c.country_code=${row.countryCode} and c.entity_type=${row.entityType} and c.ad_product=${row.adProduct} and c.content_digest=${row.contentDigest} and c.configuration=${JSON.stringify(row.configuration)}::jsonb and o.acquired_at=${row.provenance.acquiredAt} and o.acquisition_key=${acquisitionKey}) as found`;
         if(found[0]?.found) reconciledRows++;
       } else {
         const row=AmazonChangeEvent.parse(rawRow),digest=catalogueDigest({previousValue:row.previousValue,newValue:row.newValue,metadata:row.metadata});
@@ -88,17 +108,17 @@ export async function persistCatalogueCollection(handle: QueryHandle, raw: Persi
     const counts = CatalogueCollectionCounts.parse({ requestedMembers: input.requestedMembers ?? input.sourceRows,
       pages: input.pages, sourceRows: input.sourceRows, parsedRows: input.parsedRows, refusedRows: input.refusedRows,
       duplicates: input.duplicates, canonicalRows, writtenRows, existingRows, verifiedRows: reconciledRows });
-    await sql`update public.ads_catalogue_source_receipts set counts=${JSON.stringify(counts)}::jsonb where id=${receiptId}`;
-    if (input.refusedRows === 0 && input.finalCursor === null) await sql`insert into public.ads_catalogue_source_checkpoints(org_id,profile_id,marketplace_id,family,selector_key,covered_from,covered_through,source_observed_at,receipt_id,cursor,cursor_failure)
+    if (!replayed) await sql`update public.ads_catalogue_source_receipts set counts=${JSON.stringify(counts)}::jsonb where id=${receiptId}`;
+    if (input.checkpoint !== false && !replayed && input.refusedRows === 0 && input.finalCursor === null) await sql`insert into public.ads_catalogue_source_checkpoints(org_id,profile_id,marketplace_id,family,selector_key,covered_from,covered_through,source_observed_at,receipt_id,cursor,cursor_failure)
       values(${input.scope.orgId},${input.scope.profileId},${input.scope.marketplaceId},${input.family},${input.selectorKey},${input.windowStart},${input.windowEnd},${input.acquiredAt},${receiptId},${input.finalCursor},null)
       on conflict(profile_id,marketplace_id,family,selector_key) do update set covered_from=least(ads_catalogue_source_checkpoints.covered_from,excluded.covered_from),covered_through=excluded.covered_through,source_observed_at=excluded.source_observed_at,receipt_id=excluded.receipt_id,cursor=excluded.cursor,cursor_failure=null,updated_at=now()
       where ads_catalogue_source_checkpoints.org_id=excluded.org_id and (ads_catalogue_source_checkpoints.source_observed_at is null or ads_catalogue_source_checkpoints.source_observed_at<=excluded.source_observed_at)`;
-    if (input.refusedRows > 0 || input.finalCursor !== null) {
+    if (input.checkpoint !== false && !replayed && (input.refusedRows > 0 || input.finalCursor !== null)) {
       await sql`insert into public.ads_catalogue_source_checkpoints(org_id,profile_id,marketplace_id,family,selector_key,cursor_failure)
         values(${input.scope.orgId},${input.scope.profileId},${input.scope.marketplaceId},${input.family},${input.selectorKey},'incomplete collection')
         on conflict(profile_id,marketplace_id,family,selector_key) do update set cursor_failure='incomplete collection',updated_at=now() where ads_catalogue_source_checkpoints.org_id=excluded.org_id`;
     }
-    return { receiptId, counts };
+    return { receiptId, counts, replayed };
   };
   return 'savepoint' in handle.sql ? handle.sql.savepoint(transaction) : handle.sql.begin(transaction);
 }
@@ -114,21 +134,78 @@ export async function recordCatalogueCursorFailure(handle: QueryHandle, scope: A
     values(${scope.orgId},${scope.profileId},${scope.marketplaceId},${family},${selectorKey},${bounded}) on conflict(profile_id,marketplace_id,family,selector_key) do update set cursor_failure=excluded.cursor_failure,updated_at=now() where ads_catalogue_source_checkpoints.org_id=excluded.org_id`;
 }
 
-export async function readProductEvidence(handle: QueryHandle, input: { scope: AdsCatalogueScope; asins: readonly string[]; adProduct: 'SP'|'SB'|'SD'; staleAfter: string }): Promise<ProductEvidence[]> {
-  if (input.asins.length === 0) return [];
-  const rows = await handle.sql<{ asin: string; metadata: unknown; eligibility: unknown; metadata_at: Date|string|null; eligibility_at: Date|string|null }[]>`
-    select requested.asin,m.snapshot as metadata,
-      case when e.id is null then null else jsonb_build_object('scope',jsonb_build_object('orgId',e.org_id,'profileId',e.profile_id,'marketplaceId',e.marketplace_id),'asin',e.asin,'sku',e.sku,'adProduct',e.ad_product,'verdict',e.verdict,'reasons',e.reasons,'provenance',jsonb_build_object('family','product_eligibility','contractVersion',e.contract_version,
-        'providerObservedAt',case when e.provider_observed_at is null then null else to_char(e.provider_observed_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') end,
-        'acquiredAt',to_char(e.acquired_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),'retrievedAt',to_char(e.retrieved_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))) end as eligibility,
-      m.acquired_at as metadata_at,e.acquired_at as eligibility_at from unnest(${[...input.asins]}::text[]) requested(asin)
-    left join lateral(select * from public.ads_product_metadata_snapshots where org_id=${input.scope.orgId} and profile_id=${input.scope.profileId} and marketplace_id=${input.scope.marketplaceId} and asin=requested.asin and ad_product=${input.adProduct} order by acquired_at desc,retrieved_at desc,id desc limit 1)m on true
-    left join lateral(select * from public.ads_product_eligibility_snapshots where org_id=${input.scope.orgId} and profile_id=${input.scope.profileId} and marketplace_id=${input.scope.marketplaceId} and asin=requested.asin and ad_product=${input.adProduct} order by acquired_at desc,retrieved_at desc,id desc limit 1)e on true`;
-  if (rows.length !== input.asins.length) throw new Error('product evidence read count mismatch');
-  const stale = new Date(input.staleAfter).getTime();
-  return rows.map((row) => ProductEvidence.parse({ scope: input.scope, asin: row.asin,
-    availability: row.metadata === null && row.eligibility === null ? 'missing' : [row.metadata_at,row.eligibility_at].filter(Boolean).some((at) => new Date(at!).getTime() < stale) ? 'stale' : row.metadata === null || row.eligibility === null ? 'partial' : 'measured',
-    metadata: row.metadata === null ? null : ProductMetadataSnapshot.parse(row.metadata), eligibility: row.eligibility === null ? null : ProductEligibilitySnapshot.parse(row.eligibility) }));
+export async function readProductEvidence(handle: QueryHandle, raw: ProductEvidenceRequest): Promise<ProductEvidence[]> {
+  const input=ProductEvidenceRequest.parse(raw);
+  if(input.asins.length===0) return [];
+  const metadata=await handle.sql<{snapshot:unknown;collection_complete:boolean}[]>`with ranked as (
+    select m.snapshot,m.asin,m.sku,m.acquired_at,
+      (a.id is null or coalesce((final.counts->>'refusedRows')::int,1)=0) as collection_complete,
+      dense_rank() over(partition by m.asin,coalesce(m.sku,'') order by m.acquired_at desc) as recency
+    from public.ads_product_metadata_snapshots m join public.ads_catalogue_source_receipts r on r.id=m.receipt_id
+    left join public.ads_catalogue_pages page on page.receipt_id=r.id
+    left join public.ads_catalogue_acquisitions a on a.org_id=page.org_id and a.profile_id=page.profile_id and a.id=page.acquisition_id
+    left join public.ads_catalogue_source_receipts final on final.id=a.final_receipt_id
+    where m.org_id=${input.scope.orgId} and m.profile_id=${input.scope.profileId} and m.marketplace_id=${input.scope.marketplaceId}
+      and m.asin=any(${input.asins}::text[]) and m.ad_product=${input.adProduct}
+      and (${input.sku??null}::text is null or m.sku=${input.sku??null})
+      and (r.selector_key not like 'acquisition:%' or a.final_receipt_id is not null))
+    select snapshot,collection_complete from ranked where recency=1 order by asin,sku nulls first`;
+  const eligibility=await handle.sql<{asin:string;sku:string|null;verdict:ProductEligibilitySnapshot['verdict'];reasons:ProductEligibilitySnapshot['reasons'];acquired_at:Date;retrieved_at:Date;provider_observed_at:Date|null;contract_version:string;collection_complete:boolean}[]>`with ranked as (
+    select e.*, (a.id is null or coalesce((final.counts->>'refusedRows')::int,1)=0) as collection_complete,
+      dense_rank() over(partition by e.asin,coalesce(e.sku,'') order by e.acquired_at desc) as recency
+    from public.ads_product_eligibility_snapshots e join public.ads_catalogue_source_receipts r on r.id=e.receipt_id
+    left join public.ads_catalogue_pages page on page.receipt_id=r.id
+    left join public.ads_catalogue_acquisitions a on a.org_id=page.org_id and a.profile_id=page.profile_id and a.id=page.acquisition_id
+    left join public.ads_catalogue_source_receipts final on final.id=a.final_receipt_id
+    where e.org_id=${input.scope.orgId} and e.profile_id=${input.scope.profileId} and e.marketplace_id=${input.scope.marketplaceId}
+      and e.asin=any(${input.asins}::text[]) and e.ad_product=${input.adProduct}
+      and (${input.sku??null}::text is null or e.sku=${input.sku??null})
+      and (r.selector_key not like 'acquisition:%' or a.final_receipt_id is not null))
+    select * from ranked where recency=1 order by asin,sku nulls first,payload_digest`;
+  const snapshots=metadata.map(row=>({snapshot:ProductMetadataSnapshot.parse(row.snapshot),complete:row.collection_complete}));
+  const verdicts=eligibility.map(row=>({complete:row.collection_complete,snapshot:ProductEligibilitySnapshot.parse({scope:input.scope,asin:row.asin,sku:row.sku,adProduct:input.adProduct,verdict:row.verdict,reasons:row.reasons,
+    provenance:{family:'product_eligibility',contractVersion:row.contract_version,providerObservedAt:row.provider_observed_at?new Date(row.provider_observed_at).toISOString():null,acquiredAt:new Date(row.acquired_at).toISOString(),retrievedAt:new Date(row.retrieved_at).toISOString()}})}));
+  const stale=(row:ProductMetadataSnapshot|ProductEligibilitySnapshot)=>Date.parse(row.provenance.providerObservedAt??row.provenance.acquiredAt)<Date.parse(input.staleAfter);
+  return input.asins.map(asin=>{
+    const m=snapshots.filter(row=>row.snapshot.asin===asin),e=verdicts.filter(row=>row.snapshot.asin===asin);
+    const facts=m.filter(row=>hasUsableProductFacts(row.snapshot));
+    const explicit=e.filter(row=>row.snapshot.verdict!=='unknown');
+    const metadataAvailability=facts.length===0?'missing':facts.some(row=>stale(row.snapshot))?'stale':m.length!==1||m.some(row=>!row.complete)?'partial':'measured';
+    const eligibilityAvailability=explicit.length===0?'missing':explicit.some(row=>stale(row.snapshot))?'stale':e.length!==1||e.some(row=>!row.complete)?'partial':'measured';
+    const availability=metadataAvailability==='stale'||eligibilityAvailability==='stale'?'stale':metadataAvailability==='measured'&&eligibilityAvailability==='measured'?'measured':facts.length===0&&explicit.length===0?'missing':'partial';
+    return ProductEvidence.parse({scope:input.scope,asin,sku:input.sku??null,availability,metadataAvailability,eligibilityAvailability,
+      metadata:m.length===1?m[0]!.snapshot:null,eligibility:e.length===1?e[0]!.snapshot:null,
+      eligibilityIdentity:e.length===0?'missing':e.length===1?'explicit':'ambiguous',eligibilityCandidates:e.map(row=>row.snapshot)});
+  });
+}
+
+export function hasUsableProductFacts(row:ProductMetadataSnapshot):boolean {
+  return [row.title,row.imageUrl,row.category,row.variationAsins,row.price,row.basisPrice,row.availability,row.inventoryQuantity,row.bestSellerRank]
+    .some(field=>field.state==='returned' && (typeof field.value==='string'?field.value.trim().length>0:Array.isArray(field.value)?field.value.length>0:true));
+}
+
+/** Future builder consumers must treat unavailable product checks as unavailable, with no write authority. */
+export async function readCampaignProductEvidence(handle:QueryHandle,input:ProductEvidenceRequest):Promise<CampaignProductEvidence> {
+  const products=await readProductEvidence(handle,input);
+  return CampaignProductEvidence.parse({products,campaignCreationAuthority:false,assetModeration:'unknown',checks:products.map(product=>({asin:product.asin,
+    status:product.availability!=='measured'||product.eligibilityIdentity!=='explicit'?'unavailable':product.eligibility?.verdict==='ineligible'?'ineligible':'eligible',
+    reasons:product.eligibilityCandidates.flatMap(row=>row.reasons.map(reason=>reason.message??reason.code))}))});
+}
+
+export async function readCurrentValidationConfiguration(handle:QueryHandle,input:{scope:AdsCatalogueScope;resource:ValidationConfiguration['resource'];countryCode:string;entityType:ValidationConfiguration['entityType'];adProduct:ValidationConfiguration['adProduct'];staleAfter:string}):Promise<{availability:CatalogueReaderStatus['availability'];configuration:ValidationConfiguration|null;candidates:ValidationConfiguration[]}> {
+  const rows=await handle.sql<{content:Record<string,unknown>;resource:string;country_code:string;entity_type:string;ad_product:string;content_digest:string;acquired_at:Date;retrieved_at:Date;provider_observed_at:Date|null;contract_version:string}[]>`with ranked as (
+    select c.configuration as content,c.resource,c.country_code,c.entity_type,c.ad_product,c.content_digest,o.acquired_at,o.retrieved_at,o.provider_observed_at,o.contract_version,
+      dense_rank() over(order by o.acquired_at desc) as recency
+    from public.ads_validation_configurations c join public.ads_validation_configuration_observations o on o.configuration_id=c.id and o.org_id=c.org_id and o.profile_id=c.profile_id
+    join public.ads_catalogue_source_receipts r on r.id=o.receipt_id
+    left join public.ads_catalogue_pages page on page.receipt_id=r.id
+    left join public.ads_catalogue_acquisitions a on a.org_id=page.org_id and a.profile_id=page.profile_id and a.id=page.acquisition_id
+    where c.org_id=${input.scope.orgId} and c.profile_id=${input.scope.profileId} and c.marketplace_id=${input.scope.marketplaceId}
+      and c.resource=${input.resource} and c.country_code=${input.countryCode} and c.entity_type=${input.entityType} and c.ad_product=${input.adProduct}
+      and (r.selector_key not like 'acquisition:%' or a.final_receipt_id is not null)) select * from ranked where recency=1 order by content_digest`;
+  const candidates=[...new Map(rows.map(row=>[row.content_digest,row])).values()].map(row=>ValidationConfiguration.parse({scope:input.scope,resource:row.resource,countryCode:row.country_code,entityType:row.entity_type,adProduct:row.ad_product,contentDigest:row.content_digest,configuration:row.content,providerVersion:null,
+    provenance:{family:'validation_configurations',contractVersion:row.contract_version,acquiredAt:new Date(row.acquired_at).toISOString(),retrievedAt:new Date(row.retrieved_at).toISOString(),providerObservedAt:row.provider_observed_at?new Date(row.provider_observed_at).toISOString():null}}));
+  return {availability:candidates.length===0?'missing':candidates.some(row=>Date.parse(row.provenance.acquiredAt)<Date.parse(input.staleAfter))?'stale':candidates.length>1?'partial':'measured',configuration:candidates.length===1?candidates[0]!:null,candidates};
 }
 
 export interface AmazonObservedChange { id: string; marketplaceId: string; occurredAt: string; retrievedAt: string; entityType: string; entityId: string; changeType: string; previousValue: string|null; newValue: string|null; resolvedEntityType: string|null; resolvedAmazonId: string|null; identityConflict: boolean; identityQuality: 'derived'; source: 'amazon_ads_change_history' }
@@ -158,7 +235,130 @@ export async function resolveAmazonChangeEvents(handle: QueryHandle, scope: { or
 }
 
 export async function readCatalogueSourceStatus(handle: QueryHandle, scope: AdsCatalogueScope): Promise<CatalogueReaderStatus[]> {
-  const rows = await handle.sql<Array<{family:AdsCatalogueFamily;covered_from:Date|string|null;covered_through:Date|string|null;source_observed_at:Date|string|null;cursor_failure:string|null;source_rows:string|null;loaded_rows:string|null}>>`
-    select c.family,c.covered_from,c.covered_through,c.source_observed_at,c.cursor_failure,r.counts->>'sourceRows' as source_rows,r.counts->>'verifiedRows' as loaded_rows from public.ads_catalogue_source_checkpoints c left join public.ads_catalogue_source_receipts r on r.id=c.receipt_id where c.org_id=${scope.orgId} and c.profile_id=${scope.profileId} and c.marketplace_id=${scope.marketplaceId} order by c.family`;
-  return rows.map((row) => CatalogueReaderStatus.parse({ family:row.family,availability:row.cursor_failure?'partial':row.covered_through?'measured':'missing',coveredFrom:row.covered_from?new Date(row.covered_from).toISOString():null,coveredThrough:row.covered_through?new Date(row.covered_through).toISOString():null,observedAt:row.source_observed_at?new Date(row.source_observed_at).toISOString():null,sourceRows:Number(row.source_rows??0),loadedRows:Number(row.loaded_rows??0),cursorFailure:row.cursor_failure }));
+  const rows = await handle.sql<Array<{family:AdsCatalogueFamily;selector_key:string;covered_from:Date|string|null;covered_through:Date|string|null;source_observed_at:Date|string|null;cursor_failure:string|null;source_rows:string|null;loaded_rows:string|null}>>`
+    select c.family,c.selector_key,c.covered_from,c.covered_through,c.source_observed_at,c.cursor_failure,r.counts->>'sourceRows' as source_rows,r.counts->>'verifiedRows' as loaded_rows from public.ads_catalogue_source_checkpoints c left join public.ads_catalogue_source_receipts r on r.id=c.receipt_id where c.org_id=${scope.orgId} and c.profile_id=${scope.profileId} and c.marketplace_id=${scope.marketplaceId} order by c.family`;
+  return rows.map((row) => CatalogueReaderStatus.parse({ family:row.family,selectorKey:row.selector_key,availability:row.cursor_failure?'partial':row.covered_through?'measured':'missing',coveredFrom:row.covered_from?new Date(row.covered_from).toISOString():null,coveredThrough:row.covered_through?new Date(row.covered_through).toISOString():null,observedAt:row.source_observed_at?new Date(row.source_observed_at).toISOString():null,sourceRows:row.source_rows===null?null:Number(row.source_rows),loadedRows:row.loaded_rows===null?null:Number(row.loaded_rows),cursorFailure:row.cursor_failure }));
+}
+
+export interface CatalogueStoredPage {
+  expected: CataloguePosition;
+  next: CataloguePosition | null;
+  evidence: PersistCatalogueCollectionInput;
+}
+export interface CatalogueAcquisitionState {
+  request: CatalogueAcquisitionRequest;
+  acquiredAt: string;
+  windowStart: string;
+  windowEnd: string;
+  next: CataloguePosition | null;
+  pages: CatalogueStoredPage[];
+  result: PersistCatalogueCollectionResult | null;
+  attemptWrittenRows: number;
+}
+export interface CataloguePageInput {
+  acquisition: CatalogueAcquisitionState;
+  expected: CataloguePosition;
+  next: CataloguePosition | null;
+  rows: readonly CatalogueEvidenceRow[];
+  sourceRows: number;
+  parsedRows: number;
+  refusedRows: number;
+  duplicates: number;
+}
+
+function collectionFromPages(state: CatalogueAcquisitionState): PersistCatalogueCollectionInput {
+  const unique = new Map<string,CatalogueEvidenceRow>();
+  let sourceRows=0, parsedRows=0, refusedRows=0, duplicates=0;
+  for(const page of state.pages) {
+    sourceRows+=page.evidence.sourceRows; parsedRows+=page.evidence.parsedRows;
+    refusedRows+=page.evidence.refusedRows; duplicates+=page.evidence.duplicates;
+    for(const row of page.evidence.rows) {
+      const key=catalogueRowIdentity(row);
+      if(unique.has(key)) duplicates++; else unique.set(key,row);
+    }
+  }
+  return {scope:state.request.scope,family:state.request.family,selectorKey:state.request.selectorKey,acquisitionId:state.request.id,
+    windowStart:state.windowStart,windowEnd:state.windowEnd,acquiredAt:state.acquiredAt,
+    requestedMembers:state.request.requestedMembers,pages:state.pages.length,finalCursor:null,
+    sourceRows,parsedRows,refusedRows,duplicates,rows:[...unique.values()]};
+}
+
+/** Job identity binds retries to one acquisition; completed retries reverify all destinations. */
+export async function resumeCatalogueAcquisition(handle: QueryHandle, raw: CatalogueAcquisitionRequest): Promise<CatalogueAcquisitionState> {
+  const request=CatalogueAcquisitionRequest.parse(raw);
+  const scope=request.scope;
+  const run=async(sql:postgres.TransactionSql):Promise<CatalogueAcquisitionState>=>{
+    await sql`insert into public.ads_catalogue_acquisitions(id,org_id,profile_id,marketplace_id,family,selector_key,request_fingerprint,acquired_at,window_start,window_end,requested_members,next_position)
+      values(${request.id},${scope.orgId},${scope.profileId},${scope.marketplaceId},${request.family},${request.selectorKey},${request.requestFingerprint},${request.proposedAcquiredAt},${request.windowStart??request.proposedAcquiredAt},${request.windowEnd??request.proposedAcquiredAt},${request.requestedMembers},'{"page":0,"unit":0,"token":null}'::jsonb) on conflict do nothing`;
+    const [row]=await sql<{marketplace_id:string;family:string;selector_key:string;request_fingerprint:string;acquired_at:Date;window_start:Date;window_end:Date;next_position:unknown;requested_members:number}[]>`
+      select * from public.ads_catalogue_acquisitions where org_id=${scope.orgId} and profile_id=${scope.profileId} and id=${request.id} for update`;
+    if(!row || row.request_fingerprint!==request.requestFingerprint || row.marketplace_id!==scope.marketplaceId || row.family!==request.family || row.selector_key!==request.selectorKey || row.requested_members!==request.requestedMembers) throw new Error('catalogue acquisition request fingerprint mismatch');
+    if(request.windowStart!==null && new Date(row.window_start).getTime()!==Date.parse(request.windowStart) || request.windowEnd!==null && new Date(row.window_end).getTime()!==Date.parse(request.windowEnd)) throw new Error('catalogue acquisition window mismatch');
+    const saved=await sql<{expected_position:CataloguePosition;next_position:CataloguePosition|null;evidence:PersistCatalogueCollectionInput;page_number:number;page_fingerprint:string}[]>`
+      select * from public.ads_catalogue_pages where org_id=${scope.orgId} and profile_id=${scope.profileId} and acquisition_id=${request.id} order by page_number`;
+    let expected:CataloguePosition|null={page:0,unit:0,token:null};
+    const state:CatalogueAcquisitionState={request,acquiredAt:new Date(row.acquired_at).toISOString(),windowStart:new Date(row.window_start).toISOString(),windowEnd:new Date(row.window_end).toISOString(),next:row.next_position===null?null:CataloguePosition.parse(row.next_position),pages:[],result:null,attemptWrittenRows:0};
+    for(const page of saved) {
+      if(page.page_number!==state.pages.length || canonical(page.expected_position)!==canonical(expected)) throw new Error('catalogue page sequence is incomplete');
+      const entry={expected:CataloguePosition.parse(page.expected_position),next:page.next_position===null?null:CataloguePosition.parse(page.next_position),evidence:page.evidence};
+      if(catalogueDigest(entry)!==page.page_fingerprint) throw new Error('catalogue page fingerprint mismatch');
+      await persistCatalogueCollection({...handle,sql},page.evidence);
+      state.pages.push(entry);expected=entry.next;
+    }
+    if(canonical(expected)!==canonical(state.next)) throw new Error('catalogue continuation differs from durable pages');
+    if(state.next===null) state.result=await persistCatalogueCollection({...handle,sql},collectionFromPages(state));
+    return state;
+  };
+  return 'savepoint' in handle.sql ? handle.sql.savepoint(run) : handle.sql.begin(run);
+}
+
+/** Destination readback, page evidence and continuation advance share one transaction. */
+export async function persistCataloguePage(handle:QueryHandle, input:CataloguePageInput):Promise<CatalogueAcquisitionState> {
+  const expected=CataloguePosition.parse(input.expected), next=input.next===null?null:CataloguePosition.parse(input.next);
+  if(next!==null && (next.page!==expected.page+1 || next.unit<expected.unit || next.unit>expected.unit+1)) throw new Error('catalogue continuation is not adjacent');
+  const run=async(sql:postgres.TransactionSql):Promise<CatalogueAcquisitionState>=>{
+    const state=await resumeCatalogueAcquisition({...handle,sql},input.acquisition.request);
+    const page:CatalogueStoredPage={expected,next,evidence:{scope:state.request.scope,family:state.request.family,
+      selectorKey:`acquisition:${state.request.id}:page:${expected.page}`,acquisitionId:state.request.id,windowStart:state.windowStart,windowEnd:state.windowEnd,
+      acquiredAt:state.acquiredAt,pages:1,finalCursor:next===null?null:JSON.stringify(next),requestedMembers:0,
+      rows:input.rows,sourceRows:input.sourceRows,parsedRows:input.parsedRows,refusedRows:input.refusedRows,duplicates:input.duplicates,checkpoint:false}};
+    if(input.rows.some(row=>row.provenance.acquiredAt!==state.acquiredAt && state.request.family!=='change_history')) throw new Error('catalogue page acquisition time mismatch');
+    const fingerprint=catalogueDigest(page);
+    const existing=state.pages[expected.page];
+    if(existing) {
+      if(catalogueDigest(existing)!==fingerprint) throw new Error('catalogue page replay fingerprint mismatch');
+      await persistCatalogueCollection({...handle,sql},page.evidence);
+      return state;
+    }
+    if(canonical(state.next)!==canonical(expected)) throw new Error('catalogue page position conflict');
+    if(next?.token && state.pages.some(p=>p.expected.unit===next.unit && p.expected.token===next.token) || next?.token && next.unit===expected.unit && next.token===expected.token) throw new Error('catalogue cursor repeated');
+    const persisted=await persistCatalogueCollection({...handle,sql},page.evidence);
+    await sql`insert into public.ads_catalogue_pages(org_id,profile_id,acquisition_id,page_number,expected_position,next_position,page_fingerprint,evidence,receipt_id)
+      values(${state.request.scope.orgId},${state.request.scope.profileId},${state.request.id},${expected.page},${JSON.stringify(expected)}::jsonb,${next===null?null:JSON.stringify(next)}::jsonb,${fingerprint},${JSON.stringify(page.evidence)}::jsonb,${persisted.receiptId})`;
+    state.pages.push(page);state.next=next;state.attemptWrittenRows=persisted.counts.writtenRows;
+    if(next===null) state.result=await persistCatalogueCollection({...handle,sql},collectionFromPages(state));
+    await sql`update public.ads_catalogue_acquisitions set next_position=${next===null?null:JSON.stringify(next)}::jsonb,final_receipt_id=${state.result?.receiptId??null}
+      where org_id=${state.request.scope.orgId} and profile_id=${state.request.scope.profileId} and id=${state.request.id}`;
+    return state;
+  };
+  return 'savepoint' in handle.sql ? handle.sql.savepoint(run) : handle.sql.begin(run);
+}
+
+/** Bounded Products read; scope-less ASINs remain visible as unavailable. */
+export async function readAdvertisedCatalogueProducts(handle:QueryHandle,input:{orgId:string;profileId:string;asin?:string;staleAfter:string}) {
+  const own=await handle.sql<{asin:string;ad_product:ProductEvidenceRequest['adProduct']}[]>`select distinct asin,ad_product from public.product_ads
+    where org_id=${input.orgId} and profile_id=${input.profileId} and deleted_at is null and asin is not null
+      and (${input.asin??null}::text is null or asin=${input.asin??null}) order by asin,ad_product limit 301`;
+  const selected=own.slice(0,300);
+  const markets=await handle.sql<{marketplace_id:string}[]>`select distinct marketplace_id from (
+    select marketplace_id from public.ads_catalogue_source_settings where org_id=${input.orgId} and profile_id=${input.profileId}
+    union select marketplace_id from public.ads_product_metadata_snapshots where org_id=${input.orgId} and profile_id=${input.profileId}
+    union select marketplace_id from public.ads_product_eligibility_snapshots where org_id=${input.orgId} and profile_id=${input.profileId}) scope order by marketplace_id`;
+  const products:ProductEvidence[]=[];
+  for(const market of markets) for(const adProduct of ['SP','SB','SD'] as const) {
+    const asins=selected.filter(row=>row.ad_product===adProduct).map(row=>row.asin);
+    products.push(...await readProductEvidence(handle,{scope:{orgId:input.orgId,profileId:input.profileId,marketplaceId:market.marketplace_id},asins,adProduct,staleAfter:input.staleAfter}));
+  }
+  if(products.length!==selected.length*markets.length) throw new Error('Products scoped evidence row count mismatch');
+  return {products,missingScopeAsins:markets.length===0?selected.map(row=>row.asin):[],advertisedIdentities:selected.length,scopedRows:products.length,truncated:own.length>selected.length};
 }

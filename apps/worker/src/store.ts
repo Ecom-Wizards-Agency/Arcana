@@ -229,7 +229,7 @@ export interface WorkerStore {
   repairOverlongLookbacks(profileId?: string): Promise<number>;
   /** Reconcile provider schedules from active integration connections. */
   ensureIntegrationSchedules(): Promise<number>;
-  /** Persist proposed catalogue cadences as disabled rows for explicit operator review. */
+  /** Provision disabled templates only after deployment and profile admission. */
   ensureCatalogueSchedules?(): Promise<number>;
   ensureReportPartitions(
     reportType: ReportType,
@@ -273,6 +273,7 @@ export class ClaimOwnershipLost extends Error {
 }
 
 export interface PostgresWorkerStoreOptions {
+  catalogueDeploymentEnabled?: () => boolean;
   claimProtocol?: 'legacy' | 'fenced';
   keywordMirror?: KeywordMirrorCapability;
 }
@@ -289,6 +290,7 @@ type ExistingEntity = { amazonId: string; deletedAt: Date | string | null; snaps
 export class PostgresWorkerStore implements WorkerStore {
   private readonly logger: StoreLogger;
   private readonly keywordMirror: KeywordMirrorCapability | undefined;
+  private readonly catalogueDeploymentEnabled: () => boolean;
   private readonly reportedDisabledSbKeywords = new Set<string>();
   private readonly claimProtocol: 'legacy' | 'fenced';
 
@@ -300,6 +302,7 @@ export class PostgresWorkerStore implements WorkerStore {
     this.logger = logger ?? { info: (message, details) => console.info(message, details ?? {}) };
     this.claimProtocol = options.claimProtocol ?? 'legacy';
     this.keywordMirror = options.keywordMirror;
+    this.catalogueDeploymentEnabled = options.catalogueDeploymentEnabled ?? (() => false);
   }
 
   /** Activation requires explicit composition; construction never queries the DB. */
@@ -905,13 +908,16 @@ export class PostgresWorkerStore implements WorkerStore {
   }
 
   async ensureCatalogueSchedules(): Promise<number> {
+    if (!this.catalogueDeploymentEnabled()) return 0;
     const rows = await this.handle.sql<{ id:string }[]>`
       with expected as (
         select s.org_id,s.profile_id,s.marketplace_id,s.family,
           case s.family when 'product_metadata' then 'ads.product_metadata.sync' when 'product_eligibility' then 'ads.product_eligibility.sync' when 'validation_configurations' then 'ads.validation_configurations.sync' else 'ads.change_history.sync' end::public.sync_job_type as job_type,
           case s.family when 'change_history' then interval '1 hour' else interval '1 day' end as cadence,
           jsonb_build_object('marketplaceId',s.marketplace_id,'sourceEnabled',true) as payload
-        from public.ads_catalogue_source_settings s)
+        from public.ads_catalogue_source_settings s
+        join public.ad_profiles p on p.org_id=s.org_id and p.id=s.profile_id
+        where s.enabled and s.reporting_recovery_verified_at is not null and p.sync_enabled)
       insert into public.sync_schedules(org_id,profile_id,job_type,variant,cadence,payload,enabled)
       select org_id,profile_id,job_type,'catalogue:'||marketplace_id||':'||family,cadence,payload,false from expected
       on conflict(profile_id,job_type,report_type,variant) do update set cadence=excluded.cadence,payload=excluded.payload
