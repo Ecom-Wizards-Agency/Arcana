@@ -60,6 +60,6 @@ describe('sync status authenticated loader and lifecycle tables', () => {
       expect(markup).toContain(row.lastSeen);
     }
     const hidden = await withAuthenticatedActor(db, { orgId, userId }, (sql) => loadSyncStatus({ sql }, orgId, randomUUID()));
-    expect(hidden).toEqual({ freshness: [], jobs: [], reports: [], deadLetters: [], lifecycle: [] });
+    expect(hidden).toEqual({ freshness: [], jobs: [], reports: [], deadLetters: [], lifecycle: [], catalogue: [] });
   });
 });

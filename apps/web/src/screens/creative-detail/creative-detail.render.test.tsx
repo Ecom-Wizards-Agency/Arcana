@@ -64,6 +64,8 @@ describe('Creative detail tabs', () => {
     expect(within(listing).getByTestId('sp-source-status').getAttribute('data-state')).toBe('unavailable');
     expect(within(listing).getByText(/No listing fields observed in this period/)).toBeTruthy();
     expect(screen.getByText('The judgement is made once when the change is recorded and stored, never recomputed on read.')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Listing changes not measured' })).toBeTruthy();
+    expect(screen.getByText(/Listing rows apply the same certainty rule/)).toBeTruthy();
   });
   it('renders recorded change values as prose in the profile currency, preserving unknowns and zero', () => {
     const data = visualFixture('history');

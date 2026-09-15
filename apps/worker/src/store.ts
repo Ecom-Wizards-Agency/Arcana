@@ -238,6 +238,8 @@ export interface WorkerStore {
   repairOverlongLookbacks(profileId?: string): Promise<number>;
   /** Reconcile provider schedules from active integration connections. */
   ensureIntegrationSchedules(): Promise<number>;
+  /** Persist proposed catalogue cadences as disabled rows for explicit operator review. */
+  ensureCatalogueSchedules?(): Promise<number>;
   ensureReportPartitions(
     reportType: ReportType,
     startDate: string,
@@ -975,6 +977,22 @@ export class PostgresWorkerStore implements WorkerStore {
     await this.handle.sql`update public.sync_schedules set enabled=false where job_type='provider.evidence.collect' and enabled and not (variant=any(${keep}))`;
     const verified = await this.handle.sql<{ variant: string }[]>`select variant from public.sync_schedules where job_type='provider.evidence.collect' and enabled`;
     if (verified.length !== keep.length || verified.some((row) => !keep.includes(row.variant))) throw new Error('Provider collection schedule readback mismatch');
+  }
+
+  async ensureCatalogueSchedules(): Promise<number> {
+    const rows = await this.handle.sql<{ id:string }[]>`
+      with expected as (
+        select s.org_id,s.profile_id,s.marketplace_id,s.family,
+          case s.family when 'product_metadata' then 'ads.product_metadata.sync' when 'product_eligibility' then 'ads.product_eligibility.sync' when 'validation_configurations' then 'ads.validation_configurations.sync' else 'ads.change_history.sync' end::public.sync_job_type as job_type,
+          case s.family when 'change_history' then interval '1 hour' else interval '1 day' end as cadence,
+          jsonb_build_object('marketplaceId',s.marketplace_id,'sourceEnabled',true) as payload
+        from public.ads_catalogue_source_settings s)
+      insert into public.sync_schedules(org_id,profile_id,job_type,variant,cadence,payload,enabled)
+      select org_id,profile_id,job_type,'catalogue:'||marketplace_id||':'||family,cadence,payload,false from expected
+      on conflict(profile_id,job_type,report_type,variant) do update set cadence=excluded.cadence,payload=excluded.payload
+      where sync_schedules.enabled=false and (sync_schedules.cadence is distinct from excluded.cadence or sync_schedules.payload is distinct from excluded.payload)
+      returning id`;
+    return rows.length;
   }
 
   async unscheduledProfiles(): Promise<{ orgId: string; profileId: string }[]> {

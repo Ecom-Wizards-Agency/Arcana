@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Tabs } from '@wizard-ads/ui';
-import { aggregateCreativeCampaigns } from '@wizard-ads/core';
+import { aggregateCreativeCampaigns, creativeChangeCertainty } from '@wizard-ads/core';
 import { creativeProductUrl, type CreativeWorkspace, type CreativeWorkspaceAsset, type CreativeAttributionState } from '@wizard-ads/shared';
 import { Button, Input, LinkButton, Select } from '../../ui/primitives';
 import { ATTRIBUTION_EXPLANATIONS, ATTRIBUTION_LABELS, filterAndSortCreativePerformance, type CreativeSort } from '../../creative/performance';
@@ -148,11 +148,20 @@ export function CreativePlacements({ workspace, asset, currencyCode }: { workspa
 
 export function CreativeHistory({ workspace, asset, currencyCode }: { workspace: CreativeWorkspace; asset: CreativeWorkspaceAsset; currencyCode: string }) {
   const rows = workspace.changes.filter((change) => asset.assetId !== null && change.assetIds.includes(asset.assetId));
+  const listing = workspace.listingChanges.filter((change)=>asset.advertisedAsin!==null&&change.asin===asset.advertisedAsin).flatMap((change)=>{
+    const fields=['title','imageUrl','category','variationAsins','price','basisPrice','availability','bestSellerRank'] as const;
+    const certainty=creativeChangeCertainty({previous:change.previous.provenance.acquiredAt,observedAt:change.current.provenance.acquiredAt,firstObservation:false});
+    return fields.flatMap((field)=>JSON.stringify(change.previous[field])===JSON.stringify(change.current[field])?[]:[{id:`${change.id}:${field}`,field,oldValue:change.previous[field],newValue:change.current[field],observedAt:change.current.provenance.acquiredAt,marketplaceId:change.marketplaceId,certainty}]);
+  });
   return <section><div className={styles.sectionHeader}><h2>Everything that could have moved this creative’s numbers</h2></div><p className={styles.muted}>Selected window · ordered newest first · recorded observation certainty</p>
     {!rows.length ? <EvidenceCard title="No recorded changes in this window" tone="missing"><p>No scoped bid, placement or creative first-seen observations are held for this selection.</p></EvidenceCard> : <DataTable label="Creative change history" headers={['When', 'Certainty', 'What', 'Change', 'Scope', 'Effect on this creative']}>
       {rows.map((row) => <tr key={row.id}><td>{dateLabel(row.observedAt)}</td><td><Chip tone={row.certainty.kind === 'exact' ? 'good' : row.certainty.kind === 'window' ? 'warn' : 'muted'}>{row.certainty.kind}{row.certainty.kind === 'window' ? row.certainty.widthDays === null ? ' · width unknown' : ` · ${row.certainty.widthDays} days` : ''}</Chip></td><td><Chip>{row.kind}</Chip></td><td className={styles.wrap}>{creativeChangeText(row, currencyCode)}</td><td>{row.scope}</td><td>{row.effect}</td></tr>)}
     </DataTable>}
     <EvidenceCard title="A gap is not a change date" tone="missing"><p>Exact: consecutive observations bracket the change. Window: observations are missing on either side; the label carries the gap width. First: the earliest observation held.</p><p>The judgement is made once when the change is recorded and stored, never recomputed on read.</p></EvidenceCard>
     <p className={styles.footnote}>Effects describe the scope of the change. No spend or sales effect is inferred.</p><EvidenceCard title={workspace.listingCoverage?.measuredFields ? "Listing observations available" : "Needs ingestion: listing snapshots"} tone="warn"><p>{rows.some((r) => r.kind === 'Listing' || r.kind === 'Promotion') ? 'Listing fields retain their source observation time and certainty.' : `No listing or promotion changes are recorded for this creative in this window. Profile coverage: ${workspace.listingCoverage?.measuredFields ?? 0} fresh fields, ${workspace.listingCoverage?.staleFields ?? 0} stale fields.`}</p></EvidenceCard>
+    {listing.length===0?<EvidenceCard title="Listing changes not measured" tone="missing"><p>No changed adjacent Product Metadata observations match this creative&apos;s advertised ASIN in the selected window.</p></EvidenceCard>:<DataTable label="Amazon listing observations" headers={['When','Certainty','Field','Before','After','Marketplace','Source']}>
+      {listing.map((row)=><tr key={row.id}><td>{dateLabel(row.observedAt)}</td><td><Chip tone={row.certainty.kind==='exact'?'good':'warn'}>{row.certainty.kind}{row.certainty.widthDays===null?'':` · ${row.certainty.widthDays} days`}</Chip></td><td>{row.field}</td><td className={styles.wrap}>{JSON.stringify(row.oldValue)}</td><td className={styles.wrap}>{JSON.stringify(row.newValue)}</td><td>{row.marketplaceId}</td><td>Amazon Product Metadata v1 observation</td></tr>)}
+    </DataTable>}
+    <p>Listing rows apply the same certainty rule to the two retained adjacent Product Metadata observations.</p>
   </section>;
 }
