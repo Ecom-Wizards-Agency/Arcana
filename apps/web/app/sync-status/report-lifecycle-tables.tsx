@@ -1,3 +1,4 @@
+import { formatTimestamp } from '../../src/ui/date-format';
 import { EmptyState, TableFrame } from '../../src/ui/primitives';
 import { REPORT_LIFECYCLE_STAGES, type DeadReportJob, type ReportLifecycleCounts } from '@wizard-ads/db';
 import { muted, subheading, table, td, th } from '../../src/ui/tokens';
@@ -26,7 +27,7 @@ export function ReportLifecycleTables({ deadLetters, lifecycle }: {
       <tbody>{deadLetters.map((job) => <tr key={job.id} data-testid="dead-letter-row">
         <td style={td}>{job.jobType}</td><td style={td}>{job.profileLabel}</td>
         <td style={td}>{job.lastError ?? '—'}</td><td style={td}>{job.attempts}</td>
-        <td style={td}>{job.firstSeen}</td><td style={td}>{job.lastSeen}</td>
+        <td style={td}><time dateTime={job.firstSeen}>{formatTimestamp(job.firstSeen)}</time></td><td style={td}><time dateTime={job.lastSeen}>{formatTimestamp(job.lastSeen)}</time></td>
       </tr>)}</tbody>
     </table></TableFrame>
     {deadLetters.length === 0 ? <EmptyState title="No dead-letter jobs." body="No report jobs currently need recovery." /> : null}

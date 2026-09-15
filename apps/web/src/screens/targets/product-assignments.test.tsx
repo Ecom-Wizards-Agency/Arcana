@@ -17,6 +17,7 @@ it('lists every candidate, saves the chosen ASIN, and recounts from the server',
   fireEvent.click(await screen.findByRole('button',{ name: 'Link them' }));
   const dialog = screen.getByRole('dialog');
   expect(within(dialog).getAllByTestId('product-assignment-row')).toHaveLength(list.count);
+  expect(within(dialog).getByText('1 ad group · 1 Sept 2026 – 2 Sept 2026')).toBeTruthy();
   expect(within(dialog).getByText('$20.00')).toBeTruthy();
   fireEvent.change(within(dialog).getByRole('combobox'),{ target: { value: item.asins[0] } });
   fireEvent.click(within(dialog).getByRole('button',{ name: 'Save assignment' }));
@@ -36,5 +37,6 @@ it('keeps viewer pickers disabled and missing spend unmeasured', async () => {
   render(<ProductAssignmentBanner profileId={profileId} currencyCode="USD" enabled />);
   fireEvent.click(await screen.findByRole('button',{name:'Link them'}));
   expect(screen.getByText('Not measured')).toBeTruthy();
+  expect(screen.getByText('2 ad groups · 1 Sept 2026 – 2 Sept 2026')).toBeTruthy();
   expect(screen.getAllByRole('combobox').every((select) => select.hasAttribute('disabled'))).toBe(true);
 });

@@ -1,3 +1,4 @@
+import { formatTimestamp } from '../../ui/date-format';
 import { TableFrame } from '../../ui/primitives';
 import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
 import { ConnectionProgress } from '../../oauth/connection-progress';
@@ -82,7 +83,7 @@ function renderReady({ context, query, operation, mayConnect, enabled, connectio
                 </td>
                 <td style={td}>{connection.hasCredential ? 'Stored' : 'Missing'}</td>
                 <td style={td}>{connection.profileCount}</td>
-                <td style={td}>{connection.connectedAt ?? '—'}</td>
+                <td style={td}>{formatTimestamp(connection.connectedAt)}</td>
                 <td style={td}>{connection.lastError ?? '—'}</td>
               </tr>
             ))}

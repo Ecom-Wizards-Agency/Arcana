@@ -106,7 +106,8 @@ test('target page and goto restore the complete shared grid analysis', async ({ 
         values(${orgId},${fixtureProfileId},${date},'c-1','ag-1','synthetic-mapping-target','keyword','SP',20)`;
       await page.goto(route);
       const banner = page.getByTestId('grid-unattributed');
-      await expect(banner).toContainText('1 ad groups');
+      await expect(banner).toContainText('1 ad group advertises');
+      await expect(banner).toContainText('over 1 day needs');
       await banner.getByRole('button',{ name: 'Link them' }).click();
       const mapping = page.getByRole('dialog',{ name: 'Assign products to ad groups' });
       await expect(mapping.getByTestId('product-assignment-row')).toHaveCount(1);

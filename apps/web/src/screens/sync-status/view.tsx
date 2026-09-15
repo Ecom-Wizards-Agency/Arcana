@@ -1,3 +1,4 @@
+import { formatShellDate, formatTimestamp, formatDateWindow } from '../../ui/date-format';
 import { TableFrame } from '../../ui/primitives';
 import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
 import { reportAccountingLabel } from '../../data/sync-status';
@@ -63,7 +64,7 @@ function renderReady({ context, status }: Extract<ScreenData, { view: 'ready'; }
               </td>
               <td style={td}>{row.region}</td>
               <td style={td}>{row.syncEnabled ? 'on' : 'off'}</td>
-              <td style={td}>{row.latestFactDate ?? 'never'}</td>
+              <td style={td}>{row.latestFactDate === null ? 'never' : formatShellDate(row.latestFactDate)}</td>
               <td style={td}>{row.queued}</td>
               <td style={td}>{row.running}</td>
               <td style={{ ...td, color: row.failed > 0 ? colors.bad : undefined }}>
@@ -99,8 +100,8 @@ function renderReady({ context, status }: Extract<ScreenData, { view: 'ready'; }
               <td style={td}>
                 {job.attempts}/{job.maxAttempts}
               </td>
-              <td style={td}>{job.runAfter ?? '—'}</td>
-              <td style={td}>{job.finishedAt ?? '—'}</td>
+              <td style={td}>{formatTimestamp(job.runAfter)}</td>
+              <td style={td}>{formatTimestamp(job.finishedAt)}</td>
               <td style={{ ...td, color: job.lastError ? colors.bad : undefined }}>
                 {job.lastError ?? '—'}
               </td>
@@ -135,7 +136,7 @@ function renderReady({ context, status }: Extract<ScreenData, { view: 'ready'; }
               <td style={td}>{report.profileLabel}</td>
               <td style={td}>{report.reportType}</td>
               <td style={td}>
-                {report.startDate} → {report.endDate}
+                {formatDateWindow(report.startDate, report.endDate)}
               </td>
               <td style={td}>{report.status}</td>
               <td style={td}>{report.pollAttempts}</td>

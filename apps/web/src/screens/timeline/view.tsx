@@ -5,7 +5,7 @@ import { TrendChart } from '@wizard-ads/ui';
 import type { TrendSeries } from '@wizard-ads/ui';
 import { TimelineEventKind, TimelineMeasure, TimelineViewState, serializeGridView } from '@wizard-ads/shared';
 import type { GridSavedView, TimelineEvent } from '@wizard-ads/shared';
-import { timelineDates, timelineSummary, timelineValue, timelineEffect, timelinePretrend, shiftTimelineDate } from '../../../../../packages/core/src/timeline-effect';
+import { timelineDates, timelineSummary, timelineValue, timelineEffect, timelinePretrend, shiftTimelineDate } from '@wizard-ads/core';
 import { Button, EmptyState } from '../../ui/primitives';
 import type { TimelineData } from './load';
 import { ManualEventForm } from './manual-event-form';

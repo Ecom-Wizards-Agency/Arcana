@@ -1,4 +1,6 @@
 'use client';
+import { formatShellDate } from '../../src/ui/date-format';
+
 import { EmptyState } from '@wizard-ads/ui';
 
 /**
@@ -30,7 +32,7 @@ function statusOf(key: Row): Status {
 }
 
 function shortDate(iso: string | null): string {
-  return iso === null ? '—' : iso.slice(0, 10);
+  return iso === null ? '—' : formatShellDate(iso.slice(0, 10));
 }
 
 /** Claude configuration stores the variable reference, never its value. */

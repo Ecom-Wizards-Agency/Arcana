@@ -1,4 +1,6 @@
 'use client';
+import { formatDateWindow } from '../../ui/date-format';
+
 import { useSearchParams } from 'next/navigation';
 import { AdGroupProductAssignmentList } from '@wizard-ads/shared';
 import { EmptyState } from '@wizard-ads/ui';
@@ -166,7 +168,7 @@ function ProductAssignmentContent({ profileId, start, end, currencyCode }: { pro
     {loading && data === null ? <div style={{ height: 120, overflow: 'hidden' }}><EmptyState variant="loading" title="Checking product assignments" body="Reading unresolved ad groups for this date range." /></div> : null}
     {error ? <EmptyState variant="error" title="Product assignment unavailable" body={error} action={<Button onClick={() => refresh((value) => value+1)}>Reload assignments</Button>} /> : null}
     {data && data.unassignedCount > 0 ? <section data-testid="grid-unattributed" style={{ height: 120, boxSizing: 'border-box', padding: '16px 24px', display: 'flex', alignItems: 'center', gap: 16, background: tokens.color.warnSoft, borderBlock: `1px solid ${tokens.color.warnBorder}`, color: tokens.color.warn, fontSize: 13 }}>
-      <strong>{data.unassignedCount} ad groups advertise more than one ASIN, so {money(data.unassignedSpend)} of spend over {data.days} days needs a product assignment.</strong>
+      <strong>{data.unassignedCount} {data.unassignedCount === 1 ? 'ad group advertises' : 'ad groups advertise'} more than one ASIN, so {money(data.unassignedSpend)} of spend over {data.days} {data.days === 1 ? 'day' : 'days'} needs a product assignment.</strong>
       <Button className="wa-product-assignment-action" ref={trigger} onClick={() => dialog.current?.showModal()}>Link them</Button>
     </section> : null}
     <dialog className="wa-product-assignments" ref={dialog} aria-label="Assign products to ad groups" onClose={() => trigger.current?.focus()} style={{ width: 'min(900px, calc(100vw - 48px))', maxHeight: '80vh', background: tokens.color.surface, color: tokens.color.text, border: `1px solid ${tokens.color.border}`, borderRadius: 8, padding: 24 }}>
@@ -176,7 +178,7 @@ function ProductAssignmentContent({ profileId, start, end, currencyCode }: { pro
       {loading ? <EmptyState variant="loading" title="Refreshing assignments" body="Waiting for the saved list and counts." /> : null}
       {data?.canAssign === false ? <EmptyState variant="gated" title="Read-only access" body="An analyst, admin or owner can assign products." /> : null}
       {data?.count === 0 ? <EmptyState title="No multi-product ad groups" body="No current ad groups advertise multiple products." /> : null}
-      <p>{data?.count ?? '—'} ad groups · {start} to {end}</p>
+      <p>{data?.count ?? '—'} {data?.count === 1 ? 'ad group' : 'ad groups'} · {formatDateWindow(start, end)}</p>
       <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th>Ad group</th><th>Spend</th><th>Product</th><th>Assignment</th></tr></thead><tbody>
         {data?.items.map((item) => <tr key={item.adGroupId} data-testid="product-assignment-row">
           <td>{item.name ?? item.adGroupId}</td><td>{money(item.spend)}</td>

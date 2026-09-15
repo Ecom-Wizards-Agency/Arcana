@@ -1,2 +1,3 @@
 'use client';
-export { default } from '../../../../src/screens/shared-error';
+import { ScreenSurface, EmptyState } from '@wizard-ads/ui';
+export default function ErrorBoundary({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) { return <ScreenSurface title="Experiment"><EmptyState variant="error" data-testid="app-error" title="Something failed on our side" body="This screen could not be rendered. Try again or report the reference below." meta={error.digest ? <code data-testid="error-digest">{error.digest}</code> : undefined} action={<><button className="wa-btn" onClick={reset}>Try again</button> <a href="/">Back to the index</a></>} /></ScreenSurface>; }

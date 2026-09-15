@@ -1,4 +1,6 @@
 'use client';
+import { formatShellDate } from '../../ui/date-format';
+
 
 /**
  * The experiment list.
@@ -25,7 +27,7 @@ const card = {
   padding: '0.875rem 1rem',
 } as const;
 
-const day = (iso: string): string => iso.slice(0, 10);
+const day = (iso: string): string => formatShellDate(iso.slice(0, 10));
 
 export function ProposedTestsSection({ proposedTests }: { proposedTests: TestIdea[] }) {
   return (

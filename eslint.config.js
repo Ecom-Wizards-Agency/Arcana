@@ -37,7 +37,6 @@ export default tseslint.config(
     // Existing exceptions outside WP-272's file scope; new imports remain forbidden.
     plugins: { workspace: { rules: { 'public-imports': crossPackageImports } } },
     rules: { 'workspace/public-imports': ['error', { existing: [
-      { file: 'apps/web/src/screens/timeline/view.tsx', source: '../../../../../packages/core/src/timeline-effect' },
       { file: 'packages/db/scripts/measure-read-path.ts', source: '../../../apps/web/app/_lib/grid-data.js' },
       { file: 'packages/db/scripts/measure-read-path.ts', source: '../../../apps/web/app/_lib/dashboard-data.js' },
       { file: 'packages/db/scripts/measure-read-path.ts', source: '../../../apps/web/app/_lib/optimizer-page-data.js' },

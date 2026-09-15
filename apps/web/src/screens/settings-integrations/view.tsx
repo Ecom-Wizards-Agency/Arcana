@@ -1,3 +1,4 @@
+import { formatTimestamp } from '../../ui/date-format';
 import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
 import type { ReactNode } from 'react';
 
@@ -288,10 +289,7 @@ function statusTone(
   return 'neutral';
 }
 
-function formatTimestamp(value: Date | null): string {
-  if (!value) return '—';
-  return `${value.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
-}
+
 
 export default function ScreenView({ data }: { data: ScreenData }) {
   if (data === null) return null;
