@@ -1,10 +1,8 @@
+const versions = ["20260915000000", "20260915010000", "20260915020000", "20260915030000", "20260915040000", "20260915050000", "20260915060000", "20260915070000", "20260915080000", "20260915090000", "20260915100000", "20260915110000", "20260915120000", "20260915130000", "20260915140000", "20260915150000", "20260915160000", "20260915170000", "20260915180000", "20260915190000", "20260915200000", "20260915210000", "20260915220000", "20260915230000", "20260915240000", "20260915250000", "20260915260000", "20260915270000", "20260915280000", "20260915290000", "20260915300000", "20260915310000", "20260915320000", "20260915330000", "20260915340000", "20260915350000", "20260915360000"];
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import {
-  adminConnectionString, applySqlFile, createTestDatabase, databaseAvailable,
-  migrationFiles, type TestDatabase,
-} from './testing/harness.js';
+import { adminConnectionString, applySqlFile, createTestDatabase, databaseAvailable, migrationFiles, type TestDatabase } from './testing/harness.js';
 import { asUser } from './testing/rls.js';
 import { decideRecommendations } from './queries/recommendations.js';
 import { reviseRecommendation } from './queries/recommendation-revisions.js';
@@ -12,7 +10,6 @@ import { reviseRecommendation } from './queries/recommendation-revisions.js';
 const available = await databaseAvailable();
 const directory = fileURLToPath(new URL('../../../supabase/migrations/', import.meta.url));
 const baseline = '20260914120000_spapi_connection_lifecycle.sql';
-const versions = ["20260915000000", "20260915010000", "20260915020000", "20260915030000", "20260915040000", "20260915050000", "20260915060000", "20260915070000", "20260915080000", "20260915090000", "20260915100000", "20260915110000", "20260915120000", "20260915130000", "20260915140000", "20260915150000", "20260915160000", "20260915170000", "20260915180000", "20260915190000", "20260915200000", "20260915210000", "20260915220000", "20260915230000", "20260915240000", "20260915250000", "20260915260000", "20260915270000", "20260915280000", "20260915290000", "20260915300000", "20260915310000", "20260915320000", "20260915330000", "20260915340000", "20260915350000"];
 
 // This proves the current repository schema upgrade. Historical hosted bytes have
 // separate fixed pins and require an additional exact-baseline rehearsal.

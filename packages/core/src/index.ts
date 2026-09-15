@@ -23,6 +23,8 @@ export * from './creative/certainty.js';
 export * from './creative/prompt-loop.js';
 export * from './spapi-evidence.js';
 export * from './provider-evidence.js';
+export * from './asset-eligibility.js';
+export * from './provider-graph.js';
 export * from './types.js';
 export * from './num.js';
 export * from './rows.js';

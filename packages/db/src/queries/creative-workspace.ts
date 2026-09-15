@@ -1,11 +1,9 @@
 import { type NamingSettings } from '@wizard-ads/campaigns';
-import {
-  CreativeWorkspace, NamingStrategy, TimelineDaily, TimelineEvent,
-  ProductMetadataSnapshot, type CreativeWorkspaceAsset, type CreativeWorkspaceCampaign,
-} from '@wizard-ads/shared';
+import { CreativeWorkspace, NamingStrategy, TimelineDaily, TimelineEvent, ProductMetadataSnapshot, type CreativeWorkspaceAsset, type CreativeWorkspaceCampaign } from '@wizard-ads/shared';
 import type { QueryHandle } from '../client.js';
 import { readCreativePerformance, resolveCreativeKeyword } from './creative-performance.js';
 import { readCreativeChangeHistory } from './creative-change-history.js';
+import { readAssetEvidence } from './asset-evidence.js';
 
 export interface CreativeWorkspaceFilter { orgId: string; profileId: string; from: string; to: string }
 
@@ -144,6 +142,26 @@ export async function readCreativeWorkspace(handle: QueryHandle, filter: Creativ
   }
   const listingChanges = listingRows.map((row) => ({ id:`listing:${row.id}`,asin:row.asin,marketplaceId:row.marketplace_id,
     previous:ProductMetadataSnapshot.parse(row.previous),current:ProductMetadataSnapshot.parse(row.current) }));
+  const assetEvidence = await readAssetEvidence(handle, { orgId, profileId, now: new Date().toISOString() });
+  for (const observation of assetEvidence.assets) {
+    if (!assets.some((row) => row.assetId === observation.identity.assetId)) assets.push({
+      assetId: observation.identity.assetId, attributionState: 'mapped', name: observation.name, assetType: observation.assetType,
+      thumbnailUrl: null, firstSeenAt: observation.observedAt, durationSeconds: observation.mediaMetadata?.durationSeconds ?? null,
+      width: observation.mediaMetadata?.width ?? null, height: observation.mediaMetadata?.height ?? null, advertisedAsin: null,
+      moderation: null, campaignIds: [], adGroupIds: [], placementCampaignIds: [], performance: null,
+    });
+  }
+  for (const asset of assets) {
+    asset.assetLibrary = assetEvidence.assets.filter((row) => row.identity.assetId === asset.assetId);
+    asset.assetLibraryEvidence = assetEvidence.assetObservations.filter((row) => row.observation.identity.assetId === asset.assetId);
+    asset.moderationEvidence = assetEvidence.moderationObservations.filter((row) => row.observation.assetIdentity?.assetId === asset.assetId);
+    const metadata = asset.assetLibrary.length === 1 ? asset.assetLibrary[0] : undefined;
+    if (metadata) {
+      asset.width = metadata.mediaMetadata?.width ?? asset.width;
+      asset.height = metadata.mediaMetadata?.height ?? asset.height;
+      asset.durationSeconds = metadata.mediaMetadata?.durationSeconds ?? asset.durationSeconds;
+    }
+  }
   return CreativeWorkspace.parse({ assets, campaigns, changes, listingChanges,
     placements: placements.map((row) => {
       const modifiers = campaigns.find((campaign) => campaign.campaignId === row.campaignId)?.modifiers;

@@ -79,8 +79,13 @@ test('creative workspace preserves selection, filters, evidence and detail route
   await expect(page.getByText(/No moderation source|No source|Not measured/).first()).toBeVisible();
   const path = testInfo.outputPath('creative-eligibility-persisted.png');
   await waitForCreativeShell(page);
-  await page.screenshot({ path, fullPage: true, animations: 'disabled' });
+  await page.screenshot({ path, fullPage: true, animations: 'disabled', style: 'nextjs-portal { display: none; }' });
   await testInfo.attach('Persisted creative eligibility', { path, contentType: 'image/png' });
+  await page.goto(`/sync-status?profile=${state.fixtureProfileId}`);
+  await expect(page.getByTestId('stream-extension-row')).toHaveCount(8);
+  const streamPath = testInfo.outputPath('stream-bindings-freshness.png');
+  await page.screenshot({ path: streamPath, fullPage: true, animations: 'disabled', style: 'nextjs-portal { display: none; }' });
+  await testInfo.attach('Stream binding freshness', { path: streamPath, contentType: 'image/png' });
 });
 
 test('creative screens capture every declared visual state in the operator shell', async ({ page }, testInfo) => {

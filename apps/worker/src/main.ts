@@ -1,7 +1,8 @@
 import { registerAssetLibrarySource } from './asset-library.js';
 import { registerSpApiReportSources, postgresSpReportDependencies } from './spapi-report-sources.js';
-import { registerProviderEvidence, postgresProviderEvidenceDependencies } from "./provider-evidence.js";
+import { registerProviderEvidence, postgresProviderEvidenceDependencies } from './provider-evidence.js';
 import { registerOwnCollectors, postgresOwnCollectors } from './own-collectors/index.js';
+import { registerStreamExtensionProjection } from './marketing-stream-extensions.js';
 import { registerTargetTranslation } from './translation/register.js';
 import { registerBudgetUsageSources } from './budget-usage/register.js';
 import { createBudgetUsageStore } from './budget-usage/composition.js';
@@ -27,34 +28,16 @@ import { createMarketingStreamSqsConsumer } from './marketing-stream-sqs.js';
 import { createMarketingStreamNormalizeHandler } from './marketing-stream-normalize.js';
 import { createSpApiSqpRequestHandler } from './spapi-sqp.js';
 import { PostgresWeeklySqpScheduler } from './sqp-scheduler.js';
-import {
-  PostgresRecommendationRunStore,
-  createRecommendationsRunner,
-} from './recommendations-run.js';
+import { PostgresRecommendationRunStore, createRecommendationsRunner } from './recommendations-run.js';
 import { RecommendationObservationPass } from './recommendation-observer.js';
 import { createReadinessGatedRecommendationSchedules } from './recommendation-schedule-readiness.js';
 import { PostgresWorkerStore } from './store.js';
 import { WorkerUnifiedDualRun } from './unified-reporting.js';
 import { PostgresUnifiedDualRunStore } from './unified-reporting-store.js';
-import {
-  ObservedSbVideoIngestion,
-  PostgresSbVideoIngestionStore,
-} from './sb-video-ingestion.js';
+import { ObservedSbVideoIngestion, PostgresSbVideoIngestionStore } from './sb-video-ingestion.js';
 import { createMrpEconomicsSync } from './mrp.js';
-import {
-  terminateAfterFatalWorkerFailure,
-  terminateAfterFinalShutdown,
-} from './fatal-exit.js';
-import {
-  AuthHealthMonitor,
-  BidSeriesSyncPass,
-  QueueSettlementError,
-  ScheduleProvisioner,
-  shutdownExitCode,
-  StaleClaimReaper,
-  SyncWorker,
-  type WorkerShutdownEvidence,
-} from './worker.js';
+import { terminateAfterFatalWorkerFailure, terminateAfterFinalShutdown } from './fatal-exit.js';
+import { AuthHealthMonitor, BidSeriesSyncPass, QueueSettlementError, ScheduleProvisioner, shutdownExitCode, StaleClaimReaper, SyncWorker, type WorkerShutdownEvidence } from './worker.js';
 import type { JobType } from '@wizard-ads/shared';
 
 const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
@@ -187,6 +170,7 @@ const worker = new SyncWorker({
     if (spApiClientId && lwaKey) registerSpApiReportSources(registry, postgresSpReportDependencies({ handle, clientId: spApiClientId, clientSecret: lwaKey }));
     registerOwnCollectors(registry, postgresOwnCollectors(handle, config.ownCollectorDropRoot, config.ownCollectorsEnabled));
     registerTargetTranslation(registry, handle);
+    registerStreamExtensionProjection(registry, handle);
     registerProviderEvidence(registry, postgresProviderEvidenceDependencies(handle));
     registerBudgetUsageSources(registry, { store: budgetUsageStore, provider: createBudgetUsageProvider(handle),
       apiEnabled: config.budgetUsageApiEnabled, streamEnabled: config.budgetUsageStreamEnabled });

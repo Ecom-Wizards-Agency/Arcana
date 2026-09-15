@@ -26,6 +26,7 @@ import {
 import {
   type AmazonMarketingStreamDatasetId,
   MarketingStreamBatchEnvelope,
+  StreamExtensionReceipt,
   MarketingStreamLedgerEvent,
   type MarketingStreamBatchEnvelope as MarketingStreamBatchEnvelopeValue,
   type MarketingStreamLedgerEvent as MarketingStreamLedgerEventValue,
@@ -266,6 +267,8 @@ export interface MarketingStreamSqsConsumerOptions {
   process?: MarketingStreamProcessor;
   /** Production schedules durable replay; the inline processor remains a narrow test seam. */
   scheduler?: MarketingStreamNormalizeScheduler;
+  /** Optional counted extension intake; absent by default and no provisioning authority. */
+  extensionIntake?: (message: MarketingStreamQueueMessage) => Promise<StreamExtensionReceipt | null>;
   now?: () => Date;
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   /** Test seam; production derives one third of the configured visibility timeout. */
@@ -286,6 +289,7 @@ export class MarketingStreamSqsConsumer {
   private readonly profiles: MarketingStreamProfileScopeResolver | undefined;
   private readonly process: MarketingStreamProcessor;
   private readonly scheduler: MarketingStreamNormalizeScheduler | undefined;
+  private readonly extensionIntake: MarketingStreamSqsConsumerOptions['extensionIntake'];
   private readonly now: () => Date;
   private readonly sleep: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   private readonly logger: MarketingStreamConsumerLogger;
@@ -325,6 +329,7 @@ export class MarketingStreamSqsConsumer {
     this.profiles = options.profiles;
     this.process = options.process ?? processMarketingStreamBatch;
     this.scheduler = options.scheduler;
+    this.extensionIntake = options.extensionIntake;
     this.now = options.now ?? (() => new Date());
     this.sleep = options.sleep ?? abortableDelay;
     this.visibilityHeartbeatIntervalMs = options.visibilityHeartbeatIntervalMs;
@@ -403,6 +408,15 @@ export class MarketingStreamSqsConsumer {
             },
           });
           await heartbeat.start();
+        }
+        const extensionReceipt = await this.extensionIntake?.(message);
+        if (extensionReceipt) {
+          StreamExtensionReceipt.parse(extensionReceipt);
+          heartbeat?.throwIfFailed();
+          await this.queue.delete(this.queueUrl, message.receiptHandle!, operationSignal(signal));
+          this.counters.acknowledged += 1;
+          await heartbeat?.stop();
+          continue;
         }
         const payload = parseMarketingStreamSqsBody(message.body);
         const envelope = payload.kind === 'envelope'

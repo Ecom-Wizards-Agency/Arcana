@@ -41,6 +41,7 @@ export * from './creative-observations.js';
 export * from './ads-catalogue.js';
 export * from './provider-evidence.js';
 export * from './own-collectors.js';
+export * from './stream-assets-graph.js';
 export * from './report-families.js';
 export * from './spapi-reports.js';
 export * from './campaign-builder.js';
