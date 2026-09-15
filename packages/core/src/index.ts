@@ -45,3 +45,5 @@ export * from './creative/certainty.js';
 export * from './creative/prompt-loop.js';
 export { calculateCampaignStartingBid, campaignBidRationale } from './campaign-builder/bid.js';
 export { campaignBuilderEligibility } from './campaign-builder/eligibility.js';
+export * from './dayparting/schedule.js';
+export * from './brand-lens/model.js';

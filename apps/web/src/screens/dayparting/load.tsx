@@ -1,3 +1,6 @@
+import type { DaypartingResults } from '../../dayparting/results';
+import { listDaypartingSchedules } from '@wizard-ads/db';
+import { readDaypartingResults } from '../../dayparting/results';
 import type { ScreenActor } from '../../server/page-read';
 
 import type { ScreenParams } from '../types';
@@ -73,7 +76,13 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   const cells = buildDaypartingHeatmap(evidence, metric);
   const cellMap = new Map(cells.map((cell) => [`${cell.dayOfWeek}|${cell.hour}`, cell]));
 
-  return { view: 'ready' as const, props: { profile, summary, workspace, campaignId, campaignChoices, metric, showAllEvidence, from, to, selectedFacts, evidence, cellMap, proposals } };
+  const research=await access.snapshot(async snapshot=>{
+    const schedules=await listDaypartingSchedules(snapshot,profile.id);
+    const campaigns=await snapshot.sql<{id:string;name:string}[]>`select amazon_id as id,coalesce(name,amazon_id) as name from public.campaigns where org_id=${orgId} and profile_id=${profile.id} and ad_product='SP' and deleted_at is null order by name`;
+    const results=Object.fromEntries(await Promise.all(schedules.filter(s=>s.enabledAt!==null).map(async s=>[s.id,await readDaypartingResults(snapshot,s)])));
+    return {schedules,campaigns:[...campaigns],results:results as Record<string, DaypartingResults|null>};
+  });
+  return { view: 'ready' as const, props: { research, profile, summary, workspace, campaignId, campaignChoices, metric, showAllEvidence, from, to, selectedFacts, evidence, cellMap, proposals } };
 }
 
 function validDate(value: string | undefined): value is string {

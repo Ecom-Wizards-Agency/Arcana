@@ -4,9 +4,9 @@ import type ScreenView from './view';
 
 export const descriptor = {
   id: "queries",
-  path: "/queries",
+  path: "/query-intelligence",
   route: "redirect",
-  redirectTo: "/query-intelligence",
+  redirectTo: "/queries",
   nav: null,
   guard: null,
   prefetch: "cheap",

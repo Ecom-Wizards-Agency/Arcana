@@ -89,6 +89,9 @@ export async function runE2EGlobalSetup<Mock, Server>(
 }
 
 export default async function globalSetup(): Promise<void> {
+  // Brand lens ships behind its rollout flag (off in production). Set it for this process so the
+  // spec expectations (nav links from the registry) and the dev server (below) agree.
+  process.env['WIZARD_ADS_BRAND_LENS_ENABLED'] ??= '1';
   await runE2EGlobalSetup({
     installTeardown: (teardown) => {
       (globalThis as Record<string, unknown>)['__wizardAdsE2E'] = teardown;
@@ -363,6 +366,8 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock, fixturePro
         DATABASE_URL: connectionString,
         WIZARD_ADS_APP_URL: BASE_URL,
         WIZARD_ADS_E2E_AUTH: '1',
+        // Brand lens ships behind its rollout flag (off in production); the suites exercise it.
+        WIZARD_ADS_BRAND_LENS_ENABLED: '1',
         GOTO_LINK_SIGNING_SECRET: randomBytes(32).toString('hex'),
         AMAZON_LWA_CLIENT_ID: 'amzn1.application-oa2-client.e2e',
         AMAZON_OAUTH_REDIRECT_URI: `${BASE_URL}/api/amazon/oauth/callback`,

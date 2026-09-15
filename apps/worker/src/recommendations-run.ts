@@ -523,7 +523,15 @@ export async function runRecommendations(
       throw new RecommendationScopeIntegrityError('The profile timezone changed after this preview was confirmed.');
     }
     window = oneTime?.configuration.window ?? recommendationWindow(profile.timezone, lookbackDays, now);
-    const inputs = await store.loadInputs(scope, window, execution);
+    const loadedInputs = await store.loadInputs(scope, window, execution);
+    const exclusions = new Set(started.groupRun?.group.exclusions ?? []);
+    const inputs = exclusions.size === 0 ? loadedInputs : {
+      ...loadedInputs,
+      targets: loadedInputs.targets.filter(target => !exclusions.has(target.entityRef.campaignId ?? '')),
+      campaigns: loadedInputs.campaigns.filter(campaign => !exclusions.has(campaign.campaignId)),
+      ...(loadedInputs.placementFacts === undefined ? {} : {placementFacts: loadedInputs.placementFacts.filter(fact => !exclusions.has(fact.campaignId))}),
+      ...(loadedInputs.campaignControlEvidence === undefined ? {} : {campaignControlEvidence: loadedInputs.campaignControlEvidence.filter(evidence => !exclusions.has(evidence.campaignId))}),
+    };
     const groupSafety = oneTime !== null
       ? await store.loadOneTimeRecommendationSafety(scope, execution)
       : started.groupRun === null || started.groupRun === undefined
@@ -1520,6 +1528,7 @@ async function readEligibleCampaigns(
        and campaign.deleted_at is null
        and (${selectedIds === undefined} or campaign.amazon_id = any (${selectedIds ?? []}::text[]))
        and (${includeDisabledGroups} or assignment.group_id is null or optimization_group.enabled)
+       and not (campaign.amazon_id = any(coalesce(optimization_group.exclusions, array[]::text[])))
      order by campaign.amazon_id collate "C"
   `;
 }

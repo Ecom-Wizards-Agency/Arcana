@@ -1,0 +1,10 @@
+.daypart-grid { display:grid; grid-template-columns:44px repeat(24,minmax(36px,1fr)); gap:3px; min-width:980px; }
+.daypart-grid .hour { text-align:center; font-size:11px; padding:8px 0; }
+.daypart-grid .day { font-size:12px; align-self:center; }
+.daypart-grid button { font:12px var(--wa-font); min-height:36px; border:0; border-radius:3px; color:var(--wa-text); padding:4px 0; cursor:crosshair; user-select:none; touch-action:none; }
+.daypart-grid .neutral { background:var(--wa-surface-sunken); }
+.daypart-grid .positive { background:color-mix(in srgb,var(--wa-accent) var(--daypart-mix),var(--wa-surface)); }
+.daypart-grid .negative { background:color-mix(in srgb,var(--wa-indigo) var(--daypart-mix),var(--wa-surface)); }
+.daypart-grid button:disabled { opacity:1; cursor:default; }
+.daypart-campaigns { display:flex; gap:12px; flex-wrap:wrap; }
+.daypart-campaigns label { display:flex; align-items:center; gap:5px; }

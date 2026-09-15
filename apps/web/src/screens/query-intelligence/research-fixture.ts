@@ -1,0 +1,25 @@
+import type { SqpWeeklyFact } from '@wizard-ads/shared';
+export const researchFacts: SqpWeeklyFact[] = (['own_brand', 'competitor', 'core', 'head', 'excluded', 'unreviewed'] as const).map((category, i) => ({
+  profileId: '11111111-1111-4111-8111-111111111111',
+  marketplaceId: 'synthetic-market',
+  asin: `SYNTHETIC${i}`,
+  weekStart: '2026-06-07',
+  weekEnd: '2026-06-13',
+  searchQuery: `Synthetic query ${i}`,
+  normalizedQuery: `synthetic query ${i}`,
+  category,
+  searchQueryScore: null,
+  searchQueryVolume: 100 * (i + 1),
+  totalImpressions: 1000,
+  asinImpressions: 100,
+  totalClicks: 100,
+  asinClicks: 10 + i,
+  totalCartAdds: 20,
+  asinCartAdds: 5,
+  asinCartAddShare: 0.25,
+  totalPurchases: 10,
+  asinPurchases: i,
+  asinPurchaseShare: i / 10,
+  asinClickShare: (10 + i) / 100,
+  asinImpressionShare: 0.1
+}));

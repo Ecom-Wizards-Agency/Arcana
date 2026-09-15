@@ -16,10 +16,12 @@
  * gram itself, because you cannot negate a gram: you negate the terms that
  * contain it, in the ad groups they ran in. And it proposes. It never writes.
  */
+import { NgramNegativeReviewPanel } from '../../src/screens/ngrams/negative-review';
+import '../../src/screens/query-intelligence/research.css';
 import { useCallback, useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { aggregateNgrams, tokenize } from '@wizard-ads/core';
-import type { SearchTermRow } from '@wizard-ads/core';
+import { aggregateNgrams, tokenize, ngramCoverage, buildNgramNegativeReview } from '@wizard-ads/core';
+import type { SearchTermRow, NegativeCandidateOptions, NgramNegativeReview } from '@wizard-ads/core';
 import {
   DEFAULT_DENSITY,
   DataGrid,
@@ -33,17 +35,20 @@ import {
   toCsv,
 } from '@wizard-ads/ui';
 import type { FilterSet, GridColumn, GridDensity, GridRow, SortRule } from '@wizard-ads/ui';
-import { DEFAULT_NGRAM_COLUMNS, GRAM_SIZES, GRAM_SIZE_LABELS, ngramColumns, toGridRows } from '../../src/ngrams/rows';
+import { ResearchSegmented } from '../../src/screens/query-intelligence/research-ui';
+import { GRAM_SIZES, ngramColumns, toGridRows } from '../../src/ngrams/rows';
 import type { GramSize } from '../../src/ngrams/rows';
 import type { ScopeOption } from '../../src/ngrams/data';
 
 export interface NgramExplorerProps {
   rows: readonly SearchTermRow[];
+  negativeOptions?: NegativeCandidateOptions | null;
   scopes: { campaigns: ScopeOption[]; tags: ScopeOption[] };
   profileId: string;
   currencyCode: string;
   period: { start: string; end: string };
   /** Test seam: react-virtual measures a real element and jsdom has none. */
+  initialSize?: GramSize;
   initialGridRect?: { width: number; height: number };
 }
 
@@ -161,17 +166,18 @@ export function toTermGridRows(
 }
 
 export function NgramExplorer(props: NgramExplorerProps): ReactNode {
-  const [size, setSize] = useState<GramSize>(2);
+  const [size, setSize] = useState<GramSize>(props.initialSize??2);
   const [minClicks, setMinClicks] = useState(0);
   const [scopeId, setScopeId] = useState('profile');
   const [filter, setFilter] = useState<FilterSet>({ groups: [] });
-  const [visible, setVisible] = useState<string[]>([...DEFAULT_NGRAM_COLUMNS]);
+  const [visible, setVisible] = useState<string[]>(['gram','search_terms','impressions','clicks','spend','sales','orders','acos']);
   const [groupBy, setGroupBy] = useState<string[]>([]);
   const [sort, setSort] = useState<SortRule[]>([{ columnId: 'spend', direction: 'desc' }]);
   const [gram, setGram] = useState<string | null>(null);
   const [selectedTerms, setSelectedTerms] = useState<ReadonlySet<string>>(new Set());
   const [matchType, setMatchType] = useState('negative_exact');
-  const [busy, setBusy] = useState(false);
+  const [review,setReview]=useState<NgramNegativeReview|null>(null);
+  const busy = false;
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [density, setDensity] = useState<GridDensity>(DEFAULT_DENSITY);
@@ -336,66 +342,21 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
     [busy, selectedTerms, termSourceById],
   );
 
-  const propose = useCallback(async () => {
-    setError(null);
-    setMessage(null);
-    const chosen = terms.filter((row) => selectedTerms.has(termKey(row)));
-    if (chosen.length === 0) {
-      setError('Select at least one search term.');
-      return;
-    }
-    setBusy(true);
-    try {
-      const response = await fetch('/api/ngrams/negatives', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          profileId: props.profileId,
-          window: props.period,
-          proposals: chosen.map((row) => ({
-            searchTerm: row.searchTerm,
-            campaignId: row.campaignId,
-            adGroupId: row.adGroupId ?? null,
-            matchType,
-            clicks: row.clicks,
-            rpc: row.clicks > 0 ? row.sales7d / row.clicks : null,
-          })),
-        }),
-      });
-      const payload = (await response.json()) as Record<string, unknown>;
-      if (!response.ok) throw new Error(String(payload['error'] ?? response.statusText));
-      setMessage(
-        `Proposed ${String(payload['created'])} of ${String(payload['offered'])} negatives. They are ` +
-          'proposals: review and export them from the recommendations screen. Nothing was negated.',
-      );
-      setSelectedTerms(new Set());
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Proposal failed');
-    } finally {
-      setBusy(false);
-    }
-  }, [matchType, props.period, props.profileId, selectedTerms, termKey, terms]);
+  const propose = useCallback(() => {
+    const chosen = terms.filter(row => selectedTerms.size===0 || selectedTerms.has(termKey(row)));
+    if (!props.negativeOptions || gram===null) {setError('Target ACOS and average order value are required to evaluate a negative.');return;}
+    const prepared = buildNgramNegativeReview(chosen,gram,size,props.negativeOptions);
+    if(!prepared){setError('This gram does not meet either negative-keyword reason.');return;}
+    setReview({...prepared,rows:prepared.rows.map(row=>({...row,matchType:matchType as typeof row.matchType}))});
+  }, [gram,matchType,props.negativeOptions,selectedTerms,size,termKey,terms]);
+  const coverage=ngramCoverage(scopedRows,ngrams);
+  if(review)return <NgramNegativeReviewPanel review={review} profileId={props.profileId} period={props.period} currencyCode={props.currencyCode}
+    campaignNames={Object.fromEntries(props.scopes.campaigns.map(c=>[c.id,c.label]))} selectedTerms={terms.filter(row=>selectedTerms.size===0||selectedTerms.has(termKey(row))).map(termKey)} onDismiss={()=>setReview(null)}/>;
 
   return (
-    <section style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <fieldset style={panel}>
-        <legend style={legend}>Grams</legend>
-        <div role="group" aria-label="Gram size" style={{ display: 'flex', gap: '0.375rem' }}>
-          {GRAM_SIZES.map((value) => (
-            <button
-              key={value}
-              type="button"
-              aria-pressed={size === value}
-              onClick={() => {
-                setSize(value);
-                clearGramSelection();
-              }}
-              style={{ fontWeight: size === value ? 600 : 400 }}
-            >
-              {GRAM_SIZE_LABELS[value]}
-            </button>
-          ))}
-        </div>
+    <section className="research" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      <div className="research-actions ngram-controls">
+        <ResearchSegmented label="Gram size" value={size} options={GRAM_SIZES.map(value => ({ value, label: ['Unigram', 'Bigram', 'Trigram'][value - 1]! }))} onChange={value => { setSize(value); clearGramSelection(); }} />
         <label style={label}>
           Scope
           <select
@@ -439,10 +400,11 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
             style={{ width: '5rem' }}
           />
         </label>
+      </div>
         <span style={muted} data-testid="gram-count">
-          {formatInteger(ngrams.length)} grams over {formatInteger(scopedRows.length)} search terms
+          {formatInteger(coverage.grams)} grams · {formatInteger(coverage.representedTerms)} of {formatInteger(coverage.totalTerms)} search terms in window · {new Intl.NumberFormat('en-US',{style:'currency',currency:props.currencyCode}).format(coverage.representedSpend)} of {new Intl.NumberFormat('en-US',{style:'currency',currency:props.currencyCode}).format(coverage.totalSpend)} spend represented · gram spend overlaps by construction, so these do not sum to account spend
         </span>
-      </fieldset>
+
 
       <GridViewport
         fullscreen={fullscreen}
@@ -453,7 +415,7 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
           entity="search_terms"
           available={available}
           visible={visible}
-          onVisibleChange={setVisible}
+          onVisibleChange={next=>setVisible([...new Set(['gram','search_terms',...next])])}
           filter={filter}
           onFilterChange={updateFilter}
           groupBy={groupBy}
@@ -529,7 +491,7 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
               Select all {formatInteger(terms.length)}
             </button>
             <button type="button" onClick={() => void propose()} disabled={busy}>
-              Propose selected as negatives
+              Review negative keyword
             </button>
             <span style={muted}>
               This creates proposals for review. v1 writes nothing to Amazon.
@@ -578,6 +540,8 @@ export function NgramExplorer(props: NgramExplorerProps): ReactNode {
           />
         </section>
       )}
+      <p className="muted">No totals row because gram spend overlaps by construction.</p>
+      <p className="muted">The search-terms column is locked and cannot be hidden.</p>
     </section>
   );
 }

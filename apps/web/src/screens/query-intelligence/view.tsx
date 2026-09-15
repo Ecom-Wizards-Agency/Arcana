@@ -1,3 +1,6 @@
+import type { OrgProfile } from '../../recommendations/data';
+import { formatResearchPeriod } from './research-format';
+import { QueryResearch } from './research-view';
 import type { CSSProperties } from 'react';
 
 import {
@@ -18,7 +21,7 @@ import styles from '../../../app/query-intelligence/query-intelligence.module.cs
 
 import type { load } from './load';
 
-export type ScreenData = Awaited<ReturnType<typeof load>>;
+export type ScreenData = Awaited<ReturnType<typeof load>> | {view:'not-measured';props:{profile:OrgProfile}};
 
 export default function ScreenView({ data }: { data: ScreenData; }) {
   switch (data.view) {
@@ -50,10 +53,10 @@ function renderNotMeasured({ profile }: Extract<ScreenData, { view: 'not-measure
         </p>
       </div>
     </header>
-    <div className="wa-empty">
+    <div className="wa-empty" data-state="not-measured">
       <p className="wa-empty__title">No authoritative weekly SQP data</p>
       <p className="wa-empty__body">
-        No marketplace/week has a complete Query Intelligence contract yet. The worker must
+        Search Query Performance is not connected for this profile. No marketplace/week has a complete Query Intelligence contract yet. The worker must
         promote a Sunday–Saturday SP-API Brand Analytics report before this page can compare
         search demand, shares, and PPC attribution.
       </p>
@@ -68,7 +71,7 @@ function renderReady({ profile, scope, scopes, category, search, model, contextu
       <div>
         <h1 className="wa-page-title">Query Intelligence</h1>
         <p className="wa-page-sub">
-          {profile.label} · {scope.marketplaceId} · {scope.weekStart} to {scope.weekEnd}
+          {profile.label} · {scope.marketplaceId} · {formatResearchPeriod({ start: scope.weekStart, end: scope.weekEnd })}
         </p>
       </div>
       <span className="wa-badge wa-badge--info">Review and evidence only · Amazon not updated</span>
@@ -88,7 +91,7 @@ function renderReady({ profile, scope, scopes, category, search, model, contextu
               key={`${option.marketplaceId}:${option.weekStart}`}
               value={`${option.marketplaceId}|${option.weekStart}`}
             >
-              {option.marketplaceId} · {option.weekStart} to {option.weekEnd}
+              {option.marketplaceId} · {formatResearchPeriod({ start: option.weekStart, end: option.weekEnd })}
             </option>
           ))}
         </select>
@@ -110,7 +113,7 @@ function renderReady({ profile, scope, scopes, category, search, model, contextu
       {category !== null || search.length > 0 ? (
         <a
           className="wa-btn wa-btn--ghost wa-btn--sm"
-          href={`/query-intelligence?${new URLSearchParams({
+          href={`/queries?${new URLSearchParams({
             profile: profile.id,
             scope: `${scope.marketplaceId}|${scope.weekStart}`,
           })}`}
@@ -119,13 +122,12 @@ function renderReady({ profile, scope, scopes, category, search, model, contextu
         </a>
       ) : null}
       <span className={styles.toolbarMeta}>
-        {scope.factRows} query/ASIN rows · loaded{' '}
-        {new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'UTC' }).format(
-          new Date(scope.loadedAt),
-        )}
+        {model.queryRows.length ? `${scope.factRows} query/ASIN rows · loaded ${new Intl.DateTimeFormat('en-US', {dateStyle:'medium',timeZone:'UTC'}).format(new Date(scope.loadedAt))}` : 'No authoritative weekly SQP data'}
       </span>
     </form>
 
+    <QueryResearch key={`${profile.id}:${scope.weekStart}:${category}:${search}`} initialCategory={category} initialSearch={search} profileId={profile.id} marketplaceId={scope.marketplaceId} facts={model.queryRows} ppc={model.ppcRows} vocabulary={model.vocabulary}/>
+    {model.queryRows.length ? <details><summary>Attribution and contextual negative review</summary>
     <QueryIntelligenceWorkspace
       model={model}
       currencyCode={profile.currencyCode}
@@ -147,6 +149,7 @@ function renderReady({ profile, scope, scopes, category, search, model, contextu
         />
       )}
     />
+    </details> : null}
   </main>);
 }
 

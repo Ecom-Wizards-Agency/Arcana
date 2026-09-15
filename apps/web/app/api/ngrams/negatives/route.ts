@@ -1,3 +1,5 @@
+import { buildNgramNegativeReview, ngramCalculationTrace } from '@wizard-ads/core';
+import { loadSearchTermRows } from '../../../../src/ngrams/data';
 /**
  * "Propose as negative" from the n-gram explorer.
  *
@@ -37,6 +39,7 @@ export async function POST(request: Request): Promise<Response> {
       profileId?: unknown;
       window?: unknown;
       proposals?: unknown;
+      gram?: unknown; n?: unknown; selectedTerms?: unknown;
     };
     if (typeof body.profileId !== 'string') throw new MutationInputError('profileId is required');
     const incomingWindow = body.window as { start?: unknown; end?: unknown } | undefined;
@@ -66,6 +69,37 @@ export async function POST(request: Request): Promise<Response> {
       ) as exists
     `;
     if (!owned[0]?.exists) throw new MutationInputError('Not found', 404);
+
+    if (typeof body.gram === 'string') {
+      if (![1,2,3].includes(Number(body.n))) throw new MutationInputError('Invalid gram size');
+      const payload = await loadSearchTermRows(database,{orgId:actor.orgId,profileId:body.profileId,period:window});
+      if(payload.truncated) throw new MutationInputError('Narrow the period before proposing negatives');
+      const [profile] = await database.sql<{target_acos:number|null}[]>`select target_acos::float8 as target_acos from public.ad_profiles where id=${body.profileId} and org_id=${actor.orgId}`;
+      const orders=payload.rows.reduce((n,r)=>n+r.purchases7d,0),sales=payload.rows.reduce((n,r)=>n+r.sales7d,0);
+      if(!profile?.target_acos||orders<=0)throw new MutationInputError('Target ACOS and average order value are required');
+      if(!Array.isArray(body.selectedTerms)||body.selectedTerms.some(id=>typeof id!=='string'))throw new MutationInputError('Selected term identities are required');
+      const selected=new Set(body.selectedTerms as string[]);
+      const selectedRows=payload.rows.filter(r=>selected.has(`${r.campaignId??''}|${r.adGroupId??''}|${r.searchTerm}`));
+      if(selectedRows.length!==selected.size)throw new MutationInputError('Search-term evidence changed. Reload before reviewing.');
+      const review=buildNgramNegativeReview(selectedRows,body.gram,Number(body.n),{targetAcos:profile.target_acos,aov:sales/orders});
+      if(!review||review.rows.length!==body.proposals.length)throw new MutationInputError('Negative evidence changed. Reload before reviewing.');
+      const proposals:NegativeProposalInput[]=review.rows.map(row=>{
+        const matches=(body.proposals as Record<string,unknown>[]).filter(p=>p['campaignId']===row.campaignId&&p['adGroupId']===row.adGroupId);
+        const incoming=matches[0];
+        if(matches.length!==1||!incoming
+          ||incoming['searchTerm']!==review.gram
+          ||!MATCH_TYPES.includes(String(incoming['matchType']))
+          ||incoming['spend']!==row.spend
+          ||incoming['clicks']!==row.clicks
+          ||incoming['searchTerms']!==row.searchTerms)throw new MutationInputError('Reviewed rows changed. Reload before reviewing.');
+        const expected={...review.options,spend:review.candidate.cost,sales:review.candidate.sales,orders:review.candidate.purchases,reason:review.candidate.reason};
+        if(JSON.stringify(incoming['gramInputs'])!==JSON.stringify(expected))throw new MutationInputError('Engine inputs changed. Review the new calculation.');
+        return {searchTerm:review.gram,campaignId:row.campaignId,adGroupId:row.adGroupId,matchType:incoming['matchType'] as NegativeProposalInput['matchType'],inputs:{
+          rpc:row.clicks>0?row.sales/row.clicks:null,clicks:row.clicks,cvrSourceLevel:'keyword',ceilingApplied:null,capClamped:false,window,trace:ngramCalculationTrace(review)}};
+      });
+      const result=await createNegativeProposalsForActor(database,{profileId:body.profileId,window,lookbackDays:Math.round((Date.parse(window.end)-Date.parse(window.start))/86400000)+1,proposals});
+      return Response.json({...result,offered:proposals.length},{status:201});
+    }
 
     const proposals: NegativeProposalInput[] = (body.proposals as IncomingProposal[]).map(
       (proposal, index) => {

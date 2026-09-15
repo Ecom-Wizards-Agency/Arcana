@@ -317,7 +317,7 @@ test.describe('n-gram explorer', () => {
     // Bigrams by default; unigrams pool the same terms differently, and the
     // count changes without a round trip because the engine runs in the page.
     const bigrams = (await page.getByTestId('gram-count').textContent()) ?? '';
-    await page.getByRole('button', { name: 'Unigrams' }).click();
+    await page.getByRole('button', { name: 'Unigram' }).click();
     await expect(page.getByTestId('gram-count')).not.toHaveText(bigrams);
 
     // The explorer now uses the same composable filter model as the main Grid.
@@ -346,7 +346,7 @@ test.describe('n-gram explorer', () => {
     const csv = await readFile(downloadPath!, 'utf8');
     expect(csv.trim().split(/\r?\n/)).toHaveLength(3);
 
-    // Click a gram to see the terms behind it: you negate terms, not grams.
+    // Inspect the search terms supporting the selected gram.
     await page.getByTestId('grid-row').first().click();
     await page.getByRole('button', { name: /Select all \d+/ }).click();
 
@@ -368,18 +368,22 @@ test.describe('n-gram explorer', () => {
     expect(chosen).toBeGreaterThan(0);
     expect(chosen).toBeLessThanOrEqual(SEARCH_TERMS);
     await selectAll.click();
-    await terms.getByRole('button', { name: 'Propose selected as negatives' }).click();
+    await terms.getByRole('button', { name: 'Review negative keyword' }).click();
+    await expect(page.getByRole('region', { name: 'Review negative keyword' })).toContainText(`${chosen} search terms`);
+    const proposedRows = await page.getByRole('region', { name: 'Review negative keyword' }).locator('tbody tr').count();
+    expect(proposedRows).toBe(1);
+    await page.getByRole('button', { name: `Accept proposal` }).click();
 
     const result = page.getByTestId('propose-result');
-    await expect(result).toContainText(`Proposed ${chosen} of ${chosen} negatives`);
-    await expect(result).toContainText('Nothing was negated');
+    await expect(result).toContainText(`${proposedRows} negative keyword proposals added`);
+    await expect(page.getByRole('region', { name: 'Negative keywords queued' })).toContainText('Review and approve the proposals in the change queue before they are sent to Amazon.');
 
     // They are reviewable like any other proposal, in their own run — the
     // newest one, which the review screen lists first.
     await page.goto(`/recommendations?profile=${PROFILE}`);
     await page.getByText(/^Choose run/).click();
     await page.getByRole('navigation', { name: 'Runs' }).getByRole('link').first().click();
-    await expect(page.locator('[data-testid^="proposal-"]')).toHaveCount(chosen);
+    await expect(page.locator('[data-testid^="proposal-"]')).toHaveCount(proposedRows);
     await expect(page.getByTestId('grid-row').first()).toContainText('Flag');
   });
 });
