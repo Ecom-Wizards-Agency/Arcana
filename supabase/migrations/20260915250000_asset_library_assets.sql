@@ -33,3 +33,24 @@ create table public.asset_library_assets (
   check(duration_seconds is null or duration_seconds >= 0)
 );
 select app.install_tenant_rls('public.asset_library_assets');
+
+alter type public.sync_job_type add value if not exists 'asset-library.search';
+
+-- Refresh admits only a read job. The profile lock serializes concurrent clicks.
+create function app.request_asset_library_refresh(p_org uuid, p_profile uuid)
+returns table(job_id uuid, enqueued integer, already_queued integer)
+language plpgsql security definer set search_path = pg_catalog, public, app as $$
+declare v_job uuid;
+begin
+  perform app.lock_org_editor(p_org);
+  perform 1 from public.ad_profiles where org_id=p_org and id=p_profile for update;
+  if not found then raise exception 'Resource not found' using errcode='42501'; end if;
+  select id into v_job from public.sync_jobs where org_id=p_org and profile_id=p_profile
+    and job_type::text='asset-library.search' and status in ('queued','running') order by created_at limit 1;
+  if v_job is not null then return query select v_job,0,1; return; end if;
+  insert into public.sync_jobs(org_id,profile_id,job_type,payload)
+    values(p_org,p_profile,'asset-library.search',jsonb_build_object('type','asset-library.search','orgId',p_org,'profileId',p_profile)) returning id into v_job;
+  return query select v_job,1,0;
+end $$;
+revoke all on function app.request_asset_library_refresh(uuid,uuid) from public,anon;
+grant execute on function app.request_asset_library_refresh(uuid,uuid) to authenticated;

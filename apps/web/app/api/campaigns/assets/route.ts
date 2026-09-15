@@ -1,4 +1,4 @@
-import { readAssetLibrarySnapshot, listUsedCampaignCreatives } from '@wizard-ads/db';
+import { readAssetLibrarySnapshot, listUsedCampaignCreatives, requestAssetLibraryRefresh } from '@wizard-ads/db';
 import { authenticatedRead, readUuid } from '../../../../src/server/authenticated-read';
 import { authenticatedMutation, mutationBody, mutationUuid } from '../../../../src/server/authenticated-mutation';
 export const runtime = 'nodejs';
@@ -9,8 +9,8 @@ export async function GET(request: Request): Promise<Response> {
   });
 }
 export async function POST(request: Request): Promise<Response> {
-  return authenticatedMutation(request, async () => {
-    const body = await mutationBody(request); mutationUuid(body['profileId'], 'profileId');
-    return Response.json({ error: 'Asset-library refresh is unavailable until its ingestion job is registered.' }, { status: 503 });
+  return authenticatedMutation(request, async (context) => {
+    const body = await mutationBody(request); const profileId = mutationUuid(body['profileId'], 'profileId');
+    return Response.json(await requestAssetLibraryRefresh(context, profileId), { status: 202 });
   });
 }

@@ -8,6 +8,7 @@
  * worker resumable instead of a lost report.
  */
 import { z } from 'zod';
+import { AssetLibrarySearchJob } from './asset-library.js';
 import { AdProduct, AmazonId, IsoDate, Uuid } from './primitives.js';
 
 export const JobType = z.enum([
@@ -28,6 +29,7 @@ export const JobType = z.enum([
   'marketing_stream.normalize',
   'report.unified.advance',
   'translation.request',
+  'asset-library.search',
 ]);
 export type JobType = z.infer<typeof JobType>;
 
@@ -283,6 +285,7 @@ export type TargetTranslationJob = z.infer<typeof TargetTranslationJob>;
 
 export const JobPayload = z.discriminatedUnion('type', [
   EntitySyncJob,
+  AssetLibrarySearchJob,
   ReportRequestJob,
   ReportPollJob,
   ReportFetchJob,

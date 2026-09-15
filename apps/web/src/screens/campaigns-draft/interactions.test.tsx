@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { CampaignBuilderResult } from '@wizard-ads/shared';
-import { BidEditor } from './bid';
+import { BidEditor, evidenceWindow } from './bid';
 import { CreationConfirm, CreationResult, KeywordRetry } from './creation-states';
 import { DraftReady } from './view';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -11,6 +11,15 @@ import { builderContext, builderRecipe, savedDraft, validatedDraft, blockedDraft
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const noop = () => {};
 describe('bid and immutable draft interactions', () => {
+  it('formats the evidence window in words and preserves a frozen rationale while editing', () => {
+    expect(evidenceWindow('2026-05-01', '2026-05-30')).toBe('1 – 30 May 2026');
+    const sentence = 'Synthetic saved bid rationale.';
+    render(<BidEditor keyword={builderRecipe.keywords[0]!} evidence={builderContext.bidEvidence[0]!} bounds={{ floor: 0.12, ceiling: 0.96, exposureCeiling: 2.4, decimalPlaces: 2 }} currency="USD" topOfSearch={140} audienceAdjustment={0} placementSource="name" frozenRationale={sentence} onUse={noop} onCancel={noop} />);
+    expect(screen.getByText('Read from the campaign name, token (TOS-140).')).toBeTruthy();
+    expect(screen.getByText('$0.25')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Starting bid amount'), { target: { value: '0.48' } });
+    expect(screen.getByText(`“${sentence}”`)).toBeTruthy();
+  });
   it('blocks inconsistent CPC until the operator selects manual and uses the exact entered bid', () => {
     const use = vi.fn();
     render(<BidEditor keyword={{ ...builderRecipe.keywords[0]!, basis: 'keyword_cpc' }} evidence={{ ...builderContext.bidEvidence[0]!, reportedCpc: 1.2 }} bounds={{ floor: 0.12, ceiling: 0.96, exposureCeiling: 2.4, decimalPlaces: 2 }} currency="USD" topOfSearch={140} audienceAdjustment={0} onUse={use} onCancel={noop} />);
@@ -71,7 +80,7 @@ describe('executor presentation boundary and resource results', () => {
   it('renders only one unresolved keyword retry, separately disabled when the executor is absent', () => {
     render(<KeywordRetry result={creationResult(false)} executor={{ available: false }} onBack={noop} onExport={noop} />);
     expect((screen.getByRole('button', { name: 'Yes, retry 1 keyword in Amazon' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getAllByText('Reuse the created resource')).toHaveLength(3);
+    expect(screen.getByText('Reuse the created campaign')).toBeTruthy(); expect(screen.getByText('Reuse the created ad group')).toBeTruthy(); expect(screen.getByText('Keep the created product ad')).toBeTruthy();
   });
   it('reconciles four original resources, one retry and no duplicated resources', () => {
     render(<CreationResult result={creationResult(true)} onBack={noop} onRetry={noop} />);

@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AssetLibrarySnapshot } from '@wizard-ads/shared/asset-library';
 import { createTestDatabase, type TestDatabase } from '../testing/harness.js';
-import { withAuthenticatedReadSnapshot } from './authenticated-actor.js';
-import { readAssetLibraryJobSnapshot, readAssetLibrarySnapshot, recordAssetLibrarySnapshot } from './asset-library.js';
+import { withAuthenticatedReadSnapshot, withAuthenticatedOrgEditor } from './authenticated-actor.js';
+import { readAssetLibraryJobSnapshot, readAssetLibrarySnapshot, recordAssetLibrarySnapshot, requestAssetLibraryRefresh } from './asset-library.js';
 describe('asset library snapshots', () => {
   let db: TestDatabase; let profileId: string; let amazonProfileId: string; let snapshot: AssetLibrarySnapshot;
   const actor = { orgId: '', userId: randomUUID() }; const other = { orgId: '', userId: randomUUID() };
@@ -32,4 +32,14 @@ describe('asset library snapshots', () => {
     await recordAssetLibrarySnapshot(db, actor.orgId, { ...snapshot, id: randomUUID(), observedAt: '2026-06-13T00:00:00.000Z', sourceRows: 0, persistedRows: 0, assets: [] });
     expect((await withAuthenticatedReadSnapshot(db, actor, (tx) => readAssetLibrarySnapshot(tx, profileId)))?.assets).toEqual([]);
   });
+  it('admits one read job, deduplicates concurrent refresh and refuses another tenant', async () => {
+    const first = await withAuthenticatedOrgEditor(db, actor, (tx) => requestAssetLibraryRefresh(tx, profileId));
+    expect(first).toMatchObject({ requested: 1, enqueued: 1, alreadyQueued: 0 });
+    const second = await withAuthenticatedOrgEditor(db, actor, (tx) => requestAssetLibraryRefresh(tx, profileId));
+    expect(second).toEqual({ ...first, enqueued: 0, alreadyQueued: 1 });
+    const jobs = await db.sql`select job_type,payload from public.sync_jobs where id=${first.jobId}`;
+    expect(jobs).toHaveLength(1); expect(jobs[0]).toMatchObject({ job_type: 'asset-library.search', payload: { type: 'asset-library.search', orgId: actor.orgId, profileId } });
+    await expect(withAuthenticatedOrgEditor(db, other, (tx) => requestAssetLibraryRefresh(tx, profileId))).rejects.toThrow('Resource not found');
+  });
+
 });

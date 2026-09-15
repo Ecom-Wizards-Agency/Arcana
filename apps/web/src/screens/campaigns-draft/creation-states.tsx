@@ -1,7 +1,7 @@
 'use client';
 import { orderCampaignCreationNodes, CAMPAIGN_CREATION_UNAVAILABLE, CampaignBuilderCheck, type CampaignBuilderResult } from '@wizard-ads/shared';
 import type { CampaignCreationApprovalView } from '@wizard-ads/shared/campaign-creation-approval';
-import { Button, CampaignPage, DetailsTable, Notice, NO_ROLLBACK_NOTE } from '../campaigns/ui';
+import { Button, CampaignPage, DetailsTable, Notice, quantity, NO_ROLLBACK_NOTE } from '../campaigns/ui';
 
 export type CreationExecutor = { available: false } | { available: true; create: () => void; retry: () => void };
 export function CreationConfirm({ review, checks, executor, onExport, onBack }: {
@@ -13,8 +13,8 @@ export function CreationConfirm({ review, checks, executor, onExport, onBack }: 
   const completeChecks = CampaignBuilderCheck.shape.id.options.every((id) => checks.filter((check) => check.id === id).length === 1);
   const available = executor.available && completeChecks && !checks.some((check) => check.blocking) && review.freshness.status === 'current';
   const labels = { 'campaign.create': 'Campaign', 'ad_group.create': 'Ad group', 'ad.create': 'Product ad', 'target.create': 'Keyword', 'creative.create': 'Creative' };
-  return <CampaignPage title="Confirm campaign creation"><Notice><strong>Create {count} campaign(s) in Amazon</strong><p>{review.profile.label} · {review.plan.marketplaceId} · {currency} · Campaign starts paused</p></Notice>
-    <DetailsTable headings={['Resource', 'Count', 'After creation']} rows={nodes.map((node) => [labels[node.kind as keyof typeof labels] ?? node.kind, 1, node.kind === 'campaign.create' ? 'Paused' : node.kind === 'target.create' ? 'Using the reviewed bid' : 'In the reviewed campaign'])} />
+  return <CampaignPage title="Confirm campaign creation"><section className="campaign-rationale"><h2>Create {quantity(count, 'campaign')} in Amazon</h2><p className="wa-hint">{review.profile.label} · {review.plan.marketplaceId} · {currency} · Campaign starts paused</p></section>
+    <DetailsTable headings={['Resource', 'Count', 'After creation']} rows={nodes.map((node) => [labels[node.kind as keyof typeof labels] ?? node.kind, 1, node.kind === 'campaign.create' ? 'Paused' : node.kind === 'target.create' ? 'Using the reviewed bid' : node.kind === 'ad.create' ? 'In the new ad group' : 'In the new campaign'])} />
     <p>{nodes.length} resources will be created in order. Validation must pass for the exact draft you approve.</p><p>Payload fingerprint <code>{review.plan.fingerprint}</code></p>
     <Notice kind="warn">{NO_ROLLBACK_NOTE}</Notice>
     {checks.some((check) => check.status === 'not_measured') && <Notice><strong>Checks not measured</strong><ul>{checks.filter((check) => check.status === 'not_measured').map((check) => <li key={check.id}>{check.label} · {check.source}</li>)}</ul></Notice>}
@@ -38,7 +38,7 @@ export function CreationResult({ result, onRetry, onBack }: { result: CampaignBu
   const campaignObserved = result.resources.some((row) => row.kind === 'campaign' && row.status === 'created') && count.observed === count.succeeded;
   return <CampaignPage title={complete ? 'Campaign created' : count.succeeded > 0 ? 'Campaign partially created' : 'Campaign creation unresolved'} subtitle={`${count.succeeded} of ${count.operatorApproved} resources created · Initial state paused`}>
     <Notice kind={complete ? 'good' : 'warn'}><strong>{complete ? `All ${count.succeeded} resources are created` : campaignObserved ? 'The campaign is paused. Review the unresolved resources.' : 'The campaign state is not confirmed. Review the unresolved resources.'}</strong><p>{complete ? 'The campaign remains paused while you review it.' : result.resources.find((row) => row.status === 'failed')?.message ?? 'Provider completion is not confirmed.'}</p></Notice>
-    <DetailsTable headings={['Resource', 'Requested', 'Succeeded', 'Status']} rows={result.resources.map((row) => [row.kind.replaceAll('_', ' '), row.requested, row.succeeded, row.status])} />
+    <DetailsTable headings={['Resource', 'Requested', 'Succeeded', 'Status']} rows={result.resources.map((row) => [({ campaign: 'Campaign', ad_group: 'Ad group', product_ad: 'Product ad', keyword: 'Keyword' })[row.kind], row.requested, row.succeeded, row.status === 'created' ? `Created${row.kind === 'campaign' ? ' · Paused' : ''}` : row.status === 'failed' ? `Failed · ${row.responseCode ?? 'Reason not recorded'}` : row.status === 'pending' ? 'Pending' : 'Unknown'])} />
     <p>Requested {count.operatorApproved} · Attempted {count.attempted} · Succeeded {count.succeeded} · Failed {count.failed}</p>
     {complete && <p>Original request: {count.operatorApproved} resources · Created: {count.succeeded} · Failed: {count.failed}</p>}
     {result.retry && <p>Retry: {result.retry.requested} keyword requested · {result.retry.created} created · {result.retry.duplicated} duplicated resources</p>}
@@ -49,8 +49,8 @@ export function CreationResult({ result, onRetry, onBack }: { result: CampaignBu
 export function KeywordRetry({ result, executor, onBack, onExport }: { result: CampaignBuilderResult; executor: CreationExecutor; onBack: () => void; onExport: () => void }) {
   const count = keywordRetryCount(result);
   return <CampaignPage title="Review keyword retry"><Notice><strong>{count > 0 ? 'Retry the keyword only' : 'Keyword retry is unavailable'}</strong><p>{count > 0 ? 'The campaign, ad group and product ad already exist. The campaign remains paused.' : 'Resolve resource and observation conflicts before reviewing a retry.'}</p></Notice>
-    <DetailsTable headings={['Resource', 'Action']} rows={result.resources.map((row) => [row.kind.replaceAll('_', ' '), row.status === 'created' ? 'Reuse the created resource' : row.kind === 'keyword' && row.status === 'failed' ? 'Retry after checking current state' : 'Requires separate review'])} />
-    <p>This approval covers {count} unresolved keyword creation(s). Successful resources will not be created again.</p>
+    <DetailsTable headings={['Resource', 'Action']} rows={result.resources.map((row) => [({ campaign: 'Campaign', ad_group: 'Ad group', product_ad: 'Product ad', keyword: 'Keyword' })[row.kind], row.status === 'created' ? row.kind === 'product_ad' ? 'Keep the created product ad' : `Reuse the created ${row.kind === 'ad_group' ? 'ad group' : row.kind}` : row.kind === 'keyword' && row.status === 'failed' ? 'Retry after checking current state' : 'Requires separate review'])} />
+    <p>This approval covers {quantity(count, 'unresolved keyword creation')}. Successful resources will not be created again.</p>
     {!executor.available && <Notice>{CAMPAIGN_CREATION_UNAVAILABLE}</Notice>}
     <div className="wa-actions"><Button variant="primary" disabled={!executor.available || count === 0} onClick={() => { if (executor.available && count > 0) executor.retry(); }}>Yes, retry {count} {count === 1 ? 'keyword' : 'keywords'} in Amazon</Button><Button onClick={onBack}>Back to results</Button><Button onClick={onExport}>Export bulk sheet</Button></div>
   </CampaignPage>;

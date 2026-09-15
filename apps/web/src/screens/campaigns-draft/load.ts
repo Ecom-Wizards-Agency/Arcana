@@ -1,6 +1,6 @@
+import { readCampaignRouteFixture, DraftRouteData } from '../../campaigns/route-fixtures';
 import { readCampaignDraft } from '@wizard-ads/db';
-import { Uuid, campaignCreationExecutorAvailable, type CampaignBuilderContext, type CampaignDraft } from '@wizard-ads/shared';
-import type { CampaignCreationApprovalView } from '@wizard-ads/shared/campaign-creation-approval';
+import { Uuid, campaignCreationExecutorAvailable } from '@wizard-ads/shared';
 import { unavailableCampaignReview } from '../../campaigns/review';
 import type { ScreenActor } from '../../server/page-read';
 import type { ScreenParams } from '../types';
@@ -9,10 +9,11 @@ import { unstable_rethrow } from 'next/navigation';
 import { pageReadErrorMessage } from '../../server/authenticated-page-read';
 import { listProfiles } from '../../../app/_lib/profiles';
 
-export type DraftScreenData = { view: 'ready'; context: CampaignBuilderContext; draft: CampaignDraft; review: CampaignCreationApprovalView; executorAvailable: boolean; step: string }
-  | { view: 'error' | 'empty' | 'gated' | 'not-measured'; message: string };
+export type DraftScreenData = DraftRouteData;
 export async function load(access: ScreenActor, input: ScreenParams): Promise<DraftScreenData> {
   const id = Uuid.safeParse(input.searchParams['draft']);
+  const fixture = await readCampaignRouteFixture(access, input, 'campaigns-draft', DraftRouteData);
+  if (fixture) return fixture;
   try {
     return await access.snapshot(async (snapshot) => {
       const profile = access.selectProfile(await listProfiles({ sql: snapshot.sql }, snapshot.actor.orgId));

@@ -26,6 +26,6 @@ export function AssetPicker({ snapshot, used, canRefresh, onRefresh, initialTab 
     {selected && <Notice>Selected for review: {selected.observation.identity.assetId} · version {selected.observation.identity.version}. This selection is not saved as a campaign draft.</Notice>}
     <p className="wa-hint">Observed: {snapshot?.observedAt ?? 'Not measured'}. “Never used” means no use observed in the current Sponsored Brands video snapshot; historical and other-format use may be missing. Thumbnails require a known expiry. Asset reuse preserves the Amazon asset ID. Processing status does not establish moderation approval.</p>
     <Button disabled={!canRefresh || busy} onClick={async () => { setBusy(true); try { await onRefresh(); setMessage('Asset-library refresh queued. Reload after the worker finishes.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Refresh unavailable'); } finally { setBusy(false); } }}>Refresh from Amazon</Button>{message && <Notice>{message}</Notice>}
-    {!canRefresh && <Notice>Asset-library refresh is unavailable until its ingestion job is registered and the operator has editing permission.</Notice>}
+    {!canRefresh && <Notice>Editing permission is required to refresh the asset library.</Notice>}
   </section>;
 }

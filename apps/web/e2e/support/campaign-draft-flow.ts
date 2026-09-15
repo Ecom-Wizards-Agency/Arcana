@@ -25,7 +25,7 @@ export async function verifyCampaignDraftFlow(page: Page) {
     await page.getByLabel('Top-of-search adjustment', { exact: true }).fill('140');
     await page.getByRole('button', { name: 'Continue to play & targets' }).click();
     await page.getByLabel('Keywords', { exact: true }).fill('synthetic draft keyword');
-    await expect(page.getByText('1 keywords × 1 products = 1 campaigns, 1 keyword each')).toBeVisible();
+    await expect(page.getByText('1 keyword × 1 product = 1 campaign, 1 keyword each')).toBeVisible();
     await page.getByRole('button', { name: 'Review draft', exact: true }).click();
     await page.getByRole('button', { name: 'Save campaign draft' }).click();
     await expect(page).toHaveURL(/\/campaigns\/draft\?/);

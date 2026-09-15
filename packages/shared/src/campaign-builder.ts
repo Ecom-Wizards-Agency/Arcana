@@ -1,3 +1,5 @@
+import { CampaignCreationApprovalView } from './campaign-creation-approval.js';
+import { AssetLibrarySnapshot, UsedCampaignCreative } from './asset-library.js';
 import { z } from 'zod';
 import { CurrencyCode, Uuid } from './primitives.js';
 import { NamingStrategy } from './strategy.js';
@@ -101,7 +103,7 @@ export const CAMPAIGN_CREATION_UNAVAILABLE = 'Creation in Amazon is not availabl
 /** Row outcomes supplement the existing aggregate contract; no provider payload is exposed. */
 export const CampaignBuilderResult = z.object({
   snapshot: CampaignCreationExecutionSnapshot,
-  resources: z.array(z.object({ nodeId: Uuid, kind: z.enum(['campaign', 'ad_group', 'product_ad', 'keyword']), requested: z.number().int().nonnegative(), succeeded: z.number().int().nonnegative(), status: z.enum(['created', 'failed', 'pending', 'unknown']), message: z.string().nullable() }).strict()),
+  resources: z.array(z.object({ nodeId: Uuid, kind: z.enum(['campaign', 'ad_group', 'product_ad', 'keyword']), requested: z.number().int().nonnegative(), succeeded: z.number().int().nonnegative(), status: z.enum(['created', 'failed', 'pending', 'unknown']), message: z.string().nullable(), responseCode: z.string().min(1).max(128).nullable().optional() }).strict()),
   retry: z.object({ requested: z.number().int().nonnegative(), created: z.number().int().nonnegative(), duplicated: z.number().int().nonnegative() }).strict().nullable(),
   campaignState: z.literal('paused'), currencyCode: CurrencyCode,
 }).strict().superRefine((value, ctx) => {
@@ -116,3 +118,39 @@ export const CampaignBuilderResult = z.object({
   }
 });
 export type CampaignBuilderResult = z.infer<typeof CampaignBuilderResult>;
+
+/** Display guidance from the reviewed page-12 capability snapshot. This does not
+ * authorize a provider write; execution still requires the coordinated matrix. */
+export const CAMPAIGN_AD_TYPE_SNAPSHOT = {
+  version: 'campaign-ad-types.2026-09-15.v1',
+  entries: [
+    { adType: 'SP', name: 'Sponsored Products', cost: 'CPC', source: 'Page 12, node 95:2; SP coordinated capabilities and marketplace rules', rows: [
+      { supported: true, label: 'Keyword and product targeting' }, { supported: true, label: 'Three placement adjustments' },
+      { supported: true, label: 'Fixed, down-only, up-and-down' }, { supported: true, label: 'Product ads from your catalogue' }, { supported: false, label: 'No creative to choose' },
+    ] },
+    { adType: 'SB', name: 'Sponsored Brands', cost: 'CPC', source: 'Page 12, node 95:2, reviewed capability guidance; creation executor unavailable', rows: [
+      { supported: true, label: 'Keyword targeting' }, { supported: true, label: 'Top and rest of search adjustments' }, { supported: true, label: 'Headline, logo, destination' },
+      { supported: false, label: 'No product-page adjustment' }, { supported: false, label: 'Negative adjustments may not be supported' },
+    ] },
+    { adType: 'SBV', name: 'Sponsored Brands video', cost: 'CPC', source: 'Page 12, node 95:2, reviewed capability guidance; creation executor unavailable', rows: [
+      { supported: true, label: 'Keyword targeting' }, { supported: true, label: 'A video asset' }, { supported: true, label: 'Store or detail-page destination' }, { supported: false, label: 'Same placement limits as SB' },
+    ] },
+    { adType: 'SD', name: 'Sponsored Display', cost: 'CPC or vCPM', source: 'Page 12, node 95:2, reviewed capability guidance; creation executor unavailable', rows: [
+      { supported: true, label: 'Audience or product targeting' }, { supported: true, label: 'Cost type decides everything else' }, { supported: false, label: 'No SP placements' }, { supported: false, label: 'No SP bidding modes' },
+    ] },
+  ],
+} as const;
+
+/** Serialized screen evidence; inert fixture adapters never grant execution authority. */
+const unavailable = z.object({ view: z.enum(['error', 'empty', 'gated', 'not-measured']), message: z.string() });
+export const BuilderRouteData = z.union([z.object({ view: z.literal('ready'), context: CampaignBuilderContext, step: z.enum(['products', 'targets', 'review']), initialRecipe: CampaignBuilderRecipe.optional(), initialSource: z.enum(['paste', 'search-terms', 'ngrams', 'rank-radar', 'saved']).optional() }), unavailable]);
+export const DraftRouteData = z.union([z.object({ view: z.literal('ready'), context: CampaignBuilderContext, draft: CampaignDraft, review: CampaignCreationApprovalView, executorAvailable: z.boolean(), step: z.string(), result: CampaignBuilderResult.optional(), fixtureExecutor: z.literal('inert').optional() }), unavailable]);
+export const NamingRouteData = z.union([z.object({ view: z.literal('ready'), profileId: Uuid, naming: NamingStrategy.nullable(), presets: z.array(CampaignNamingPreset), profiles: z.array(z.object({ id: Uuid, label: z.string() })), canEdit: z.boolean() }), unavailable]);
+export const AssetsRouteData = z.union([z.object({ view: z.literal('ready'), profileId: Uuid, snapshot: AssetLibrarySnapshot.nullable(), used: z.array(UsedCampaignCreative), canRefresh: z.boolean(), initialTab: z.enum(['library', 'used', 'upload']).optional() }), unavailable]);
+export const UpdateRouteData = z.union([z.object({ view: z.literal('ready'), profileId: Uuid, profileLabel: z.string(), marketplace: z.string() }), unavailable]);
+
+export type BuilderRouteData = z.infer<typeof BuilderRouteData>;
+export type DraftRouteData = z.infer<typeof DraftRouteData>;
+export type NamingRouteData = z.infer<typeof NamingRouteData>;
+export type AssetsRouteData = z.infer<typeof AssetsRouteData>;
+export type UpdateRouteData = z.infer<typeof UpdateRouteData>;

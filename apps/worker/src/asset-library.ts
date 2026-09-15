@@ -1,3 +1,6 @@
+import type { IngestionRegistry } from './ingestion-registry.js';
+import { readAssetLibraryJobSnapshot, recordAssetLibrarySnapshot, type DbHandle } from '@wizard-ads/db';
+import { ingestionSource } from './ingestion-sources.js';
 import { AssetLibraryObservation, AssetLibrarySnapshot, AssetLibrarySearchJob, type AssetLibrarySnapshotAsset } from '@wizard-ads/shared/asset-library';
 import type { AdsProfileContext, SbVideoContractProbeClient } from './ads-api.js';
 
@@ -33,4 +36,27 @@ export async function executeAssetLibrarySearch(input: {
   const receipt = await input.persist(job.orgId, snapshot);
   if (receipt.persistedRows !== assets.length || receipt.verifiedRows !== assets.length) throw new Error('Asset library snapshot counts do not reconcile');
   return { sourceRows: library.sourceRows, parsedRows: assets.length, loadedRows: receipt.persistedRows, verifiedLoadedRows: receipt.verifiedRows, refusedRows: 0, observedAt };
+}
+
+/** Production registry binding: the provider surface contains only reads. */
+export function registerAssetLibrarySource(
+  registry: Pick<IngestionRegistry, 'register'>,
+  handle: Pick<DbHandle, 'sql'>,
+  reader: SbVideoContractProbeClient,
+  now: () => string = () => new Date().toISOString(),
+): void {
+  registry.register({
+    source: { ...ingestionSource('asset-library.search'), jobType: 'asset-library.search', reportType: 'asset_library_assets' },
+    plan: (context) => context,
+    execute: ({ payload, job, profile }) => executeAssetLibrarySearch({ job: payload, jobId: job.id, profile, reader, now,
+      readExisting: (orgId, profileId, jobId) => readAssetLibraryJobSnapshot(handle, orgId, profileId, jobId),
+      persist: (orgId, snapshot) => recordAssetLibrarySnapshot(handle, orgId, snapshot),
+    }),
+    counts: (result) => result,
+    coverage: { target: (result, context) => {
+      const date = new Intl.DateTimeFormat('en-CA', { timeZone: context.profile.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(result.observedAt));
+      return { reportType: 'asset_library_assets', grain: 'asset_library_assets', earliestDate: date, coveredThrough: date,
+        observedAt: result.observedAt, settledThrough: null, status: 'complete' };
+    } },
+  });
 }

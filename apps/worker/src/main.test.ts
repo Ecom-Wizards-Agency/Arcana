@@ -11,6 +11,7 @@ describe('runtime job coverage', () => {
   it('accounts for every declared type in dispatch and production composition', () => {
     // These are production bindings, not injectable test-only handlers.
     const bindings = {
+      'asset-library.search': 'registerAssetLibrarySource(',
       'translation.request': 'registerTargetTranslation(',
       'entity.sync': 'adsApi,',
       'report.request': 'adsApi,',

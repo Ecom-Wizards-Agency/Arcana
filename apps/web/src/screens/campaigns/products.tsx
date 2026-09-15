@@ -1,22 +1,16 @@
 'use client';
 import { useState } from 'react';
-import { spMarketplaceBidCapability, type CampaignBuilderAdType, type CampaignBuilderContext } from '@wizard-ads/shared';
+import { CAMPAIGN_AD_TYPE_SNAPSHOT, spMarketplaceBidCapability, type CampaignBuilderAdType, type CampaignBuilderContext } from '@wizard-ads/shared';
 import { Button, Input, Select, Notice, money } from './ui';
 
-const adTypes = [ ['SP', 'Sponsored Products', 'CPC'], ['SB', 'Sponsored Brands', 'CPC'], ['SBV', 'Sponsored Brands video', 'CPC'], ['SD', 'Sponsored Display', 'CPC or vCPM'] ] as const;
-const controls = [['target_bid', 'Keyword bids'], ['placement_adjustment', 'Placement adjustments'], ['audience_adjustment', 'Audience adjustments'], ['bidding_mode', 'Bidding strategy']] as const;
 export function AdTypeCards({ context, selected, onSelect }: { context: CampaignBuilderContext; selected: CampaignBuilderAdType; onSelect: (type: CampaignBuilderAdType) => void }) {
   const bidRules = spMarketplaceBidCapability(context.profile.marketplace ?? undefined);
-  return <section className="wa-stack"><h2>Choose the ad type first</h2><div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: 12 }}>
-    {adTypes.map(([type, title, cost]) => <Button key={type} aria-pressed={type === selected} onClick={() => onSelect(type)} style={{ display: 'block', textAlign: 'left', whiteSpace: 'normal', fontWeight: 400, lineHeight: 1.5, padding: 16, borderColor: type === selected ? 'var(--wa-accent)' : 'var(--wa-border)' }}>
-      <strong>{title}</strong><p className="wa-hint">{type} · {cost}</p>
-      {controls.map(([control, label]) => {
-        const available = type === 'SP' && (control !== 'target_bid' || bidRules !== null) && context.capabilities.entries.some((entry) => entry.adProduct === 'SP' && entry.control === control && entry.available);
-        return <div key={control}>{available ? '✓' : '—'} {label}{available ? '' : ' · Unavailable'}</div>;
-      })}
-      {type === 'SP' && <p className="wa-hint">{bidRules ? `Marketplace bids: ${money(bidRules.bidMin, bidRules.currencyCode)} to ${money(bidRules.bidMax, bidRules.currencyCode)} · ${bidRules.decimalPlaces} decimal places` : 'Marketplace bid limits: not measured'}</p>}
+  return <section className="wa-stack"><h2>Choose the ad type first</h2><p className="wa-hint">What you can set differs by type, so the form changes rather than showing fields that will be ignored.</p><div className="campaign-ad-types" data-capability-version={CAMPAIGN_AD_TYPE_SNAPSHOT.version}>
+    {CAMPAIGN_AD_TYPE_SNAPSHOT.entries.map(({ adType, name, cost, rows, source }) => <Button key={adType} aria-pressed={adType === selected} onClick={() => onSelect(adType)} title={source} className="campaign-ad-type" style={{ background: adType === selected ? 'var(--wa-accent-soft)' : 'var(--wa-surface-2)', borderColor: adType === selected ? 'var(--wa-accent)' : 'var(--wa-border)' }}>
+      <strong>{name}</strong><p className="wa-hint">{adType} · {cost}</p>
+      {rows.map((row) => <div key={row.label} className="wa-hint"><span style={{ color: row.supported ? 'var(--wa-good-text)' : 'var(--wa-text-dim)' }}>{row.supported ? '✓' : '—'}</span> {row.label}</div>)}
     </Button>)}
-  </div><p className="wa-hint">These lists come from capability snapshot {context.capabilities.version}. A control we cannot verify is unavailable.</p></section>;
+  </div><p className="wa-hint">These lists come from a versioned capability snapshot, not from memory. Amazon changes what a type supports, and an old help article is not current API authority — a control we cannot verify is shown as unavailable rather than offered and then rejected on push.</p><small className="wa-hint">Snapshot {CAMPAIGN_AD_TYPE_SNAPSHOT.version}{selected === 'SP' ? bidRules ? ` · Marketplace bids: ${money(bidRules.bidMin, bidRules.currencyCode)} to ${money(bidRules.bidMax, bidRules.currencyCode)} · ${bidRules.decimalPlaces} decimal places` : ' · Marketplace bid limits: not measured' : ''}</small></section>;
 }
 export function Products({ context, selected, onSelect }: { context: CampaignBuilderContext; selected: string[]; onSelect: (keys: string[]) => void }) {
   const [search, setSearch] = useState(''); const [filter, setFilter] = useState('all');

@@ -1,7 +1,7 @@
 import { Uuid } from '@wizard-ads/shared';
 import { AssetLibrarySnapshot, AssetLibrarySnapshotAsset, UsedCampaignCreative } from '@wizard-ads/shared/asset-library';
 import type { DbHandle, QueryHandle } from '../client.js';
-import type { AuthenticatedReadSnapshot } from './authenticated-actor.js';
+import type { AuthenticatedReadSnapshot, AuthenticatedEditorTransaction } from './authenticated-actor.js';
 
 async function readSnapshot(handle: QueryHandle, orgId: string, profileId: string, id: string | null): Promise<AssetLibrarySnapshot | null> {
   const headers = await handle.sql<{ id: string; observedAt: string; sourceRows: number; persistedRows: number }[]>`
@@ -60,4 +60,13 @@ export async function recordAssetLibrarySnapshot(handle: Pick<DbHandle, 'sql'>, 
     return { receipt: { persistedRows: persisted, verifiedRows: readback.assets.length } };
   });
   return result.receipt;
+}
+
+/** Admission is atomic with current editor authority and scoped queue ownership. */
+export async function requestAssetLibraryRefresh(context: AuthenticatedEditorTransaction, profileId: string) {
+  Uuid.parse(profileId);
+  const rows = await context.sql<{ job_id: string; enqueued: number; already_queued: number }[]>`select * from app.request_asset_library_refresh(${context.actor.orgId}::uuid,${profileId}::uuid)`;
+  const row = rows[0];
+  if (rows.length !== 1 || !row || row.enqueued + row.already_queued !== 1) throw new Error('Asset refresh admission counts do not reconcile');
+  return { jobId: Uuid.parse(row.job_id), requested: 1, enqueued: row.enqueued, alreadyQueued: row.already_queued };
 }

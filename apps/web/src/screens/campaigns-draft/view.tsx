@@ -6,13 +6,13 @@ import { draftRequest, downloadDraft } from '../../campaigns/client';
 import { builderBidEvidence, builderBounds } from '../../campaigns/model';
 import { unavailableCampaignReview } from '../../campaigns/review';
 import { buildCampaignRecipe } from '@wizard-ads/campaigns';
-import { CampaignPage, Button, Input, Notice, DetailsTable, money } from '../campaigns/ui';
+import { CampaignPage, Button, Input, Notice, DetailsTable, money, quantity } from '../campaigns/ui';
 import { BidEditor } from './bid';
-import { CreationConfirm, type CreationExecutor } from './creation-states';
+import { CreationConfirm, CreationResult, KeywordRetry, type CreationExecutor } from './creation-states';
 
 export default function DraftScreen({ data }: { data: DraftScreenData }) {
   if (data.view !== 'ready') return <CampaignPage title="Review campaign draft"><Notice kind={data.view === 'error' ? 'bad' : 'neutral'}>{data.message}</Notice><a href="/campaigns">Return to builder</a></CampaignPage>;
-  return <DraftReady data={data} />;
+  return <DraftReady data={data} executor={data.fixtureExecutor === 'inert' ? { available: true, create: () => {}, retry: () => {} } : { available: false }} />;
 }
 export function DraftReady({ data, initiallyEditing = false, executor = { available: false } }: { data: Extract<DraftScreenData, { view: 'ready' }>; initiallyEditing?: boolean; executor?: CreationExecutor }) {
   const [draft, setDraft] = useState(data.draft); const [step, setStep] = useState(data.step);
@@ -35,18 +35,20 @@ export function DraftReady({ data, initiallyEditing = false, executor = { availa
   async function exportSheet() { try { await downloadDraft(draft.profileId, draft.id); } catch (error) { setError(error instanceof Error ? error.message : 'Export unavailable'); } }
   function useBid(keyword: CampaignBuilderKeyword) { const recipe = { ...draft.recipe, keywords: draft.recipe.keywords.map((item, index) => index === keywordIndex ? keyword : item) }; void save(recipe); }
   if (step === 'bid') return <><BidEditor keyword={draft.recipe.keywords[keywordIndex]!} evidence={builderBidEvidence(data.context, draft.recipe.keywords[keywordIndex]!.text)}
-    bounds={builderBounds(data.context, draft.recipe.groupId)} currency={currency} topOfSearch={draft.recipe.topOfSearch} audienceAdjustment={draft.recipe.audienceAdjustment}
-    sqpMeasured={data.context.sqpMeasured} onUse={useBid} onCancel={() => navigate('review')} />{error && <Notice kind="bad">{error}</Notice>}</>;
+    match={draft.recipe.play === 'discovery' || draft.recipe.play === 'shield' ? 'Phrase' : 'Exact'} bounds={builderBounds(data.context, draft.recipe.groupId)} currency={currency} topOfSearch={draft.recipe.topOfSearch} audienceAdjustment={draft.recipe.audienceAdjustment}
+    frozenRationale={draft.rationale[keywordIndex]?.sentence} sqpMeasured={data.context.sqpMeasured} onUse={useBid} onCancel={() => navigate('review')} />{error && <Notice kind="bad">{error}</Notice>}</>;
   if (step === 'confirm') return <><CreationConfirm review={data.review.plan.fingerprint === draft.plan.fingerprint ? data.review : unavailableCampaignReview(draft, data.context.profile.label, draft.updatedAt)} checks={draft.validation?.checks ?? []} executor={data.executorAvailable && draft.status === 'validated' ? executor : { available: false }} onExport={() => void exportSheet()} onBack={() => navigate('review')} />{error && <Notice kind="bad">{error}</Notice>}</>;
+  if (step === 'result' && data.result) return <CreationResult result={data.result} onRetry={() => navigate('retry')} onBack={() => navigate('review')} />;
+  if (step === 'retry' && data.result) return <KeywordRetry result={data.result} executor={executor} onBack={() => navigate('result')} onExport={() => void exportSheet()} />;
   if (step === 'result' || step === 'retry') return <CampaignPage title={step === 'result' ? 'Campaign result' : 'Review keyword retry'}><Notice>No creation result has been recorded. Creation in Amazon is not available yet.</Notice><Button onClick={() => navigate('review')}>Return to draft</Button></CampaignPage>;
   const issues = draft.validation?.checks.filter((check) => check.blocking) ?? [];
   const blocked = step === 'validation' || draft.status === 'blocked';
   const count = draft.plan.counts.byKind['campaign.create'];
-  return <CampaignPage title={blocked ? 'Fix draft issues' : 'Review campaign draft'} subtitle={`Sponsored Products · ${count} campaign(s)`}>
+  return <CampaignPage title={blocked ? 'Fix draft issues' : 'Review campaign draft'} subtitle={`Sponsored Products · ${quantity(count, 'campaign')}`}>
     {error && <Notice kind="bad">{error}</Notice>}
-    {draft.status === 'validated' && <Notice kind="good"><strong>Ready to review {count} campaign(s)</strong><p>Budget, name and exposure checks passed for this draft. Unmeasured checks remain listed at confirmation.</p></Notice>}
-    {blocked ? <><h2>{issues.length} issues block campaign creation</h2><DetailsTable headings={['Issue', 'Current value', 'Required action']} rows={issues.map((issue) => [issue.label, issue.currentValue, issue.requiredAction])} /><Notice kind="warn">Fix all {issues.length} issues before creation. Your campaign draft is saved. No resources have been created in Amazon.</Notice></> : <DetailsTable headings={['Draft setting', draft.status === 'validated' ? 'Reviewed value' : 'Value']} rows={[
-      ['Ad type', 'Sponsored Products'], ['Campaigns', `${count} · Created paused`], ['Resources', `${draft.plan.counts.byKind['campaign.create']} campaigns, ${draft.plan.counts.byKind['ad_group.create']} ad groups, ${draft.plan.counts.byKind['ad.create']} product ads, ${draft.plan.counts.byKind['target.create']} keywords`],
+    {draft.status === 'validated' && <Notice kind="good"><strong>Ready to create {quantity(count, 'campaign')}</strong><p>Budget, name and exposure checks passed for this draft. Unmeasured checks remain listed at confirmation.</p></Notice>}
+    {blocked ? <><h2>{quantity(issues.length, 'issue')} {issues.length === 1 ? 'blocks' : 'block'} campaign creation</h2><DetailsTable headings={['Issue', 'Current value', 'Required action']} rows={issues.map((issue) => [issue.label, issue.currentValue, issue.requiredAction])} /><Notice kind="warn">Fix {issues.length === 1 ? 'the issue' : `all ${issues.length} issues`} before creation. Your campaign draft is saved. No resources have been created in Amazon.</Notice></> : <DetailsTable headings={['Draft setting', draft.status === 'validated' ? 'Reviewed value' : 'Value']} rows={[
+      ['Ad type', 'Sponsored Products'], ['Campaigns', `${count} · Created paused`], ['Resources', [quantity(draft.plan.counts.byKind['campaign.create'], 'campaign'), quantity(draft.plan.counts.byKind['ad_group.create'], 'ad group'), quantity(draft.plan.counts.byKind['ad.create'], 'product ad'), quantity(draft.plan.counts.byKind['target.create'], 'keyword')].join(', ')],
       ['Daily budget', money(draft.recipe.dailyBudget, currency)], ['Campaign names', draft.plan.nodes.filter((node) => node.kind === 'campaign.create').map((node) => node.payload.name).join('; ')],
       ['Top-of-search adjustment', `${draft.recipe.topOfSearch}%`], ['Initial campaign state', 'Paused'],
       ...draft.recipe.keywords.flatMap((keyword) => [[`Starting bid · ${keyword.text}`, money(keyword.bid, currency)], ['Maximum exposure', `${keyword.bid} × ${1 + draft.recipe.topOfSearch / 100} × ${1 + draft.recipe.audienceAdjustment / 100} = ${Number((keyword.bid * (1 + draft.recipe.topOfSearch / 100) * (1 + draft.recipe.audienceAdjustment / 100)).toFixed(6))}`]]),

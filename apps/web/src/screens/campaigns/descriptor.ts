@@ -12,7 +12,7 @@ export const descriptor = {
   rollout: { "enabled": true },
   states: ["loading", "error", "empty", "gated", "not-measured"],
   entry: "request-message",
-  specs: [{ "file": "campaigns.spec.ts", "suite": "tags-goto" }],
+  specs: [{ "file": "campaigns.spec.ts", "suite": "tags-goto" }, { "file": "campaign-routes.spec.ts", "suite": "auth" }],
   load: (actor, params) => import('./load').then((module) => module.load(actor, params)),
   client: (): Promise<typeof ScreenView> => import('./view').then((module) => module.default),
 } satisfies ScreenDescriptor<Awaited<ReturnType<typeof load>>>;

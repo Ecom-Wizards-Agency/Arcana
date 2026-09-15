@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { buildCampaignRecipe, campaignRecipeCreationPlan, namingSettingsFromStrategy, parseCampaignName } from '@wizard-ads/campaigns';
+import { generateCampaignName, buildCampaignRecipe, campaignRecipeCreationPlan, namingSettingsFromStrategy, parseCampaignName } from '@wizard-ads/campaigns';
 import { campaignBidRationale, campaignBuilderEligibility, spCoordinatedCapabilities } from '@wizard-ads/core';
 import { CampaignBuilderContext, CampaignBuilderRecipe, CampaignDraft, CampaignBuilderResult, CampaignCreationPlanV2, CampaignCreationNodeV2, serializeCampaignCreationNodeFingerprint, serializeCampaignCreationPlanFingerprint, spMarketplaceScopeForCountry, spMarketplaceBudgetCapability } from '@wizard-ads/shared';
 import { CampaignCreationApprovalView, campaignCreationReviewFreshness } from '@wizard-ads/shared/campaign-creation-approval';
@@ -59,6 +59,7 @@ export function creationResult(complete: boolean) {
   const resources = fixturePlan.nodes.filter((node) => node.effect === 'irreversible_create').map((node) => ({ nodeId: node.nodeId,
     kind: node.kind === 'campaign.create' ? 'campaign' : node.kind === 'ad_group.create' ? 'ad_group' : node.kind === 'ad.create' ? 'product_ad' : 'keyword',
     requested: 1, succeeded: node.kind === 'target.create' && !complete ? 0 : 1, status: node.kind === 'target.create' && !complete ? 'failed' : 'created',
+    responseCode: node.kind === 'target.create' && !complete ? '429' : null,
     message: node.kind === 'target.create' && !complete ? 'The keyword request was throttled. Review a separate retry.' : null }));
   return CampaignBuilderResult.parse({ snapshot: { status: complete ? 'succeeded' : 'partial_failed', accounting: {
     operatorApproved: 4, pendingDispatch: 0, attempted: 4, succeeded: complete ? 4 : 3, failed: complete ? 0 : 1, ambiguous: 0, refusedAtExecution: 0, blockedByDependency: 0,
@@ -70,3 +71,6 @@ export const assetSnapshot = AssetLibrarySnapshot.parse({ id: fixtureId(6), prof
   durationSeconds: null, thumbnailUrl: null, thumbnailExpiresAt: null, usedInCampaignIds: ['synthetic-campaign'],
 }] });
 export const ready = { view: 'ready' as const, context: builderContext, step: 'products' as const };
+
+export const fixtureNaming = { ...builderContext.naming!, variable_order: ['Goal', 'AdType', 'MatchType', 'Keyword', 'Custom1', 'Counter'] };
+export const fixtureReverseName = generateCampaignName(namingSettingsFromStrategy(fixtureNaming), { goal: 'Rank', campaignType: 'SKW', matchType: 'EXACT', productName: 'Synthetic lantern', keywordText: 'synthetic lantern', counter: 3 }, '2026-06-10');

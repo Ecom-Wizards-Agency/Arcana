@@ -14,13 +14,13 @@ import { AssetPicker } from '../campaigns-assets/picker';
 import NamingScreen, { NamingReady } from '../campaigns-naming/view';
 import EligibilityScreen from '../campaigns-eligibility/view';
 import UpdateScreen from '../campaigns-update/view';
-import { builderContext, builderRecipe, savedDraft, validatedDraft, blockedDraft, fixtureReview, validationChecks, fixtureId, assetSnapshot, creationResult, ready } from './render-fixture';
+import { fixtureNaming, fixtureReverseName, builderContext, builderRecipe, savedDraft, validatedDraft, blockedDraft, fixtureReview, validationChecks, fixtureId, assetSnapshot, creationResult, ready } from './render-fixture';
 
 export interface CampaignVisualCase { screen: string; key: string; state: ScreenState | 'ready'; text: string; render: () => ReactNode }
 const noop = () => {};
 const draftData = { view: 'ready' as const, context: builderContext, draft: savedDraft, review: fixtureReview, executorAvailable: false, step: 'review' };
-const namingData = { view: 'ready' as const, profileId: fixtureId(2), naming: builderContext.naming, canEdit: true,
-  profiles: [builderContext.profile, { id: fixtureId(12), label: 'Synthetic second account' }], presets: [{ id: fixtureId(7), name: 'Synthetic convention', naming: builderContext.naming!, createdBy: fixtureId(4), usageCount: 1 }] };
+const namingData = { view: 'ready' as const, profileId: fixtureId(2), naming: fixtureNaming, canEdit: true,
+  profiles: [builderContext.profile, { id: fixtureId(12), label: 'Synthetic second account' }], presets: [{ id: fixtureId(7), name: 'Synthetic convention', naming: fixtureNaming, createdBy: fixtureId(4), usageCount: 1 }] };
 const cases: CampaignVisualCase[] = [];
 function add(screen: string, key: string, text: string, render: () => ReactNode, state: ScreenState | 'ready' = 'ready') { cases.push({ screen, key, text, render, state }); }
 const unavailable = { available: false as const };
@@ -30,7 +30,7 @@ for (const adType of builders) add('campaigns', `products-${adType.toLowerCase()
 for (const [source, label] of KEYWORD_SOURCES) add('campaigns', `targets-${source}`, label, () => <CampaignPage title="Campaign Builder"><Builder context={builderContext} initialRecipe={builderRecipe} initialStep="targets" initialSource={source} /></CampaignPage>);
 add('campaigns', 'targets-keyword-set', 'the keyword set in each', () => <CampaignPage title="Campaign Builder"><Builder context={builderContext} initialRecipe={{ ...builderRecipe, structure: 'set-product' }} initialStep="targets" /></CampaignPage>);
 add('campaigns', 'review', 'Review campaign draft', () => <CampaignPage title="Campaign Builder"><Builder context={builderContext} initialRecipe={builderRecipe} initialStep="review" /></CampaignPage>);
-for (const [key, draft] of [['draft', savedDraft], ['validated', validatedDraft], ['blocked', blockedDraft]] as const) add('campaigns-draft', key, key === 'blocked' ? 'Fix draft issues' : 'Review campaign draft', () => <DraftReady data={{ ...draftData, draft }} />);
+for (const [key, draft] of [['draft', savedDraft], ['validated', validatedDraft], ['blocked', blockedDraft]] as const) add('campaigns-draft', key, key === 'blocked' ? 'Fix draft issues' : 'Review campaign draft', () => <DraftReady data={{ ...draftData, draft }} />, key === 'blocked' ? 'blocked' : 'ready');
 add('campaigns-draft', 'edit', 'Save draft', () => <DraftReady data={draftData} initiallyEditing />);
 const bidProps = { keyword: builderRecipe.keywords[0]!, evidence: builderContext.bidEvidence[0]!, bounds: { floor: 0.12, ceiling: 0.96, exposureCeiling: 2.4, decimalPlaces: 2 }, currency: 'USD', topOfSearch: 140, audienceAdjustment: 0, onUse: noop, onCancel: noop };
 add('campaigns-draft', 'bid-within-range', 'Allowed base bid', () => <BidEditor {...bidProps} />);
@@ -52,10 +52,10 @@ for (const tab of ['library', 'used', 'upload'] as const) add('campaigns-assets'
 add('campaigns-assets', 'no-snapshot', 'No asset-library snapshot exists yet', () => <CampaignPage title="Creative asset library"><AssetPicker snapshot={null} used={[]} canRefresh onRefresh={async () => {}} /></CampaignPage>);
 add('campaigns-assets', 'empty-snapshot', 'No assets match this snapshot', () => <CampaignPage title="Creative asset library"><AssetPicker snapshot={{ ...assetSnapshot, sourceRows: 0, persistedRows: 0, assets: [] }} used={[]} canRefresh onRefresh={async () => {}} /></CampaignPage>);
 add('campaigns-naming', 'preview-saved-copy', 'Copy to another profile', () => <NamingReady data={namingData} />);
-const name = savedDraft.plan.nodes.find((node) => node.kind === 'campaign.create')!.payload.name;
+const name = fixtureReverseName;
 add('campaigns-naming', 'reverse-read', 'matches the selected preset', () => <NamingReady data={namingData} initialName={name} initiallyRead />);
 add('campaigns-naming', 'reverse-unparseable', 'does not match', () => <NamingReady data={namingData} initialName="unparseable" initiallyRead />);
-add('campaigns-eligibility', 'nine-checks', 'Yes · Not yet validated', () => <EligibilityScreen data={ready} />);
+add('campaigns-eligibility', 'nine-checks', 'yes', () => <EligibilityScreen data={ready} />);
 add('campaigns-update', 'recipe', 'Update campaigns', () => <UpdateScreen data={{ view: 'ready', profileId: fixtureId(2), profileLabel: 'Synthetic account', marketplace: 'US' }} />);
 const screens = {
   campaigns: BuilderScreen, 'campaigns-draft': DraftScreen, 'campaigns-assets': AssetsScreen,

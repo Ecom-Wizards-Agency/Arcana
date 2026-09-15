@@ -15,12 +15,17 @@ describe('builder source and naming interactions', () => {
     fireEvent.click(screen.getByRole('tab', { name: '2 Play & targets' }));
     for (const source of ['From search terms', 'From n-grams', 'From Rank Radar', 'Saved keyword set', 'Paste']) { fireEvent.click(screen.getByRole('tab', { name: source })); expect(screen.getByRole('tab', { name: source }).getAttribute('aria-selected')).toBe('true'); }
     fireEvent.change(screen.getByLabelText('Keywords'), { target: { value: 'synthetic one\nsynthetic two' } });
-    expect(screen.getByText('2 keywords × 1 products = 2 campaigns, 1 keyword each')).toBeTruthy();
+    expect(screen.getByText('2 keywords × 1 product = 2 campaigns, 1 keyword each')).toBeTruthy();
     fireEvent.change(screen.getByLabelText('Campaign structure'), { target: { value: 'set-product' } });
-    expect(screen.getByText('2 keywords × 1 products = 1 campaigns, the keyword set in each')).toBeTruthy();
+    expect(screen.getByText('2 keywords × 1 product = 1 campaign, the keyword set in each')).toBeTruthy();
     fireEvent.click(screen.getByRole('tab', { name: '3 Review & create' }));
     expect(screen.getByLabelText('Settings')).toBeTruthy(); expect(screen.getByLabelText('Plan so far')).toBeTruthy();
     expect(screen.getByTestId('campaign-name-preview').textContent).toContain('QA');
+  });
+  it('uses the design vocabulary for the six saved convention tokens', () => {
+    const naming = { variable_order: ['Goal','AdType','MatchType','Keyword','Custom1','Counter'], delimiter: ' | ', custom1_value: 'QA' };
+    render(<NamingReady data={{ view: 'ready', profileId: fixtureId(2), profiles: [builderContext.profile], naming, canEdit: true, presets: [] }} initialName="Rank | SP | Exact | synthetic keyword | QA | 03" initiallyRead />);
+    for (const label of ['Role · Rank', 'Ad type · SP', 'Match · Exact', 'Keyword · synthetic keyword', 'Agency · QA', 'Index · 03']) expect(screen.getByText(label)).toBeTruthy();
   });
   it('reads reverse-name chips and submits a same-profile convention copy through the guarded route', async () => {
     const fetch = vi.fn(async () => Response.json({ copied: true })); vi.stubGlobal('fetch', fetch);
@@ -64,4 +69,12 @@ describe('asset snapshot presentation', () => {
     expect(screen.queryByText(/refresh queued/)).toBeNull();
     const call = fetch.mock.calls[0] as unknown as [string, RequestInit]; expect(call[0]).toBe('/api/campaigns/assets'); expect(JSON.parse(String(call[1].body))).toEqual({ profileId: fixtureId(2) });
   });
+  it('enqueues a scoped refresh and reports the queue receipt without an Amazon call', async () => {
+    const fetch = vi.fn(async () => Response.json({ requested: 1, enqueued: 1, alreadyQueued: 0 }, { status: 202 })); vi.stubGlobal('fetch', fetch);
+    render(<AssetsScreen data={{ view: 'ready', profileId: fixtureId(2), snapshot: null, used: [], canRefresh: true }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh from Amazon' }));
+    await waitFor(() => expect(screen.getByText('Asset-library refresh queued. Reload after the worker finishes.')).toBeTruthy());
+    expect(fetch).toHaveBeenCalledOnce(); expect((fetch.mock.calls[0] as unknown as [string])[0]).toBe('/api/campaigns/assets');
+  });
+
 });
