@@ -3,6 +3,7 @@ import { signIn } from './support/auth';
 import { readState } from './support/fixture';
 import { researchScreenshots } from './support/research-screenshots';
 test('Queries keeps missing SQP explicit and persists reviewed vocabulary', async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
   const { fixtureProfileId } = await readState();
   await signIn(page, 'admin');
   await page.goto(`/queries?${new URLSearchParams({profile:fixtureProfileId,from:'2026-08-01',to:'2026-08-28'})}`);

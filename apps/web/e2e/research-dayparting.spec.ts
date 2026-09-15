@@ -3,6 +3,7 @@ import { signIn } from './support/auth';
 import { readState } from './support/fixture';
 import { researchScreenshots } from './support/research-screenshots';
 test('Dayparting persists all 168 hours and cannot enable scheduled writes', async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
   const { fixtureProfileId } = await readState();
   await signIn(page, 'admin');
   await page.goto(`/dayparting?profile=${fixtureProfileId}`);

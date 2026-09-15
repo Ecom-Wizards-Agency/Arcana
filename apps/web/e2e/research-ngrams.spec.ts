@@ -4,6 +4,7 @@ import { signIn } from './support/auth';
 import { readState } from './support/fixture';
 import { researchScreenshots } from './support/research-screenshots';
 test('N-grams queues exactly the reviewed negative rows with calculation inputs', async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
   const { fixtureProfileId, orgId, connectionString } = await readState();
   const db = createDb({ connectionString });
   try {

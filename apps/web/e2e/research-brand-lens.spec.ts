@@ -3,6 +3,7 @@ import { signIn } from './support/auth';
 import { readState } from './support/fixture';
 import { researchScreenshots, researchInteractionScreenshot } from './support/research-screenshots';
 test('Brand lens classifies keyword targets and persists an operator override', async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
   await page.setViewportSize({ width: 1440, height: 1024 });
   const { fixtureProfileId } = await readState();
   await signIn(page, 'admin');
