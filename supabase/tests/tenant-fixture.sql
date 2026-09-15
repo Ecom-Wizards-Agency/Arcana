@@ -32,6 +32,9 @@ declare
   v_experiment uuid;
   v_asset uuid;
   v_spapi uuid;
+  v_adapter_plan jsonb;
+  v_adapter_row jsonb;
+  v_adapter_report jsonb;
   v_stream_binding uuid;
   v_report uuid;
   v_recommendation uuid;
@@ -379,6 +382,47 @@ begin
   insert into public.spapi_profile_bindings
     (org_id, profile_id, connection_id, marketplace_id)
   values (v_org, v_profile, v_spapi, 'ATVPDKIKX0DER');
+  if to_regclass('public.spapi_report_sources') is not null then
+    -- RLS evidence only. Neither credentials nor this fixture enables a report source.
+    insert into public.spapi_report_sources(org_id,profile_id,connection_id,family)
+    values(v_org,v_profile,v_spapi,'retail');
+    v_adapter_plan := jsonb_build_object(
+      'scope',jsonb_build_object('orgId',v_org,'profileId',v_profile,'connectionId',v_spapi,
+        'marketplaceId','ATVPDKIKX0DER','sellingPartnerId',p_slug || '-seller','region','NA'),
+      'family','retail','requestId','fixture-spapi-retail','start',p_date::text,'end',p_date::text,
+      'requestedAt',to_char(p_date::timestamp,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+      'contractVersion','amazon-models:3659f96867bfc669aca7a524c2f95744ff0e4478');
+    v_adapter_row := jsonb_build_object('kind','retail','key','fixture-total','date',p_date::text,
+      'grain','total','asin',null,'parentAsin',null,'sales',0,'currency','USD',
+      'units',0,'orderItems',0,'sessions',0,'pageViews',0,'reportedUnitSessionPercentage',null);
+    v_adapter_report := jsonb_build_object('plan',v_adapter_plan,'reportId','fixture-provider-retail',
+      'documentId','fixture-document-retail','observedAt',v_adapter_plan->>'requestedAt',
+      'payloadFingerprint',repeat('a',64),'rows',jsonb_build_array(v_adapter_row),'complete',true,
+      'counts',jsonb_build_object('sourceRows',1,'parsedRows',1,'refusedRows',0,'duplicateRows',0,'addedRows',0,'canonicalRows',1));
+    insert into public.spapi_report_runs(org_id,profile_id,family,request_id,revision,checkpoint)
+    values(v_org,v_profile,'retail','fixture-spapi-retail',0,jsonb_build_object('plan',v_adapter_plan,
+      'revision',0,'state','planned','reportId',null,'documentId',null,'observedAt',null,'receipt',null));
+    insert into public.spapi_report_receipts(org_id,profile_id,family,request_id,selling_partner_id,marketplace_id,
+      start_date,end_date,observed_at,report)
+    values(v_org,v_profile,'retail','fixture-spapi-retail',p_slug || '-seller','ATVPDKIKX0DER',
+      p_date,p_date,p_date::timestamptz,v_adapter_report);
+    insert into public.fact_retail_sales_traffic_daily(org_id,selling_partner_id,marketplace_id,date,row_key,
+      profile_id,connection_id,grain,observed_at,report_request_id,payload)
+    values(v_org,p_slug || '-seller','ATVPDKIKX0DER',p_date,'fixture-total',v_profile,v_spapi,'total',
+      p_date::timestamptz,'fixture-spapi-retail',v_adapter_row);
+    insert into public.fact_aba_search_terms_periodic(org_id,selling_partner_id,marketplace_id,date,row_key,
+      profile_id,connection_id,grain,observed_at,report_request_id,payload)
+    values(v_org,p_slug || '-seller','ATVPDKIKX0DER',p_date,'fixture-query',v_profile,v_spapi,'query',
+      p_date::timestamptz,'fixture-spapi-aba',jsonb_build_object('kind','aba','key','fixture-query',
+        'date',p_date::text,'end',p_date::text,'department','All','query','Synthetic fixture query',
+        'frequencyRank',1,'slot',0,'asin',null,'clickShare',null,'conversionShare',null,'complete',false));
+    insert into public.spapi_listing_observations(org_id,selling_partner_id,marketplace_id,date,row_key,
+      profile_id,connection_id,grain,observed_at,report_request_id,payload)
+    values(v_org,p_slug || '-seller','ATVPDKIKX0DER',p_date,'fixture-listing',v_profile,v_spapi,'listing',
+      p_date::timestamptz,'fixture-spapi-catalogue',jsonb_build_object('kind','catalogue','key','fixture-listing',
+        'date',p_date::text,'listingId','fixture-listing','sku','fixture-sku','asin','B0TEST0001',
+        'fields',jsonb_build_object('title','Synthetic fixture listing')));
+  end if;
   insert into public.fact_sales_traffic_daily (org_id, profile_id, date, asin, sessions)
   values (v_org, v_profile, p_date, 'B0TEST0001', 10);
   insert into public.fact_sqp_weekly (org_id, profile_id, week_start, asin, search_query, search_volume)

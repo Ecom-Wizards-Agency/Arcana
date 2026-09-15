@@ -325,6 +325,29 @@ function assertIdempotentPromotion(
   }
 }
 
+/** Re-read canonical evidence before publishing coverage for a completed checkpoint. */
+export async function verifySqpWeeklyPromotion(
+  handle: DbHandle,
+  input: Omit<SqpWeeklyPromotionInput, 'rows'> & { promotionRunId: string },
+): Promise<number> {
+  const rows = await readSqpWeeklyFacts(handle, {
+    orgId: input.orgId, profileId: input.profileId, marketplaceId: input.marketplaceId,
+    weekStart: input.weekStart, asins: input.requestedAsins,
+  });
+  const staged = validatePromotion({ ...input, rows });
+  const runs = await handle.db.select().from(sqpPromotionRuns).where(and(
+    eq(sqpPromotionRuns.id, input.promotionRunId),
+    eq(sqpPromotionRuns.orgId, input.orgId),
+    eq(sqpPromotionRuns.profileId, input.profileId),
+    eq(sqpPromotionRuns.requestIdentity, input.requestIdentity),
+  ));
+  const run = runs[0];
+  if (runs.length !== 1 || !run) throw new SqpPersistenceError('SQP promotion receipt ownership could not be verified');
+  assertIdempotentPromotion(staged, run);
+  assertCount('SQP replay canonical rows', run.canonicalRows, rows.length);
+  return rows.length;
+}
+
 export async function readSqpWeeklyFacts(
   handle: DbHandle,
   input: {

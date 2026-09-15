@@ -6,11 +6,11 @@ import { context, profile } from '../synthetic-render-fixtures';
 import { load } from './load';
 
 const mocks = vi.hoisted(() => ({
-  coreEvidence: vi.fn(), freshness: vi.fn(), crosscheck: vi.fn(), profiles: vi.fn(), authenticate: vi.fn(), sql: vi.fn(),
+  source: vi.fn(), coreEvidence: vi.fn(), freshness: vi.fn(), crosscheck: vi.fn(), profiles: vi.fn(), authenticate: vi.fn(), sql: vi.fn(),
 }));
 vi.mock('../../server/load-freshness', () => ({ loadFreshness: mocks.freshness }));
 vi.mock('@wizard-ads/crosscheck-cli', () => ({ loadCrosscheckPanel: mocks.crosscheck }));
-vi.mock('@wizard-ads/db', () => ({ withAuthenticatedActor: mocks.authenticate, readCoreReportEvidence: mocks.coreEvidence }));
+vi.mock('@wizard-ads/db', () => ({ readSpReportEvidence: mocks.source, withAuthenticatedActor: mocks.authenticate, readCoreReportEvidence: mocks.coreEvidence }));
 vi.mock('../../../app/_lib/profiles', () => ({ listProfiles: mocks.profiles }));
 
 const actor = { orgId: context.active!.orgId, userId: context.user.id };
@@ -35,6 +35,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   mocks.coreEvidence.mockResolvedValue([]);
   mocks.profiles.mockResolvedValue([profile]);
+  mocks.source.mockResolvedValue({ state: 'unavailable', reason: 'Disabled', report: null });
   mocks.authenticate.mockImplementation(async (_handle, _actor, run) => run(handle.sql));
 });
 
@@ -73,6 +74,7 @@ it('does not read freshness for empty or populated rosters', async () => {
   expect(await load(access(), { searchParams: {}, params: {} })).toMatchObject({ view: 'empty' });
   expect(mocks.freshness).not.toHaveBeenCalled();
   mocks.profiles.mockResolvedValue([profile]);
+  mocks.source.mockResolvedValue({ state: 'unavailable', reason: 'Disabled', report: null });
   mocks.freshness.mockRejectedValue(new Error('Synthetic freshness failure'));
   mocks.crosscheck.mockResolvedValue(null);
   const data = await load(access(), { searchParams: {}, params: {} });

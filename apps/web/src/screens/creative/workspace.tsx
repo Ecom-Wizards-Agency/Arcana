@@ -153,6 +153,6 @@ export function CreativeHistory({ workspace, asset, currencyCode }: { workspace:
       {rows.map((row) => <tr key={row.id}><td>{dateLabel(row.observedAt)}</td><td><Chip tone={row.certainty.kind === 'exact' ? 'good' : row.certainty.kind === 'window' ? 'warn' : 'muted'}>{row.certainty.kind}{row.certainty.kind === 'window' ? row.certainty.widthDays === null ? ' · width unknown' : ` · ${row.certainty.widthDays} days` : ''}</Chip></td><td><Chip>{row.kind}</Chip></td><td className={styles.wrap}>{creativeChangeText(row, currencyCode)}</td><td>{row.scope}</td><td>{row.effect}</td></tr>)}
     </DataTable>}
     <EvidenceCard title="A gap is not a change date" tone="missing"><p>Exact: consecutive observations bracket the change. Window: observations are missing on either side; the label carries the gap width. First: the earliest observation held.</p><p>The judgement is made once when the change is recorded and stored, never recomputed on read.</p></EvidenceCard>
-    <p className={styles.footnote}>Effects describe the scope of the change. No spend or sales effect is inferred.</p><EvidenceCard title="Needs ingestion: listing snapshots" tone="warn"><p>Listing and promotion changes have no source on this screen yet.</p></EvidenceCard>
+    <p className={styles.footnote}>Effects describe the scope of the change. No spend or sales effect is inferred.</p>
   </section>;
 }

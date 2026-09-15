@@ -14,6 +14,10 @@
 export const PACKAGE_NAME = '@wizard-ads/core' as const;
 
 export * from './report-metrics.js';
+export * from './creative/performance.js';
+export * from './creative/certainty.js';
+export * from './creative/prompt-loop.js';
+export * from './spapi-evidence.js';
 export * from './types.js';
 export * from './num.js';
 export * from './rows.js';

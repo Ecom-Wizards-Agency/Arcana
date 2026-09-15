@@ -7,12 +7,14 @@
  * counts parsed rows against loaded rows. Splitting them is what makes a killed
  * worker resumable instead of a lost report.
  */
+import { SpReportPlan } from './spapi-reports.js';
 import { z } from 'zod';
 import { AssetLibrarySearchJob } from './asset-library.js';
 import { CoreFeatureReportType, CoreReportConfiguration } from './report-families.js';
 import { AdProduct, AmazonId, IsoDate, Uuid } from './primitives.js';
 
 export const JobType = z.enum([
+  'retail.report.request', 'aba.report.request', 'catalogue.report.request',
   'entity.sync',
   'report.request',
   'report.poll',
@@ -286,7 +288,12 @@ export const TargetTranslationJob = z.strictObject({
 });
 export type TargetTranslationJob = z.infer<typeof TargetTranslationJob>;
 
+export const RetailReportJob = z.object({ ...jobBase, type: z.literal("retail.report.request"), plan: SpReportPlan });
+export const AbaReportJob = z.object({ ...jobBase, type: z.literal("aba.report.request"), plan: SpReportPlan });
+export const CatalogueReportJob = z.object({ ...jobBase, type: z.literal("catalogue.report.request"), plan: SpReportPlan });
+
 export const JobPayload = z.discriminatedUnion('type', [
+  RetailReportJob, AbaReportJob, CatalogueReportJob,
   EntitySyncJob,
   AssetLibrarySearchJob,
   ReportRequestJob,

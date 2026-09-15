@@ -73,6 +73,7 @@ export function registerIntegrationSources(
     // Old completed checkpoints have no observation timestamp. Keep their date conservative.
     return { ...result, observedAt: result['observedAt'] ?? `${payload.weekEnd}T23:59:59.999Z` };
   }, (result) => {
+    if (result['status'] !== 'completed') throw new Error('SQP coverage requires a completed workflow');
     const ingestion = record(result['ingestion']);
     const canonicalRows = count(ingestion, 'canonicalRows');
     const expectedWrites = ingestion['status'] === 'already_promoted' ? 0 : canonicalRows;

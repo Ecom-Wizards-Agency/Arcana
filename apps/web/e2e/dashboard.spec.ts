@@ -119,3 +119,31 @@ test('Home renders five KPIs and the two-column decision cards in both budget st
   ]);
   await expect(steps.getByRole('listitem').first()).toHaveAttribute('aria-current', 'step');
 });
+
+test('SP-API reader components expose measured, partial, stale and unavailable evidence', async ({ page }, testInfo) => {
+  const { execFileSync } = await import('node:child_process');
+  const rendered = JSON.parse(execFileSync(process.execPath, ['--import', 'tsx', 'e2e/support/render-spapi-evidence.ts'], {
+    cwd: process.cwd(), encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
+  })) as Record<string, string>;
+  const states = ['measured', 'partial', 'stale', 'unavailable'];
+  expect(Object.keys(rendered)).toEqual(states);
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  const screenshots: string[] = [];
+  for (const state of states) {
+    await page.setContent(rendered[state]!);
+    await expect(page.getByTestId('sp-source-status')).toHaveCount(3);
+    await expect(page.locator(`[data-state="${state}"]`)).toHaveCount(3);
+    await expect(page.getByRole('columnheader', { name: 'TACOS', exact: true })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Click share', exact: true })).toBeVisible();
+    if (state === 'measured') {
+      await expect(page.getByRole('cell', { name: 'Not top 3', exact: true })).toHaveCount(1);
+      await expect(page.getByRole('cell', { name: '2,400 EUR', exact: true })).toHaveCount(1);
+      await expect(page.getByRole('cell', { name: '10.00%', exact: true })).toHaveCount(1);
+      await expect(page.getByRole('cell', { name: 'Observed synthetic listing title', exact: true })).toHaveCount(1);
+    } else await expect(page.getByRole('cell', { name: 'Not top 3', exact: true })).toHaveCount(0);
+    const path = testInfo.outputPath(`spapi-${state}.png`);
+    await page.screenshot({ path, fullPage: true, animations: 'disabled' });
+    await testInfo.attach(`SP-API ${state}`, { path, contentType: 'image/png' }); screenshots.push(path);
+  }
+  expect(screenshots).toHaveLength(states.length);
+});

@@ -1,4 +1,5 @@
 import { registerAssetLibrarySource } from './asset-library.js';
+import { registerSpApiReportSources, postgresSpReportDependencies } from './spapi-report-sources.js';
 import { registerTargetTranslation } from './translation/register.js';
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
 import { runSpApiConnectionPass } from './spapi-connections.js';
@@ -153,7 +154,13 @@ const worker = new SyncWorker({
   sbVideo,
   unifiedReporting,
   integrations: { marketingStreamNormalize: integrations.marketingStreamNormalize },
-  sources: (registry) => { if (adsApi) registerAssetLibrarySource(registry, handle, adsApi); registerIntegrationSources(registry, integrations); registerTargetTranslation(registry, handle); },
+  sources: (registry) => {
+    if (adsApi) registerAssetLibrarySource(registry, handle, adsApi);
+    registerIntegrationSources(registry, integrations);
+    const { spApiClientId, spApiClientSecret: lwaKey } = config;
+    if (spApiClientId && lwaKey) registerSpApiReportSources(registry, postgresSpReportDependencies({ handle, clientId: spApiClientId, clientSecret: lwaKey }));
+    registerTargetTranslation(registry, handle);
+  },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,
   pollIntervalMs: config.pollIntervalMs,

@@ -2,6 +2,7 @@ import type { OrgProfile } from '../../recommendations/data';
 import type { CoreReportEvidence } from '@wizard-ads/shared';
 import { formatResearchPeriod } from './research-format';
 import { QueryResearch } from './research-view';
+import { AbaEvidencePanel } from '../grid/spapi-evidence';
 import type { CSSProperties } from 'react';
 import { CoreReportEvidencePanel } from '../grid/core-report-evidence';
 
@@ -68,7 +69,7 @@ function renderNotMeasured({ profile, coreEvidence }: Extract<ScreenData, { view
   </main>);
 }
 
-function renderReady({ profile, scope, scopes, category, search, model, contextualReview, contextualExports, role, coreEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ aba, profile, scope, scopes, category, search, model, contextualReview, contextualExports, role, coreEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main className="wa-stack" data-interactive="true">
     {coreEvidence ? <CoreReportEvidencePanel evidence={coreEvidence} title="Sponsored Brands paid queries" /> : null}
     <header className="wa-page-head">
@@ -130,6 +131,7 @@ function renderReady({ profile, scope, scopes, category, search, model, contextu
       </span>
     </form>
 
+    <AbaEvidencePanel evidence={aba} />
     <QueryResearch key={`${profile.id}:${scope.weekStart}:${category}:${search}`} initialCategory={category} initialSearch={search} profileId={profile.id} marketplaceId={scope.marketplaceId} facts={model.queryRows} ppc={model.ppcRows} vocabulary={model.vocabulary}/>
     {model.queryRows.length ? <details><summary>Attribution and contextual negative review</summary>
     <QueryIntelligenceWorkspace

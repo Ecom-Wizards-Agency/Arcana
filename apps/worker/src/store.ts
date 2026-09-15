@@ -1,3 +1,4 @@
+import { provisionSpApiReportJobs } from './spapi-report-scheduler.js';
 import type { ReportCoverageObservation } from '@wizard-ads/shared';
 import { mergeControlMirror, mergeKeywordMirror, readKeywordMirrorStart } from '@wizard-ads/db/sp-write-worker';
 import type { ControlMirrorMergeCounts, KeywordMirrorMergeCounts, KeywordMirrorMergeRequest } from '@wizard-ads/shared/sp-write-mirror';
@@ -929,7 +930,8 @@ export class PostgresWorkerStore implements WorkerStore {
       )
       select ((select count(*) from disabled) + (select count(*) from upserted))::text as changed
     `;
-    return Number(result?.changed ?? 0);
+    const spapi = await provisionSpApiReportJobs(this.handle);
+    return Number(result?.changed ?? 0) + spapi.enqueued + spapi.disabledScopes;
   }
 
   async unscheduledProfiles(): Promise<{ orgId: string; profileId: string }[]> {

@@ -13,6 +13,8 @@ interface RegistryEntry {
 export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
   {domain: 'schema/report-families', contract: null, schema: 'schema/report-families.ts', queries: null, migrationPrefix: '20260915330000', exports: [{barrel: 'schema/index.ts', order: 120, clause: '*', after: ''}]},
   {domain: 'queries/report-families', contract: null, schema: null, queries: 'queries/report-families.ts', migrationPrefix: '20260915330000', exports: [{barrel: 'index.ts', order: 120, clause: '*', after: ''}]},
+  {"domain": "schema/spapi-reports", "contract": null, "schema": "schema/spapi-reports.ts", "queries": null, "migrationPrefix": "20260915320000", "exports": [{"barrel": "schema/index.ts", "order": 120, "clause": "*", "after": ""}]},
+  {"domain": "queries/spapi-reports", "contract": null, "schema": null, "queries": "queries/spapi-reports.ts", "migrationPrefix": "20260915320000", "exports": [{"barrel": "index.ts", "order": 120, "clause": "*", "after": ""}]},
   {domain: "queries/sp-write-application-optimizer", contract: null, schema: null, queries: "queries/sp-write-application-optimizer.ts", migrationPrefix: null, exports: [{barrel: "index.ts", order: 106, clause: "{ prepareOptimizerRetry, readOptimizerRetryExclusions }", after: ""}]},
   {domain: "queries/optimizer-export", contract: null, schema: null, queries: "queries/optimizer-export.ts", migrationPrefix: "20260915190000", exports: [{barrel: "index.ts", order: 105, clause: "*", after: ""}]},
   {"domain": "queries/optimizer-run", "contract": null, "schema": null, "queries": "queries/optimizer-run.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 104, "clause": "*", "after": ""}]},

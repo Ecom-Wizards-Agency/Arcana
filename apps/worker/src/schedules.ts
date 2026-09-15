@@ -23,6 +23,13 @@ import { CORE_REPORT_FAMILIES, CoreFeatureReportType } from '@wizard-ads/shared'
 import { defaultCoreReportConfiguration } from '@wizard-ads/ads-api';
 import { RECOMMENDATION_CADENCE } from './recommendation-cadence.js';
 
+/** Source rows, schedule opt-in and accepted report policy are all required. */
+export const SP_API_REPORT_CADENCES = {
+  retail: { cadence: '1 day', enabled: false, documentRetentionDays: 90, lookbackCalendarYears: 2 },
+  aba: { cadence: '7 days', enabled: false, documentRetentionDays: 90, lookbackCalendarYears: null },
+  catalogue: { cadence: '1 day', enabled: false, documentRetentionDays: 90, lookbackCalendarYears: null },
+} as const;
+
 export type ScheduleVariant = 'default' | 'restatement' | 'comparison';
 
 /** Provisioning never enables a family, even when capability evidence already exists. */

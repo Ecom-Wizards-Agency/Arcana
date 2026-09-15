@@ -1,3 +1,4 @@
+import { SpSourceStatus } from '../grid/spapi-evidence';
 import { formatShellDate, formatTimestamp, formatDateWindow } from '../../ui/date-format';
 import { TableFrame } from '../../ui/primitives';
 import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
@@ -33,7 +34,7 @@ function renderGated({ result }: Extract<ScreenData, { view: 'gated'; }>['props'
   </main>);
 }
 
-function renderReady({ context, status, coreEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ context, status, sources, coreEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main style={page}>
     <Shell context={context} current="sync">
       <h1 style={heading}>Sync status</h1>
@@ -78,6 +79,7 @@ function renderReady({ context, status, coreEvidence }: Extract<ScreenData, { vi
       </table></TableFrame>
       {status.freshness.length === 0 ? <ScreenState title="No profiles yet." body="Choose a connected profile or check again after the next sync." /> : null}
 
+      <section aria-label="SP-API source status"><h2>SP-API sources</h2>{sources?.length ? sources.map(source => <SpSourceStatus key={source.family} evidence={source.evidence} label={source.family} />) : <p>Select a profile to inspect retail, ABA and catalogue source evidence.</p>}</section>
       <ReportLifecycleTables deadLetters={status.deadLetters} lifecycle={status.lifecycle} />
 
       <h2 style={subheading}>Jobs</h2>

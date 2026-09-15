@@ -1,6 +1,10 @@
 /** Public export inventory. generatedBarrels is pure; the caller owns file I/O. */
 export const PACKAGE_REGISTRY = [
   { module: './report-metrics.js', clause: '*' },
+  { "module": "./creative/performance.js", "clause": "*" },
+  { "module": "./creative/certainty.js", "clause": "*" },
+  { "module": "./creative/prompt-loop.js", "clause": "*" },
+  { "module": "./spapi-evidence.js", "clause": "*" },
   {
     "module": "./types.js",
     "clause": "*"

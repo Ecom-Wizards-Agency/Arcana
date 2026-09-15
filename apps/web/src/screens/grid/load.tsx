@@ -32,9 +32,9 @@ import {
 
 import type { EntityLevel } from '@wizard-ads/ui';
 
-import { withAuthenticatedActor, type DbHandle } from '@wizard-ads/db';
+import { withAuthenticatedActor, readSpReportEvidence, type DbHandle } from '@wizard-ads/db';
 
-import type { OrgActor } from '@wizard-ads/shared';
+import type { OrgActor, SpEvidence } from '@wizard-ads/shared';
 
 import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
 
@@ -100,7 +100,8 @@ export async function load(access: ScreenActor, input: ScreenParams) {
     const profile = access.selectProfile(profiles, profileId);
     if (profile === null) return { profiles, profile: null };
 
-    return { profiles, profile };
+    const sourceEvidence = entity === 'products' || entity === 'search_terms' || entity === 'targets' ? await readSpReportEvidence(handle, { orgId, profileId: profile.id, family: entity === 'products' ? 'retail' : 'aba', start: period.start, end: period.end }) : undefined;
+    return { profiles, profile, sourceEvidence };
   });
 
   if (data === null) {
@@ -116,7 +117,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
 
   return {
     view: 'ready' as const, props: {
-      ...(coreEvidence.length ? { coreEvidence } : {}), entity, profile, period, comparison, params, slot1: (<GridCockpit
+      ...({ sourceEvidence: data.sourceEvidence } as { sourceEvidence?: SpEvidence }), ...(coreEvidence.length ? { coreEvidence } : {}), entity, profile, period, comparison, params, slot1: (<GridCockpit
         handle={entry.handle} actor={actor}
         orgId={orgId}
         profile={profile}
