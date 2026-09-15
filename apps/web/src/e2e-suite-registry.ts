@@ -98,7 +98,7 @@ export const E2E_SUITE_DEFINITIONS = [
     config: 'playwright.route-acceptance.config.ts',
     project: 'route-acceptance',
     expectedSpecFiles: specsFor('route-acceptance'),
-    expectedTests: 12,
+    expectedTests: 13,
   },
 ] as const;
 
