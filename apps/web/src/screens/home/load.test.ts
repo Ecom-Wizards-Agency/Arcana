@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('../cockpit/load', () => ({ load: mocks.performance }));
 vi.mock('../../server/org-role', () => ({ requireOrgRole: mocks.role }));
-vi.mock('@wizard-ads/db', () => ({ listRecommendations: mocks.proposals, listHomeInsights: mocks.events, listHomeMarketGaps: mocks.market }));
+vi.mock('@wizard-ads/db', () => ({ readStreamExtensionEvidence: vi.fn(async () => ({ events: [], count: 0, source: 'amazon_marketing_stream', completeness: 'missing', selectionAuthority: false })), listRecommendations: mocks.proposals, listHomeInsights: mocks.events, listHomeMarketGaps: mocks.market }));
 vi.mock('../../../app/_lib/dashboard-data', () => ({ loadCampaignDailyRows: mocks.campaigns, loadHomeRankWatch: mocks.ranks, loadProfileDailyRows: mocks.month }));
 import { load } from './load';
 

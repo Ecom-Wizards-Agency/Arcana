@@ -1,4 +1,5 @@
 import { registerAssetLibrarySource } from './asset-library.js';
+import { registerStreamExtensionProjection } from './marketing-stream-extensions.js';
 import { registerTargetTranslation } from './translation/register.js';
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
 import { runSpApiConnectionPass } from './spapi-connections.js';
@@ -152,7 +153,7 @@ const worker = new SyncWorker({
   sbVideo,
   unifiedReporting,
   integrations: { marketingStreamNormalize: integrations.marketingStreamNormalize },
-  sources: (registry) => { if (adsApi) registerAssetLibrarySource(registry, handle, adsApi); registerIntegrationSources(registry, integrations); registerTargetTranslation(registry, handle); },
+  sources: (registry) => { if (adsApi) registerAssetLibrarySource(registry, handle, adsApi); registerIntegrationSources(registry, integrations); registerTargetTranslation(registry, handle); registerStreamExtensionProjection(registry, handle); },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,
   pollIntervalMs: config.pollIntervalMs,

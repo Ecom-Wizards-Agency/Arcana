@@ -9,6 +9,7 @@
  */
 import { z } from 'zod';
 import { AssetLibrarySearchJob } from './asset-library.js';
+import { StreamExtensionDataset } from './marketing-stream-extensions.js';
 import { AdProduct, AmazonId, IsoDate, Uuid } from './primitives.js';
 
 export const JobType = z.enum([
@@ -30,6 +31,7 @@ export const JobType = z.enum([
   'report.unified.advance',
   'translation.request',
   'asset-library.search',
+  'marketing_stream.extensions.project',
 ]);
 export type JobType = z.infer<typeof JobType>;
 
@@ -40,6 +42,7 @@ export const FeatureJobType = z.enum([
   'history.bootstrap',
   'report.promote',
   'marketing_stream.normalize',
+  'marketing_stream.extensions.project',
   'report.unified.advance',
 ]);
 export type FeatureJobType = z.infer<typeof FeatureJobType>;
@@ -283,6 +286,7 @@ export const TargetTranslationJob = z.strictObject({
 });
 export type TargetTranslationJob = z.infer<typeof TargetTranslationJob>;
 
+export const StreamExtensionProjectionJob = z.object({ ...jobBase, type: z.literal('marketing_stream.extensions.project'), datasetId: StreamExtensionDataset, eventIdentity: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 export const JobPayload = z.discriminatedUnion('type', [
   EntitySyncJob,
   AssetLibrarySearchJob,
@@ -300,6 +304,7 @@ export const JobPayload = z.discriminatedUnion('type', [
   HistoryBootstrapJob,
   ReportPromoteJob,
   MarketingStreamNormalizeJob,
+  StreamExtensionProjectionJob,
   UnifiedReportAdvanceJob,
   TargetTranslationJob,
 ]);
@@ -311,6 +316,7 @@ export const FeatureJobPayload = z.discriminatedUnion('type', [
   HistoryBootstrapJob,
   ReportPromoteJob,
   MarketingStreamNormalizeJob,
+  StreamExtensionProjectionJob,
   UnifiedReportAdvanceJob,
 ]);
 export type FeatureJobPayload = z.infer<typeof FeatureJobPayload>;

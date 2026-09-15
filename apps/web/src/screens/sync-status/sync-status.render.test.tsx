@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { expect, it } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { StreamExtensionDataset } from '@wizard-ads/shared';
 import Loading from '../../../app/sync-status/loading';
 import { verifyScreen } from '../settings/render-support';
 import SharedError from '../../../app/sync-status/error';
@@ -16,3 +19,12 @@ verifyScreen(descriptor, [
   { state: 'gated', name: 'explains missing organization membership', render: () => <Screen data={{ view: 'gated', props: { result: { state: 'no-org', context: { ...context, active: null, memberships: [] } } } }} />, text: 'organisation' },
   { state: 'empty', name: 'shows the empty workspace', render: () => <Screen data={ready} />, text: "Sync status" }
 ]);
+
+it('renders eight disabled bindings without inventing rejection or dead-letter counts', () => {
+  const streams = StreamExtensionDataset.options.map((datasetId) => ({ datasetId, bindingCount: 0, enabled: false, confirmed: false,
+    stored: 0, latestEventAt: null, maximumLagSeconds: null, duplicates: null, rejected: null, deadLettered: null }));
+  render(<Screen data={{ ...ready, props: { ...ready.props, status: { ...ready.props.status, streams } } }} />);
+  expect(screen.getAllByTestId('stream-extension-row')).toHaveLength(8);
+  expect(screen.getAllByText('missing confirmation')).toHaveLength(8);
+  expect(screen.getAllByText('unmeasured / unmeasured / unmeasured')).toHaveLength(8);
+});

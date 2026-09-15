@@ -1,5 +1,7 @@
 /** Contracts for authoritative ad-to-creative-to-asset attribution. */
 import { z } from 'zod';
+import { AssetEligibilityEvidence, AssetModerationObservation } from './asset-evidence.js';
+import { AssetLibraryObservation } from './asset-library.js';
 import { AdProduct, AmazonId, IsoDate, Placement, Uuid } from './primitives.js';
 import { TimelineDaily, TimelineEvent } from './timeline-events.js';
 import { CampaignCreationAmazonModerationStatus } from './campaign-creation.js';
@@ -216,6 +218,10 @@ export const CreativeWorkspaceAsset = z.object({
   firstSeenAt: z.iso.datetime().nullable(), durationSeconds: z.number().positive().nullable(),
   width: count.nullable(), height: count.nullable(), advertisedAsin: z.string().nullable(),
   moderation: CampaignCreationAmazonModerationStatus.nullable(),
+  assetLibrary: z.array(AssetLibraryObservation).optional(),
+  eligibility: z.array(AssetEligibilityEvidence).optional(),
+  assetLibraryEvidence: z.array(z.object({ observation: AssetLibraryObservation, expiresAt: z.iso.datetime() })).optional(),
+  moderationEvidence: z.array(z.object({ observation: AssetModerationObservation, expiresAt: z.iso.datetime() })).optional(),
   campaignIds: z.array(z.string()), adGroupIds: z.array(z.string()),
   /** Campaigns from creative_placements overlapping the selected window only. */
   placementCampaignIds: z.array(z.string()),

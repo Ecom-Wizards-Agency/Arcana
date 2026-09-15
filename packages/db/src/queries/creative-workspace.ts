@@ -6,6 +6,7 @@ import {
 import type { QueryHandle } from '../client.js';
 import { readCreativePerformance, resolveCreativeKeyword } from './creative-performance.js';
 import { readCreativeChangeHistory } from './creative-change-history.js';
+import { readAssetEvidence } from './asset-evidence.js';
 
 export interface CreativeWorkspaceFilter { orgId: string; profileId: string; from: string; to: string }
 
@@ -133,6 +134,26 @@ export async function readCreativeWorkspace(handle: QueryHandle, filter: Creativ
       durationSeconds: null, width: null, height: null, advertisedAsin: null, moderation: null,
       placementCampaignIds: unique(usage.filter((link) => link.is_placement).map((link) => link.campaign_id)),
       campaignIds: unique(usage.map((link) => link.campaign_id)), adGroupIds: unique(usage.flatMap((link) => link.ad_group_id === null ? [] : [link.ad_group_id])), performance: null });
+  }
+  const assetEvidence = await readAssetEvidence(handle, { orgId, profileId, now: new Date().toISOString() });
+  for (const observation of assetEvidence.assets) {
+    if (!assets.some((row) => row.assetId === observation.identity.assetId)) assets.push({
+      assetId: observation.identity.assetId, attributionState: 'mapped', name: observation.name, assetType: observation.assetType,
+      thumbnailUrl: null, firstSeenAt: observation.observedAt, durationSeconds: observation.mediaMetadata?.durationSeconds ?? null,
+      width: observation.mediaMetadata?.width ?? null, height: observation.mediaMetadata?.height ?? null, advertisedAsin: null,
+      moderation: null, campaignIds: [], adGroupIds: [], placementCampaignIds: [], performance: null,
+    });
+  }
+  for (const asset of assets) {
+    asset.assetLibrary = assetEvidence.assets.filter((row) => row.identity.assetId === asset.assetId);
+    asset.assetLibraryEvidence = assetEvidence.assetObservations.filter((row) => row.observation.identity.assetId === asset.assetId);
+    asset.moderationEvidence = assetEvidence.moderationObservations.filter((row) => row.observation.assetIdentity?.assetId === asset.assetId);
+    const metadata = asset.assetLibrary.length === 1 ? asset.assetLibrary[0] : undefined;
+    if (metadata) {
+      asset.width = metadata.mediaMetadata?.width ?? asset.width;
+      asset.height = metadata.mediaMetadata?.height ?? asset.height;
+      asset.durationSeconds = metadata.mediaMetadata?.durationSeconds ?? asset.durationSeconds;
+    }
   }
   return CreativeWorkspace.parse({ assets, campaigns, changes,
     placements: placements.map((row) => {

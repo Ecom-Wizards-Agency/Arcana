@@ -24,6 +24,7 @@ describe('runtime job coverage', () => {
       'economics.sync': 'economicsSync: createMrpEconomicsSync(',
       'creative.sync': 'new ObservedSbVideoIngestion(',
       'sqp.request': 'createSpApiSqpRequestHandler({',
+      'marketing_stream.extensions.project': 'registerStreamExtensionProjection(',
       'marketing_stream.normalize': 'marketingStreamNormalize: createMarketingStreamNormalizeHandler(',
       'report.unified.advance': 'new WorkerUnifiedDualRun({',
       'sqp.categorize': null,

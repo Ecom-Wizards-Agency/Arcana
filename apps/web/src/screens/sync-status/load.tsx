@@ -1,3 +1,5 @@
+import { readStreamExtensionHealth } from '@wizard-ads/db';
+import type { StreamExtensionHealth } from '@wizard-ads/shared';
 import type { ScreenActor } from '../../server/page-read';
 
 import type { ScreenParams } from '../types';
@@ -33,7 +35,9 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   const org = context.active;
   if (!org) return null;
 
-  const status = await access.readSql((sql) => loadSyncStatus({ sql }, org.orgId, query.profile ?? null));
+  const status: Awaited<ReturnType<typeof loadSyncStatus>> & { streams?: StreamExtensionHealth[] } = await access.readSql((sql) => loadSyncStatus({ sql }, org.orgId, query.profile ?? null));
+
+  if (query.profile) status.streams = await access.readSql((sql) => readStreamExtensionHealth({ sql }, org.orgId, query.profile!));
 
   return { view: 'ready' as const, props: { context, status } };
 }

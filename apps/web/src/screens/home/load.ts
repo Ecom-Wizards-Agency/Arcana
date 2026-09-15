@@ -1,5 +1,6 @@
+import type { StreamExtensionEvidence } from '@wizard-ads/shared';
 import { analyzeAccount, classifyCampaignCategory, computePacing, evaluate, pacingFlag } from '@wizard-ads/core';
-import { listHomeInsights, listHomeMarketGaps, listRecommendations } from '@wizard-ads/db';
+import { readStreamExtensionEvidence, listHomeInsights, listHomeMarketGaps, listRecommendations } from '@wizard-ads/db';
 import { loadCampaignDailyRows, loadHomeRankWatch, loadProfileDailyRows } from '../../../app/_lib/dashboard-data';
 import { kpiTiles, totalsOf } from '../../optimizer/view';
 import { addDays, precedingPeriod, periodFromParams } from '../../../app/_lib/periods';
@@ -37,11 +38,13 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       loadProfileDailyRows(handle, actor.orgId, profile.id, profile.label, { start: `${reportDate.slice(0, 8)}01`, end: reportDate }),
       loadProfileDailyRows(handle, actor.orgId, profile.id, profile.label, comparison),
     ]);
+    const provider: { providerDiagnostics?: StreamExtensionEvidence } = { providerDiagnostics: await readStreamExtensionEvidence(handle, { ...scope, datasetId: 'sponsored-ads-campaign-diagnostics-recommendations', asOf: new Date().toISOString(), maxAgeMs: 86400000 }) };
     const pacing = computePacing(monthRows, reportDate, profile.monthlyBudget);
     const pacingAlert = pacingFlag(pacing, null);
     const flags = evaluate(analyzeAccount(profile.label, reportDate, analysisRows,
       campaigns.map((row) => ({ ...row, category: classifyCampaignCategory(row.campaignName) }))), null, profile.goalLens);
     return {
+      ...provider,
       tiles: kpiTiles(totalsOf(accountRows.filter((row) => row.date >= period.start && row.date <= period.end)), totalsOf(comparisonRows)),
       // No confirmed profile break-even economics exist in the current read contract.
       breakEvenAcos: null as number | null,

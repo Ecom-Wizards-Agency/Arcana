@@ -1,3 +1,4 @@
+import { deriveAssetEligibility } from '@wizard-ads/core';
 import { readCreativeWorkspace, readLatestCreativeSyncJobState, readLatestCreativeSyncSnapshot } from '@wizard-ads/db';
 import type { ScreenActor } from '../../server/page-read';
 import type { ScreenParams } from '../types';
@@ -29,6 +30,16 @@ export async function loadCreativeScreen(access: ScreenActor, input: ScreenParam
     readLatestCreativeSyncSnapshot({ sql }, { orgId, profileId: profile.id }),
     readLatestCreativeSyncJobState({ sql }, { orgId, profileId: profile.id }),
   ]));
+  const now = new Date().toISOString();
+  for (const asset of workspace.assets) {
+    asset.eligibility = [];
+    for (const evidence of asset.assetLibraryEvidence ?? []) {
+      const contexts = new Map((asset.moderationEvidence ?? []).map((row) => [JSON.stringify(row.observation.context), row.observation.context]));
+      for (const context of contexts.values()) asset.eligibility.push(deriveAssetEligibility({ context,
+        identity: evidence.observation.identity, now, asset: evidence, moderation: asset.moderationEvidence ?? [] }));
+    }
+    if (asset.eligibility.length === 1) asset.moderation = asset.eligibility[0]!.status;
+  }
   const pilot = creativeSyncPilotFromEnv();
   const evidence: CreativeLifecycleEvidence = {
     producerEligible: profile.syncEnabled && pilot.enabled && pilot.profileIds.includes(profile.id.toLowerCase()),
