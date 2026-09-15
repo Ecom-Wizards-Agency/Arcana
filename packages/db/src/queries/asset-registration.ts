@@ -80,7 +80,9 @@ export async function reconcileAssetRegistrations(handle: Pick<DbHandle, 'sql'>,
   return EvidenceReconciliationCounts.parse({ requested: rows.length, attempted: rows.length, succeeded: rows.length, failed: 0, refused: 0 });
 }
 
-/** Read-only retries retain their original job/snapshot identity; exhausted reads stay visible. */
+/** Read-only retries retain their original job/snapshot identity; exhausted reads stay visible.
+ * Filter eligibility before LIMIT so terminal reads cannot occupy every recovery batch.
+ * A later durable snapshot may permit bounded recovery without another provider read. */
 export async function reconcileAssetSearchWork(handle: Pick<DbHandle, 'sql'>, enabled = false, limit = 100) {
   const counts = { requested: 0, attempted: 0, succeeded: 0, failed: 0, refused: 0 };
   if (!enabled) return EvidenceReconciliationCounts.parse(counts);
@@ -90,7 +92,10 @@ export async function reconcileAssetSearchWork(handle: Pick<DbHandle, 'sql'>, en
       select j.id,j.attempts,j.max_attempts,exists(select 1 from public.asset_library_snapshots s
         where s.id=j.id and s.org_id=j.org_id and s.profile_id=j.profile_id) as persisted
       from public.sync_jobs j where j.job_type='asset-library.search' and j.status in ('failed','dead')
-        and j.run_after<=now() order by j.created_at limit ${limit} for update of j skip locked`;
+        and j.run_after<=now() and j.attempts<8
+        and (j.attempts<j.max_attempts or exists(select 1 from public.asset_library_snapshots s
+          where s.id=j.id and s.org_id=j.org_id and s.profile_id=j.profile_id))
+      order by j.created_at,j.id limit ${limit} for update of j skip locked`;
     for (const job of jobs) {
       counts.requested++;
       if (job.attempts>=8 || !job.persisted && job.attempts>=job.max_attempts) { counts.refused++; continue; }
