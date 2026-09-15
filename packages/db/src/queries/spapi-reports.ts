@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { SpReportCheckpoint, SpParsedReport, SpReportScope, SpRetailSpendEvidence, type SpReportPlan, type SpReportFamily, type SpReportReceipt, type SpEvidence } from '@wizard-ads/shared';
+import { type SpReportAdmission, sameSpReportDocument, SP_REPORT_FRESHNESS_HOURS, FreshnessCoverage, SpReportCheckpoint, SpParsedReport, SpReportScope, SpRetailSpendEvidence, type SpReportPlan, type SpReportFamily, type SpReportReceipt, type SpEvidence } from '@wizard-ads/shared';
 import type { DbHandle, QueryHandle } from '../client.js';
 
 const tables = { retail: 'fact_retail_sales_traffic_daily', aba: 'fact_aba_search_terms_periodic', catalogue: 'spapi_listing_observations' } as const;
@@ -67,9 +67,28 @@ export async function resolveSpReportScope(handle: QueryHandle, input: { orgId: 
   const r = rows[0];
   return r ? SpReportScope.parse({ orgId:r['org_id'],profileId:r['profile_id'],connectionId:r['connection_id'],marketplaceId:r['marketplace_id'],sellingPartnerId:r['selling_partner_id'],region:r['region'] }) : null;
 }
-export async function admitSpReportPlan(handle: QueryHandle, plan: SpReportPlan): Promise<boolean> {
-  const scope = await resolveSpReportScope(handle,{...plan.scope,family:plan.family});
-  return scope !== null && stable(scope) === stable(plan.scope);
+export async function admitSpReportPlan(handle: QueryHandle, plan: SpReportPlan): Promise<SpReportAdmission> {
+  const s=plan.scope;
+  const [row]=await handle.sql`select p.sync_enabled,p.region::text,b.enabled as binding_enabled,b.connection_id,b.marketplace_id,
+    c.selling_partner_id,c.status::text,c.vault_secret_id is not null as has_credential,
+    b.marketplace_id=any(c.marketplace_ids) as marketplace_matches,
+    p.region=app.spapi_region_for_marketplace(b.marketplace_id) as region_matches,
+    src.enabled as source_enabled,src.connection_id as source_connection_id
+    from public.ad_profiles p left join public.spapi_profile_bindings b on b.org_id=p.org_id and b.profile_id=p.id
+    left join public.spapi_connections c on c.org_id=b.org_id and c.id=b.connection_id
+    left join public.spapi_report_sources src on src.org_id=p.org_id and src.profile_id=p.id and src.family=${plan.family}
+    where p.org_id=${s.orgId} and p.id=${s.profileId}`;
+  const refuse=(code: Extract<SpReportAdmission,{admitted:false}>['code']):SpReportAdmission=>({admitted:false,code});
+  if(!row)return refuse('profile_unavailable');
+  if(!row['source_enabled'])return refuse('source_disabled');
+  if(!row['binding_enabled'])return refuse('binding_disabled');
+  if(!row['sync_enabled'])return refuse('profile_sync_disabled');
+  if(row['connection_id']!==s.connectionId || row['source_connection_id']!==s.connectionId)return refuse('connection_mismatch');
+  if(row['selling_partner_id']!==s.sellingPartnerId || !s.sellingPartnerId.trim())return refuse('seller_mismatch');
+  if(row['marketplace_id']!==s.marketplaceId || !row['marketplace_matches'])return refuse('marketplace_mismatch');
+  if(row['region']!==s.region || !row['region_matches'])return refuse('region_mismatch');
+  if(row['status']!=='active'||!row['has_credential'])return refuse('credential_unavailable');
+  return {admitted:true,scope:s};
 }
 export async function loadSpReportCheckpoint(handle: QueryHandle, plan: SpReportPlan): Promise<SpReportCheckpoint | null> {
   const rows = await handle.sql`select checkpoint from public.spapi_report_runs where org_id=${plan.scope.orgId} and profile_id=${plan.scope.profileId} and family=${plan.family} and request_id=${plan.requestId}`;
@@ -116,8 +135,18 @@ export async function verifySpReport(handle: QueryHandle, raw: SpParsedReport): 
 export async function promoteSpReport(handle: Pick<DbHandle,'sql'>, raw: SpParsedReport): Promise<SpReportReceipt> {
   const report=SpParsedReport.parse(raw), {scope,family,requestId,start,end}=report.plan;
   return handle.sql.begin(async sql => {
-    if (!await admitSpReportPlan({sql},report.plan)) throw new Error('SP-API source no longer admitted');
+    if (!(await admitSpReportPlan({sql},report.plan)).admitted) throw new Error('SP-API source no longer admitted');
     await sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify([scope.orgId,scope.sellingPartnerId,scope.marketplaceId,family,start,end])},0))`;
+    await sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify([scope.orgId,scope.sellingPartnerId,scope.marketplaceId,family,report.reportId,report.documentId])},0))`;
+    const documents=await sql`select report from public.spapi_report_receipts where org_id=${scope.orgId}
+      and selling_partner_id=${scope.sellingPartnerId} and marketplace_id=${scope.marketplaceId} and family=${family}
+      and report->>'reportId'=${report.reportId} and report->>'documentId'=${report.documentId}
+      order by observed_at,request_id limit 1`;
+    if(documents[0]){
+      const original=SpParsedReport.parse(documents[0]['report']);
+      if(!sameSpReportDocument(original,report))throw new Error('Provider document identity conflict');
+      return {report:original,writtenRows:0,verifiedLoadedRows:await verifySpReport({sql},original)};
+    }
     if(family!=='catalogue')await sql`select app.ensure_fact_partitions(${start}::date,0)`;
     const existing=await sql`select report from public.spapi_report_receipts where org_id=${scope.orgId} and profile_id=${scope.profileId} and family=${family} and request_id=${requestId}`;
     if (existing.length) {
@@ -173,6 +202,29 @@ export async function listSpReportPeriods(handle: QueryHandle,input:{orgId:strin
     order by start_date desc,end_date desc,observed_at desc`;
   return rows.map(r=>({marketplaceId:scope.marketplaceId,start:String(r['start_date']),end:String(r['end_date']),observedAt:new Date(r['observed_at']).toISOString(),rows:SpParsedReport.parse(r['report']).rows.length}));
 }
+const reportTypes = { retail: 'GET_SALES_AND_TRAFFIC_REPORT', aba: 'GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT', catalogue: 'GET_MERCHANT_LISTINGS_ALL_DATA' } as const;
+/** Read the producer's exact period observation; a receipt alone cannot publish freshness. */
+async function publishedSpReportState(handle:QueryHandle,report:SpParsedReport,now:Date):Promise<SpEvidence['state']>{
+  const {scope,family,start,end}=report.plan;
+  const rows=await handle.sql`select status::text,source,report_type,latest_loaded_date::text,observed_at,
+    source_rows,parsed_rows,loaded_rows,refused_rows,counts_match
+    from public.report_coverage where org_id=${scope.orgId} and profile_id=${scope.profileId}
+      and source='amazon_spapi' and report_type=${reportTypes[family]}
+      and grain in (${family},${`${family}:${start}:${end}`})
+      and earliest_returned_date=${start} and latest_loaded_date=${end} order by observed_at desc limit 1`;
+  const row=rows[0];if(!row || row['observed_at']===null)return 'unavailable';
+  const number=(key:string)=>row[key]===null?null:Number(row[key]);
+  const observation=FreshnessCoverage.safeParse({source:row['source'],reportType:row['report_type'],status:row['status'],
+    coveredThrough:row['latest_loaded_date'],observedAt:new Date(row['observed_at']).toISOString(),sourceRows:number('source_rows'),
+    parsedRows:number('parsed_rows'),loadedRows:number('loaded_rows'),refusedRows:number('refused_rows'),countsMatch:row['counts_match']});
+  if(!observation.success)return 'unavailable';
+  const c=observation.data;
+  if(!['complete','partial'].includes(c.status) || c.countsMatch!==true || c.observedAt!==report.observedAt
+    || c.sourceRows!==report.counts.sourceRows || c.parsedRows!==report.counts.parsedRows
+    || c.refusedRows!==report.counts.refusedRows || c.loadedRows!==report.counts.canonicalRows)return 'unavailable';
+  if(now.getTime()-Date.parse(c.observedAt)>SP_REPORT_FRESHNESS_HOURS[family]*3_600_000)return 'stale';
+  return c.status==='partial'||!report.complete?'partial':'measured';
+}
 export async function readSpReportEvidence(handle: QueryHandle,input:{orgId:string;profileId:string;family:SpReportFamily;start:string;end:string;now?:Date;latest?:boolean}):Promise<SpEvidence> {
   const unavailable=(reason:string):SpEvidence=>({state:'unavailable',reason,report:null});
   const scope=await resolveSpReportScope(handle,input);
@@ -188,12 +240,13 @@ export async function readSpReportEvidence(handle: QueryHandle,input:{orgId:stri
   const reports=rows.map(r=>SpParsedReport.parse(r['report']));
   if(!reports.length) return unavailable('No report observed for this period');
   let report=reports[0]!;
+  let selectedReports=[report];
   if(input.family==='retail') {
     const days=new Map<string,SpParsedReport>();
     for(const r of reports) if(!days.has(r.plan.start)) days.set(r.plan.start,r);
     const expected=Math.round((Date.parse(input.end)-Date.parse(input.start))/86400000)+1;
     if(days.size!==expected) return unavailable('Retail date coverage has gaps');
-    const selected=[...days.values()];
+    const selected=[...days.values()]; selectedReports=selected;
     for(const r of selected) { try { await verifySpReport(handle,r); } catch { return unavailable('Retail destination verification failed'); } }
     const canonical=selected.flatMap(r=>r.rows);
     const count=(key:'sourceRows'|'parsedRows'|'refusedRows'|'duplicateRows'|'addedRows'|'canonicalRows')=>selected.reduce((n,r)=>n+r.counts[key],0);
@@ -204,10 +257,12 @@ export async function readSpReportEvidence(handle: QueryHandle,input:{orgId:stri
   } else {
     if(input.family==='aba') {
       const exact=reports.find(r=>r.plan.start===input.start && r.plan.end===input.end);
-      if(!exact) return unavailable('ABA requires an exact covered provider week'); report=exact;
+      if(!exact) return unavailable('ABA requires an exact covered provider week'); report=exact; selectedReports=[report];
     }
     try{await verifySpReport(handle,report);}catch{return unavailable('Destination verification failed');}
   }
-  const stale=(input.now??new Date()).getTime()-Date.parse(report.observedAt)>(input.family==='aba'?14:3)*86400000;
-  return {state:stale?'stale':report.complete?'measured':'partial',reason:stale?'Source observation is stale':report.complete?null:'Report contains incomplete evidence',report};
+  const states=await Promise.all(selectedReports.map(r=>publishedSpReportState(handle,r,input.now??new Date())));
+  if(states.includes('unavailable'))return unavailable('No matching successful, counted coverage publication for this period');
+  const state=states.includes('stale')?'stale':states.includes('partial')?'partial':'measured';
+  return {state,reason:state==='stale'?'Published source observation is stale':state==='partial'?'Published coverage contains incomplete evidence':null,report};
 }

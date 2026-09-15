@@ -92,3 +92,31 @@ the returned report ID, and refuse to replay an unresolved intent. SQP implement
 this checkpoint pattern. A new worker source registers its plan, execute, counts,
 and coverage target with `IngestionRegistry`; the registry writes freshness using
 the WP-256 producer. No provider module imports a database or starts a scheduler.
+
+### Report bounds, replay and published evidence
+
+Document downloads stream at most 32 MiB of transport bytes and 128 MiB of
+uncompressed UTF-8 bytes by default. `maxDocumentBytes` and
+`maxDecompressedDocumentBytes` can lower or explicitly raise those independent
+limits. Oversize input or GZIP expansion aborts the request and cancels the stream.
+Presigned downloads still carry no authorization headers.
+
+Provider report/document identity is unique within tenant, seller, marketplace
+and family, across caller request IDs and Ads profiles. A repeated document
+returns its original immutable receipt and observation time; changed content
+under that identity is refused. Checkpoints retain their caller identity while
+referencing the original provider receipt.
+
+Retail, ABA and catalogue readers require a matching WP-256 coverage publication
+for each exact provider period as well as exact destination readback. SQP also
+publishes its verified period start through that producer. Period-specific grains
+avoid treating disjoint weekly observations as a continuous interval. Missing or
+failed publication is unavailable; partial publication remains partial. Freshness
+uses the published observation and the shared cadence policy: 30 hours for daily
+sources and 174 hours for weekly ABA (cadence plus six hours). Receipt replay never
+advances that observation.
+
+Admission exposes stable shared refusal codes for source/binding disablement,
+profile sync, credential availability and seller/marketplace/region/connection
+mismatches. A conflicting ABA slot retains its conflict marker after canonical
+row deduplication, and readers withhold its measured identity and shares.

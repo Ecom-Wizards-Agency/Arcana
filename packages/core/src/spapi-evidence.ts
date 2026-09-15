@@ -56,6 +56,7 @@ export function abaEvidence(evidence: SpEvidence, input: { query: string; asin: 
   if (ranks.size !== 1 || new Set(slots.map(row => row.slot)).size !== slots.length
     || new Set(slots.flatMap(row => row.asin === null ? [] : [row.asin])).size !== slots.length)
     return unknown('ABA ranked results are conflicting or incomplete.');
+  if (slots.some(row => row.conflicted || !row.complete)) return unknown('ABA ranked slots contain conflicting or incomplete source observations.');
   const present = slots.find(row => row.asin === input.asin);
   if (present) return { state: 'present' as const, reason: evidence.reason, frequencyRank: present.frequencyRank,
     slot: present.slot, clickShare: present.clickShare, conversionShare: present.conversionShare, department: present.department };

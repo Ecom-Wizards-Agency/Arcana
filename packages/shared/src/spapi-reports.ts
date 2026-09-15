@@ -35,6 +35,8 @@ export const SpAbaRow = z.object({
   department: z.string().min(1), query: z.string().min(1), frequencyRank: count.min(1),
   slot: z.number().int().min(0).max(3), asin: asin.nullable(),
   clickShare: share, conversionShare: share, complete: z.boolean(),
+  /** Conflicting source rows for this ranked slot; survives canonical deduplication. */
+  conflicted: z.boolean().optional(),
 });
 export type SpAbaRow = z.infer<typeof SpAbaRow>;
 export const SpListingRow = z.object({
@@ -103,3 +105,35 @@ export const SpRetailSpendEvidence = z.object({
   rows: z.array(z.object({ date: IsoDate, spend: z.number().nonnegative() })),
 });
 export type SpRetailSpendEvidence = z.infer<typeof SpRetailSpendEvidence>;
+
+export const SpReportAdmissionCode = z.enum([
+  'profile_unavailable', 'source_disabled', 'binding_disabled', 'profile_sync_disabled',
+  'credential_unavailable', 'seller_mismatch', 'marketplace_mismatch', 'region_mismatch', 'connection_mismatch',
+]);
+export type SpReportAdmissionCode = z.infer<typeof SpReportAdmissionCode>;
+export const SpReportAdmission = z.discriminatedUnion('admitted', [
+  z.object({ admitted: z.literal(true), scope: SpReportScope }),
+  z.object({ admitted: z.literal(false), code: SpReportAdmissionCode }),
+]);
+export type SpReportAdmission = z.infer<typeof SpReportAdmission>;
+/** Expected daily/weekly cadence plus six hours of delivery tolerance. Age uses producer observations. */
+export const SP_REPORT_FRESHNESS_HOURS = { retail: 30, aba: 174, catalogue: 30 } as const;
+
+/** Request identities may differ; provider identity and admitted seller period may not. */
+export function sameSpReportDocument(a: SpParsedReport, b: SpParsedReport): boolean {
+  const identity = (r: SpParsedReport) => [r.plan.scope.orgId, r.plan.scope.sellingPartnerId,
+    r.plan.scope.marketplaceId, r.plan.scope.region, r.plan.family, r.plan.start, r.plan.end,
+    r.plan.contractVersion, r.reportId, r.documentId, r.payloadFingerprint];
+  const canonical = (value: unknown): string => {
+    if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+    if (value && typeof value === 'object') {
+      const fields = Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, item]) => JSON.stringify(key) + ':' + canonical(item));
+      return '{' + fields.join(',') + '}';
+    }
+    return JSON.stringify(value);
+  };
+  return canonical(identity(a)) === canonical(identity(b)) && canonical(a.rows.map(row=>row.kind==='aba'?{...row,conflicted:row.conflicted??false}:row))
+    === canonical(b.rows.map(row=>row.kind==='aba'?{...row,conflicted:row.conflicted??false}:row))
+    && canonical(a.counts) === canonical(b.counts) && a.complete === b.complete;
+}

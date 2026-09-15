@@ -189,7 +189,7 @@ describe('listing document fixtures', () => {
   });
   it.each([false, true])('downloads and parses real text transport with GZIP=%s and zero auth access', async compressed => {
     const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
-      expect(init).toEqual({ method: 'GET' });
+      expect(init).toEqual({ method: 'GET', signal: expect.any(AbortSignal) });
       return new Response(compressed ? new Uint8Array(gzipSync(listing)) : listing);
     });
     const client = new SpApiClient({ endpoint: 'https://provider.invalid', userAgent: 'Fixture/1', fetch,

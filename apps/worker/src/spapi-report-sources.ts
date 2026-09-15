@@ -4,7 +4,7 @@ import { LwaRefreshTokenProvider, SpApiClient, SP_REPORT_TYPES, type FetchLike }
 import { ingestionSource } from './ingestion-sources.js';
 import type { IngestionRegistry } from './ingestion-registry.js';
 import { PermanentJobError } from './permanent-job-error.js';
-import { runSpReportWorkflow, type SpReportWorkflowDependencies } from './spapi-report-workflow.js';
+import { SpReportAdmissionError, runSpReportWorkflow, type SpReportWorkflowDependencies } from './spapi-report-workflow.js';
 import { spApiEndpointForRegion } from './spapi-sqp.js';
 import { MinimumIntervalSqpProviderGate } from './sqp.js';
 
@@ -22,7 +22,8 @@ export function registerSpApiReportSources(registry:Pick<IngestionRegistry,'regi
       execute:async(plan)=>({receipt:await runSpReportWorkflow(plan,deps)}),
       counts:({receipt})=>({sourceRows:receipt.report.counts.sourceRows,parsedRows:receipt.report.counts.parsedRows,
         refusedRows:receipt.report.counts.refusedRows,loadedRows:receipt.report.rows.length,verifiedLoadedRows:receipt.verifiedLoadedRows}),
-      coverage:{target:({receipt}:{receipt:SpReportReceipt})=>({reportType:SP_REPORT_TYPES[family],grain:family,
+      coverage:{target:({receipt}:{receipt:SpReportReceipt})=>({reportType:SP_REPORT_TYPES[family],grain:`${family}:${receipt.report.plan.start}:${receipt.report.plan.end}`,
+        verifiedStartDate:receipt.report.plan.start,
         earliestDate:receipt.report.plan.start,coveredThrough:receipt.report.plan.end,settledThrough:null,
         observedAt:receipt.report.observedAt,status:receipt.report.complete?'complete':'partial'})},
     });
@@ -45,7 +46,7 @@ export function postgresSpReportDependencies(options:{handle:DbHandle;clientId:s
           refreshTokenProvider:()=>getSpApiRefreshToken(options.handle,{orgId:plan.scope.orgId,connectionId:plan.scope.connectionId}),
           ...(options.fetch?{fetch:options.fetch}:{})}),...(options.fetch?{fetch:options.fetch}:{})});clients.set(key,client);}
       const api=client;
-      return {createReport:async(request)=>{await gate.beforeCall('create_report', key);if(!await admitSpReportPlan(options.handle,plan))throw new PermanentJobError('SP-API binding revoked before create');return api.createReport(request);},
+      return {createReport:async(request)=>{await gate.beforeCall('create_report', key);const admission=await admitSpReportPlan(options.handle,plan);if(!admission.admitted)throw new SpReportAdmissionError(admission.code);return api.createReport(request);},
         getReport:api.getReport.bind(api),getReportDocument:api.getReportDocument.bind(api),downloadReportDocumentText:api.downloadReportDocumentText.bind(api)};
     },
   };

@@ -1,4 +1,4 @@
-import type { SpParsedReport, SpReportCheckpoint, SpReportPlan, SpReportReceipt } from '@wizard-ads/shared';
+import { sameSpReportDocument, type SpReportAdmission, type SpReportAdmissionCode, type SpParsedReport, type SpReportCheckpoint, type SpReportPlan, type SpReportReceipt } from '@wizard-ads/shared';
 import { listingChanges } from '@wizard-ads/core';
 import { SpApiAmbiguousOutcome, SpApiAuthError, SpApiError, canonicalSpJson, parseAbaSearchTerms, parseCatalogueListings, parseSalesTraffic,
   spReportRequest, SP_REPORT_TYPES, validateSpPlan, type SpApiClient } from '@wizard-ads/sp-api';
@@ -14,8 +14,12 @@ export class SpReportPendingError extends SqpWorkflowPendingError {
   }
 }
 
+export class SpReportAdmissionError extends PermanentJobError {
+  constructor(readonly code: SpReportAdmissionCode) { super(`SP-API admission refused: ${code}`); }
+}
+
 export interface SpReportWorkflowDependencies {
-  admit(plan:SpReportPlan):Promise<boolean>;
+  admit(plan:SpReportPlan):Promise<SpReportAdmission>;
   load(plan:SpReportPlan):Promise<SpReportCheckpoint|null>;
   save(next:SpReportCheckpoint,expected:number|null):Promise<SpReportCheckpoint>;
   promote(report:SpParsedReport):Promise<SpReportReceipt>;
@@ -26,13 +30,13 @@ export interface SpReportWorkflowDependencies {
 }
 export async function runSpReportWorkflow(input:SpReportPlan,deps:SpReportWorkflowDependencies):Promise<SpReportReceipt> {
   const plan=validateSpPlan(input);
-  const admit=async()=>{if(!await deps.admit(plan))throw new PermanentJobError('SP-API source or exact binding is disabled');};
+  const admit=async()=>{const result=await deps.admit(plan);if(!result.admitted)throw new SpReportAdmissionError(result.code);};
   await admit();
   let checkpoint=await deps.load(plan);
   if(checkpoint && canonicalSpJson(checkpoint.plan)!==canonicalSpJson(plan))throw new PermanentJobError('SP-API checkpoint differs from admitted request');
   if(checkpoint?.state==='completed'){
     const receipt=checkpoint.receipt;
-    if(!receipt || canonicalSpJson(receipt.report.plan)!==canonicalSpJson(plan) || receipt.report.reportId!==checkpoint.reportId
+    if(!receipt || !sameSpReportDocument(receipt.report,{...receipt.report,plan}) || receipt.report.reportId!==checkpoint.reportId
       || receipt.report.documentId!==checkpoint.documentId || receipt.report.observedAt!==checkpoint.observedAt)throw new PermanentJobError('Missing or mismatched completed report receipt');
     const verifiedLoadedRows=await deps.verify(receipt.report);
     return {...receipt,writtenRows:0,verifiedLoadedRows};
@@ -89,7 +93,7 @@ export async function runSpReportWorkflow(input:SpReportPlan,deps:SpReportWorkfl
       .filter(change=>change.observedAt===parsed.observedAt&&change.id.startsWith(`${parsed.reportId}:`));
   }
   await admit(); const receipt=await deps.promote(parsed);
-  if(canonicalSpJson(receipt.report)!==canonicalSpJson(parsed) || receipt.verifiedLoadedRows!==parsed.rows.length)throw new Error('SP-API promotion receipt mismatch');
-  await save({state:'completed',receipt});
-  return {...receipt,verifiedLoadedRows:await deps.verify(parsed)};
+  if(!sameSpReportDocument(receipt.report,parsed) || receipt.verifiedLoadedRows!==parsed.rows.length)throw new Error('SP-API promotion receipt mismatch');
+  await save({state:'completed',receipt,observedAt:receipt.report.observedAt});
+  return {...receipt,verifiedLoadedRows:await deps.verify(receipt.report)};
 }

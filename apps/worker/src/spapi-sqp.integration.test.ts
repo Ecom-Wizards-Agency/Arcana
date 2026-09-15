@@ -1,3 +1,4 @@
+import { readGridPerformance } from '@wizard-ads/db';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   createTestDatabase,
@@ -206,6 +207,8 @@ describe.skipIf(!available)('tenant-scoped SP-API SQP runtime', () => {
     `;
     expect(coverage).toMatchObject({ source_rows: '1', loaded_rows: '1' });
     expect(new Date(coverage?.observed_at ?? '').toISOString()).toBe('2026-08-23T01:00:00.000Z');
+    expect((await readGridPerformance(database,orgId,profileId,payload.weekStart,payload.weekEnd)).feeds.find(feed=>feed.feed==='SQP'))
+      .toMatchObject({status:'complete',daysHeld:7,daysRequested:7});
     const providerCalls = calls.length;
     expect(await registry.dispatch(context)).toMatchObject({ status: 'completed', reused: true,
       observedAt: '2026-08-23T01:00:00.000Z' });

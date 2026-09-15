@@ -58,6 +58,13 @@ describe('ABA evidence', () => {
     expect(abaEvidence({ ...value, state: 'partial' }, match).state).toBe('not-measured');
     expect(abaEvidence(value, { ...match, end: '2026-09-08' }).state).toBe('not-measured');
   });
+  it('withholds identity and shares when a canonical slot retains source conflicts',()=>{
+    const rows=abaRows().map(row=>row.kind==='aba'&&row.slot===1?{...row,conflicted:true,complete:false}:row);
+    const value=evidence({...report(rows,'aba'),complete:false});
+    expect(abaEvidence(value,{...match,asin:'B000000001'})).toMatchObject({state:'not-measured',slot:null,clickShare:null,conversionShare:null});
+    const legacy=rows.map(row=>row.kind==='aba'?{...row,conflicted:undefined}:row);
+    expect(abaEvidence(evidence({...report(legacy,'aba'),complete:false}),{...match,asin:'B000000001'}).state).toBe('not-measured');
+  });
   it('refuses duplicate slots and ambiguous departments', () => {
     expect(abaEvidence(evidence(report([...abaRows(), abaRows()[0]!], 'aba')), match).state).toBe('not-measured');
     const extra = abaRows().map(row => row.kind === 'aba' ? { ...row, department: 'Other' } : row);

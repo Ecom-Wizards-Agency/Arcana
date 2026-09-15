@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { SpParsedReport, type SpReportScope } from '@wizard-ads/shared';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '../testing/harness.js';
+import { upsertReportCoverage } from './report-coverage.js';
 import { asUser } from '../testing/rls.js';
 import { storeSpApiRefreshToken } from './spapi.js';
 import { promoteSpReport, readSpReportEvidence, readSpRetailSpendEvidence, resolveSpReportScope, verifySpReport,
@@ -39,6 +40,49 @@ describe.skipIf(!available)('SP-API source persistence on disposable PostgreSQL'
     return scope;
   }
 
+  async function publish(report:SpParsedReport,status:'complete'|'partial'=report.complete?'complete':'partial'){
+    return upsertReportCoverage(database,{orgId:report.plan.scope.orgId,profileId:report.plan.scope.profileId,
+      source:'amazon_spapi',reportType:'GET_SALES_AND_TRAFFIC_REPORT',grain:`retail:${report.plan.start}:${report.plan.end}`,
+      status,earliestDate:report.plan.start,verifiedStartDate:report.plan.start,coveredThrough:report.plan.end,settledThrough:null,
+      observedAt:report.observedAt,sourceRows:report.counts.sourceRows,parsedRows:report.counts.parsedRows,
+      refusedRows:report.counts.refusedRows,loadedRows:report.counts.canonicalRows,countsMatch:true},await verifySpReport(database,report));
+  }
+
+  it('deduplicates one provider document across two request identities without refreshing its observation',async()=>{
+    const scope=await seed(),original=retail(scope,'provider-original');
+    await promoteSpReport(database,original);await publish(original);
+    const replay={...original,observedAt:'2026-09-14T01:00:00.000Z',plan:{...original.plan,requestId:'provider-second',requestedAt:'2026-09-14T01:00:00.000Z'}};
+    expect(await promoteSpReport(database,replay)).toEqual({report:original,writtenRows:0,verifiedLoadedRows:1});
+    expect(await database.sql`select request_id from public.spapi_report_receipts where org_id=${scope.orgId} and family='retail' and start_date=${date}`).toHaveLength(1);
+    const [fact]=await database.sql`select report_request_id,observed_at from public.fact_retail_sales_traffic_daily where org_id=${scope.orgId} and date=${date}`;
+    expect(fact?.['report_request_id']).toBe(original.plan.requestId);
+    expect(new Date(fact?.['observed_at']).toISOString()).toBe(original.observedAt);
+    expect(await publish((await promoteSpReport(database,replay)).report)).toMatchObject({written:0,unchanged:1});
+    expect(await readSpReportEvidence(database,{...scope,family:'retail',start:date,end:date,now:new Date('2026-09-15T01:00:00Z')})).toMatchObject({state:'stale'});
+    await expect(database.sql`insert into public.spapi_report_receipts
+      (org_id,profile_id,family,request_id,selling_partner_id,marketplace_id,start_date,end_date,observed_at,report)
+      select org_id,profile_id,family,'direct-duplicate',selling_partner_id,marketplace_id,start_date,end_date,observed_at,report
+      from public.spapi_report_receipts where org_id=${scope.orgId} and family='retail' and start_date=${date}`)
+      .rejects.toMatchObject({code:'23505'});
+    await expect(promoteSpReport(database,{...replay,payloadFingerprint:'b'.repeat(64)})).rejects.toThrow('Provider document identity conflict');
+  });
+
+  it('requires producer publication and preserves absent, failed, partial and stale coverage states',async()=>{
+    const scope=await seed(),report=retail(scope,'publication');await promoteSpReport(database,report);
+    const input={...scope,family:'retail' as const,start:date,end:date,now:new Date(report.observedAt)};
+    expect(await readSpReportEvidence(database,input)).toMatchObject({state:'unavailable',report:null});
+    await publish(report,'partial');
+    expect(await readSpReportEvidence(database,input)).toMatchObject({state:'partial'});
+    await database.sql`update public.report_coverage set status='failed' where org_id=${scope.orgId} and report_type='GET_SALES_AND_TRAFFIC_REPORT'`;
+    expect(await readSpReportEvidence(database,input)).toMatchObject({state:'unavailable'});
+    await database.sql`delete from public.report_coverage where org_id=${scope.orgId} and report_type='GET_SALES_AND_TRAFFIC_REPORT'`;
+    await publish(report);
+    expect(await readSpReportEvidence(database,input)).toMatchObject({state:'measured'});
+    expect(await readSpReportEvidence(database,{...input,now:new Date('2026-09-15T01:00:00Z')})).toMatchObject({state:'stale'});
+    await database.sql`update public.fact_retail_sales_traffic_daily set payload=jsonb_set(payload,'{sales}','999'::jsonb) where org_id=${scope.orgId} and date=${date}`;
+    expect(await readSpReportEvidence(database,input)).toMatchObject({state:'unavailable'});
+  });
+
   it('deduplicates retail totals across two Ads profiles bound to one seller and rejects old restatements', async () => {
     const scope = await seed(), first = retail(scope, 'retail-original');
     expect(await promoteSpReport(database, first)).toMatchObject({ writtenRows: 1, verifiedLoadedRows: 1 });
@@ -52,8 +96,11 @@ describe.skipIf(!available)('SP-API source persistence on disposable PostgreSQL'
     await database.sql`insert into public.spapi_report_sources(org_id,profile_id,connection_id,family,enabled)
       values (${scope.orgId},${profile!.id},${scope.connectionId},'retail',true)`;
     expect(await resolveSpReportScope(database, { ...secondScope, family: 'retail' })).toEqual(secondScope);
+    const alias={...first,plan:{...first.plan,scope:secondScope,requestId:'same-document-second-profile'},observedAt:'2026-09-14T01:00:00.000Z'};
+    expect(await promoteSpReport(database,alias)).toEqual({report:first,writtenRows:0,verifiedLoadedRows:1});
+    expect(await database.sql`select request_id from public.spapi_report_receipts where org_id=${scope.orgId} and family='retail' and start_date=${date}`).toHaveLength(1);
     const revised = retail(secondScope, 'retail-restated', '2026-09-14T01:00:00.000Z', 120);
-    await promoteSpReport(database, revised);
+    await promoteSpReport(database, revised); await publish(revised);
     const [count] = await database.sql`select count(*)::int as n,sum((payload->>'sales')::numeric)::text as sales
       from public.fact_retail_sales_traffic_daily where org_id=${scope.orgId} and date=${date}`;
     expect(count).toMatchObject({ n: 1, sales: '120' });
@@ -84,7 +131,7 @@ describe.skipIf(!available)('SP-API source persistence on disposable PostgreSQL'
     const scope = await seed(), partial = retail(scope, 'partial');
     if (partial.rows[0]?.kind !== 'retail') throw new Error('Expected retail fixture');
     partial.rows[0].sessions = null; partial.complete = false;
-    await promoteSpReport(database, partial);
+    await promoteSpReport(database, partial); await publish(partial);
     expect(await readSpReportEvidence(database, { ...scope, family: 'retail', start: date, end: date, now: new Date(partial.observedAt) }))
       .toMatchObject({ state: 'partial', report: { rows: [{ sessions: null }] } });
     const empty = retail(scope, 'empty', '2026-09-14T01:00:00.000Z');

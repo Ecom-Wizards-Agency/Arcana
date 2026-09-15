@@ -1,3 +1,4 @@
+import { abaEvidence } from '@wizard-ads/core';
 import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
@@ -6,7 +7,7 @@ import {
   resolveSpReportScope, revokeSpApiRefreshToken, saveSpReportCheckpoint,
   storeSpApiRefreshToken, upsertReportCoverage, verifySpReport, type ClaimedJob,
 } from '@wizard-ads/db';
-import { SpApiAmbiguousOutcome, SpApiClient, SP_REPORT_CONTRACT, SP_REPORT_TYPES, validateSpPlan } from '@wizard-ads/sp-api';
+import { parseAbaSearchTerms, SpApiAmbiguousOutcome, SpApiClient, SP_REPORT_CONTRACT, SP_REPORT_TYPES, validateSpPlan } from '@wizard-ads/sp-api';
 import type { SpReportFamily, SpReportPlan, SpReportScope } from '@wizard-ads/shared';
 import { provisionSpApiReportJobs } from './spapi-report-scheduler.js';
 import { IngestionRegistry, type CoverageProducer } from './ingestion-registry.js';
@@ -142,7 +143,7 @@ describe.skipIf(!available)('registered SP-API report families with disposable p
     expect(await readSpReportEvidence(database, { ...scope, family, start: plan.start, end: plan.end, now: new Date('2026-10-15T00:00:00Z') }))
       .toMatchObject({ state: 'stale' });
     await revokeSpApiRefreshToken(database, { orgId: scope.orgId, connectionId: scope.connectionId });
-    await expect(registry.dispatch(context)).rejects.toThrow('disabled');
+    await expect(registry.dispatch(context)).rejects.toMatchObject({code:'credential_unavailable'});
     expect(provider.fetch).toHaveBeenCalledTimes(beforeReplay);
     expect(produce).toHaveBeenCalledTimes(2);
   });
@@ -150,9 +151,17 @@ describe.skipIf(!available)('registered SP-API report families with disposable p
   it('refuses mismatched seller, marketplace, region and tenant without provider calls', async () => {
     const scope = await seed('retail'); await enable(scope);
     const plan = makePlan(scope, 'retail'), provider = fakeProvider(plan), deps = dependencies(provider.client);
-    for (const mismatch of [{ sellingPartnerId: 'other-seller' }, { marketplaceId: 'other-marketplace' }, { region: 'EU' as const },
-      { orgId: '77777777-7777-4777-8777-777777777777' }, { connectionId: '77777777-7777-4777-8777-777777777777' }]) {
-      await expect(runSpReportWorkflow({ ...plan, scope: { ...scope, ...mismatch } }, deps)).rejects.toThrow('disabled');
+    for (const [mismatch,code] of [
+      [{ sellingPartnerId: 'other-seller' },'seller_mismatch'], [{ marketplaceId: 'other-marketplace' },'marketplace_mismatch'],
+      [{ region: 'EU' as const },'region_mismatch'], [{ orgId: '77777777-7777-4777-8777-777777777777' },'profile_unavailable'],
+      [{ connectionId: '77777777-7777-4777-8777-777777777777' },'connection_mismatch'],
+    ] as const) {
+      await expect(runSpReportWorkflow({ ...plan, scope: { ...scope, ...mismatch } }, deps)).rejects.toMatchObject({code});
+    }
+    for(const [table,column,code] of [['spapi_report_sources','enabled','source_disabled'],['spapi_profile_bindings','enabled','binding_disabled'],['ad_profiles','sync_enabled','profile_sync_disabled']] as const){
+      await database.sql.unsafe(`update public.${table} set ${column}=false where org_id=$1`,[scope.orgId]);
+      await expect(runSpReportWorkflow(plan,deps)).rejects.toMatchObject({code});
+      await database.sql.unsafe(`update public.${table} set ${column}=true where org_id=$1`,[scope.orgId]);
     }
     expect(provider.fetch).not.toHaveBeenCalled(); expect(provider.tokens).not.toHaveBeenCalled();
   });
@@ -164,6 +173,32 @@ describe.skipIf(!available)('registered SP-API report families with disposable p
     await expect(runSpReportWorkflow(plan, dependencies(provider.client))).rejects.toBeInstanceOf(SpApiAmbiguousOutcome);
     expect(provider.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
     expect(await loadSpReportCheckpoint(database, plan)).toMatchObject({ state: 'creating', reportId: null });
+  });
+
+  it.each(['retail','aba','catalogue'] as const)('%s reuses a provider document through another request and checkpoint',async family=>{
+    const scope=await seed(family);await enable(scope);
+    const plan=makePlan(scope,family),first=fakeProvider(plan),deps=dependencies(first.client);
+    const original=await runSpReportWorkflow(plan,deps);
+    const next={...plan,requestId:plan.requestId+'-alias',requestedAt:'2026-09-13T02:00:00.000Z'};
+    const repeated=fakeProvider(plan,{observedAt:'2026-09-13T02:00:00.000Z'});
+    const replay=await runSpReportWorkflow(next,dependencies(repeated.client));
+    expect(replay).toEqual({...original,writtenRows:0});
+    expect(await loadSpReportCheckpoint(database,next)).toMatchObject({state:'completed',observedAt,receipt:{report:{plan:{requestId:plan.requestId},observedAt}}});
+    const calls=repeated.fetch.mock.calls.length;
+    expect(await runSpReportWorkflow(next,dependencies(repeated.client))).toEqual(replay);
+    expect(repeated.fetch).toHaveBeenCalledTimes(calls);
+    expect(await database.sql`select request_id from public.spapi_report_receipts where org_id=${scope.orgId} and family=${family} and start_date=${plan.start} and end_date=${plan.end}`).toHaveLength(1);
+  });
+
+  it('preserves conflicting ABA slot evidence from parser to reader', async () => {
+    const scope=await seed('aba'),plan=makePlan(scope,'aba');
+    const body=JSON.parse(document(plan));
+    body.dataByDepartmentAndSearchTerm.push({...body.dataByDepartmentAndSearchTerm[0],clickedAsin:'B000000009',clickShare:0.9});
+    const parsed=parseAbaSearchTerms(JSON.stringify(body),{plan,reportId:'conflicted',documentId:'conflicted',observedAt});
+    expect(parsed.counts).toMatchObject({sourceRows:4,parsedRows:4,refusedRows:0,duplicateRows:1,canonicalRows:4});
+    expect(parsed.rows.find(row=>row.kind==='aba'&&row.slot===1)).toMatchObject({conflicted:true});
+    for(const asin of ['B000000001','B000000009'])expect(abaEvidence({state:'partial',reason:null,report:parsed},
+      {query:'synthetic query',asin,start:plan.start,end:plan.end})).toMatchObject({state:'not-measured',slot:null,clickShare:null,conversionShare:null});
   });
 
   it('defers repeated pending reports across registry restarts without creating another report or premature coverage', async () => {

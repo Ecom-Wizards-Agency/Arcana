@@ -49,6 +49,8 @@ create table public.spapi_report_receipts (
 );
 create index spapi_report_receipts_scope on public.spapi_report_receipts
   (org_id,selling_partner_id,marketplace_id,family,start_date,end_date,observed_at desc);
+create unique index spapi_report_receipts_provider_document on public.spapi_report_receipts
+  (org_id,selling_partner_id,marketplace_id,family,(report->>'reportId'),(report->>'documentId'));
 select app.install_tenant_rls('public.spapi_report_receipts');
 
 create table public.fact_retail_sales_traffic_daily (
