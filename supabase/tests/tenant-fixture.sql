@@ -802,6 +802,7 @@ begin
       least(p_date::timestamptz,statement_timestamp())-interval '1 day',least(p_date::timestamptz,statement_timestamp()),0,0,0,0);
     insert into public.sponsored_prompt_visits(org_id,profile_id,user_id,last_visited_at)
     values(v_org,v_profile,p_user_id,least(p_date::timestamptz,statement_timestamp()));
+  end if;
   -- Inert WP-270 storage-policy rows. Application draft validation has separate
   -- complete synthetic graphs; this placeholder cannot pass plan admission.
   if to_regclass('public.campaign_drafts') is not null then
