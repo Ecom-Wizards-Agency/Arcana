@@ -151,6 +151,55 @@ it('keeps API snapshots out of Stream and requires active binding, current revis
   expect(await database.sql`select id from public.marketing_stream_hourly_facts where org_id=${orgId} and profile_id=${profileId}`).toHaveLength(1);
 });
 
+it('replays saved Stream identities after a newer independent observation, but refuses invalidated evidence', async () => {
+  const [binding] = await database.sql<{ id: string }[]>`select id from public.marketing_stream_subscription_bindings where org_id=${orgId} and profile_id=${profileId} and subscription_id='synthetic-budget-subscription'`;
+  const oldEvent = randomUUID();
+  const newerEvent = randomUUID();
+  const oldTime = '2026-09-03T12:00:00.000Z';
+  const newerTime = '2026-09-03T13:00:00.000Z';
+  const insert = async (id: string, message: string, time: string, usage: number, revision = 0) => {
+    await database.sql`insert into public.marketing_stream_events(id,org_id,profile_id,message_id,dataset,ad_product,event_time,received_at,revision,payload_hash,raw_payload,binding_id,provider_subscription_id,provider_dataset_id,provider_event_id,provider_advertiser_id,provider_marketplace_id)
+      values(${id},${orgId},${profileId},${message},'budget_usage','SP',${time},${time},${revision},${id},${JSON.stringify({ metrics: [{ campaignId: 'same-campaign', budgetUsagePercent: usage, budgetObservedAt: time }] })}::jsonb,${binding!.id},'synthetic-budget-subscription','budget-usage',${id},'synthetic-advertiser','synthetic-marketplace')`;
+    await database.sql`insert into public.marketing_stream_hourly_facts(org_id,profile_id,ad_product,campaign_id,utc_hour,profile_timezone,local_date,local_hour,local_day_of_week,currency_code,budget_usage_percent,settling_state,source_events,loaded_at)
+      values(${orgId},${profileId},'SP','same-campaign',${time},'UTC','2026-09-03',${new Date(time).getUTCHours()},4,'USD',${usage},'settled',1,${time})
+      on conflict (profile_id,ad_product,campaign_id,utc_hour) do update set budget_usage_percent=excluded.budget_usage_percent,loaded_at=excluded.loaded_at`;
+  };
+  await insert(oldEvent,oldEvent,oldTime,70);
+  const observations = await readMarketingStreamBudgetUsage(database, { ...scope, fromProviderTime: oldTime });
+  expect(observations).toHaveLength(1);
+  const saved = { ...run(), source: 'amazon_marketing_stream' as const, observations, receivedAt: oldTime };
+  const counts = await persistBudgetUsageRun(database, saved);
+  await insert(newerEvent,newerEvent,newerTime,90);
+  expect(await readMarketingStreamBudgetUsage(database, { ...scope, fromProviderTime: oldTime })).toMatchObject([{ sourceIdentity: `${newerEvent}:same-campaign` }]);
+  expect(await readBudgetUsageRun(database, { ...scope, runId: saved.runId })).toEqual({ input: saved, counts });
+  expect(await persistBudgetUsageRun(database, saved)).toEqual(counts);
+  expect(await database.sql`select id from public.budget_usage_runs where id=${saved.runId}`).toHaveLength(1);
+  await database.sql`update public.marketing_stream_subscription_bindings set active=false where id=${binding!.id}`;
+  await expect(readBudgetUsageRun(database, { ...scope, runId: saved.runId })).rejects.toThrow('verification');
+  await database.sql`update public.marketing_stream_subscription_bindings set active=true where id=${binding!.id}`;
+  await database.sql`insert into public.marketing_stream_projection_blocks(org_id,profile_id,first_blocked_at,last_blocked_at,last_reason) values(${orgId},${profileId},${oldTime},${oldTime},'Synthetic replay block')`;
+  await expect(readBudgetUsageRun(database, { ...scope, runId: saved.runId })).rejects.toThrow('verification');
+  await database.sql`delete from public.marketing_stream_projection_blocks where profile_id=${profileId}`;
+  await insert(randomUUID(),oldEvent,oldTime,75,1);
+  await expect(readBudgetUsageRun(database, { ...scope, runId: saved.runId })).rejects.toThrow('verification');
+  await expect(persistBudgetUsageRun(database, saved)).rejects.toThrow('verification');
+});
+
+it.each(['input', 'counts', 'timestamp'])('rejects malformed persisted %s at the Home evidence boundary', async (malformed) => {
+  const input = { ...run(), observations: [], selected: [], receivedAt: '2026-10-01T12:00:00.000Z' };
+  const counts = { selected: 0, requested: 0, returned: 0, failed: 0, sourceRows: 0, parsedRows: 0, refusedRows: 0, loadedRows: 0, existingRows: 0, verifiedLoadedRows: 0 };
+  const rawInput = malformed === 'input' ? { ...input, populationComplete: 'false' }
+    : malformed === 'timestamp' ? { ...input, receivedAt: 'invalid-time' } : input;
+  const rawCounts = malformed === 'counts' ? { ...counts, requested: '0' } : counts;
+  await database.sql`insert into public.budget_usage_runs(id,org_id,profile_id,source,received_at,input,counts)
+    values(${input.runId},${orgId},${profileId},'amazon_ads_api',${input.receivedAt},${JSON.stringify(rawInput)}::jsonb,${JSON.stringify(rawCounts)}::jsonb)`;
+  try {
+    await expect(readBudgetUsageEvidence(database, scope)).rejects.toThrow();
+  } finally {
+    await database.sql`delete from public.budget_usage_runs where id=${input.runId}`;
+  }
+});
+
 function coverage(run: BudgetUsageRunInput, counts: BudgetUsageRunCounts): ReportCoverageObservation {
   const providerTimes = run.observations.map((row) => row.providerUpdatedAt).sort();
   return { ...run.scope, source: run.source, sourceRunId: run.runId, reportType: 'campaign_budget_usage', grain: 'campaign_budget_usage',
