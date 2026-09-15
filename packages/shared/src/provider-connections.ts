@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { AmazonConnectionBegin, AmazonConnectionSubmit } from './amazon-connections.js';
-import { Uuid } from './primitives.js';
+import { Region, Uuid } from './primitives.js';
 import type { OrgActor } from './agency.js';
 
 export const ConnectionProvider = z.enum(['amazon_ads', 'amazon_spapi']);
@@ -31,19 +31,36 @@ export interface ProviderConnectionCustody<Claim, Operation> {
   attach(operationId: string, leaseId: string, refreshToken: string): Promise<Operation>;
 }
 
-export const SpApiConnectionBegin = AmazonConnectionBegin.omit({ scope: true }).extend({
+/** Deployment application identity is independent of the consenting seller. */
+export const SpApiDeployment = AmazonConnectionBegin.pick({ clientId: true, redirectUri: true }).extend({
+  applicationId: z.string().trim().min(1).max(256),
+  region: Region,
+}).strict();
+export type SpApiDeployment = z.infer<typeof SpApiDeployment>;
+export const SpApiProfileSelection = z.object({
+  profileId: Uuid.transform((value) => value.toLowerCase()),
+  marketplaceId: z.string().regex(/^[A-Z0-9]{1,64}$/),
+}).strict();
+export type SpApiProfileSelection = z.infer<typeof SpApiProfileSelection>;
+export const SpApiConnectionBegin = AmazonConnectionBegin.pick({ requestId: true, nonceHash: true })
+  .extend(SpApiDeployment.shape).extend({
   label: z.string().trim().min(1).max(256),
-  sellingPartnerId: z.string().trim().min(1).max(256),
-  marketplaceIds: z.array(z.string().trim().min(1).max(64)).min(1).max(50)
-    .refine((ids) => new Set(ids).size === ids.length, 'Duplicate marketplaces'),
-});
+  bindings: z.array(SpApiProfileSelection).min(1).max(50)
+    .refine((rows) => new Set(rows.map((row) => row.profileId)).size === rows.length, 'Duplicate profiles'),
+}).strict();
 export type SpApiConnectionBegin = z.infer<typeof SpApiConnectionBegin>;
-export const SpApiConnectionSubmit = AmazonConnectionSubmit;
+/** Only a verified SP callback may supply these provider-returned values. */
+export const SpApiConnectionSubmit = AmazonConnectionSubmit.extend({
+  code: AmazonConnectionSubmit.shape.code.refine((value) => value.trim().length > 0, 'Missing consent code'),
+  sellingPartnerId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$/),
+}).strict();
 export type SpApiConnectionSubmit = z.infer<typeof SpApiConnectionSubmit>;
 export const SpApiConnectionOperation = z.object({
   operationId: Uuid, orgId: Uuid, connectionId: Uuid.nullable(),
   state: z.enum(['awaiting_consent', 'queued', 'exchanging', 'completed', 'reconnect_required', 'cancelled']),
   reason: z.enum(['not_configured', 'exchange_uncertain', 'exchange_refused', 'authority_changed', 'expired', 'operator_cancelled']).nullable(),
+  requestedBindings: z.number().int().min(0).max(50),
+  attachedBindings: z.number().int().min(0).max(50),
   createdAt: z.iso.datetime({ offset: true }), updatedAt: z.iso.datetime({ offset: true }),
 }).strict();
 export type SpApiConnectionOperation = z.infer<typeof SpApiConnectionOperation>;
@@ -53,9 +70,19 @@ export const SpApiConnectionClaim = z.object({
   operation: SpApiConnectionOperation,
   leaseId: Uuid,
   installation: SpApiConnectionInstallation,
+  sellingPartnerId: SpApiConnectionSubmit.shape.sellingPartnerId,
   code: z.string().min(1).max(8192),
 }).strict();
 export type SpApiConnectionClaim = z.infer<typeof SpApiConnectionClaim>;
+
+/** Worker transaction context; never contains a credential or a Vault pointer. */
+export const SpApiAttachmentContext = z.object({
+  operation: SpApiConnectionOperation,
+  installation: SpApiConnectionInstallation,
+  sellingPartnerId: SpApiConnectionSubmit.shape.sellingPartnerId,
+  targetConnectionId: Uuid.nullable(),
+}).strict();
+export type SpApiAttachmentContext = z.infer<typeof SpApiAttachmentContext>;
 
 export class NotConfigured extends Error {
   readonly provider = 'amazon_spapi';

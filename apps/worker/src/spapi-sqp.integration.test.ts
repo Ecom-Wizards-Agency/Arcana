@@ -11,6 +11,7 @@ import {
   upsertReportCoverage,
   type ClaimedJob,
   storeSpApiRefreshToken,
+  upsertSpApiProfileBinding,
 } from '@wizard-ads/db';
 import { createSpApiSqpRequestHandler } from './spapi-sqp.js';
 import { SqpWorkflowPermanentError } from './sqp.js';
@@ -68,6 +69,15 @@ describe.skipIf(!available)('tenant-scoped SP-API SQP runtime', () => {
       orgId,
       connectionId,
       refreshToken: value('refresh'),
+    });
+    // This report-runtime fixture explicitly authorizes its synthetic binding;
+    // completing onboarding must leave the same binding disabled.
+    await upsertSpApiProfileBinding(database, {
+      orgId,
+      profileId,
+      connectionId,
+      marketplaceId,
+      enabled: true,
     });
   }, 60_000);
 

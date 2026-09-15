@@ -78,10 +78,12 @@ export function createState(
   key: string,
   claims: OAuthStateClaims,
   now: number = Date.now(),
+  provider: 'amazon_ads' | 'amazon_spapi' = 'amazon_ads',
 ): string {
   const issuedAt = Math.floor(now / 1000);
   const payload: StatePayload = {
-    v: STATE_VERSION,
+    v: provider === 'amazon_spapi' ? 3 : STATE_VERSION,
+    ...(provider === 'amazon_spapi' ? { provider } : {}),
     iat: issuedAt,
     exp: issuedAt + STATE_TTL_SECONDS,
     org: claims.org,
@@ -105,6 +107,7 @@ export function verifyState(
   state: string | null | undefined,
   cookieNonce: string | null | undefined,
   now: number = Date.now(),
+  provider: 'amazon_ads' | 'amazon_spapi' = 'amazon_ads',
 ): StateVerification {
   if (!state || !cookieNonce) return { ok: false, reason: 'missing' };
   if (state.length > MAX_STATE_LENGTH) return { ok: false, reason: 'malformed' };
@@ -127,7 +130,7 @@ export function verifyState(
   } catch {
     return { ok: false, reason: 'malformed' };
   }
-  if (!isStatePayload(parsed)) return { ok: false, reason: 'malformed' };
+  if (!isStatePayload(parsed, provider)) return { ok: false, reason: 'malformed' };
   // A signed payload whose TTL is not ours was minted by a different policy.
   if (parsed.exp - parsed.iat !== STATE_TTL_SECONDS) return { ok: false, reason: 'malformed' };
 
@@ -201,11 +204,12 @@ function fromBase64Url(value: string): Buffer | null {
   }
 }
 
-function isStatePayload(value: unknown): value is StatePayload {
+function isStatePayload(value: unknown, provider: 'amazon_ads' | 'amazon_spapi'): value is StatePayload {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;
   return (
-    candidate['v'] === STATE_VERSION &&
+    candidate['v'] === (provider === 'amazon_spapi' ? 3 : STATE_VERSION) &&
+    (provider !== 'amazon_spapi' || candidate['provider'] === provider) &&
     Uuid.safeParse(candidate['operationId']).success &&
     Number.isInteger(candidate['iat']) &&
     Number.isInteger(candidate['exp']) &&

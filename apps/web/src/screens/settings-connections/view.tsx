@@ -2,6 +2,7 @@ import { formatTimestamp } from '../../ui/date-format';
 import { TableFrame } from '../../ui/primitives';
 import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
 import { ConnectionProgress } from '../../oauth/connection-progress';
+import { SpApiConnections } from '../../oauth/spapi-connections';
 
 import { operatorFailureLabel } from '../../security/operator-failure';
 
@@ -41,7 +42,7 @@ function renderNoOrg(_props: Extract<ScreenData, { view: 'no-org'; }>['props']) 
   </main>);
 }
 
-function renderReady({ context, query, operation, mayConnect, enabled, connections, inProgress, org, connected, roster }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ context, query, operation, mayConnect, enabled, connections, inProgress, org, connected, roster, spApi, spApiEnabled, spApiOperation }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main style={page}>
     <Shell context={context} current="connections">
       <h1 style={heading}>Connections</h1>
@@ -105,6 +106,9 @@ function renderReady({ context, query, operation, mayConnect, enabled, connectio
         )}
       </p>
 
+      <SpApiConnections key={org.orgId} orgId={org.orgId} mayManage={mayConnect} enabled={spApiEnabled}
+        connections={spApi.connections} profiles={spApi.profiles} initial={spApiOperation} callbackError={!!query.spapi_error} />
+
       <h2 style={subheading}>More connections</h2>
       <p style={muted}>
         Additional Amazon integrations are planned.
@@ -119,19 +123,6 @@ function renderReady({ context, query, operation, mayConnect, enabled, connectio
           title="Amazon Marketing Cloud — coming soon"
         >
           Connect AMC
-          <span className="wa-badge" style={{ marginLeft: '0.375rem' }}>
-            Coming soon
-          </span>
-        </button>
-        <button
-          type="button"
-          className="wa-btn wa-btn--sm"
-          aria-disabled="true"
-          disabled
-          data-testid="connect-spapi"
-          title="Seller / Vendor Central (SP-API) — coming soon"
-        >
-          Connect Seller / Vendor Central
           <span className="wa-badge" style={{ marginLeft: '0.375rem' }}>
             Coming soon
           </span>

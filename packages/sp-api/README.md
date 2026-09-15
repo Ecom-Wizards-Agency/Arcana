@@ -120,3 +120,59 @@ Admission exposes stable shared refusal codes for source/binding disablement,
 profile sync, credential availability and seller/marketplace/region/connection
 mismatches. A conflicting ABA slot retains its conflict marker after canonical
 row deduplication, and readers withhold its measured identity and shares.
+
+## Seller consent onboarding
+
+Seller consent is separate from Amazon Advertising authorization and reporting.
+The web application saves selected agency profiles in a signed, one-use operation.
+The callback accepts `selling_partner_id` and `spapi_oauth_code`; it does not exchange
+tokens. The general worker makes one bounded LWA request and returns only the refresh
+value to the existing Vault custody boundary. Transport failure or an unreadable
+success requires new consent. A recognized OAuth refusal is reported separately.
+
+Onboarding requires known seller profiles whose stored account identity, country and
+region match the selected association. Unknown identities and vendor profiles fail
+closed. The callback seller must match that saved association. These checks do not
+independently prove that the returned token grants marketplace access. Every selected
+binding is saved disabled, and onboarding never enables profile synchronization or
+report sources.
+
+### Deployment configuration
+
+Apply `20260915310000_spapi_onboarding.sql` before releasing the compatible worker
+and web code. The migration preserves existing connections and binding states; pending
+operations without profile selections require fresh consent.
+
+| Variable | Runtime | Purpose |
+| --- | --- | --- |
+| `OPENSPELL_SPAPI_CONNECTIONS_ENABLED` | Web and general worker | Disabled unless exactly `1` |
+| `SP_API_APPLICATION_ID` | Web and worker | Seller Central application identity |
+| `SP_API_LWA_CLIENT_ID` | Web and worker | LWA application client identity |
+| `SP_API_LWA_CLIENT_SECRET` | Worker only | Injected application secret |
+| `SP_API_OAUTH_REGION` | Web and worker | `NA`, `EU` or `FE`; pins the regional consent endpoint |
+| `SP_API_OAUTH_REDIRECT_URI` | Web | Exact registered callback URI |
+| `SP_API_OAUTH_ALLOWED_REDIRECT_URIS` | Worker | Exact comma-separated callback allowlist |
+| `SP_API_OAUTH_BETA` | Web | Requests the draft application only when exactly `1` |
+| `AMAZON_OAUTH_STATE_KEY` | Web | Existing signing key; SP uses a distinct state version and nonce cookie |
+
+Routes are under `/api/amazon/spapi/`: `oauth/start` accepts a same-origin POST with
+the connection label and profile/marketplace selections; `oauth/callback` accepts the
+provider redirect. `operations/[operationId]` reads or cancels saved progress.
+`connections/[connectionId]` reads health or revokes custody. Status, cancellation and
+revocation remain available when new consent admission is disabled.
+
+The test-only consent endpoint override requires the non-production browser fixture
+gate and a loopback URL. Fake worker transport maps the fixed LWA endpoint to its
+local server. Neither override is a hosted setup instruction.
+
+### Hosted steps for Victor
+
+Resolve the existing scoped hosted authorization, confirm the registered application's
+regional consent/login/redirect contract and supported seller account identity, then
+review the migration and inject the worker secret through the approved runtime.
+Keep both connection gates and all source/binding gates off until a bounded consent
+test is authorized. Verify custody counts and cross-agency isolation, then authorize
+any selected binding/source enablement separately. Live consent and marketplace access
+are not proved by the offline fixtures.
+
+Protocol reference: [Amazon website authorization workflow](https://developer-docs.amazon/sp-api/docs/website-authorization-workflow).

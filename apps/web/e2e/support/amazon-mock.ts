@@ -44,12 +44,43 @@ export async function startAmazonMock(options: AmazonMockOptions): Promise<Amazo
   const calls: string[] = [];
   let exchanges = 0;
   let refreshes = 0;
+  let spExchanges = 0; let spConsents = 0;
+  let spMode = 'success';
+  const spCodes = new Set<string>();
+  const held: ServerResponse[] = [];
+  const spSuccess = (response: ServerResponse): void => json(response,200,{ refresh_token: ['synthetic','sp-renewal'].join('-'),access_token: GRANT });
 
   const server: Server = createServer((request, response) => {
     const url = new URL(request.url ?? '/', `http://127.0.0.1:${options.port}`);
     calls.push(`${request.method} ${url.pathname}`);
     if (request.method === 'GET' && url.pathname === '/__test/calls') {
-      json(response, 200, { exchanges, refreshes, calls }); return;
+      json(response, 200, { exchanges, refreshes, spExchanges, spConsents, calls }); return;
+    }
+    if (url.pathname === '/__test/spapi' && request.method === 'POST') {
+      void readBody(request).then((body) => {
+        const mode = new URLSearchParams(body).get('mode');
+        if (!mode || !['success','refuse','hold'].includes(mode)) { json(response,400,{}); return; }
+        spMode = mode;
+        if (mode === 'success') for (const pending of held.splice(0)) spSuccess(pending);
+        json(response,200,{ mode });
+      }); return;
+    }
+    if (url.pathname === '/spapi/consent') {
+      const redirect = url.searchParams.get('redirect_uri'); const state = url.searchParams.get('state');
+      if (!redirect || !state || url.searchParams.get('application_id') !== 'synthetic-sp-app') { json(response,400,{}); return; }
+      spConsents++;
+      const target = new URL(redirect);
+      target.search = new URLSearchParams({ state,selling_partner_id: 'ENTITY1001',spapi_oauth_code: `synthetic-sp-code-${spConsents}` }).toString();
+      response.writeHead(302,{ Location: target.href }); response.end(); return;
+    }
+    if (url.pathname === '/spapi/token' && request.method === 'POST') {
+      void readBody(request).then((body) => {
+        spExchanges++;
+        const form = new URLSearchParams(body); const code = form.get('code');
+        if (!code || spCodes.has(code) || spMode === 'refuse') { json(response,400,{ error: 'invalid_grant' }); return; }
+        spCodes.add(code);
+        if (spMode === 'hold') held.push(response); else spSuccess(response);
+      }); return;
     }
 
     // The authorize screen, with the operator's approval assumed.

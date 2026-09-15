@@ -121,13 +121,15 @@ export default async function globalSetup(): Promise<void> {
     },
     acquireServer: async (connectionString, mock) => {
       const worker = await spawnConnectionTestWorker(connectionString, mock.url);
+      let spWorker: ChildProcess | null = null;
       try {
+        spWorker = await spawnConnectionTestWorker(connectionString, mock.url, true);
         const { fixtureProfileId } = await readState();
         const server = spawnWebServer(connectionString, mock, fixtureProfileId);
         return { resource: server, cleanup: async () => {
-          try { await stopProcess(server.child); } finally { await stopProcess(worker); }
+          try { await stopProcess(server.child); } finally { await stopProcess(worker); if (spWorker) await stopProcess(spWorker); }
         } };
-      } catch (error) { await stopProcess(worker); throw error; }
+      } catch (error) { await stopProcess(worker); if (spWorker) await stopProcess(spWorker); throw error; }
     },
     waitUntilReady: async (server) => {
       await waitForE2EServerOrFailure(
@@ -324,10 +326,10 @@ interface SpawnedWebServer {
   failedBeforeReady: Promise<never>;
 }
 
-async function spawnConnectionTestWorker(connectionString: string, mockOrigin: string): Promise<ChildProcess> {
-  const worker = spawn(process.execPath, ['--import', 'tsx', resolve(REPO_ROOT, 'apps/worker/src/amazon-connections-e2e.ts')], {
+async function spawnConnectionTestWorker(connectionString: string, mockOrigin: string, spapi = false): Promise<ChildProcess> {
+  const worker = spawn(process.execPath, ['--import', 'tsx', resolve(REPO_ROOT, spapi ? 'apps/worker/src/spapi-connections.e2e.ts' : 'apps/worker/src/amazon-connections-e2e.ts')], {
     cwd: REPO_ROOT, stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-    env: { PATH: process.env['PATH'], NODE_ENV: 'test', WIZARD_ADS_TEST_DATABASE_URL: connectionString,
+    env: { PATH: process.env['PATH'], TMPDIR: process.env['TMPDIR'], NODE_ENV: 'test', WIZARD_ADS_TEST_DATABASE_URL: connectionString,
       OPENSPELL_TEST_AMAZON_ORIGIN: mockOrigin, OPENSPELL_TEST_APP_ORIGIN: BASE_URL },
   });
   try {
@@ -374,6 +376,9 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock, fixturePro
         AMAZON_OAUTH_STATE_KEY: STATE_KEY,
         AMAZON_LWA_AUTHORIZE_URL: amazon.authorizeUrl,
         OPENSPELL_AMAZON_CONNECTIONS_ENABLED: '1',
+        OPENSPELL_SPAPI_CONNECTIONS_ENABLED: '1',SP_API_APPLICATION_ID: 'synthetic-sp-app',SP_API_LWA_CLIENT_ID: 'synthetic-sp-client',
+        SP_API_OAUTH_REGION: 'NA',SP_API_OAUTH_REDIRECT_URI: `${BASE_URL}/api/amazon/spapi/oauth/callback`,
+        SP_API_TEST_CONSENT_URL: `${amazon.url}/spapi/consent`,
         // This process owns only the synthetic suite database. The creative
         // producer allowlist is confined to its seeded profile; no cron runs.
         ...(process.env['WIZARD_ADS_E2E_SUITE'] === 'route-acceptance' ? {

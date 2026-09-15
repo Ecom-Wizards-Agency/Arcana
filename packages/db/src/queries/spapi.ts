@@ -1,6 +1,6 @@
 import {
-  SpApiConnectionBegin, SpApiConnectionSubmit, SpApiConnectionOperation, SpApiConnectionClaim, Uuid,
-  type ProviderConnectionLifecycle,
+  SpApiConnectionBegin, SpApiConnectionSubmit, SpApiConnectionOperation, SpApiConnectionClaim, SpApiAttachmentContext, Uuid,
+  type ProviderConnectionLifecycle, type OrgActor,
 } from '@wizard-ads/shared';
 import { withAuthenticatedActor } from './authenticated-actor.js';
 import { providerConnectionHealth } from './connections.js';
@@ -12,7 +12,7 @@ import { providerConnectionHealth } from './connections.js';
  * the service role and therefore bypasses RLS.
  */
 import type { Region } from '@wizard-ads/shared';
-import type { DbHandle, QuerySql } from '../client.js';
+import type { DbHandle, QueryHandle, QuerySql } from '../client.js';
 
 export interface SpApiConnectionRecord {
   id: string;
@@ -70,10 +70,12 @@ function normalizeMarketplaceIds(values: readonly string[]): string[] {
   return normalized;
 }
 
-/** Create or resume one connection metadata row without handling its credential. */
+/** Insert metadata or read an identical scope. A reconnect never rewrites active scope. */
 export async function createSpApiConnection(
-  handle: Pick<DbHandle, 'sql'>,
+  handle: QueryHandle,
   input: {
+    /** Reserved by the locked consent operation for atomic onboarding. */
+    connectionId?: string;
     orgId: string;
     label: string;
     sellingPartnerId?: string | null;
@@ -84,29 +86,31 @@ export async function createSpApiConnection(
   if (!label) throw new Error('An SP-API connection label cannot be empty');
   const marketplaceIds = normalizeMarketplaceIds(input.marketplaceIds);
   const rows = await handle.sql<SpApiConnectionRow[]>`
-    insert into public.spapi_connections
-      (org_id, label, selling_partner_id, marketplace_ids, status)
+    with inserted as (insert into public.spapi_connections
+      (id, org_id, label, selling_partner_id, marketplace_ids, status)
     values
-      (${input.orgId}, ${label}, ${input.sellingPartnerId?.trim() || null}, ${marketplaceIds}, 'pending')
-    on conflict (org_id, label) do update
-      set selling_partner_id = excluded.selling_partner_id,
-          marketplace_ids = excluded.marketplace_ids,
-          status = case
-            when spapi_connections.vault_secret_id is null then 'pending'::public.connection_status
-            else spapi_connections.status
-          end,
-          last_error = null
+      (coalesce(${input.connectionId ?? null}::uuid, gen_random_uuid()), ${input.orgId}, ${label}, ${input.sellingPartnerId?.trim() || null}, ${marketplaceIds}, 'pending')
+    on conflict (org_id, label) do nothing
     returning id, org_id, label, selling_partner_id, marketplace_ids,
-              status::text as status, (vault_secret_id is not null) as has_credential
+              status::text as status, (vault_secret_id is not null) as has_credential)
+    select * from inserted
+    union all
+    select id, org_id, label, selling_partner_id, marketplace_ids, status::text, (vault_secret_id is not null)
+      from public.spapi_connections where org_id = ${input.orgId} and label = ${label}
+      and not exists (select 1 from inserted)
   `;
   const row = rows[0];
-  if (!row) throw new Error('Creating an SP-API connection returned no row');
+  if (rows.length !== 1 || !row || (input.connectionId !== undefined && row.id !== input.connectionId)
+    || row.selling_partner_id !== (input.sellingPartnerId?.trim() || null)
+    || JSON.stringify([...row.marketplace_ids].sort()) !== JSON.stringify(marketplaceIds)) {
+    throw new Error('SP-API connection metadata conflicts with the requested scope');
+  }
   return toConnection(row);
 }
 
 /** Assign one profile atomically; the migration rejects cross-org/mismatched marketplaces. */
 export async function upsertSpApiProfileBinding(
-  handle: Pick<DbHandle, 'sql'>,
+  handle: QueryHandle,
   input: {
     orgId: string;
     profileId: string;
@@ -130,12 +134,14 @@ export async function upsertSpApiProfileBinding(
       insert into public.spapi_profile_bindings
         (org_id, profile_id, connection_id, marketplace_id, enabled)
       values
-        (${input.orgId}, ${input.profileId}, ${input.connectionId}, ${marketplaceId}, ${input.enabled ?? true})
+        (${input.orgId}, ${input.profileId}, ${input.connectionId}, ${marketplaceId}, ${input.enabled ?? false})
       on conflict (profile_id) do update
         set connection_id = excluded.connection_id,
             marketplace_id = excluded.marketplace_id,
             enabled = excluded.enabled
       where spapi_profile_bindings.org_id = excluded.org_id
+        and spapi_profile_bindings.connection_id = excluded.connection_id
+        and spapi_profile_bindings.marketplace_id = excluded.marketplace_id
       returning org_id, profile_id, connection_id, marketplace_id, enabled
     )
     select b.org_id, b.profile_id, b.connection_id, b.marketplace_id, b.enabled,
@@ -378,7 +384,7 @@ export function createSpApiConnectionLifecycle(
       try {
         const input = SpApiConnectionSubmit.parse(raw);
         return await withAuthenticatedActor(handle, actor, async (sql) => spApiOperation(await sql<{ result: unknown }[]>`
-          select app.submit_spapi_connection(${actor.orgId},${input.operationId},${input.nonceHash},${input.code}) as result
+          select app.submit_spapi_connection(${actor.orgId},${input.operationId},${input.nonceHash},${input.code},${input.sellingPartnerId}) as result
         `));
       } catch { throw new SpApiConnectionCommandError(); }
     },
@@ -430,8 +436,50 @@ export async function settleSpApiConnection(
     const refresh = 'refresh' in outcome ? outcome.refresh : null;
     const reason = 'reason' in outcome ? outcome.reason : null;
     if (refresh !== null && (refresh.length === 0 || refresh.length > 65_536)) throw new SpApiConnectionCommandError();
-    return await spApiConnectionCommand(handle, async (sql) => spApiOperation(await sql<{ result: unknown }[]>`
-      select app.settle_spapi_connection(${id},${lease},${refresh},${reason}) as result
-    `));
+    return await spApiConnectionCommand(handle, async (sql) => {
+      if (refresh === null) return spApiOperation(await sql<{ result: unknown }[]>`
+        select app.settle_spapi_connection(${id},${lease},${refresh},${reason}) as result
+      `);
+      const rows = await sql<{ result: unknown }[]>`select app.prepare_spapi_attachment(${id},${lease}) as result`;
+      if (rows.length !== 1) throw new SpApiConnectionCommandError();
+      if (rows[0]!.result === null) return spApiOperation(await sql<{ result: unknown }[]>`
+        select app.read_spapi_connection_worker(${id}) as result
+      `);
+      const context = SpApiAttachmentContext.parse(rows[0]!.result);
+      if (context.operation.operationId !== id || context.targetConnectionId === null) throw new SpApiConnectionCommandError();
+      const { bindings, label } = context.installation;
+      const connection = await createSpApiConnection({ sql }, {
+        connectionId: context.targetConnectionId, orgId: context.operation.orgId, label,
+        sellingPartnerId: context.sellingPartnerId, marketplaceIds: bindings.map((binding) => binding.marketplaceId),
+      });
+      let attached = 0;
+      for (const binding of bindings) {
+        const saved = await upsertSpApiProfileBinding({ sql }, {
+          orgId: context.operation.orgId, connectionId: connection.id, ...binding, enabled: false,
+        });
+        if (saved.profileId !== binding.profileId || saved.marketplaceId !== binding.marketplaceId
+          || saved.connectionId !== connection.id || saved.orgId !== context.operation.orgId || saved.enabled) {
+          throw new SpApiConnectionCommandError();
+        }
+        attached += 1;
+      }
+      const completed = spApiOperation(await sql<{ result: unknown }[]>`
+        select app.finish_spapi_attachment(${id},${lease},${connection.id},${refresh}) as result
+      `);
+      if (completed.state !== 'completed' || completed.connectionId !== connection.id
+        || completed.requestedBindings !== bindings.length || completed.attachedBindings !== attached) {
+        throw new SpApiConnectionCommandError();
+      }
+      return completed;
+    });
   } catch { throw new SpApiConnectionCommandError(); }
+}
+
+export async function latestSpApiConnection(
+  handle: Pick<DbHandle, 'sql'>, actor: OrgActor,
+): Promise<SpApiConnectionOperation | null> {
+  return withAuthenticatedActor(handle, actor, async (sql) => {
+    const rows = await sql<{ result: unknown }[]>`select app.latest_spapi_connection(${actor.orgId}) as result`;
+    return rows[0]?.result == null ? null : spApiOperation(rows);
+  });
 }

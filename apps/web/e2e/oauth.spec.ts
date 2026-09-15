@@ -13,6 +13,7 @@ import { createDb } from '@wizard-ads/db';
 import { signIn, signOut } from './support/auth';
 import { createNonce, createState, nonceCookieName } from '../src/oauth/state';
 import { BASE_URL, GRANT, GRANT_TOTAL, MOCK_PORT, STATE_KEY, USERS, readState } from './support/fixture';
+import { exerciseSpApiOnboarding } from './support/spapi-onboarding';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -37,7 +38,7 @@ test('an anonymous visitor is sent to the login page', async ({ page }) => {
   await expect(page.getByRole('link', { name: /sign up/i })).toHaveCount(0);
 });
 
-test('an admin connects Amazon and sees the profiles per region', async ({ page }) => {
+test('an admin connects Amazon Ads and Seller Central through worker custody', async ({ page }) => {
   await signIn(page, 'admin');
 
   await page.goto('/settings/connections');
@@ -65,6 +66,7 @@ test('an admin connects Amazon and sees the profiles per region', async ({ page 
   await page.goto('/settings/profiles');
   await expect(page.getByTestId('roster-count')).toContainText(`of ${GRANT_TOTAL + 1}`);
   await expect(page.getByTestId('profile-row')).toHaveCount(GRANT_TOTAL + 1);
+  await exerciseSpApiOnboarding(page);
 });
 
 test('the refresh token reached Vault and no column holds it', async () => {

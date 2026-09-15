@@ -35,6 +35,7 @@ export const spapiConnections = pgTable('spapi_connections', {
   marketplaceIds: text('marketplace_ids').array().notNull().default([]),
   vaultSecretId: uuid('vault_secret_id'),
   status: connectionStatus('status').notNull().default('pending'),
+  credentialGeneration: bigint('credential_generation', { mode: 'bigint' }).notNull().default(0n),
   connectedAt: ts('connected_at'),
   lastError: text('last_error'),
   createdAt: ts('created_at').notNull().defaultNow(),
@@ -55,7 +56,7 @@ export const spapiProfileBindings = pgTable(
       .notNull()
       .references(() => spapiConnections.id, { onDelete: 'cascade' }),
     marketplaceId: text('marketplace_id').notNull(),
-    enabled: boolean('enabled').notNull().default(true),
+    enabled: boolean('enabled').notNull().default(false),
     createdAt: ts('created_at').notNull().defaultNow(),
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },
