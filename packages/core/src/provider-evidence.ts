@@ -10,7 +10,9 @@ export function compareProviderEvidence(provider: ProviderRecommendation, arcana
       ['orgId', 'profileId', 'marketplaceId'].some((key) => provider.scope[key as keyof typeof provider.scope] !== arcana.scope[key as keyof typeof arcana.scope]) ||
       JSON.stringify(provider.entity) !== JSON.stringify(arcana.entity)) return result('Entity or account scope differs');
   if (provider.action !== arcana.action || provider.objective === null || provider.objective !== arcana.objective ||
-      provider.horizon === null || provider.horizon !== arcana.horizon || provider.attribution !== arcana.attribution) return result('Objective or horizon differs or is unknown');
+      provider.horizon === null || provider.horizon !== arcana.horizon) return result('Objective or horizon differs or is unknown');
+  if (provider.attribution === null || arcana.attribution === null) return result('Attribution is unknown');
+  if (typeof provider.attribution !== typeof arcana.attribution || typeof provider.attribution === 'string' && provider.attribution !== arcana.attribution) return result('Attribution differs');
   if ([provider.current, provider.proposed, arcana.current, arcana.proposed].some((v) => v.value === null || v.units === null)) return result('Missing value, units or baseline');
   if (['bid','budget'].includes(provider.action) && (provider.proposed.currency === null || arcana.proposed.currency === null)) return result('Currency is unknown');
   if (provider.current.value !== arcana.current.value || provider.observedAt !== arcana.observedAt) return result('Observed baseline differs');

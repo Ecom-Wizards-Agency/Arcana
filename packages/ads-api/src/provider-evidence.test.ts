@@ -142,3 +142,45 @@ it('binds numeric legacy request identities without coercing unsafe integers', (
   const result = parseProviderEvidenceResponse(c, { associatedRules: [{ ruleId: 'synthetic-rule' }] }, at);
   expect(result.refused).toBe(0); expect(result.rows[0]?.entity.campaignId).toBe('123');
 });
+
+it('maps advertised totalCount and preserves optional omission as unknown', () => {
+  const c = config('sb.ListSponsoredBrandsOptimizationRules');
+  const optimizationRules = [{ optimizationRuleId: 'synthetic-rule' }];
+  expect(parseProviderEvidenceResponse(c, { optimizationRules, totalCount: 2 }, at)).toMatchObject({ source: 1, expectedTotal: 2 });
+  expect(parseProviderEvidenceResponse(c, { optimizationRules }, at).expectedTotal).toBeNull();
+  for (const totalCount of [-1, 1.5, '2']) expect(() => parseProviderEvidenceResponse(c, { optimizationRules, totalCount }, at)).toThrow();
+});
+it('places POST Insights cursors in the query and keeps the request body intact', async () => {
+  const c = config('sb.SBInsightsCampaignInsights', { adGroups: [{ adFormat: 'VIDEO' }] });
+  const contract = providerReadContract(c.operation); const effects = testEffects();
+  const server = createMockServer([lwaRoute(), { method: 'POST', match: contract.path, responses: [
+    { status: 200, json: { insights: [{ keywordInsight: { keywordText: 'synthetic first' } }], nextToken: 'synthetic+/second=' } },
+    { status: 200, json: { insights: [{ keywordInsight: { keywordText: 'synthetic second' } }] } },
+  ] }]);
+  const client = new AdsApiClient({ credentials: { clientId: 'synthetic-client', clientSecret: ['synthetic','secret'].join('-'), refreshToken: ['synthetic','refresh'].join('-') }, region: 'NA', fetch: server.fetch, now: effects.now, sleep: effects.sleep, random: effects.random });
+  const first = await client.readProviderEvidence(c, null);
+  const second = await client.readProviderEvidence(c, first.nextToken);
+  expect([first.source, second.source]).toEqual([1, 1]); expect(second.nextToken).toBeNull();
+  const requests = server.requestsFor(contract.path);
+  expect(requests).toHaveLength(2);
+  expect(requests.map((r) => r.json)).toEqual([c.request, c.request]);
+  expect(requests.map((r) => new URL(r.url).searchParams.get('nextToken'))).toEqual([null, 'synthetic+/second=']);
+  expect(buildProviderEvidenceRequest(config('sp.getProductRecommendations', { adAsins: ['B000000001'] }), 'second').body['cursor']).toBe('second');
+  expect(() => buildProviderEvidenceRequest(config('sb.getHeadlineRecommendations'), 'second')).toThrow();
+});
+it('treats campaign IDs as paginated list filters, including multiple recommendations and empty matches', () => {
+  const c = config('sp.getCampaignRecommendations', { campaignIds: ['synthetic-a', 'synthetic-b'] });
+  const first = parseProviderEvidenceResponse(c, { recommendations: [{ campaignId: 'synthetic-a' }], nextToken: 'second' }, at);
+  const second = parseProviderEvidenceResponse(c, { recommendations: [{ campaignId: 'synthetic-b' }] }, at);
+  expect(first).toMatchObject({ source: 1, refused: 0, nextToken: 'second' });
+  expect(second).toMatchObject({ source: 1, refused: 0, status: 'complete' });
+  expect(parseProviderEvidenceResponse(c, { recommendations: [{ campaignId: 'synthetic-a' }, { campaignId: 'synthetic-a' }] }, at).source).toBe(2);
+  expect(parseProviderEvidenceResponse(c, { recommendations: [] }, at)).toMatchObject({ source: 0, status: 'complete' });
+  for (const row of [{ campaignId: 'foreign' }, {}]) expect(() => parseProviderEvidenceResponse(c, { recommendations: [row], nextToken: 'second' }, at)).toThrow();
+});
+it('retains keyed batch reconciliation when campaign list filters allow partial pages', () => {
+  const c = config('sp.GetOptimizationRuleEligibility', { campaignIds: ['synthetic-a', 'synthetic-b'] });
+  const row = { campaignId: 'synthetic-a', performanceMetricsExists: true };
+  expect(() => parseProviderEvidenceResponse(c, { CampaignOptimizationRecommendations: [row], CampaignOptimizationRecommendationsError: [] }, at)).toThrow();
+  expect(() => parseProviderEvidenceResponse(c, { CampaignOptimizationRecommendations: [row, row], CampaignOptimizationRecommendationsError: [] }, at)).toThrow();
+});

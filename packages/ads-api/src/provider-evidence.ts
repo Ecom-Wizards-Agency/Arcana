@@ -65,10 +65,14 @@ export function buildProviderEvidenceRequest(raw: ProviderCollectionConfig, next
   const body = { ...config.request };
   let path = contract.path;
   const query = new URLSearchParams();
-  const tokenField = contract.request.properties?.['nextCursor'] ? 'nextCursor' : contract.request.properties?.['cursor'] ? 'cursor' : 'nextToken';
   if (nextToken !== null) {
-    if (contract.method === 'POST' && !contract.request.properties?.[tokenField]) throw new ProviderEvidenceProtocolError();
-    body[tokenField] = nextToken;
+    // HTTP method does not determine cursor placement: SB Insights is POST/query.
+    const cursorNames = ['nextToken', 'nextCursor', 'cursor'];
+    const queryCursor = contract.parameters.find((p) => p.location === 'query' && cursorNames.includes(p.name));
+    const bodyCursor = cursorNames.find((name) => contract.request.properties?.[name] !== undefined);
+    if (queryCursor) body[queryCursor.name] = nextToken;
+    else if (bodyCursor) body[bodyCursor] = nextToken;
+    else throw new ProviderEvidenceProtocolError();
   }
   for (const param of contract.parameters) {
     const value = body[param.name];
@@ -77,11 +81,6 @@ export function buildProviderEvidenceRequest(raw: ProviderCollectionConfig, next
     if (param.location === 'path') path = path.replace(`{${param.name}}`, encodeURIComponent(String(value)));
     else query.set(param.name, Array.isArray(value) ? value.join(',') : String(value));
     delete body[param.name];
-  }
-  if (contract.method === 'GET' && nextToken !== null) {
-    if (!contract.parameters.some((p) => p.name === 'nextToken')) throw new ProviderEvidenceProtocolError();
-    query.set('nextToken', nextToken);
-    delete body['nextToken'];
   }
   if (path.includes('{') || !matchesProviderSchema(body, contract.request)) throw new ProviderEvidenceProtocolError();
   return { contract, path: path + (query.size ? `?${query}` : ''), body };
@@ -190,6 +189,10 @@ export function parseProviderEvidenceResponse(config: ProviderCollectionConfig, 
   const campaignIds = new Set<string>();
   const indexed = Object.values(schema.properties ?? {}).some((s) => s.type === 'array' && s.items?.properties?.['index'] !== undefined);
   const requested = batchCampaigns && Array.isArray(config.request['campaigns']) ? config.request['campaigns'] : Array.isArray(config.request['campaignIds']) ? config.request['campaignIds'] : null;
+  // These keyed responses require one success/error per campaign. Paginated
+  // campaign recommendation filters can return zero or many rows per campaign.
+  const keyedBatch = ['sp.GetOptimizationRuleEligibility', 'sp.GetRuleNotification'].includes(c.operation);
+  const reconcileBatch = indexed || keyedBatch;
   const add = (v: unknown, s: ProviderWireSchema, error = false) => {
     source++;
     if (isRecord(v) && v['index'] !== undefined) {
@@ -200,7 +203,7 @@ export function parseProviderEvidenceResponse(config: ProviderCollectionConfig, 
     }
     if (requested !== null && !indexed && isRecord(v)) {
       const id = str(v['campaignId']);
-      if (id === null || !requested.includes(id) || campaignIds.has(id)) throw new ProviderEvidenceProtocolError();
+      if (id === null || !requested.some((candidate) => str(candidate) === id) || keyedBatch && campaignIds.has(id)) throw new ProviderEvidenceProtocolError();
       campaignIds.add(id);
     }
     if (error) { if (!matchesProviderSchema(v, s)) throw new ProviderEvidenceProtocolError(); refused++; return; }
@@ -221,8 +224,10 @@ export function parseProviderEvidenceResponse(config: ProviderCollectionConfig, 
     } else if (Object.keys(object).length) add(value, schema);
     else throw new ProviderEvidenceProtocolError();
   }
-  if (requested !== null && (indexed ? indexes.size : campaignIds.size) !== requested.length) throw new ProviderEvidenceProtocolError();
+  if (requested !== null && reconcileBatch && (indexed ? indexes.size : campaignIds.size) !== requested.length) throw new ProviderEvidenceProtocolError();
   if (source > config.maxRows) throw new ProviderEvidenceProtocolError();
   if (nextToken === '') nextToken = null;
-  return ProviderEvidencePage.parse({ rows, source, refused, expectedTotal: typeof object['totalResults'] === 'number' ? object['totalResults'] : null, nextToken, status: refused || object['forecastStatus'] !== undefined && object['forecastStatus'] !== 'COMPLETE' ? 'partial' : 'complete' });
+  const totals = ['totalResults', 'totalCount'].filter((key) => schema.properties?.[key] !== undefined && object[key] !== undefined).map((key) => object[key]);
+  if (totals.some((total) => typeof total !== 'number' || !Number.isSafeInteger(total) || total < 0 || total !== totals[0])) throw new ProviderEvidenceProtocolError();
+  return ProviderEvidencePage.parse({ rows, source, refused, expectedTotal: totals[0] ?? null, nextToken, status: refused || object['forecastStatus'] !== undefined && object['forecastStatus'] !== 'COMPLETE' ? 'partial' : 'complete' });
 }

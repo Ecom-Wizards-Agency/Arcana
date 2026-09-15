@@ -1,5 +1,13 @@
 import { expect, it } from 'vitest';
-import { ProviderCollectionConfig, ProviderEvidenceCounts, ProviderEstimate } from './provider-evidence.js';
+import { ProviderAttribution, ProviderCollectionConfig, ProviderEvidenceCounts, ProviderEstimate } from './provider-evidence.js';
+
+it('distinguishes unknown, specified and explicitly inapplicable comparison attribution', () => {
+  expect(ProviderAttribution.parse(null)).toBeNull();
+  expect(ProviderAttribution.parse('14-day click')).toBe('14-day click');
+  expect(ProviderAttribution.parse({ status: 'not-applicable' })).toEqual({ status: 'not-applicable' });
+  expect(ProviderAttribution.safeParse({ status: 'unknown' }).success).toBe(false);
+  expect(ProviderAttribution.safeParse(' ').success).toBe(false);
+});
 
 it('keeps unknown estimates null and labels them as provider estimates', () => {
   const estimate = ProviderEstimate.parse({ label: 'Amazon estimate', metric: 'clicks', value: null, low: null, high: null, units: null, currency: null, horizon: null, attribution: null });

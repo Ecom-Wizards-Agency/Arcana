@@ -23,6 +23,9 @@ export const ProviderValue = z.strictObject({
   units: z.string().max(100).nullable(), currency: z.string().regex(/^[A-Z]{3}$/).nullable(),
 });
 export type ProviderValue = z.infer<typeof ProviderValue>;
+/** Null means unknown. Inapplicable attribution must be explicitly asserted. */
+export const ProviderAttribution = z.union([z.string().trim().min(1).max(256), z.strictObject({ status: z.literal('not-applicable') })]).nullable();
+export type ProviderAttribution = z.infer<typeof ProviderAttribution>;
 export const ProviderEstimate = z.strictObject({
   label: z.literal('Amazon estimate'), metric: identifier,
   value: z.number().finite().nullable(), low: z.number().finite().nullable(), high: z.number().finite().nullable(),
@@ -39,7 +42,7 @@ export const ProviderRecommendation = z.strictObject({
   scope: ProviderEvidenceScope, entity: ProviderEntity, kind: identifier,
   action: z.enum(['bid', 'budget', 'target', 'headline', 'forecast', 'eligibility', 'research', 'unknown']),
   current: ProviderValue, proposed: ProviderValue, estimates: z.array(ProviderEstimate).max(100),
-  objective: identifier.nullable(), horizon: z.string().max(256).nullable(), attribution: z.string().max(256).nullable(),
+  objective: identifier.nullable(), horizon: z.string().max(256).nullable(), attribution: ProviderAttribution,
   eligibility: z.enum(['eligible', 'ineligible', 'unknown', 'unsupported']),
   generatedAt: timestamp.nullable(), expiresAt: timestamp.nullable(), retrievedAt: timestamp,
   /** First observation when the provider omits generation time; preserved on replay. */
@@ -81,7 +84,7 @@ export type ProviderComparison = z.infer<typeof ProviderComparison>;
 export const ArcanaEvidenceBaseline = z.object({
   scope: ProviderEvidenceScope, entity: ProviderEntity, action: ProviderRecommendation.shape.action,
   current: ProviderValue, proposed: ProviderValue, objective: identifier.nullable(),
-  horizon: z.string().nullable(), attribution: z.string().nullable(), observedAt: timestamp,
+  horizon: z.string().nullable(), attribution: ProviderAttribution, observedAt: timestamp,
 });
 export type ArcanaEvidenceBaseline = z.infer<typeof ArcanaEvidenceBaseline>;
 export const ProviderEvidenceRun = z.strictObject({

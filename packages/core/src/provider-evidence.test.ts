@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 import { ProviderRecommendation } from '@wizard-ads/shared';
 import { compareProviderEvidence, providerEvidenceAvailability, providerEvidenceSnapshot } from './provider-evidence.js';
 const at = '2026-06-01T00:00:00.000Z'; const id = '00000000-0000-4000-8000-000000000091';
-const recommendation = () => ProviderRecommendation.parse({ family: 'tactical', namespace: 'synthetic', providerId: 'synthetic', identityMethod: 'provider', version: 'a'.repeat(64), apiVersion: 'synthetic-v1', contractHash: 'b'.repeat(64), transport: 'http', scope: { orgId: id, profileId: id, marketplaceId: 'synthetic-market', amazonProfileId: 'synthetic-profile' }, entity: { adProduct: 'SP', entityType: 'campaign', entityId: 'synthetic-campaign', campaignId: 'synthetic-campaign', adGroupId: null, mapping: 'mapped' }, kind: 'CAMPAIGN_BUDGET', action: 'budget', current: { value: 5, units: 'daily-budget', currency: 'USD' }, proposed: { value: 6, units: 'daily-budget', currency: 'USD' }, estimates: [], objective: 'sales', horizon: 'one-day', attribution: null, eligibility: 'unknown', generatedAt: at, expiresAt: null, retrievedAt: at, observedAt: at, payload: {} });
+const recommendation = () => ProviderRecommendation.parse({ family: 'tactical', namespace: 'synthetic', providerId: 'synthetic', identityMethod: 'provider', version: 'a'.repeat(64), apiVersion: 'synthetic-v1', contractHash: 'b'.repeat(64), transport: 'http', scope: { orgId: id, profileId: id, marketplaceId: 'synthetic-market', amazonProfileId: 'synthetic-profile' }, entity: { adProduct: 'SP', entityType: 'campaign', entityId: 'synthetic-campaign', campaignId: 'synthetic-campaign', adGroupId: null, mapping: 'mapped' }, kind: 'CAMPAIGN_BUDGET', action: 'budget', current: { value: 5, units: 'daily-budget', currency: 'USD' }, proposed: { value: 6, units: 'daily-budget', currency: 'USD' }, estimates: [], objective: 'sales', horizon: 'one-day', attribution: '14-day click', eligibility: 'unknown', generatedAt: at, expiresAt: null, retrievedAt: at, observedAt: at, payload: {} });
 it('compares only matching observed baselines and preserves both sources', () => {
   const amazon = recommendation(); const arcana = recommendation(); const before = structuredClone(amazon);
   expect(compareProviderEvidence(amazon, arcana, at).status).toBe('agrees');
@@ -40,4 +40,20 @@ it('aggregates latest configured scopes without hiding partial retrieval or infe
   const snapshot = providerEvidenceSnapshot({ rows: [row], totalCount: 2, runs: [{ ...common, configId: id, status: 'partial' }, { ...common, configId: '00000000-0000-4000-8000-000000000092', status: 'complete' }] }, 'recommendations', at);
   expect(snapshot.families.find((f) => f.family === 'tactical')).toMatchObject({ availability: 'partial', counts: { source: 2, canonical: 2, readback: 2 } });
   expect(snapshot.rows[0]?.availability).toBe('expired'); expect(snapshot.truncated).toBe(true);
+});
+
+it.each(['both-unknown', 'provider-unknown', 'arcana-unknown', 'different-window', 'inapplicable-vs-window'] as const)('refuses %s attribution without inventing agreement', (kind) => {
+  const amazon = recommendation(); const arcana = recommendation();
+  if (kind === 'both-unknown' || kind === 'provider-unknown') amazon.attribution = null;
+  if (kind === 'both-unknown' || kind === 'arcana-unknown') arcana.attribution = null;
+  if (kind === 'different-window') arcana.attribution = '7-day click';
+  if (kind === 'inapplicable-vs-window') amazon.attribution = { status: 'not-applicable' };
+  expect(compareProviderEvidence(amazon, arcana, at).status).toBe('not-comparable');
+});
+it('compares explicitly inapplicable attribution independently of object identity', () => {
+  const amazon = recommendation(); const arcana = recommendation();
+  amazon.attribution = { status: 'not-applicable' }; arcana.attribution = { status: 'not-applicable' };
+  expect(compareProviderEvidence(amazon, arcana, at).status).toBe('agrees');
+  arcana.proposed.value = 7;
+  expect(compareProviderEvidence(amazon, arcana, at).status).toBe('disagrees');
 });
