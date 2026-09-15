@@ -95,6 +95,7 @@ export type AssetLibraryBatchStart = { kind: 'accepted'; requestId: string; subm
   | { kind: 'uncertain'; submitted: number } | { kind: 'not_attempted'; submitted: number };
 
 export class AssetLibraryClient {
+  get scope(): AssetLibraryScope { return this.http.scope; }
   private readonly http: ScopedAssetHttp;
   private readonly uploads = new WeakMap<AssetLibraryUploadedContent, UploadState>();
   private readonly batches = new Map<string, { urls: string[]; submitted: number }>();
@@ -134,9 +135,7 @@ export class AssetLibraryClient {
       assetType: global['assetType'], status: version['assetStatus'] }, this.http.scope, new Date(this.options.now()).toISOString());
   }
   async upload(manifest: AssetLibraryUploadManifest, bytes: Uint8Array): Promise<AssetLibraryUploadOutcome> {
-    const parsed = AssetLibraryUploadManifest.safeParse(manifest);
-    if (!parsed.success || bytes.length !== manifest.byteLength || createHash('sha256').update(bytes).digest('hex') !== manifest.sha256
-      || !validMedia(manifest, bytes)) return { kind: 'not_attempted', reason: 'invalid_input' };
+    if (!validateAssetLibraryUpload(manifest, bytes)) return { kind: 'not_attempted', reason: 'invalid_input' };
     if (!this.options.uploadOrigins?.length) return { kind: 'not_attempted', reason: 'upload_origin_not_allowed' };
     const expiresAt = this.options.now() + 15 * 60 * 1000;
     try {
@@ -233,4 +232,9 @@ function validMedia(input: AssetLibraryUploadManifest, bytes: Uint8Array): boole
   if (input.contentType === 'image/png') return extension === 'png' && bytes.length >= 8 && [137,80,78,71,13,10,26,10].every((value, index) => bytes[index] === value);
   if (input.contentType === 'image/jpeg') return (extension === 'jpg' || extension === 'jpeg') && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
   return extension === 'mp4' && bytes.length >= 12 && new TextDecoder().decode(bytes.slice(4,8)) === 'ftyp';
+}
+
+export function validateAssetLibraryUpload(manifest: AssetLibraryUploadManifest, bytes: Uint8Array): boolean {
+  return AssetLibraryUploadManifest.safeParse(manifest).success && bytes.length===manifest.byteLength
+    && createHash('sha256').update(bytes).digest('hex')===manifest.sha256 && validMedia(manifest,bytes);
 }

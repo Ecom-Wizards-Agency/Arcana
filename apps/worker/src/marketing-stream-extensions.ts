@@ -1,7 +1,9 @@
+import { EvidenceRetryPendingError } from './evidence-reconciliation.js';
+import { parseRegisteredStreamDataset, unwrapStreamDelivery } from './stream-dataset-adapters.js';
 import { createHash } from 'node:crypto';
-import { StreamExtensionDataset, StreamExtensionEvent, StreamExtensionRecord,
+import { StreamExtensionDataset, StreamExtensionEvent,
   StreamExtensionReceipt, type StreamExtensionBinding, type StreamExtensionRefusal } from '@wizard-ads/shared';
-import { projectStreamExtensionEvent, resolveStreamExtensionBinding, retainStreamExtensionDelivery,
+import { beginStreamProjectionAttempt, failStreamProjectionAttempt, projectStreamExtensionEvent, resolveStreamExtensionBinding, retainStreamExtensionDelivery,
   readProviderGraphEvidence, recordProviderGraphResolution,
   type DbHandle } from '@wizard-ads/db';
 import { reconcileProviderGraph } from '@wizard-ads/core';
@@ -20,10 +22,10 @@ export interface StreamExtensionIntakeStore {
   binding(subscriptionId: string, destinationArn: string): Promise<StreamExtensionBinding | null>;
   retain(input: Parameters<typeof retainStreamExtensionDelivery>[1]): Promise<StreamExtensionReceipt>;
 }
-/** Only canonical synthetic adapters are available on this base. Production wire admission stays unsupported. */
+/** Registered dataset dispatch shares one durable receipt and binding boundary. */
 export class StreamExtensionIntake {
   constructor(private readonly options: { store: StreamExtensionIntakeStore; destinationArn: string;
-    enabled?: boolean; syntheticAdapter?: boolean; now?: () => Date }) {}
+    enabled?: boolean; now?: () => Date }) {}
 
   async retain(message: { messageId: string; body: string }): Promise<StreamExtensionReceipt> {
     const receivedAt = (this.options.now?.() ?? new Date()).toISOString();
@@ -31,13 +33,13 @@ export class StreamExtensionIntake {
     let event: StreamExtensionEvent | null = null;
     let reason: StreamExtensionRefusal | null = null;
     let raw: unknown;
-    try { raw = JSON.parse(message.body); } catch { reason = 'invalid_json'; }
+    try { raw = unwrapStreamDelivery(message.body); } catch { reason = 'invalid_json'; }
     if (reason === null) {
       decoded = 1;
-      const parsed = StreamExtensionRecord.safeParse(raw);
+      let parsed: { success: false } | { success: true; data: StreamExtensionEvent['record'] };
+      try { parsed = { success: true, data: parseRegisteredStreamDataset(raw) }; } catch { parsed = { success: false }; }
       if (!parsed.success) reason = 'unsupported_schema';
       else if (!this.options.enabled) reason = 'disabled';
-      else if (!this.options.syntheticAdapter || parsed.data.contractVersion !== 'fixture.v1') reason = 'unsupported_schema';
       else {
         const r = parsed.data;
         const binding = await this.options.store.binding(r.subscriptionId, this.options.destinationArn);
@@ -68,8 +70,8 @@ export function isStreamExtensionDelivery(body: string): boolean {
     return raw !== null && typeof raw === 'object' && 'datasetId' in raw && StreamExtensionDataset.safeParse(raw.datasetId).success;
   } catch { return false; }
 }
-export function createStreamExtensionIntake(handle: DbHandle, destinationArn: string) {
-  return new StreamExtensionIntake({ destinationArn, store: {
+export function createStreamExtensionIntake(handle: DbHandle, destinationArn: string, enabled = false) {
+  return new StreamExtensionIntake({ destinationArn, enabled, store: {
     binding: (subscriptionId, destination) => resolveStreamExtensionBinding(handle, subscriptionId, destination),
     retain: (input) => retainStreamExtensionDelivery(handle, input),
   } });
@@ -83,7 +85,11 @@ export function registerStreamExtensionProjection(registry: Pick<IngestionRegist
       if (!enabled()) throw new PermanentJobError('Stream extension projections are disabled');
       return payload;
     },
-    execute: async (payload) => {
+    execute: async (payload, context) => {
+      const admission = await beginStreamProjectionAttempt(handle, payload, context.job);
+      if (admission.kind === 'refused') throw new PermanentJobError('Stream binding or attempt admission refused');
+      if (admission.kind === 'deferred') throw new EvidenceRetryPendingError(Math.max(1,Math.ceil((Date.parse(admission.retryAt)-Date.now())/1000)));
+      try {
       const result = await projectStreamExtensionEvent(handle, payload);
       if (result.graphScope !== null) {
         const at = new Date().toISOString();
@@ -95,6 +101,7 @@ export function registerStreamExtensionProjection(registry: Pick<IngestionRegist
           throw new Error('Stream graph resolution count mismatch');
       }
       return result;
+      } catch (error) { await failStreamProjectionAttempt(handle, payload); throw error; }
     },
     counts: (result) => result,
     coverage: { target: (result) => ({ reportType: result.event.record.datasetId, grain: 'event',

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ProviderGraphAssociation, ProviderGraphScope, ProviderGraphStoredEvidence } from './provider-graph.js';
 import { AdProduct, Region, Uuid } from './primitives.js';
 
 /** Separate from the seven hourly ledger datasets; no DSP admission. */
@@ -102,3 +103,40 @@ export const StreamExtensionHealth = z.object({
   duplicates: count.nullable(), rejected: count.nullable(), deadLettered: count.nullable(),
 }).strict();
 export type StreamExtensionHealth = z.infer<typeof StreamExtensionHealth>;
+
+/** Consumer evidence remains separate from report totals and local write history. */
+export const StreamConsumerEvidence = z.object({
+  events: z.array(StreamExtensionEvent),
+  measured: count, unresolved: count,
+  associations: z.array(ProviderGraphAssociation).default([]),
+  staleEventIds: z.array(z.string()).default([]), excluded: count.default(0), truncated: z.boolean().default(false),
+  completeness: z.enum(['missing', 'partial', 'stale']),
+  source: z.literal('amazon_marketing_stream'),
+  mutationAuthority: z.literal(false),
+}).strict().refine((v) => v.measured === v.events.length, 'consumer readback count mismatch');
+export type StreamConsumerEvidence = z.infer<typeof StreamConsumerEvidence>;
+
+/** WP-292/WP-312 may consume advice; observed budget usage remains a separate fact. */
+export const StreamBudgetHandoff = z.object({
+  event: StreamExtensionEvent.refine((v) => v.record.datasetId === 'sp-budget-recommendations'),
+  transport: z.literal('marketing_stream'),
+  kind: z.literal('provider_budget_recommendation'),
+  observedUsage: z.null(), approvalAuthority: z.literal(false),
+}).strict();
+export type StreamBudgetHandoff = z.infer<typeof StreamBudgetHandoff>;
+
+export const EvidenceReconciliationCounts = z.object({
+  requested: count, attempted: count, succeeded: count, failed: count, refused: count,
+}).strict().refine((v) => v.requested === v.succeeded + v.failed + v.refused
+  && v.attempted >= v.succeeded + v.failed && v.attempted <= v.requested, 'reconciliation counts do not agree');
+export type EvidenceReconciliationCounts = z.infer<typeof EvidenceReconciliationCounts>;
+
+export const StreamConsumerSource = z.object({
+  events: z.array(StreamExtensionEvent), graph: ProviderGraphStoredEvidence,
+  scope: ProviderGraphScope, truncated: z.boolean(),
+}).strict();
+export type StreamConsumerSource = z.infer<typeof StreamConsumerSource>;
+export interface StreamConsumerSelection {
+  asOf: string; maxAgeMs: number; from?: string; to?: string; campaignId?: string | null;
+  assetId?: string | null; entityId?: string | null; asin?: string | null; history?: boolean;
+}

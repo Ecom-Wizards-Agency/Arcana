@@ -197,3 +197,20 @@ export const AssetLibraryBatchStatus = z.object({
   }
 });
 export type AssetLibraryBatchStatus = z.infer<typeof AssetLibraryBatchStatus>;
+
+/** Separate infrastructure authority; never a campaign action class. */
+export const AssetRegistrationIntent = z.object({
+  id: Uuid, authorityId: Uuid, profileId: Uuid, scope: AssetLibraryScope,
+  manifest: AssetLibraryUploadManifest, registration: AssetLibraryRegistration,
+}).strict();
+export type AssetRegistrationIntent = z.infer<typeof AssetRegistrationIntent>;
+export const AssetRegistrationRefusal = z.enum(['disabled', 'unauthorized_actor', 'authority_missing',
+  'authority_expired', 'scope_mismatch', 'manifest_mismatch', 'invalid_media', 'count_exceeded',
+  'intent_conflict', 'already_reserved', 'outcome_uncertain']);
+export type AssetRegistrationRefusal = z.infer<typeof AssetRegistrationRefusal>;
+export const AssetRegistrationAdmission = z.object({
+  intentId: Uuid, admitted: z.boolean(), refusal: AssetRegistrationRefusal.nullable(),
+  requested: z.literal(1), admittedCount: z.number().int().min(0).max(1), refused: z.number().int().min(0).max(1),
+}).strict().refine((v) => v.requested === v.admittedCount + v.refused && v.admitted === (v.admittedCount === 1)
+  && v.admitted === (v.refusal === null));
+export type AssetRegistrationAdmission = z.infer<typeof AssetRegistrationAdmission>;

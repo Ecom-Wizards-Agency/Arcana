@@ -14,7 +14,7 @@ const record = { contractVersion: 'fixture.v1', datasetId: binding.datasetId, su
   advertiserId: binding.advertiserId, marketplaceId: binding.marketplaceId, region: binding.region, destinationArn: binding.destinationArn,
   eventId: 'event', revision: 1, eventTime: '2026-09-01T00:00:00.000Z', window: null,
   observation: { entityId: 'campaign', adProduct: 'SP', operation: 'patch', name: 'Synthetic campaign' } };
-function harness(b = binding, enabled = true, syntheticAdapter = true) {
+function harness(b = binding, enabled = true) {
   const events: StreamExtensionEvent[] = [];
   const retain = vi.fn(async (input) => {
     if (input.event) events.push(input.event);
@@ -23,7 +23,7 @@ function harness(b = binding, enabled = true, syntheticAdapter = true) {
       counts: { received: 1, undecodable: input.decoded === 0 ? 1 : 0, decoded: input.decoded, accepted: input.event ? 1 : 0, stored: input.event ? 1 : 0,
         deduplicated: 0, rejected: input.event ? 0 : input.decoded, deadLettered: 0, verifiedStored: input.event ? 1 : 0 } });
   });
-  const intake = new StreamExtensionIntake({ enabled, syntheticAdapter, destinationArn: binding.destinationArn,
+  const intake = new StreamExtensionIntake({ enabled, destinationArn: binding.destinationArn,
     now: () => new Date('2026-09-02T00:00:00.000Z'), store: { binding: async () => b, retain } });
   return { events, retain, intake };
 }
@@ -53,7 +53,7 @@ it.each(['advertiserId', 'marketplaceId', 'region', 'destinationArn', 'datasetId
 it('refuses unconfirmed, disabled and unknown schemas durably, including arbitrary confirmation URLs', async () => {
   expect((await harness({ ...binding, confirmed: false }).intake.retain({ messageId: 'one', body: JSON.stringify(record) })).reason).toBe('unconfirmed');
   expect((await harness(binding, false).intake.retain({ messageId: 'one', body: JSON.stringify(record) })).reason).toBe('disabled');
-  expect((await harness(binding, true, false).intake.retain({ messageId: 'one', body: JSON.stringify(record) })).reason).toBe('unsupported_schema');
+  expect((await harness().intake.retain({ messageId: 'one', body: JSON.stringify({ ...record, contractVersion: 'unknown.v2' }) })).reason).toBe('unsupported_schema');
   const h = harness();
   expect((await h.intake.retain({ messageId: 'bad', body: JSON.stringify({ Type: 'SubscriptionConfirmation', SubscribeURL: 'https://invalid.example/' }) })).reason).toBe('unsupported_schema');
   expect((await h.intake.retain({ messageId: 'json', body: '{' })).counts.decoded).toBe(0);

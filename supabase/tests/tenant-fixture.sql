@@ -52,6 +52,7 @@ declare
   v_sponsored_prompt uuid;
   v_wp313_at text := to_char(statement_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
   v_wp313_identity text;
+  v_wp313_authority uuid;
   v_wp313_binding jsonb;
   v_wp313_asset jsonb;
   v_wp313_graph_scope jsonb;
@@ -1096,6 +1097,22 @@ begin
       'to',jsonb_build_object('adProduct','SB','kind','campaign','providerId','synthetic-unresolved-campaign','version',null),
       'relation','parent','sourceEventAt',v_wp313_at,'revision','0','payloadFingerprint',v_wp313_identity,'operation','upsert'),
       v_wp313_at::timestamptz,v_wp313_at::timestamptz + interval '95 days');
+  end if;
+
+  if to_regclass('public.asset_registration_authorities') is not null then
+    v_wp313_authority:=gen_random_uuid();
+    -- Inert storage/RLS fixture; no valid registration request or enabled authority.
+    insert into public.asset_registration_authorities(id,org_id,profile_id,actor_id,request,expires_at)
+      values(v_wp313_authority,v_org,v_profile,p_user_id,'{}',statement_timestamp()+interval '1 hour');
+    insert into public.asset_registration_intents(id,org_id,profile_id,actor_id,authority_id,request)
+      values(gen_random_uuid(),v_org,v_profile,p_user_id,v_wp313_authority,'{}');
+    v_wp313_identity:=md5(p_slug || ':receipt') || md5(p_slug || ':receipt-2');
+    insert into public.marketing_stream_extension_receipts(delivery_id,body_fingerprint,received_at,receipt,expires_at,org_id,profile_id,dataset_id)
+      values(v_wp313_identity,v_wp313_identity,v_wp313_at::timestamptz,
+        jsonb_build_object('deliveryId',v_wp313_identity,'bodyFingerprint',v_wp313_identity,'receivedAt',v_wp313_at,
+          'outcome','rejected','reason','disabled','counts',jsonb_build_object('received',1,'undecodable',0,'decoded',1,'accepted',0,
+            'deduplicated',0,'stored',0,'rejected',1,'deadLettered',0,'verifiedStored',0)),
+        v_wp313_at::timestamptz+interval '95 days',v_org,v_profile,'ads-campaign-management-campaigns');
   end if;
 
   return v_org;

@@ -1,10 +1,11 @@
+import type { ClaimedJob } from './job-wire.js';
 import {
   ProviderGraphScope, ProviderGraphObservation, ProviderGraphAssociation, ProviderGraphReadResult,
   StreamExtensionBinding, StreamExtensionEvent, StreamExtensionEvidence,
-  StreamExtensionReceipt, StreamExtensionDataset, StreamExtensionHealth, type StreamExtensionRefusal,
+  StreamExtensionReceipt, StreamExtensionDataset, StreamExtensionHealth, StreamConsumerSource, StreamBudgetHandoff, type StreamExtensionRefusal,
 } from '@wizard-ads/shared';
 import type { DbHandle, QueryHandle } from '../client.js';
-import { appendProviderGraphEvidence } from './provider-graph.js';
+import { appendProviderGraphEvidence, readProviderGraphEvidence } from './provider-graph.js';
 
 /** Binding resolution uses a trusted transport destination, never event-supplied tenant IDs. */
 export async function resolveStreamExtensionBinding(handle: QueryHandle, subscriptionId: string, destinationArn: string) {
@@ -66,9 +67,9 @@ export async function retainStreamExtensionDelivery(handle: Pick<DbHandle, 'sql'
       receivedAt: input.receivedAt, outcome: reason === null ? 'accepted' : 'rejected', reason,
       counts: { received: 1, undecodable: input.decoded === 0 ? 1 : 0, decoded: input.decoded, accepted, stored, deduplicated: duplicate,
         rejected: input.decoded - accepted, deadLettered: 0, verifiedStored: accepted } });
-    await sql`insert into public.marketing_stream_extension_receipts(delivery_id,body_fingerprint,received_at,receipt,expires_at)
+    await sql`insert into public.marketing_stream_extension_receipts(delivery_id,body_fingerprint,received_at,receipt,expires_at,org_id,profile_id,dataset_id)
       values(${receipt.deliveryId},${receipt.bodyFingerprint},${receipt.receivedAt},${JSON.stringify(receipt)}::jsonb,
-        ${receipt.receivedAt}::timestamptz+interval '95 days')`;
+        ${receipt.receivedAt}::timestamptz+interval '95 days',${event?.orgId ?? null},${event?.profileId ?? null},${event?.record.datasetId ?? null})`;
     const check = await sql<{ receipt: unknown }[]>`select receipt from public.marketing_stream_extension_receipts where delivery_id=${receipt.deliveryId}`;
     if (check.length !== 1 || JSON.stringify(StreamExtensionReceipt.parse(check[0]!.receipt)) !== JSON.stringify(receipt))
       throw new Error('Stream receipt readback mismatch');
@@ -94,7 +95,7 @@ export async function projectStreamExtensionEvent(handle: Pick<DbHandle, 'sql'>,
     if (rows.length !== 1) throw new Error('Stream projection needs one durable event');
     const event = StreamExtensionEvent.parse(rows[0]!.event);
     const record = event.record;
-    const blocked = input.datasetId === 'sp-budget-recommendations';
+    const blocked = false;
     let graphScope: ProviderGraphScope | null = null;
     let graphReceipt: Awaited<ReturnType<typeof appendProviderGraphEvidence>> | null = null;
     if ('entityId' in record.observation) {
@@ -135,9 +136,13 @@ export async function projectStreamExtensionEvent(handle: Pick<DbHandle, 'sql'>,
       where org_id=${input.orgId} and profile_id=${input.profileId} and identity=${input.eventIdentity}
         and status=${blocked ? 'blocked' : 'projected'}`;
     if (verified.length !== 1) throw new Error('Projection checkpoint readback mismatch');
+    const persisted = await sql`select identity from public.marketing_stream_extension_events
+      where org_id=${input.orgId} and profile_id=${input.profileId} and identity=${input.eventIdentity}
+        and payload_fingerprint=${event.payloadFingerprint}`;
+    if (persisted.length !== 1) throw new Error('Projected source fact readback mismatch');
     // One Stream event remains one coverage row; node and edge fan-out have separate counted receipts.
     return { event, blocked, graphScope, graphReceipt, sourceRows: 1, parsedRows: 1, refusedRows: 0,
-      loadedRows: 1, verifiedLoadedRows: verified.length };
+      loadedRows: 1, verifiedLoadedRows: persisted.length };
   });
 }
 
@@ -171,12 +176,130 @@ export async function readStreamExtensionHealth(handle: QueryHandle, orgId: stri
     select dataset_id,count(*)::int as stored,max(event_time)::text as latest_event_at,
       extract(epoch from max(received_at-event_time))::float as maximum_lag from public.marketing_stream_extension_events
     where org_id=${orgId} and profile_id=${profileId} group by dataset_id`;
+  const counters=await handle.sql<{dataset_id:string;duplicates:number;rejected:number;dead_lettered:number}[]>`select * from app.stream_extension_receipt_counts(${orgId},${profileId})`;
   return StreamExtensionDataset.options.map((datasetId) => {
     const matches = bindings.filter((b) => b.dataset_id === datasetId);
     const row = rows.find((r) => r.dataset_id === datasetId);
+    const counter=counters.find(r=>r.dataset_id===datasetId);
     return StreamExtensionHealth.parse({ datasetId, bindingCount: matches.length,
       enabled: matches.some((b) => b.enabled), confirmed: matches.length > 0 && matches.every((b) => b.confirmed),
       stored: row?.stored ?? 0, latestEventAt: row?.latest_event_at ? new Date(row.latest_event_at).toISOString() : null,
-      maximumLagSeconds: row?.maximum_lag ?? null, duplicates: null, rejected: null, deadLettered: null });
+      maximumLagSeconds: row?.maximum_lag ?? null, duplicates: counter?.duplicates ?? null, rejected: counter?.rejected ?? null, deadLettered: counter?.dead_lettered ?? null });
   });
+}
+
+/** Read-only WP-292 handoff. Recommendations never become observed usage or approval. */
+export async function readStreamBudgetHandoff(handle: QueryHandle, input: Parameters<typeof readStreamExtensionEvidence>[1]) {
+  const evidence = await readStreamExtensionEvidence(handle, { ...input, datasetId: 'sp-budget-recommendations' });
+  return evidence.events.map((event) => StreamBudgetHandoff.parse({ event, transport: 'marketing_stream',
+    kind: 'provider_budget_recommendation', observedUsage: null, approvalAuthority: false }));
+}
+
+export async function readStreamConsumerSource(handle: QueryHandle, input: {
+  orgId: string; profileId: string; datasets: readonly StreamExtensionDataset[];
+  asOf: string; maxAgeMs: number; from?: string; to?: string; campaignId?: string | null;
+  assetId?: string | null; entityId?: string | null; asin?: string | null; history?: boolean;
+}): Promise<StreamConsumerSource> {
+  let events: StreamExtensionEvent[] = [];
+  let truncated = false;
+  if (input.history) {
+    const rows = await handle.sql<{ event: unknown }[]>`select e.event from public.marketing_stream_extension_events e
+      join public.marketing_stream_extension_projections p using(org_id,profile_id,identity)
+      where e.org_id=${input.orgId} and e.profile_id=${input.profileId} and e.dataset_id=any(${[...input.datasets]})
+        and p.status='projected' and e.event_time<=${input.asOf} and e.received_at<=${input.asOf} and e.expires_at>${input.asOf}
+        and (${input.from ?? null}::timestamptz is null or e.event_time>=${input.from ?? null}::timestamptz)
+        and (${input.to ?? null}::timestamptz is null or e.event_time<${input.to ?? null}::timestamptz)
+      order by e.event_time desc,e.revision desc,e.identity limit 501`;
+    truncated = rows.length > 500;
+    events = rows.slice(0,500).map((row) => StreamExtensionEvent.parse(row.event));
+  } else {
+    for (const datasetId of input.datasets) events.push(...(await readStreamExtensionEvidence(handle, { ...input, datasetId })).events);
+  }
+  const [profile] = await handle.sql<{ amazon_profile_id: string; region: string }[]>`select amazon_profile_id,region from public.ad_profiles
+    where org_id=${input.orgId} and id=${input.profileId}`;
+  if (!profile) throw new Error('Stream reader profile missing');
+  const scope = ProviderGraphScope.parse({ orgId: input.orgId, profileId: input.profileId,
+    amazonProfileId: profile.amazon_profile_id, region: profile.region });
+  return StreamConsumerSource.parse({ events, scope, truncated, graph: await readProviderGraphEvidence(handle,scope,input.asOf) });
+}
+
+/** Retry source accounting follows existing queue custody, capped across replacement jobs. */
+export async function beginStreamProjectionAttempt(handle: Pick<DbHandle, 'sql'>, input: {
+  orgId: string; profileId: string; eventIdentity: string;
+}, job: ClaimedJob) {
+  return handle.sql.begin(async (sql) => {
+    const custody = await sql`select id from public.sync_jobs where id=${job.id} and org_id=${input.orgId} and profile_id=${input.profileId}
+      and status='running' and claimed_by=${job.claimedBy} and attempts=${job.attempts}
+      and claim_token is not distinct from ${job.claim?.token ?? null}::uuid for update`;
+    if(custody.length!==1) throw new Error('Stream queue custody lost');
+    const [row] = await sql<{event:unknown;status:string;attempts:number;retry_after:string|null;last_attempt_key:string|null}[]>`
+      select e.event,p.status,p.attempts,p.retry_after::text,p.last_attempt_key from public.marketing_stream_extension_events e
+      join public.marketing_stream_extension_projections p using(org_id,profile_id,identity)
+      where e.org_id=${input.orgId} and e.profile_id=${input.profileId} and e.identity=${input.eventIdentity} for update of p`;
+    if(!row) throw new Error('Stream checkpoint missing');
+    const event=StreamExtensionEvent.parse(row.event),r=event.record;
+    const binding=await resolveStreamExtensionBinding({sql},r.subscriptionId,r.destinationArn);
+    if(!binding || !binding.enabled || !binding.confirmed || !binding.capabilityVerified
+      || binding.orgId!==input.orgId || binding.profileId!==input.profileId
+      || ['datasetId','advertiserId','marketplaceId','region','destinationArn','contractVersion'].some(k=>Reflect.get(binding,k)!==Reflect.get(r,k))) {
+      await sql`update public.marketing_stream_extension_projections set status='blocked',reason='binding_refused'
+        where org_id=${input.orgId} and profile_id=${input.profileId} and identity=${input.eventIdentity}`;
+      return {kind:'refused' as const};
+    }
+    if(row.status==='projected') return {kind:'ready' as const};
+    if(row.retry_after && Date.parse(row.retry_after)>Date.now()) return {kind:'deferred' as const,retryAt:new Date(row.retry_after).toISOString()};
+    const key=job.id+':'+job.attempts;
+    if(row.last_attempt_key===key) return {kind:'ready' as const};
+    if(row.attempts>=8) return {kind:'refused' as const};
+    await sql`update public.marketing_stream_extension_projections set attempts=attempts+1,status='retrying',last_attempt_key=${key}
+      where org_id=${input.orgId} and profile_id=${input.profileId} and identity=${input.eventIdentity}`;
+    return {kind:'ready' as const};
+  });
+}
+export async function failStreamProjectionAttempt(handle: Pick<DbHandle, 'sql'>, input: {
+  orgId: string; profileId: string; eventIdentity: string;
+}) {
+  await handle.sql`update public.marketing_stream_extension_projections
+    set status=case when attempts>=8 then 'blocked' else 'retrying' end,
+      reason=case when attempts>=8 then 'retry_exhausted' else 'projection_failed' end,
+      retry_after=now()+least(3600,power(2,attempts)::int*30)*interval '1 second'
+    where org_id=${input.orgId} and profile_id=${input.profileId} and identity=${input.eventIdentity}`;
+}
+
+/** Startup repairs missing/dead work; active queue claims remain owned by its existing reaper. */
+export async function reconcileStreamExtensionWork(handle: Pick<DbHandle, 'sql'>, enabled = false, limit = 100) {
+  const counts = { requested: 0, attempted: 0, succeeded: 0, failed: 0, refused: 0 };
+  if (!enabled) return counts;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error('Invalid Stream reconciliation bound');
+  await handle.sql.begin(async (sql) => {
+    const rows = await sql<{ org_id: string; profile_id: string; identity: string; dataset_id: StreamExtensionDataset; attempts: number; queue_attempts: number; admitted: boolean }[]>`
+      select p.org_id,p.profile_id,p.identity,e.dataset_id,p.attempts,
+        (select coalesce(sum(greatest(j.attempts,1)),0)::int from public.sync_jobs j
+          where j.org_id=p.org_id and j.profile_id=p.profile_id and j.job_type='marketing_stream.extensions.project'
+            and j.payload->>'eventIdentity'=p.identity) as queue_attempts,
+        exists(select 1 from public.marketing_stream_extension_bindings b where b.org_id=p.org_id and b.profile_id=p.profile_id
+          and b.dataset_id=e.dataset_id and b.subscription_id=e.event #>> '{record,subscriptionId}'
+          and b.enabled and b.confirmed and b.capability_verified) as admitted
+      from public.marketing_stream_extension_projections p join public.marketing_stream_extension_events e using(org_id,profile_id,identity)
+      where p.status in ('pending','retrying','projected') and (p.retry_after is null or p.retry_after<=now()) and e.expires_at>now()
+        and not exists(select 1 from public.sync_jobs j where j.org_id=p.org_id and j.profile_id=p.profile_id
+          and j.job_type='marketing_stream.extensions.project' and j.payload->>'eventIdentity'=p.identity and j.status in ('queued','running'))
+        and not exists(select 1 from public.sync_jobs done where done.org_id=p.org_id and done.profile_id=p.profile_id
+          and done.job_type='marketing_stream.extensions.project' and done.payload->>'eventIdentity'=p.identity and done.status='succeeded')
+      order by e.received_at limit ${limit} for update of p skip locked`;
+    for (const row of rows) {
+      counts.requested++;
+      if (!row.admitted || row.attempts >= 8 || row.queue_attempts >= 8) { counts.refused++; continue; }
+      counts.attempted++;
+      const key = `stream-recovery:${row.identity}:${row.queue_attempts}`;
+      const payload = { type: 'marketing_stream.extensions.project', orgId: row.org_id, profileId: row.profile_id,
+        datasetId: row.dataset_id, eventIdentity: row.identity };
+      await sql`insert into public.sync_jobs(org_id,profile_id,job_type,payload,dedupe_key,max_attempts)
+        values(${row.org_id},${row.profile_id},'marketing_stream.extensions.project',${JSON.stringify(payload)}::jsonb,${key},${8-Math.max(row.attempts,row.queue_attempts)}) on conflict do nothing`;
+      const check = await sql`select id from public.sync_jobs where org_id=${row.org_id} and profile_id=${row.profile_id} and dedupe_key=${key} and status in ('queued','running')`;
+      if (check.length !== 1) throw new Error('Stream recovery queue readback mismatch');
+      counts.succeeded++;
+    }
+  });
+  return counts;
 }

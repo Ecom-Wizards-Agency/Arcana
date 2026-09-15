@@ -38,7 +38,7 @@ create table public.marketing_stream_extension_projections (
   org_id uuid not null references public.orgs(id) on delete cascade,
   profile_id uuid not null, identity text not null, status text not null default 'pending',
   attempts integer not null default 0 check(attempts between 0 and 8), retry_after timestamptz,
-  reason text, primary key(org_id,profile_id,identity),
+  reason text, last_attempt_key text, primary key(org_id,profile_id,identity),
   foreign key(org_id,profile_id,identity) references public.marketing_stream_extension_events(org_id,profile_id,identity) on delete cascade,
   check(status in ('pending','projected','blocked','retrying'))
 );
@@ -168,3 +168,91 @@ revoke all on function app.prune_wp313_evidence(timestamptz) from public,anon,au
 grant execute on function app.prune_wp313_evidence(timestamptz) to service_role;
 comment on table public.asset_library_versions is 'Immutable provider versions and authenticated profile ownership. Processing and spec checks confer no moderation permission; retained while owned.';
 comment on table public.provider_entity_associations is 'Partial inventories never delete absent edges. Only explicit provider tombstones retire an association. Resolution rechecks both endpoints.';
+
+-- Asset effects have their own exact-input authority, independent of campaign writes.
+create table public.asset_registration_authorities (
+  id uuid primary key, org_id uuid not null references public.orgs(id) on delete cascade,
+  profile_id uuid not null, actor_id uuid not null references auth.users(id) on delete cascade,
+  enabled boolean not null default false, request jsonb not null, expires_at timestamptz not null,
+  foreign key(org_id,profile_id) references public.ad_profiles(org_id,id) on delete cascade
+);
+create table public.asset_registration_intents (
+  id uuid primary key, org_id uuid not null references public.orgs(id) on delete cascade,
+  profile_id uuid not null, actor_id uuid not null references auth.users(id) on delete cascade,
+  authority_id uuid not null unique references public.asset_registration_authorities(id),
+  request jsonb not null, status text not null default 'admitted'
+    check(status in ('admitted','attempting','uncertain','accepted','refused')),
+  outcome jsonb, attempted_at timestamptz, observed_at timestamptz,
+  search_job_id uuid unique references public.sync_jobs(id), created_at timestamptz not null default now(),
+  foreign key(org_id,profile_id) references public.ad_profiles(org_id,id) on delete cascade
+);
+alter table public.asset_registration_authorities enable row level security;
+alter table public.asset_registration_intents enable row level security;
+create policy tenant_read on public.asset_registration_intents for select to authenticated using(app.is_org_member(org_id));
+revoke all on public.asset_registration_authorities,public.asset_registration_intents from public,anon,authenticated;
+grant select on public.asset_registration_intents to authenticated;
+grant all on public.asset_registration_authorities,public.asset_registration_intents to service_role;
+create index asset_registration_reconciliation on public.asset_registration_intents(status,attempted_at);
+
+create function app.admit_asset_registration(p_org uuid,p_request jsonb)
+returns text language plpgsql security definer set search_path=pg_catalog,public,app as $$
+declare a public.asset_registration_authorities; i public.asset_registration_intents; p public.ad_profiles; member_role text;
+begin
+  select role::text into member_role from public.org_members where org_id=p_org and user_id=auth.uid() for share;
+  if member_role is null or member_role not in ('owner','admin','analyst') then return 'unauthorized_actor'; end if;
+  select * into a from public.asset_registration_authorities where id=(p_request->>'authorityId')::uuid for update;
+  if not found then return 'authority_missing'; end if;
+  if a.org_id<>p_org or a.actor_id<>auth.uid() or a.profile_id<>(p_request->>'profileId')::uuid then return 'scope_mismatch'; end if;
+  if not a.enabled then return 'disabled'; end if;
+  if a.expires_at<=now() then return 'authority_expired'; end if;
+  if a.request<>p_request then return 'manifest_mismatch'; end if;
+  if (p_request #>> '{registration,assetType}'='VIDEO') is distinct from
+     (p_request #>> '{manifest,contentType}'='video/mp4') then return 'invalid_media'; end if;
+  select * into p from public.ad_profiles where org_id=p_org and id=a.profile_id for share;
+  if not found or p.amazon_profile_id<>p_request #>> '{scope,amazonProfileId}' or p.region::text<>p_request #>> '{scope,region}' then return 'scope_mismatch'; end if;
+  select * into i from public.asset_registration_intents where authority_id=a.id;
+  if found then
+    if i.request<>p_request then return 'intent_conflict'; end if;
+    if i.status in ('attempting','uncertain') then return 'outcome_uncertain'; end if;
+    return null;
+  end if;
+  if exists(select 1 from public.asset_registration_intents where id=(p_request->>'id')::uuid) then return 'intent_conflict'; end if;
+  insert into public.asset_registration_intents(id,org_id,profile_id,actor_id,authority_id,request)
+    values((p_request->>'id')::uuid,p_org,a.profile_id,auth.uid(),a.id,p_request);
+  return null;
+end $$;
+revoke all on function app.admit_asset_registration(uuid,jsonb) from public,anon;
+grant execute on function app.admit_asset_registration(uuid,jsonb) to authenticated;
+
+create function app.wp313_asset_intent_immutable() returns trigger language plpgsql set search_path=pg_catalog as $$
+begin
+  if (new.id,new.org_id,new.profile_id,new.actor_id,new.authority_id,new.request,new.created_at)
+    is distinct from (old.id,old.org_id,old.profile_id,old.actor_id,old.authority_id,old.request,old.created_at)
+    then raise exception 'Asset intent identity is immutable' using errcode='23514'; end if;
+  if old.status in ('accepted','refused') and new is distinct from old
+    then raise exception 'Asset outcome is immutable' using errcode='23514'; end if;
+  return new;
+end $$;
+revoke all on function app.wp313_asset_intent_immutable() from public,anon,authenticated;
+create trigger asset_intent_immutable before update on public.asset_registration_intents
+  for each row execute function app.wp313_asset_intent_immutable();
+
+-- Tenant counters use only receipt scope established by a verified delivery binding.
+alter table public.marketing_stream_extension_receipts add column org_id uuid, add column profile_id uuid, add column dataset_id text;
+alter table public.marketing_stream_extension_receipts add foreign key(org_id,profile_id) references public.ad_profiles(org_id,id) on delete cascade;
+create index stream_extension_receipt_scope on public.marketing_stream_extension_receipts(org_id,profile_id,dataset_id);
+create function app.stream_extension_receipt_counts(p_org uuid,p_profile uuid)
+returns table(dataset_id text,duplicates integer,rejected integer,dead_lettered integer)
+language sql stable security definer set search_path=pg_catalog,public,app as $$
+  select r.dataset_id,sum((r.receipt #>> '{counts,deduplicated}')::int)::int,
+    sum((r.receipt #>> '{counts,rejected}')::int)::int,sum((r.receipt #>> '{counts,deadLettered}')::int)::int
+  from public.marketing_stream_extension_receipts r where r.org_id=p_org and r.profile_id=p_profile
+    and (app.is_org_member(p_org) or current_setting('role',true) in ('service_role','none'))
+  group by r.dataset_id
+$$;
+revoke all on function app.stream_extension_receipt_counts(uuid,uuid) from public,anon;
+grant execute on function app.stream_extension_receipt_counts(uuid,uuid) to authenticated,service_role;
+-- Only service custody may read these private relations. Browser roles have no
+-- relation privilege or applicable policy; the scoped function exposes aggregates.
+create policy service_read on public.asset_registration_authorities for select to service_role using(true);
+create policy service_read on public.marketing_stream_extension_receipts for select to service_role using(true);

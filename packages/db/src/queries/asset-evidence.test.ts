@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AssetLibraryObservation, AssetModerationObservation, ProviderGraphAssociation } from '@wizard-ads/shared';
 import { createTestDatabase, type TestDatabase } from '../testing/harness.js';
 import { asUser } from '../testing/rls.js';
-import { persistAssetLibraryEvidence, persistAssetModerationEvidence, readAssetEvidence } from './asset-evidence.js';
+import { persistAssetLibraryEvidence, persistAssetModerationEvidence, readAssetEvidence, readAssetSelectionEvidence } from './asset-evidence.js';
 
 const observedAt = '2026-09-15T10:00:00Z', expiresAt = '2026-09-16T10:00:00Z';
 const scope = { region: 'NA', amazonProfileId: '1000000001' } as const;
@@ -63,6 +63,9 @@ describe('asset evidence durable custody', () => {
     expect(await persistAssetModerationEvidence(db, owner(), [{ observation: moderation, expiresAt }])).toMatchObject({ stored: 1, unresolved: 0, verified: 1 });
     const result = await read(); expect(result.moderationObservations.filter((item) => item.observation.assetIdentity !== null)).toHaveLength(1);
     expect(result.moderationCount).toBe(2); expect(result.unresolvedCount).toBe(1);
+    const selection=await readAssetSelectionEvidence(db,{...owner(),now:'2026-09-15T12:00:00Z',identity,context:moderation.context});
+    expect(selection).toMatchObject({asset:{observation:{identity,processing:'active'}},sourceRows:3,refusedRows:0,unresolvedRows:1});
+    expect((await readAssetSelectionEvidence(db,{...owner(),now:selection.now,identity:{...identity,version:'missing'},context:moderation.context})).asset).toBeNull();
   });
   it('preserves rejection transitions, refuses another marketplace, and does not renew freshness on replay', async () => {
     const rejected = { ...moderation, status: 'rejected' as const, reasons: ['Prohibited content.'], observedAt: '2026-09-15T11:30:00Z' };

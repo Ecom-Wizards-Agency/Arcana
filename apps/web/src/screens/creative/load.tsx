@@ -1,5 +1,6 @@
-import type { CreativeWorkspace, SpEvidence, SpParsedReport } from '@wizard-ads/shared';
+import type { CreativeWorkspace, SpEvidence, SpParsedReport, StreamConsumerEvidence } from '@wizard-ads/shared';
 import { readListingEvidence, readCoreReportEvidence, readCreativeWorkspace, readSpReportEvidence, readSpListingHistory, readLatestCreativeSyncJobState, readLatestCreativeSyncSnapshot, readProviderEvidence } from '@wizard-ads/db';
+import { readStreamConsumerEvidence } from '../creative/stream-evidence-load';
 import { deriveAssetEligibility } from '@wizard-ads/core';
 import type { ScreenActor } from '../../server/page-read';
 import type { ScreenParams } from '../types';
@@ -50,6 +51,13 @@ export async function loadCreativeScreen(access: ScreenActor, input: ScreenParam
     }
     if (asset.eligibility.length === 1) asset.moderation = asset.eligibility[0]!.status;
   }
+  const streamEvidence = await access.readSql((sql) => readStreamConsumerEvidence({ sql }, {
+    orgId, profileId: profile.id, datasets: ['ads-campaign-management-ads', 'sb-clickstream', 'sb-rich-media'],
+    asOf: now, maxAgeMs: 86400000, from: `${period.start}T00:00:00.000Z`,
+    to: new Date(Date.parse(`${period.end}T00:00:00.000Z`) + 86400000).toISOString(),
+    assetId: mode === 'detail' ? input.params['assetId'] ?? one(input.searchParams['asset']) ?? null : null,
+    campaignId: mode === 'campaign' ? input.params['campaignId'] ?? null : null,
+  }));
   const pilot = creativeSyncPilotFromEnv();
   const evidence: CreativeLifecycleEvidence = {
     producerEligible: profile.syncEnabled && pilot.enabled && pilot.profileIds.includes(profile.id.toLowerCase()),
@@ -57,7 +65,7 @@ export async function loadCreativeScreen(access: ScreenActor, input: ScreenParam
   };
   const requestedTab = one(input.searchParams['tab']);
   const tab: CreativeTab = creativeTabs.find((value) => value === requestedTab) ?? 'overview';
-  return { view: 'ready' as const, props: { ...(providerEvidence ? { providerEvidence } : {}), ...({ listingEvidence, listingReports } as { listingEvidence?: SpEvidence; listingReports?: SpParsedReport[] }), profile, period, profileToday, selectedPresetId, workspace: displayedWorkspace, evidence, mode, tab, ...(coreEvidence.some((item) => item.status !== 'unmeasured') ? { coreEvidence } : {}),
+  return { view: 'ready' as const, props: { ...(providerEvidence ? { providerEvidence } : {}), ...({ listingEvidence, listingReports } as { listingEvidence?: SpEvidence; listingReports?: SpParsedReport[] }), profile, period, profileToday, selectedPresetId, workspace: displayedWorkspace, evidence, ...({ streamEvidence } as { streamEvidence?: StreamConsumerEvidence }), mode, tab, ...(coreEvidence.some((item) => item.status !== 'unmeasured') ? { coreEvidence } : {}),
     selectedAssetId: input.params['assetId'] ?? one(input.searchParams['asset']) ?? null,
     campaignId: input.params['campaignId'] ?? null,
     sbKeywordSyncEnabled: process.env['OPENSPELL_SB_KEYWORD_SYNC_ENABLED'] === '1',

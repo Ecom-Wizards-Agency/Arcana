@@ -1,5 +1,6 @@
 import { readProviderEvidence, getRecommendationRun, readStreamExtensionEvidence, listRecommendationRuns, listRecommendations } from '@wizard-ads/db';
-import type { StreamExtensionEvidence } from '@wizard-ads/shared';
+import type { StreamConsumerEvidence, StreamExtensionEvidence } from '@wizard-ads/shared';
+import { readStreamConsumerEvidence } from '../creative/stream-evidence-load';
 import type { ScreenActor } from '../../server/page-read';
 import type { ScreenParams } from '../types';
 import { pageReadErrorMessage } from '../../server/authenticated-page-read';
@@ -86,7 +87,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       );
 
       const providerEvidence = await readProviderEvidence(database, { orgId: actor.orgId, profileId: profile.id, consumer: 'recommendations' });
-      const provider: { providerDiagnostics?: StreamExtensionEvidence } = { providerDiagnostics: await readStreamExtensionEvidence(database, { orgId: actor.orgId, profileId: profile.id, datasetId: 'sponsored-ads-campaign-diagnostics-recommendations', asOf: new Date().toISOString(), maxAgeMs: 86400000 }) };
+      const provider: { providerBudget?: StreamConsumerEvidence; providerDiagnostics?: StreamExtensionEvidence } = { providerBudget: await readStreamConsumerEvidence(database, { orgId: actor.orgId, profileId: profile.id, datasets: ['sp-budget-recommendations'], asOf: new Date().toISOString(), maxAgeMs: 86400000 }), providerDiagnostics: await readStreamExtensionEvidence(database, { orgId: actor.orgId, profileId: profile.id, datasetId: 'sponsored-ads-campaign-diagnostics-recommendations', asOf: new Date().toISOString(), maxAgeMs: 86400000 }) };
       return { view: 'ready' as const, props: { run, proposals, profile, runs, role, ...(providerEvidence ? { providerEvidence } : {}), ...provider } };
     });
   } catch (error) {

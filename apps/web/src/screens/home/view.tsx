@@ -1,5 +1,6 @@
 import { RetailEvidencePanel } from '../grid/spapi-evidence';
 import { ProviderEvidencePanel } from '../recommendations/provider-evidence';
+import { StreamEvidencePanel } from '../creative/stream-evidence';
 import { ProviderDiagnostics } from '../recommendations/provider-diagnostics';
 import { EmptyState, formatValue } from '@wizard-ads/ui';
 import { remainingBudget, resolvePacingThresholds } from '@wizard-ads/core';
@@ -46,7 +47,7 @@ export function HomeContent({ profile, context, home, period }: HomeReady) {
       </div>
     </section>
     <RetailEvidencePanel evidence={home.retail} spend={home.retailSpend} previous={home.previousRetail} previousPeriod={home.comparison} start={period.start} end={period.end} />
-    <ProviderDiagnostics evidence={home.providerDiagnostics} />
+    <ProviderDiagnostics evidence={home.providerDiagnostics} /><StreamEvidencePanel evidence={home.providerBudget} title="Provider budget advice" />
     <div className="wa-home-grid">
       <ProposalsInbox key={profile.id} proposals={home.proposals} canDecide={home.canDecide} profileId={profile.id} capped={home.proposalsCapped} />
       <HomeCard title="Flags" subtitle="Raised and noted sit as peers. A suppressed flag is never hidden in a disclosure.">

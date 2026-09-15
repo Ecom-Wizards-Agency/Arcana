@@ -1,3 +1,4 @@
+import type { AssetLibraryIdentity, AssetModerationContext } from '@wizard-ads/shared';
 import { createHash } from 'node:crypto';
 import { AssetLibraryObservation, AssetModerationObservation, ProviderGraphAssociation, ProviderGraphObservation, AssetEvidencePersistenceCounts } from '@wizard-ads/shared';
 import type { DbHandle, QueryHandle } from '../client.js';
@@ -19,7 +20,7 @@ function expiry(observedAt: string, expiresAt: string) {
 }
 
 /** Version content anchors and processing observations commit together with independent readback. */
-export async function persistAssetLibraryEvidence(handle: DbHandle, owner: Owner, input: readonly { observation: AssetLibraryObservation; expiresAt: string }[]): Promise<AssetEvidencePersistenceCounts> {
+export async function persistAssetLibraryEvidence(handle: Pick<DbHandle, 'sql'>, owner: Owner, input: readonly { observation: AssetLibraryObservation; expiresAt: string }[]): Promise<AssetEvidencePersistenceCounts> {
   return handle.sql.begin(async (sql) => {
     const scope = await ownerScope({ sql }, owner); const canonical = new Map<string, { observation: AssetLibraryObservation; expiresAt: string }>();
     for (const raw of input) {
@@ -144,4 +145,16 @@ export async function readAssetEvidence(handle: QueryHandle, owner: Owner & { no
   return { assets: assets.map((item) => item.observation), assetObservations: assets, moderationObservations: moderation,
     assetCount: assets.length, moderationCount: moderation.length,
     unresolvedCount: moderation.filter((item) => item.observation.assetIdentity === null).length, refusedCount };
+}
+
+/** Builder handoff: exact immutable version and context; caller derives eligibility in core. */
+export async function readAssetSelectionEvidence(handle: QueryHandle, input: Owner & {
+  now: string; identity: AssetLibraryIdentity;
+  context: AssetModerationContext;
+}) {
+  const evidence=await readAssetEvidence(handle,input);
+  const matches=evidence.assetObservations.filter(row=>row.observation.identity.assetId===input.identity.assetId && row.observation.identity.version===input.identity.version);
+  return {now:input.now,identity:input.identity,context:input.context,asset:matches.length===1?matches[0]!:null,
+    moderation:evidence.moderationObservations,sourceRows:evidence.assetCount+evidence.moderationCount,
+    refusedRows:evidence.refusedCount,unresolvedRows:evidence.unresolvedCount};
 }

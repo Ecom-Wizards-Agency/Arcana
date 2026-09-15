@@ -624,6 +624,7 @@ export function createMarketingStreamSqsConsumer(input: {
   queue?: MarketingStreamQueueClient;
   scheduler?: MarketingStreamNormalizeScheduler;
   logger?: MarketingStreamConsumerLogger;
+  extensionIntake?: MarketingStreamSqsConsumerOptions['extensionIntake'];
 }): MarketingStreamSqsConsumer {
   return new MarketingStreamSqsConsumer({
     queueUrl: input.queueUrl,
@@ -633,6 +634,7 @@ export function createMarketingStreamSqsConsumer(input: {
     profiles: new DbMarketingStreamProfileScopeResolver(input.handle),
     scheduler: input.scheduler,
     logger: input.logger,
+    extensionIntake: input.extensionIntake,
   });
 }
 
