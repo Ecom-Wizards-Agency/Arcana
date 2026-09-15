@@ -48,6 +48,7 @@ export * from './timeline-events.js';
 export * from './sponsored-prompts.js';
 export * from './campaign-builder.js';
 export * from './brand-lens.js';
+export * from './own-collectors.js';
 export * from './spapi-reports.js';
 export * from './provider-evidence.js';
 export * from './spapi-fulfillment.js';

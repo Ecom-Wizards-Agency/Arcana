@@ -36,7 +36,7 @@ it('renders each data tab, shelf gap and all fact/change rows', () => {
   fireEvent.click(screen.getByRole('tab',{name:'Performance'}));
   expect(host.container.querySelectorAll('tbody tr')).toHaveLength(ready.performance.length);
   fireEvent.click(screen.getByRole('tab',{name:'Shelf'}));
-  expect(host.container.textContent).toContain('Listing snapshots are not collected');
+  expect(host.container.textContent).toContain('No scoped listing observations are available');
 });
 it('keeps SQP and ABA evidence in the Rank tab after rank observations', () => {
   const host = render(<Screen data={ready} />);
@@ -93,8 +93,22 @@ it('renders authoritative zero-uplift CPC separately from missing placement evid
   expect(view.container.textContent).toContain('$5.00 base × (1 + 0% placement uplift)');
   view.rerender(<Screen data={{ ...ready, payload: { ...ready.payload, points: [{ ...point, storedMaxCpc: 5, maxCpc: null, placementEvidence: 'missing' }] } }} />);
   expect(view.container.textContent).toContain('Placement modifiers not measured.');
-  expect(view.container.textContent).toContain('Placement formula not measured.');
+  expect(view.container.textContent).toContain('Configured exposure not measured.');
   const maxCpc = Array.from(view.container.querySelectorAll('dt')).find((node) => node.textContent === 'Max CPC');
   expect(maxCpc?.nextElementSibling?.textContent).toContain('Not measured');
   expect(view.container.textContent).not.toContain('Placement uplifts: 0%.');
+});
+
+it('renders partial and stale listing facts without inventing unavailable checks', () => {
+  const provenance = { source: 'synthetic', sourceIdentity: 'listing', observedAt: '2026-06-01T00:00:00.000Z', collectedAt: '2026-06-02T00:00:00.000Z' };
+  const listingEvidence = [{ scope: { orgId: '00000000-0000-4000-8000-000000000001', profileId: ready.profileId, marketplace: 'US' }, asin: 'B000000001',
+    availability: 'partial' as const, moderation: 'unavailable' as const, fields: [{ observation: { field: 'price' as const, value: 2, provenance }, availability: 'stale' as const },
+      { observation: { field: 'inStock' as const, value: false, provenance }, availability: 'measured' as const }] }];
+  const host = render(<Screen data={{ ...ready, payload: { ...ready.payload, listingEvidence } }} />);
+  fireEvent.click(screen.getByRole('tab', { name: 'Shelf' }));
+  expect(host.container.textContent).toContain('Price · stale');
+  expect(host.container.textContent).toContain('In stock · measuredNo');
+  expect(host.container.textContent).toContain('Moderation unavailable.');
+  expect(host.container.textContent).not.toContain('Owns Buy Box');
+  expect(host.container.textContent).toContain(provenance.observedAt);
 });

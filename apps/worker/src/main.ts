@@ -1,6 +1,7 @@
 import { registerAssetLibrarySource } from './asset-library.js';
 import { registerSpApiReportSources, postgresSpReportDependencies } from './spapi-report-sources.js';
 import { registerProviderEvidence, postgresProviderEvidenceDependencies } from "./provider-evidence.js";
+import { registerOwnCollectors, postgresOwnCollectors } from './own-collectors/index.js';
 import { registerTargetTranslation } from './translation/register.js';
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
 import { exchangeSpApiAuthorizationCode, runSpApiConnectionPass } from './spapi-connections.js';
@@ -70,6 +71,7 @@ if (!Number.isFinite(reportStaleHours) || reportStaleHours <= 0) {
 const handle = createDb({ connectionString: config.databaseUrl, max: config.maxConcurrentJobs + 2 });
 const store = new PostgresWorkerStore(handle, undefined, {
   claimProtocol: config.claimProtocol,
+  ownCollectorsEnabled: config.ownCollectorsEnabled,
   ...((config.spWrites.dispatchEnabled || config.spWrites.reconcileEnabled)
     ? { keywordMirror: createKeywordMirrorCapability(handle) } : {}),
 });
@@ -144,7 +146,7 @@ const sqpSchedules = sqpRequest
 const integrations = {
     economicsSync: createMrpEconomicsSync(handle),
     rankSync: createDataDiveRankSyncHandler({ handle }),
-    keepaSync: createKeepaSyncHandler(handle),
+    keepaSync: createKeepaSyncHandler(handle, { ownListingsEnabled: config.ownCollectorsEnabled }),
     ...(sqpRequest === undefined ? {} : { sqpRequest }),
     marketingStreamNormalize: createMarketingStreamNormalizeHandler({ handle, queue: store }),
   };
@@ -164,6 +166,7 @@ const worker = new SyncWorker({
     registerIntegrationSources(registry, integrations);
     const { spApiClientId, spApiClientSecret: lwaKey } = config;
     if (spApiClientId && lwaKey) registerSpApiReportSources(registry, postgresSpReportDependencies({ handle, clientId: spApiClientId, clientSecret: lwaKey }));
+    registerOwnCollectors(registry, postgresOwnCollectors(handle, config.ownCollectorDropRoot, config.ownCollectorsEnabled));
     registerTargetTranslation(registry, handle);
     registerProviderEvidence(registry, postgresProviderEvidenceDependencies(handle));
   },

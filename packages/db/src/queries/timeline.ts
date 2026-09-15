@@ -1,3 +1,5 @@
+import { readListingChanges } from './own-collectors.js';
+import type { CreativeChangeCertainty } from '@wizard-ads/shared';
 import { TimelineDaily, TimelineEvent, TimelineEventInput, TimelineSnapshot, TimelineEvidenceSettings } from '@wizard-ads/shared';
 import type { TimelineRank } from '@wizard-ads/shared';
 import type { QueryHandle } from '../client.js';
@@ -112,7 +114,17 @@ export async function readTimeline(handle: QueryHandle, orgId: string, profileId
       order by asin,category,(observed_at at time zone 'UTC')::date,observed_at desc,id desc`,
         readTimelineSettings(handle, orgId, profileId),
     ]);
-    const events: TimelineEvent[] = [...manual, ...experiments.map((e) => ({ id: e.id, name: e.name, kind: 'experiment' as const, start: e.startAt.toISOString().slice(0, 10), end: e.endAt?.toISOString().slice(0, 10) ?? null,
+    const listingChanges = await readListingChanges(handle,{ orgId,profileId,from:'1970-01-01',to:'9999-12-31' });
+    const bidChanges = await handle.sql<{ id:string; observed_at:Date|string; amazon_id:string; field:string; certainty:CreativeChangeCertainty }[]>`select id::text,observed_at,amazon_id,field,certainty from public.entity_changes ec
+      where ec.org_id=${orgId} and ec.profile_id=${profileId} and ec.field in ('bid','defaultBid','placementBidding') and ec.source='sync'
+      and not exists(select 1 from public.apply_batches b where b.org_id=ec.org_id and b.profile_id=ec.profile_id and b.id=ec.apply_batch_id and b.status in ('applied','reverted') and (b.applied_on is not null or b.applied_at is not null))
+      order by observed_at,id`;
+    const observed = [...listingChanges.map((c) => TimelineEvent.parse({ id:`listing:${c.id}`,name:`${c.asin}: ${c.current.field}`,kind:['coupon','lightningDeal'].includes(c.current.field) ? 'promotion':'listing',
+      start:c.current.provenance.observedAt.slice(0,10),end:c.current.provenance.observedAt.slice(0,10),status:'observed',scope:{ asins:[c.asin] },scopeText:c.asin,focus:'sales',
+      note:`${c.certainty.kind} observation from ${c.current.provenance.source}; no causal effect inferred.`,actorId:null,createdAt:c.current.provenance.collectedAt,supersedesId:null,certainty:c.certainty,source:c.current.provenance.source })),
+      ...bidChanges.map((c) => { const at=new Date(c.observed_at).toISOString(); return TimelineEvent.parse({ id:`bid:${c.id}`,name:`Observed ${c.field}`,kind:'market',start:at.slice(0,10),end:at.slice(0,10),status:'observed',scope:{},scopeText:c.amazon_id,focus:'acos',
+        note:`${c.certainty.kind} synchronized observation; no causal effect inferred.`,actorId:null,createdAt:at,supersedesId:null,certainty:c.certainty,source:'amazon_ads_mirror' }); })];
+    const events: TimelineEvent[] = [...observed, ...manual, ...experiments.map((e) => ({ id: e.id, name: e.name, kind: 'experiment' as const, start: e.startAt.toISOString().slice(0, 10), end: e.endAt?.toISOString().slice(0, 10) ?? null,
             status: e.status, scope: e.scope, scopeText: [e.scope.campaignIds?.length ? `${e.scope.campaignIds.length} campaigns` : '', e.scope.adGroupIds?.length ? `${e.scope.adGroupIds.length} ad groups` : '', e.scope.targetIds?.length ? `${e.scope.targetIds.length} targets` : '', e.scope.asins?.length ? `${e.scope.asins.length} products (recorded only)` : ''].filter(Boolean).join(' · ') || 'No measured scope',
             focus: e.metricFocus, note: e.hypothesis, actorId: e.createdBy, createdAt: e.createdAt.toISOString(), supersedesId: null })),
         ...batches.map((b) => TimelineEvent.parse({ ...b, kind: 'apply_batch', end: b['start'], status: b['status'], scope: { campaignIds: b['campaigns'], adGroupIds: b['groups'], targetIds: b['targets'] }, scopeText: 'Applied advertising entities', focus: 'acos', supersedesId: null }))];
@@ -132,7 +144,7 @@ export async function readTimeline(handle: QueryHandle, orgId: string, profileId
     }
     if ([...ranks.values()].reduce((n, r) => n + r.points.length, 0) !== organic.length + bsr.length)
         throw new Error('Rank observation count mismatch');
-    if (events.length !== manual.length + experiments.length + batches.length)
+    if (new Set(events.map((e) => e.id)).size !== events.length || events.length !== manual.length + experiments.length + batches.length + listingChanges.length + bidChanges.length)
         throw new Error('Timeline source count mismatch');
     const [failure] = await handle.sql<{
         since: string | null;

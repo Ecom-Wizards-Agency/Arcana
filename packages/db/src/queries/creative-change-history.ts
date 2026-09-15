@@ -1,3 +1,4 @@
+import { readListingChanges } from './own-collectors.js';
 import { CreativeWorkspaceChange, type CreativeChangeCertainty } from '@wizard-ads/shared';
 import type { QueryHandle } from '../client.js';
 
@@ -47,7 +48,22 @@ export async function readCreativeChangeHistory(handle: QueryHandle, filter: {
     from public.creative_placements p join public.creative_assets a on a.id=p.asset_id and a.org_id=p.org_id and a.profile_id=p.profile_id
     where p.org_id=${orgId} and p.profile_id=${profileId} and a.amazon_asset_id is not null
       and p.started_at>=${from}::date and p.started_at<${to}::date+interval '1 day' order by p.started_at desc,p.id`;
-  const result = [...rows.map((row) => CreativeWorkspaceChange.parse({
+  const listing = await readListingChanges(handle,filter);
+  const listingRows: CreativeWorkspaceChange[] = [];
+  for (const change of listing) {
+    const usages = await handle.sql<{ asset_ids: string[]; campaign_id: string; ad_group_id: string }[]>`select array_agg(distinct a.amazon_asset_id) as asset_ids,p.campaign_id,p.ad_group_id
+      from public.product_ads p join public.creative_placements cp on cp.org_id=p.org_id and cp.profile_id=p.profile_id and cp.campaign_id=p.campaign_id and cp.ad_group_id=p.ad_group_id
+      join public.creative_assets a on a.org_id=cp.org_id and a.profile_id=cp.profile_id and a.id=cp.asset_id
+      where p.org_id=${orgId} and p.profile_id=${profileId} and p.asin=${change.asin} and p.deleted_at is null and a.amazon_asset_id is not null
+      and (cp.started_at is null or cp.started_at<=${change.current.provenance.observedAt})
+      and (cp.ended_at is null or cp.ended_at>${change.current.provenance.observedAt})
+      group by p.campaign_id,p.ad_group_id`;
+    for (const usage of usages) listingRows.push(CreativeWorkspaceChange.parse({ id:`listing:${change.id}:${usage.campaign_id}:${usage.ad_group_id}`,
+      assetIds:usage.asset_ids,campaignId:usage.campaign_id,adGroupId:usage.ad_group_id,kind:['coupon','lightningDeal'].includes(change.current.field) ? 'Promotion':'Listing',
+      field:change.current.field,oldValue:change.previous?.value ?? null,newValue:change.current.value,observedAt:change.current.provenance.observedAt,
+      certainty:change.certainty,scope:change.asin,effect:'direct' }));
+  }
+  const result = [...listingRows, ...rows.map((row) => CreativeWorkspaceChange.parse({
     id: `change:${row.id}`, assetIds: row.asset_ids, campaignId: row.campaign_id, adGroupId: row.ad_group_id,
     kind: row.kind, field: row.field, oldValue: row.old_value, newValue: row.new_value,
     observedAt: new Date(row.observed_at).toISOString(), certainty: row.certainty,
@@ -59,6 +75,6 @@ export async function readCreativeChangeHistory(handle: QueryHandle, filter: {
       certainty: { kind: 'first', from: null, to: observedAt, widthDays: null },
       scope: row.ad_group_id ?? row.campaign_id ?? 'Recorded placement', effect: 'direct' });
   })].sort((a, b) => b.observedAt.localeCompare(a.observedAt) || b.id.localeCompare(a.id));
-  if (result.length !== rows.length + first.length) throw new Error('Creative history count mismatch');
+  if (result.length !== rows.length + first.length + listingRows.length) throw new Error('Creative history count mismatch');
   return result;
 }

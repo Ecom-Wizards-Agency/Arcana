@@ -278,6 +278,7 @@ export class ClaimOwnershipLost extends Error {
 }
 
 export interface PostgresWorkerStoreOptions {
+  ownCollectorsEnabled?: boolean;
   claimProtocol?: 'legacy' | 'fenced';
   keywordMirror?: KeywordMirrorCapability;
 }
@@ -293,6 +294,7 @@ type ExistingEntity = { amazonId: string; deletedAt: Date | string | null; snaps
 
 export class PostgresWorkerStore implements WorkerStore {
   private readonly logger: StoreLogger;
+  private readonly ownCollectorsEnabled: boolean;
   private readonly keywordMirror: KeywordMirrorCapability | undefined;
   private readonly reportedDisabledSbKeywords = new Set<string>();
   private readonly claimProtocol: 'legacy' | 'fenced';
@@ -305,6 +307,7 @@ export class PostgresWorkerStore implements WorkerStore {
     this.logger = logger ?? { info: (message, details) => console.info(message, details ?? {}) };
     this.claimProtocol = options.claimProtocol ?? 'legacy';
     this.keywordMirror = options.keywordMirror;
+    this.ownCollectorsEnabled = options.ownCollectorsEnabled === true;
   }
 
   /** Activation requires explicit composition; construction never queries the DB. */
@@ -863,6 +866,12 @@ export class PostgresWorkerStore implements WorkerStore {
     `;
     if (!relation?.relation) return 0;
 
+    const ownSources = this.ownCollectorsEnabled ? this.handle.sql`
+        union select p.org_id,p.id,'own_bids.collect'::public.sync_job_type,interval '1 day','{}'::jsonb from public.ad_profiles p where p.sync_enabled
+        union select s.org_id,s.profile_id,'own_listings.collect'::public.sync_job_type,interval '1 day','{}'::jsonb from selected_profiles s where s.provider='keepa'
+        union select r.org_id,r.profile_id,(case when r.family='prompts' then 'prompts.collect' else 'own_listings.collect' end)::public.sync_job_type,interval '1 day','{}'::jsonb
+          from public.collector_export_references r join public.ad_profiles p on p.org_id=r.org_id and p.id=r.profile_id
+          where r.enabled and p.sync_enabled and r.marketplace=p.country_code` : this.handle.sql``;
     const [result] = await this.handle.sql<{ changed: string }[]>`
       with active_connections as (
         select c.org_id, c.provider::text as provider, c.config
@@ -901,13 +910,14 @@ export class PostgresWorkerStore implements WorkerStore {
             ('mrp',     'economics.sync',   '1 day',  '{}'::jsonb)
           ) as m(provider, job_type, cadence, payload)
             on m.provider = s.provider
+        ${ownSources}
       ),
       disabled as (
         update public.sync_schedules schedule
            set enabled = false
          where schedule.variant = 'integration'
-           and schedule.job_type in (
-             'keepa.sync', 'rank.sync', 'economics.sync', 'sqp.categorize'
+           and schedule.job_type::text in (
+             'keepa.sync', 'rank.sync', 'economics.sync', 'sqp.categorize', 'own_bids.collect', 'own_listings.collect', 'prompts.collect'
            )
            and schedule.enabled
            and not exists (

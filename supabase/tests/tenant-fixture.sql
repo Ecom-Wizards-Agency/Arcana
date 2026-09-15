@@ -919,6 +919,29 @@ begin
     'estimates','[]'::jsonb,'objective',null,'horizon',null,'attribution',null,'eligibility','unknown','generatedAt',null,'expiresAt',null,'retrievedAt',now(),'observedAt',now(),'payload','{}'::jsonb));
   insert into public.provider_recommendation_run_rows(org_id,profile_id,run_id,evidence_id) values(v_org,v_profile,v_provider_run,v_provider_evidence);
   end if;
+
+  if to_regclass('public.own_effective_bid_observations') is not null then
+    insert into public.own_effective_bid_observations(id,org_id,profile_id,marketplace,target_id,observed_at,collected_at,observation)
+    values(v_org::text||':own-bid',v_org,v_profile,'US','collector-fixture-target','1970-01-01','1970-01-01',
+      jsonb_build_object('scope',jsonb_build_object('orgId',v_org,'profileId',v_profile,'marketplace','US'),
+      'sourceIdentity','fixture','campaignId','fixture','adGroupId','fixture','targetId','collector-fixture-target','targetKind','keyword',
+      'observedAt','1970-01-01T00:00:00.000Z','collectedAt','1970-01-01T00:00:00.000Z','bid',null,'bidOrigin','unknown','bidding',null,'placementProvenance',null,'audienceProvenance',null));
+  end if;
+  if to_regclass('public.own_listing_observations') is not null then
+    insert into public.own_listing_observations(id,org_id,profile_id,marketplace,asin,field,observed_at,collected_at,observation)
+    values(v_org::text||':own-listing',v_org,v_profile,'US','B000000291','price','1970-01-01','1970-01-01',
+      jsonb_build_object('field','price','value',1,'provenance',jsonb_build_object('source','synthetic','sourceIdentity','fixture','observedAt','1970-01-01T00:00:00.000Z','collectedAt','1970-01-01T00:00:00.000Z')));
+    insert into public.own_listing_changes(id,org_id,profile_id,marketplace,asin,observed_at,change)
+    select id,org_id,profile_id,marketplace,asin,observed_at,jsonb_build_object('id',id,'scope',jsonb_build_object('orgId',v_org,'profileId',v_profile,'marketplace','US'),
+      'asin',asin,'previous',null,'current',observation,'certainty',jsonb_build_object('kind','first','from',null,'to','1970-01-01T00:00:00.000Z','widthDays',null))
+    from public.own_listing_observations where id=v_org::text||':own-listing';
+    insert into public.collector_export_references(id,org_id,profile_id,marketplace,family,object_key)
+      values(v_org,v_org,v_profile,'US','listing','fixture.json');
+    insert into public.collector_import_receipts(id,org_id,profile_id,marketplace,reference_id,fingerprint,observed_at,collected_at,receipt)
+      values(v_org::text||':import',v_org,v_profile,'US',v_org,repeat('a',64),'1970-01-01','1970-01-01',
+        jsonb_build_object('counts',jsonb_build_object('sourceRows',0,'parsedRows',0,'refusedRows',0,'loadedRows',0,'verifiedLoadedRows',0),
+          'inserted',0,'alreadyPresent',0,'outputIdentities','[]'::jsonb,'observedAt',null,'state','missing'));
+  end if;
   return v_org;
 end;
 $$;

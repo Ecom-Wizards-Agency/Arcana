@@ -15,6 +15,7 @@ export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
   {"domain": "spapi-reports", "contract": "spapi-reports.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 110, "clause": "*", "after": ""}]},
   {"domain": "spapi-fulfillment", "contract": "spapi-fulfillment.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 111, "clause": "*", "after": ""}]},
   { domain: 'provider-evidence', contract: 'provider-evidence.ts', schema: null, queries: null, migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 110, clause: '*', after: '' }] },
+  {"domain":"own-collectors","contract":"own-collectors.ts","schema":null,"queries":null,"migrationPrefix":null,"exports":[{"barrel":"index.ts","order":103,"clause":"*","after":""}]},
   {"domain": "sponsored-prompts", "contract": "sponsored-prompts.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 102, "clause": "*", "after": ""}]},
   {"domain":"campaign-builder","contract":"campaign-builder.ts","schema":null,"queries":null,"migrationPrefix":null,"exports":[{"barrel":"index.ts","order":102,"clause":"*","after":""}]},
   {domain: "brand-lens", contract: "brand-lens.ts", schema: null, queries: null, migrationPrefix: null, exports: [{barrel: "index.ts", order: 102, clause: "*", after: ""}]},

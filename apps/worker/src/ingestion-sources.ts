@@ -7,6 +7,7 @@ export const INGESTION_SOURCES: readonly IngestionSource[] = [
   { jobType: 'aba.report.request', source: 'amazon_spapi', laneAffinity: ['integrations'], counts: ['sourceRows', 'parsedRows', 'refusedRows', 'canonicalRows', 'verifiedLoadedRows'] },
   { jobType: 'catalogue.report.request', source: 'amazon_spapi', laneAffinity: ['integrations'], counts: ['sourceRows', 'parsedRows', 'refusedRows', 'canonicalRows', 'verifiedLoadedRows'] },
   { jobType: 'provider.evidence.collect', source: 'amazon_provider_evidence', laneAffinity: ['integrations'], counts: ['source', 'parsed', 'refused', 'duplicates', 'canonical', 'written', 'existing', 'readback'] },
+  ...(['own_bids.collect','own_listings.collect','prompts.collect'] as const).map((jobType) => ({ jobType, source: jobType, reportType: jobType, laneAffinity: ['integrations'] as IngestionLane[], counts: ['sourceRows','parsedRows','refusedRows','loadedRows','verifiedLoadedRows'] })),
   { jobType: 'translation.request', source: 'target_translation', laneAffinity: ['integrations'], counts: ['requested', 'completed', 'superseded', 'alreadyCompleted'] },
   { jobType: 'entity.sync', source: 'amazon_ads', laneAffinity: ['vercel-default', 'vercel-reduced'], counts: ['listed', 'upserted', 'duplicates'] },
   { jobType: 'creative.sync', source: 'amazon_ads', laneAffinity: ['evo-report', 'evo-report-unified'], counts: ['adsReceived', 'adsPersisted'] },

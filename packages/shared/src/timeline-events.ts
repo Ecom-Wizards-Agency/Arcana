@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CreativeChangeCertainty } from './creative.js';
 import { ExperimentScope } from './experiments.js';
 export const TimelineMeasure = z.enum(['spend', 'sales', 'acos', 'clicks', 'orders', 'cvr']);
 export type TimelineMeasure = z.infer<typeof TimelineMeasure>;
@@ -21,6 +22,7 @@ export type TimelineDaily = z.infer<typeof TimelineDaily>;
 export const TimelineEvent = z.object({
     id: z.string(), name: z.string(), kind: TimelineEventKind, start: z.iso.date(), end: z.iso.date().nullable(),
     status: z.string(), scope: ExperimentScope, scopeText: z.string(), focus: TimelineFocus,
+    certainty: z.lazy(() => CreativeChangeCertainty).optional(), source: z.string().optional(),
     note: z.string(), actorId: z.string().nullable(), createdAt: z.string(), supersedesId: z.string().nullable(),
 });
 export type TimelineEvent = z.infer<typeof TimelineEvent>;
