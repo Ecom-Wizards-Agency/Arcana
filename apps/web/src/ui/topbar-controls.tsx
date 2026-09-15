@@ -1,11 +1,10 @@
 'use client';
 
 /** Profile and date navigation preserve the current route's query state. */
-import type { FreshnessAssessment } from '@wizard-ads/ui';
+import { DateRangePicker, type FreshnessAssessment } from '@wizard-ads/ui';
 import type { VerdictChip } from '@wizard-ads/crosscheck-cli/pure';
 import { addDays, periodFromParams, periodFromParamsThroughToday, precedingPeriod, todayIsoInTimeZone, type Period } from '../../app/_lib/periods';
 import { comparisonLengthState, dateRangeHref } from './date-range';
-import { DateRangePicker } from './date-range-picker';
 import { useShellEvidence, useShellEvidenceLoading } from './shell-evidence';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
@@ -334,11 +333,21 @@ export function ShellDateControls({ path, period, comparison, today, preserved =
 }) {
   const lengths = comparisonLengthState(period, comparison);
   const router = useRouter();
+  const evidence = useShellEvidence();
   const comparisonRoot = useRef<HTMLDetailsElement>(null);
+  const mode = preserved['comparison'] === 'none' ? 'none' : preserved['comparison'] === 'year' ? 'year' : preserved['compareFrom'] ? 'custom' : 'previous';
   return <div className="wa-shell-dates">
-    <DateRangePicker path={path} period={period} today={today} preserved={preserved} includeToday={includeToday}
+    <DateRangePicker period={period} comparison={comparison} today={today} includeToday={includeToday} mode={mode}
+      factsThrough={evidence?.freshness?.coversThrough ?? null} factsComplete={evidence?.freshness?.tone === 'good'}
       {...(preserved['preset'] === undefined ? {} : { selectedPresetId: preserved['preset'] })}
+      presetHref={(range, preset) => dateRangeHref(path, range, { ...preserved, preset })}
+      onApply={(selection) => router.push(dateRangeHref(path, selection.period, { ...preserved,
+        preset: selection.preset, comparison: selection.mode,
+        compareFrom: selection.mode === 'previous' ? undefined : selection.comparison?.start,
+        compareTo: selection.mode === 'previous' ? undefined : selection.comparison?.end,
+      }))}
       trigger={<span className="wa-shell-window"><strong>{windowWords(period)}</strong><small>{lengths.currentDays} days</small></span>} />
+    {mode === 'none' ? <span>No comparison</span> : <>
     <details className="wa-date-range wa-shell-comparison" ref={comparisonRoot}>
       <summary className="wa-date-range__trigger" aria-label={`Comparison: ${windowWords(comparison)}`}>
         <span className="wa-shell-window"><strong>vs {windowWords(comparison)}</strong>
@@ -346,7 +355,7 @@ export function ShellDateControls({ path, period, comparison, today, preserved =
         <span aria-hidden="true">▾</span>
       </summary>
       <div className="wa-date-range__popover">
-        <Link href={dateRangeHref(path, period, { ...preserved, compareFrom: undefined, compareTo: undefined })}
+        <Link href={dateRangeHref(path, period, { ...preserved, comparison: undefined, compareFrom: undefined, compareTo: undefined })}
           prefetch={false} onClick={() => comparisonRoot.current?.removeAttribute('open')}>Previous period</Link>
         <form className="wa-date-range__custom" onSubmit={(event) => {
           event.preventDefault();
@@ -364,9 +373,8 @@ export function ShellDateControls({ path, period, comparison, today, preserved =
         </form>
       </div>
     </details>
-    {lengths.mismatch ? <span role="status" className="wa-shell-mismatch">
-      Date ranges differ: {lengths.currentDays} days compared with {lengths.comparisonDays} days.
-    </span> : null}
+    </>}
+    {mode !== 'none' && lengths.mismatch ? <span role="status" className="wa-shell-mismatch">Date ranges differ: {lengths.currentDays} days compared with {lengths.comparisonDays} days.</span> : null}
   </div>;
 }
 

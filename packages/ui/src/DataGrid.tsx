@@ -173,7 +173,7 @@ export function DataGrid({
   model,
   style,
   presentation,
-  columns,
+  columns: inputColumns,
   currencyCode,
   locale,
   sort,
@@ -198,6 +198,11 @@ export function DataGrid({
   populationNote,
   filterKey,
 }: DataGridProps): ReactNode {
+  // A grouping column must fit its toggle, count and share label even when the
+  // source dimension (for example Match) ordinarily uses a narrow column.
+  const columns = useMemo(() => model.groupBy.length === 0 ? inputColumns : inputColumns.map((column) =>
+    model.groupBy.includes(column.id) ? { ...column, minWidth: Math.max(column.minWidth ?? 0, 240) } : column),
+  [inputColumns, model.groupBy]);
   const renderStart = performance.now();
   useLayoutEffect(() => {
     if ((globalThis as { __gridProfile?: boolean }).__gridProfile) performance.measure('grid.visible-render', { start: renderStart });

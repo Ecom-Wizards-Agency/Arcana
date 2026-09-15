@@ -22,7 +22,7 @@ import type { ReactNode } from 'react';
 import { decodeGridRowColumns, decodeGridPerformance, type GridPerformanceEvidence, GridMeasurement, PerformanceVerdict, parseGridView, serializeGridView, type OrgActor } from '@wizard-ads/shared';
 import { browserViewStore } from './view-store';
 import {
-  DataGrid,
+  DataGrid, NumericValue,
   DEFAULT_DENSITY,
   BASE_METRICS,
   GridViewport,
@@ -592,7 +592,11 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     [layoutWrites, viewReady],
   );
 
-  const scopedRows = useMemo(() => scopeRows(props.rows, asinScope), [props.rows, asinScope]);
+  const comparisonDisabled = useSearchParams().get('comparison') === 'none';
+  const scopedRows = useMemo(() => {
+    const rows = scopeRows(props.rows, asinScope);
+    return comparisonDisabled ? rows.map((row) => ({ ...row, comparison: null })) : rows;
+  }, [props.rows, asinScope, comparisonDisabled]);
   const { model, filterError } = useMemo(
     () => gridWork('model', () => buildPerformanceModel(scopedRows, { filter: view.filter, sort: view.sort, groupBy: view.groupBy })),
     [scopedRows, view.filter, view.sort, view.groupBy],
@@ -610,8 +614,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
    */
   const visibleColumns = useMemo<GridColumn[]>(() => {
     const byId = new Map(available.map((column) => [column.id, column]));
-    const original = available.find((column) => column.pinned)?.id;
-    const baseWanted = original ? [original, ...view.columns.filter((id) => id !== original)] : [...view.columns];
+    const baseWanted = [...view.columns];
     if (baseWanted.includes('translation')) { baseWanted.splice(baseWanted.indexOf('translation'), 1); baseWanted.splice(1, 0, 'translation'); }
     const wanted = model.grouped
       ? [...model.groupBy, ...baseWanted.filter((id) => !model.groupBy.includes(id))]
@@ -621,12 +624,12 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       .filter((column): column is GridColumn => column !== undefined)
       .map((column) => {
         const width = view.widths[column.id];
-        const pinned = column.id === original || view.pinned.includes(column.id) || model.groupBy.includes(column.id);
+        const pinned = view.pinned.includes(column.id) || model.groupBy.includes(column.id);
         const normalHeaders: Record<string, string> = { sqp_impression_share: 'SQP IS', sqp_purchase_share: 'SQP purch', verdict: 'Diagnosis' };
         const header = props.entity === 'targets' && !view.columns.includes('rank_grid') ? normalHeaders[column.id] ?? column.header : column.header;
-        return { ...column, header, ...(width === undefined ? {} : { width }), pinned };
+        return { ...column, header, align: view.alignments?.[column.id] ?? column.align, ...(width === undefined ? {} : { width }), pinned };
       });
-  }, [available, model.groupBy, model.grouped, view.columns, view.pinned, view.widths, props.entity]);
+  }, [available, model.groupBy, model.grouped, view.columns, view.pinned, view.widths, view.alignments, props.entity]);
 
   const density: GridDensity = view.density ?? DEFAULT_DENSITY;
   const translation = useTranslationColumn(props.profileId, view.translation?.language ?? 'en', viewReady && view.columns.includes('translation'), props.rows);
@@ -645,7 +648,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
       const value = number(row, 'suggested_bid');
       if (value === null) return <DataGrid.cells.NotMeasuredCell reason="The Amazon suggested-bid corridor is not measured for this ad group and theme." />;
       const money = (amount: number | null) => amount === null ? '—' : new Intl.NumberFormat('en-US', { style: 'currency', currency: props.currencyCode }).format(amount);
-      return <span data-testid="suggested-bid-cell" title={`Suggested bid corridor: ${money(number(row, 'suggested_bid_low'))} – ${money(number(row, 'suggested_bid_high'))}`}>{money(value)}</span>;
+      return <span data-testid="suggested-bid-cell" title={`Suggested bid corridor: ${money(number(row, 'suggested_bid_low'))} – ${money(number(row, 'suggested_bid_high'))}`}><NumericValue value={money(value)} /></span>;
     }
     if (column.id === 'gap' && row.dimensions['gap'] == null) return <DataGrid.cells.NotMeasuredCell label="Not measured" reason="Comparable competitor ranks are not measured on this date." />;
     if (column.id === 'gap') return <DataGrid.cells.DeltaCell value={number(row, 'gap')} better="higher" />;
@@ -772,6 +775,12 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
               layoutWrites?.remember(restored);
             }}
             onSaveView={handleSaveView}
+            onSaveColumnPreset={async (name, layout) => {
+              if (!store) throw new Error('Saved views unavailable');
+              const existing = saved.find((item) => item.name === name);
+              await store.save({ ...view, ...layout, id: existing?.id ?? newViewId(), name });
+              setSaved(await store.list(props.entity));
+            }}
             onRemoveView={handleRemoveView}
             density={density}
             onDensityChange={(next) => update({ density: next })}
@@ -800,7 +809,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
           style={{ marginInline: 24, border: 0, borderRadius: 0 }}
           model={model}
           renderCell={{ ...renderCells, selection: (row) => <input type="checkbox" aria-label={`Select ${row.id}`} checked={selectedRowIds.includes(row.id)} onClick={(event) => event.stopPropagation()} onChange={() => setSelectedRowIds((ids) => ids.includes(row.id) ? ids.filter((id) => id !== row.id) : [...ids, row.id])} /> }}
-          renderHeader={{ selection: () => <input type="checkbox" aria-label="Select all rows" checked={model.matchedRows.length > 0 && model.matchedRows.every((row) => selectedRowSet.has(row.id))} onChange={(event) => { const matched = new Set(model.matchedRows.map((row) => row.id)); setSelectedRowIds((selected) => event.target.checked ? [...new Set([...selected, ...matched])] : selected.filter((id) => !matched.has(id))); }} />, signals: () => <span title={DataGrid.cells.SIGNALS_TOOLTIP}>SIGNALS ⓘ<span style={{ display: "grid", gridTemplateColumns: "repeat(4,28px)", gap: 4, fontSize: 9, textAlign: "center" }}>{["R", "T", "I", "P"].map((axis) => <span key={axis}>{axis}</span>)}</span></span> }}
+          renderHeader={{ selection: () => <input type="checkbox" aria-label="Select all rows" checked={model.matchedRows.length > 0 && model.matchedRows.every((row) => selectedRowSet.has(row.id))} onChange={(event) => { const matched = new Set(model.matchedRows.map((row) => row.id)); setSelectedRowIds((selected) => event.target.checked ? [...new Set([...selected, ...matched])] : selected.filter((id) => !matched.has(id))); }} />, signals: () => <DataGrid.cells.SignalsLegend /> }}
           collapsedGroupIds={view.collapsedGroupIds ?? []}
           onCollapsedGroupIdsChange={(collapsedGroupIds) => update({ collapsedGroupIds })}
           columns={[{ id: 'selection', header: 'Select', kind: 'control', scale: 'text', align: 'left', width: 28, minWidth: 28, pinned: true }, ...visibleColumns]}

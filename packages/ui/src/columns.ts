@@ -20,6 +20,7 @@
  *    server-side exclusion that quietly drops archived spend out of a month
  *    total.
  */
+import { SIGNALS_TOOLTIP } from './cells/signals.js';
 import type { MetricScale } from './metrics.js';
 import { METRIC_SPECS, metricSpec } from './metrics.js';
 import {
@@ -67,6 +68,7 @@ export type ColumnSubject = 'Identity' | 'RANK & ORGANIC' | 'SPONSORED PRODUCTS'
 
 export interface GridColumn {
   subject?: ColumnSubject;
+  measurementStatus?: 'available' | 'needs-ingestion';
   /** Position in the complete performance preset; absent on supplementary columns. */
   referenceOrder?: number;
   id: string;
@@ -279,7 +281,7 @@ export function columnsFor(level: EntityLevel): GridColumn[] {
 }
 
 const TARGET_PERFORMANCE_COLUMNS: GridColumn[] = [
-  dimension('signals', 'SIGNALS', { width: 124, subject: 'Identity', description: 'R: organic rank; T: top-of-search impression share; I: SQP impression share; P: SQP purchase share. Dashed means not measured.' }),
+  dimension('signals', 'SIGNALS', { width: 124, subject: 'Identity', description: SIGNALS_TOOLTIP }),
   dimension('organic_rank', 'RANK', { scale: 'integer', align: 'right', subject: 'RANK & ORGANIC' }),
   dimension('rank_change', 'CHG', { scale: 'integer', align: 'right', subject: 'RANK & ORGANIC', description: 'Comparison rank minus current rank. Positive means improvement.' }),
   dimension('rank_grid', 'LAST 14 DAYS', { width: 252, subject: 'RANK & ORGANIC' }),
