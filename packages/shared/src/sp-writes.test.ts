@@ -1531,6 +1531,13 @@ it('binds restore selection and read instants to the immutable forward preview f
   expect(serializeSpWritePlanFingerprint({...plan,source:{...source,restoreProposal:{...source.restoreProposal,sourceArtifactText:'[{}]'}}})).not.toBe(serializeSpWritePlanFingerprint(plan));
   expect(SpWritePlan.safeParse({...plan,source:{...source,restoreProposal:{...source.restoreProposal,sourceRowIds:[]}}}).success).toBe(false);
   expect(SpWritePlan.safeParse({...plan,source:{...source,restoreProposal:{...source.restoreProposal,rows:[{...row,restoreTo:{...row.restoreTo,amount:'999'}}]}}}).success).toBe(false);
+  const retryOrigin = { executionId: '00000000-0000-4000-8000-000000000282', planId: forward.id, planFingerprint: forward.fingerprint };
+  const retry = SpWritePlan.parse({ ...plan, id: '00000000-0000-4000-8000-000000000283', source: { ...source, retryOrigin } });
+  expect(retry.source).toMatchObject({ retryOrigin, restoreProposal: { sourceBatchId: forward.source.applyBatchId, sourceRowIds: [row.sourceRowId] } });
+  expect(serializeSpWritePlanFingerprint(retry)).not.toBe(serializeSpWritePlanFingerprint(plan));
+  expect(SpWritePlan.safeParse({ ...retry, id: retryOrigin.planId }).success).toBe(false);
+  expect(SpWritePlan.safeParse({ ...retry, source: { ...source, retryOrigin, forwardRowIds: [row.sourceRowId], sourceArtifactText: '[]' } }).success).toBe(false);
+  expect(SpWritePlan.safeParse({ ...retry, source: { ...source, retryOrigin, restoreProposal: { ...source.restoreProposal, sourceBatchId: retryOrigin.executionId } } }).success).toBe(false);
 });
 
 describe('optional forward source narrowing', () => {

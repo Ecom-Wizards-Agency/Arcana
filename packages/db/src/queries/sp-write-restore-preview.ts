@@ -1,11 +1,14 @@
 import { COORDINATED_RESTORE_UNAVAILABLE, RestoreProposalRequest } from '@wizard-ads/shared';
-import { SpWritePreview } from '@wizard-ads/shared/sp-write-application';
+import { OptimizerRetryRequest, OptimizerRetryPreview, SpWritePreview, SpWriteOperationRequest } from '@wizard-ads/shared/sp-write-application';
 import { serializeSpWritePlanFingerprint, serializeSpWriteActionFingerprint, spWritePlanBinding } from '@wizard-ads/shared/sp-writes';
 import { serializeSpWritePreviewGuardrails, serializeSpWritePreviewProvenance } from '@wizard-ads/shared/sp-write-preview-evidence';
 import type { QuerySql } from '../client.js';
-import type { AuthenticatedEditorTransaction } from './authenticated-actor.js';
+import type { AuthenticatedEditorTransaction, AuthenticatedReadSnapshot } from './authenticated-actor.js';
 import { loadSpWritePreviewEvidence } from './sp-write-preview-evidence.js';
 import { buildSpWriteLegacyPreview } from './sp-write-plan-builder.js';
+import { SpWriteApplicationError } from './sp-write-errors.js';
+import { readOptimizerOperation } from './optimizer-run.js';
+import { readOptimizerRetryExclusions } from './sp-write-application-optimizer.js';
 import { getReversionBatchPreview } from './time-machine.js';
 
 export async function readRestoreProposal(handle: {sql:QuerySql}, scope: {orgId:string;profileId:string;planId:string}) {
@@ -62,4 +65,63 @@ export async function reviewRestoreProposal(context:AuthenticatedEditorTransacti
   const [receipt]=await context.sql<{id:string}[]>`select app.review_sp_write_restore_proposal(${context.actor.orgId}::uuid,
     ${request.profileId}::uuid,${request.planId}::uuid,${request.fingerprint})::text as id`;
   if(receipt?.id!==request.planId) throw new Error('Restore review count mismatch');
+}
+
+/** Restore routes bind the source batch to the immutable plan in the caller's tenant. */
+export async function assertRestoreBatchBinding(
+  context: AuthenticatedEditorTransaction | AuthenticatedReadSnapshot,
+  scope: { orgId: string; profileId: string; batchId: string; planId: string },
+): Promise<void> {
+  if (scope.orgId !== context.actor.orgId) throw new SpWriteApplicationError('not_found');
+  const [row] = await context.sql<{ matches: boolean }[]>`select exists(
+    select 1 from public.sp_write_restore_proposals proposal
+    join public.sp_write_plans plan on plan.org_id=proposal.org_id and plan.profile_id=proposal.profile_id and plan.plan_id=proposal.plan_id
+    join public.org_members member on member.org_id=proposal.org_id and member.user_id=auth.uid()
+    where proposal.org_id=${scope.orgId}::uuid and proposal.profile_id=${scope.profileId}::uuid
+      and proposal.plan_id=${scope.planId}::uuid and proposal.source_batch_id=${scope.batchId}::uuid
+      and plan.artifact#>>'{source,restoreProposal,sourceBatchId}'=${scope.batchId}
+      and member.user_id=${context.actor.userId}::uuid and member.role in ('owner','admin')) as matches`;
+  if (!row?.matches) throw new SpWriteApplicationError('not_found');
+}
+
+export async function readRestoreOperation(context: AuthenticatedReadSnapshot, raw: SpWriteOperationRequest) {
+  const request = SpWriteOperationRequest.parse(raw);
+  const original = await readRestoreProposal(context, { orgId: context.actor.orgId, profileId: request.profileId, planId: request.planId });
+  if (!original) throw new SpWriteApplicationError('not_found');
+  return readOptimizerOperation(context, request);
+}
+
+/** A retry preserves the exact inverse and can include only conclusively failed rows. */
+export async function prepareRestoreRetry(context: AuthenticatedEditorTransaction, raw: OptimizerRetryRequest): Promise<OptimizerRetryPreview> {
+  const request = OptimizerRetryRequest.parse(raw);
+  await context.sql`select app.lock_sp_write_operator(${context.actor.orgId}::uuid,${request.profileId}::uuid,${context.actor.userId}::uuid)`;
+  await assertRestoreBatchBinding(context, { orgId: context.actor.orgId, profileId: request.profileId,
+    batchId: request.batchId, planId: request.original.planId });
+  const original = await readRestoreProposal(context, { orgId: context.actor.orgId, profileId: request.profileId, planId: request.original.planId });
+  if (!original || original.preview.plan.source.kind !== 'apply_batch') throw new SpWriteApplicationError('not_found');
+  const retryOrigin = { ...request.original, planFingerprint: original.preview.plan.fingerprint };
+  const existing = await readRestoreProposal(context, { orgId: context.actor.orgId, profileId: request.profileId, planId: request.requestId });
+  let preview: SpWritePreview;
+  if (existing) {
+    if (existing.preview.plan.source.kind !== 'apply_batch'
+      || existing.preview.plan.source.applyBatchId !== request.batchId
+      || JSON.stringify(existing.preview.plan.source.retryOrigin) !== JSON.stringify(retryOrigin)) {
+      throw new SpWriteApplicationError('identity_conflict');
+    }
+    preview = existing.preview;
+  } else {
+    const population = await context.sql<{ source_row_id: string; eligible: boolean }[]>`select source_row_id::text,eligible
+      from app.sp_write_retry_population(${context.actor.orgId}::uuid,${request.profileId}::uuid,
+        ${request.original.executionId}::uuid,${request.original.planId}::uuid)`;
+    if (population.length !== original.preview.plan.counts.providerRows) throw new SpWriteApplicationError('source_changed');
+    const rowIds = population.filter((row) => row.eligible).map((row) => row.source_row_id).sort();
+    if (!rowIds.length) throw new SpWriteApplicationError('unsupported_source');
+    const built = await buildSpWriteLegacyPreview(context.sql, context.actor.orgId, {
+      requestId: request.requestId, profileId: request.profileId, applyBatchId: request.batchId, retryOrigin,
+    }, rowIds);
+    preview = SpWritePreview.parse({ ...built, binding: spWritePlanBinding(built.plan) });
+    await recordRestoreProposal(context, preview);
+  }
+  return OptimizerRetryPreview.parse({ preview,
+    excludedSuccessfulRows: await readOptimizerRetryExclusions(context, preview) });
 }

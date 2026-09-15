@@ -10,6 +10,7 @@ import { pageReadErrorMessage } from '../../server/authenticated-page-read';
 import { authenticationDestination } from '../../server/request-context';
 import { resolveQueueViewQuery } from './saved-view';
 import { classifyRestoreRow } from '../../../../../packages/core/src/restore-preview';
+import { optimizerBatchHref } from '../optimizer/navigation';
 
 function one(value: string | string[] | undefined) { return Array.isArray(value) ? value[0] : value; }
 function date(value: string | undefined): string | null {
@@ -44,6 +45,11 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       const proposalId=one(query['proposal']);
       const proposal=proposalId && Uuid.safeParse(proposalId).success ? await readRestoreProposal(database,{orgId:actor.orgId,profileId:profile.id,planId:proposalId}) : null;
       if(proposalId && proposal===null) notFound();
+      if (proposal) {
+        const source = proposal.preview.plan.source;
+        if (source.kind !== 'apply_batch' || !source.restoreProposal) notFound();
+        redirect(optimizerBatchHref('confirm', source.restoreProposal.sourceBatchId, profile.id, { plan: proposal.preview.plan.id }));
+      }
       const batch = one(query['batch']);
       const preview = batch && Uuid.safeParse(batch).success ? await getReversionBatchPreview(database, { orgId: actor.orgId, batchId: batch }) : null;
       if (batch && (preview === null || preview.profileId !== profile.id)) notFound();
@@ -66,13 +72,13 @@ export async function load(access: ScreenActor, input: ScreenParams) {
         role, viewActor:actor, proposal, entries: entries.slice(0,50), hasOlder: entries.length > 50, cursor, query: preserved,
         partial: freshness?.partial ?? true,
         preview: preview === null ? null : { batchId: preview.batchId, label: preview.tag,
-          blockedReason: preview.activeReversionBatchId === null ? null : 'This batch already has an active reversion export.',
+          blockedReason: preview.activeReversionBatchId === null ? null : 'This batch already has an active restore batch.',
           rows: preview.rows.map((row) => classifyRestoreRow({ row, exportedAt: preview.exportedAt })) } } };
     });
   } catch (error) {
     const destination = authenticationDestination(error);
     if (destination !== null) redirect(destination);
-    if (error instanceof Error && 'digest' in error && String(error.digest).startsWith('NEXT_HTTP_ERROR_FALLBACK')) throw error;
+    if (error instanceof Error && 'digest' in error && (String(error.digest).startsWith('NEXT_HTTP_ERROR_FALLBACK') || String(error.digest).startsWith('NEXT_REDIRECT'))) throw error;
     return { view: 'error' as const, props: { message: pageReadErrorMessage(error, 'The change history is unavailable') } };
   }
 }

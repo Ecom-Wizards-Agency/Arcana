@@ -461,9 +461,9 @@ export const SpForwardWriteSource = z.object({
   provenanceSnapshotFingerprint: SpWriteSha256,
 }).strict().superRefine((source, context) => {
   if ((source.forwardRowIds === undefined) !== (source.sourceArtifactText === undefined)
-    || (source.retryOrigin !== undefined && source.forwardRowIds === undefined)
+    || (source.retryOrigin !== undefined && source.forwardRowIds === undefined && source.restoreProposal === undefined)
     || (source.restoreProposal !== undefined && source.forwardRowIds !== undefined)) {
-    context.addIssue({ code: 'custom', message: 'forward narrowing requires its complete original artifact; retry requires narrowing and cannot restore' });
+    context.addIssue({ code: 'custom', message: 'retry requires an exact forward or restore selection; forward narrowing requires its complete original artifact' });
   }
 });
 export type SpForwardWriteSource = z.infer<typeof SpForwardWriteSource>;
@@ -619,6 +619,9 @@ export const SpWritePlan = z.object({
 }).strict().superRefine((plan, context) => {
   if ((plan.direction === 'forward') !== (plan.source.kind === 'apply_batch')) {
     context.addIssue({ code: 'custom', path: ['source'], message: 'plan direction and source disagree' });
+  }
+  if (plan.source.kind === 'apply_batch' && plan.source.retryOrigin?.planId === plan.id) {
+    context.addIssue({ code: 'custom', path: ['source', 'retryOrigin'], message: 'a retry must be a distinct child plan' });
   }
   if (plan.source.kind === 'apply_batch' && plan.source.forwardRowIds !== undefined) {
     const ids = plan.actions.flatMap((action) => action.sources.flatMap((source) =>

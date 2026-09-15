@@ -13,10 +13,36 @@ import {
   spWriteExecutionRequirements,
   spWriteRetryEvidenceAllows,
   OptimizerRetryRequest,
+  SpWriteRestoreExportPreview,
+  SpWriteRestoreExportRequest,
+  SpWriteRestoreExportResult,
+  spWriteRestoreExportConfirmation,
 } from './sp-write-application.js';
 import { spWritePlanBinding, SpWritePlan } from './sp-writes.js';
 
 const id = (suffix: string) => `00000000-0000-4000-8000-${suffix.padStart(12, '0')}`;
+
+describe('restore export fallback authority', () => {
+  it('binds the exact count and requires a fingerprint and operator note without a write grant', () => {
+    const request = { profileId: id('1'), batchId: id('2'), expectedRows: 2, fingerprint: 'a'.repeat(64),
+      note: 'Synthetic restore review', confirmation: spWriteRestoreExportConfirmation(2) };
+    expect(SpWriteRestoreExportRequest.parse(request)).toEqual(request);
+    expect(SpWriteRestoreExportRequest.safeParse({ ...request, confirmation: 'Yes, apply 2 changes to Amazon' }).success).toBe(false);
+    expect(SpWriteRestoreExportRequest.safeParse({ ...request, expectedRows: 1 }).success).toBe(false);
+    expect(SpWriteRestoreExportRequest.safeParse({ ...request, note: ' ' }).success).toBe(false);
+    expect(SpWriteRestoreExportRequest.safeParse({ ...request, fingerprint: undefined }).success).toBe(false);
+    expect(SpWriteRestoreExportPreview.safeParse({ kind: 'export_only', profileId: request.profileId,
+      batchId: request.batchId, fingerprint: request.fingerprint, preview: {} }).success).toBe(false);
+  });
+  it('keeps counted export results distinct from Amazon execution', () => {
+    const result = { batchId: id('1'), sourceBatchId: id('2'), tag: 'synthetic-restore', rows: 2,
+      artifactSha256: 'b'.repeat(64), files: { rows: 'synthetic.rows.tsv' }, downloads: { rows: '/api/recommendations/export/synthetic?format=rows' },
+      amazonUpdated: false, guardrail: 'This is a review file only. Arcana did not update Amazon.' };
+    expect(SpWriteRestoreExportResult.parse(result)).toEqual(result);
+    expect(SpWriteRestoreExportResult.safeParse({ ...result, amazonUpdated: true }).success).toBe(false);
+    expect(SpWriteRestoreExportResult.safeParse({ ...result, rows: 0 }).success).toBe(false);
+  });
+});
 
 function operationFixture() {
   const binding = {
