@@ -31,6 +31,7 @@ export * from './optimization/index.js';
 export * from './methods/registry.js';
 export { OPTIMIZATION_METHOD_CATALOGUE } from './methods/catalogue.js';
 export * from './methods/reference.js';
+
 export * from './market-position.js';
 export { SP_COORDINATED_CAPABILITIES, spCoordinatedCapabilities } from './methods/capabilities.js';
 export { coordinatedDescriptor } from './methods/coordinated.js';
@@ -39,4 +40,8 @@ export { coordinatedPlacementChange } from './methods/placement-change.js';
 export * from './verdicts.js';
 export * from './derived-columns.js';
 export * from './bid-corridor.js';
+
+export * from './creative/performance.js';
+export * from './creative/certainty.js';
+export * from './creative/prompt-loop.js';
 export { timelineDates, timelineSummary, timelineValue, timelineEffect, timelinePretrend, shiftTimelineDate } from './timeline-effect.js';
