@@ -79,7 +79,7 @@ describe('page 12 design review corrections', () => {
   it('names the failed keyword and keeps retry accounting explicit', () => {
     const { rerender } = render(<CreationResult result={creationResult(false)} onRetry={noop} onBack={noop} />);
     expect(screen.getByText('The campaign is paused. The keyword failed.')).toBeTruthy();
-    rerender(<KeywordRetry result={creationResult(false)} executor={{ available: false }} onBack={noop} onExport={noop} />);
+    rerender(<KeywordRetry plan={fixtureReview.plan} result={creationResult(false)} executor={{ available: false }} onBack={noop} />);
     expect(screen.getByText('Campaign paused · 3 resources already created')).toBeTruthy();
     rerender(<CreationResult result={creationResult(true)} onRetry={noop} onBack={noop} />);
     expect(screen.getByText('The keyword retry succeeded. The campaign remains paused while you review it.')).toBeTruthy();

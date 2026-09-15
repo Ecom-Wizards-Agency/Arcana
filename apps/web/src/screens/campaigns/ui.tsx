@@ -1,14 +1,15 @@
-import type { ReactNode } from 'react';
+import type { ReactNode, ComponentProps } from 'react';
+import { Input } from '../../ui/primitives';
 export { Button, Input, Select, Textarea, Field, Badge } from '../../ui/primitives';
 
 export function Notice({ kind = 'neutral', children }: { kind?: 'neutral' | 'warn' | 'good' | 'bad'; children: ReactNode }) {
-  return <div role={kind === 'bad' ? 'alert' : 'status'} style={{ padding: 'var(--wa-space-4, 16px)', background: kind === 'neutral' ? 'var(--wa-surface-3)' : `var(--wa-${kind}-bg)`, borderRadius: 'var(--wa-radius)', color: 'var(--wa-text)' }}>{children}</div>;
+  return <div role={kind === 'bad' ? 'alert' : 'status'} className={`campaign-notice campaign-notice--${kind}`} style={{ background: kind === 'neutral' ? 'var(--wa-surface)' : `var(--wa-${kind}-bg)`, color: kind === 'neutral' ? 'var(--wa-text)' : `var(--wa-${kind}-text)` }}>{children}</div>;
 }
-export function DetailsTable({ headings = ['Setting', 'Value'], rows }: { headings?: string[]; rows: ReactNode[][] }) {
-  return <div style={{ overflowX: 'auto' }}><table className="wa-table" style={{ width: '100%' }}><thead><tr>{headings.map((heading) => <th key={heading} scope="col">{heading}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{row.map((cell, column) => <td key={column}>{cell}</td>)}</tr>)}</tbody></table></div>;
+export function DetailsTable({ headings = ['Setting', 'Value'], rows, columnWidths }: { headings?: string[]; rows: ReactNode[][]; columnWidths?: string[] }) {
+  return <div style={{ overflowX: 'auto' }}><table className="wa-table" style={{ width: '100%' }}><colgroup>{(columnWidths ?? (headings.length === 2 ? ['48%', '52%'] : headings.map(() => `${100 / headings.length}%`))).map((width, index) => <col key={index} style={{ width }} />)}</colgroup><thead><tr>{headings.map((heading) => <th key={heading} scope="col">{heading}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{row.map((cell, column) => <td key={column}>{cell}</td>)}</tr>)}</tbody></table></div>;
 }
-export function CampaignPage({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
-  return <main className="wa-page wa-stack campaign-page" aria-label={title}><style>{`
+export function CampaignPage({ title, subtitle, children, layout = 'default' }: { title: string; subtitle?: string; children: ReactNode; layout?: 'default' | 'review' | 'bid' }) {
+  return <main className={`wa-page wa-stack campaign-page campaign-page--${layout}`} aria-label={title}><style>{`
     .campaign-page { max-width:1200px; margin-inline:auto; width:100%; font-size:13px; line-height:1.45; }
     .campaign-page h1 { font-size:20px; letter-spacing:-.025em; margin-block:0 8px; }
     .campaign-page h2 { font-size:16px; margin-block:0; }
@@ -18,7 +19,7 @@ export function CampaignPage({ title, subtitle, children }: { title: string; sub
     .campaign-page { gap:16px; }
     .campaign-page .wa-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
     .campaign-page section, .campaign-page aside { min-width:0; }
-    .campaign-page .wa-table { border-collapse:collapse; font-size:13px; border:1px solid var(--wa-border); }
+    .campaign-page .wa-table { border-collapse:collapse; font-size:13px; border:0; table-layout:fixed; }
     .campaign-page .wa-table th { text-align:left; font-weight:600; font-size:12px; text-transform:none; letter-spacing:normal; color:var(--wa-text-muted); padding:12px; background:var(--wa-surface); }
     .campaign-page .wa-table td { padding:12px; border-bottom:1px solid var(--wa-border); vertical-align:top; }
     .campaign-page input, .campaign-page select, .campaign-page textarea { max-width:100%; }
@@ -42,7 +43,7 @@ export function CampaignPage({ title, subtitle, children }: { title: string; sub
     .campaign-product-filters { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
     .campaign-money-control { display:flex; align-items:center; gap:2px; }
     .campaign-stepper { display:flex; gap:8px; }
-    .campaign-stepper [role="tab"] { flex:1; border:0; background:var(--wa-surface); border-radius:var(--wa-radius); font-size:12px; padding:10px 8px; }
+    .campaign-stepper [role="tab"] { text-align:left; border:0; background:var(--wa-surface); border-radius:var(--wa-radius); font-size:12px; padding:10px 8px; }
     .campaign-stepper [aria-selected="true"] { background:var(--wa-indigo-soft); color:var(--wa-indigo); }
     .campaign-plan-counts { display:grid; gap:8px; line-height:1.2; }
     .campaign-plan-counts strong { font-size:24px; margin-right:8px; }
@@ -56,7 +57,7 @@ export function CampaignPage({ title, subtitle, children }: { title: string; sub
     .campaign-bid-rows dd { margin:0; text-align:right; font-weight:600; }
     .campaign-bid-rows small { display:block; color:var(--wa-text-muted); }
     .campaign-builder-layout { display:grid; grid-template-columns:120px minmax(0,1fr) 300px; gap:24px; align-items:start; }
-    .campaign-builder-layout aside { border:1px solid var(--wa-border); border-radius:var(--wa-radius); }
+    .campaign-builder-layout aside { border:0; border-radius:0; }
     .campaign-builder-layout aside small { color:var(--wa-text-muted); font-size:10px; letter-spacing:.07em; }
     .campaign-builder-layout aside p { margin-block:6px; }
     .campaign-builder-layout aside .wa-table td { padding:9px 2px; }
@@ -87,14 +88,50 @@ export function CampaignPage({ title, subtitle, children }: { title: string; sub
     .campaign-page .campaign-section-label { font-size:11px; text-transform:uppercase; color:var(--wa-text-muted); font-weight:500; }
     .campaign-convention { display:flex; justify-content:space-between; align-items:center; gap:12px; border:1px solid var(--wa-border); padding:12px; border-radius:var(--wa-radius); }
     .campaign-naming-tokens .wa-badge { background:var(--wa-indigo-soft); color:var(--wa-indigo); border:0; }
-    .campaign-asset-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,260px)); gap:16px; }
+    .campaign-asset-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(196px,212px)); gap:16px; }
     .campaign-asset-card { display:flex; flex-direction:column; gap:8px; padding:12px; border:1px solid var(--wa-border); border-radius:var(--wa-radius); background:var(--wa-surface-2); }
     .campaign-asset-thumbnail { height:112px; display:grid; place-items:center; background:var(--wa-surface); color:var(--wa-text-muted); font-size:12px; border-radius:var(--wa-radius-sm); }
     .campaign-asset-thumbnail img { max-height:112px; max-width:100%; }
     .campaign-asset-toolbar { display:flex; flex-wrap:wrap; justify-content:space-between; gap:12px; }
     @media(max-width:1100px) { .campaign-builder-layout { grid-template-columns:120px minmax(0,1fr); } .campaign-builder-layout aside:last-child { grid-column:2; } }
     @media(max-width:640px) { .campaign-ad-types, .campaign-plays { grid-template-columns:repeat(2,minmax(0,1fr)); } .campaign-convention { flex-wrap:wrap; } .campaign-builder-layout { grid-template-columns:minmax(0,1fr); } .campaign-builder-layout aside:first-child { position:static!important; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); } .campaign-builder-layout aside:last-child { grid-column:1; } .campaign-page dialog { inset:5%!important; max-width:90%!important; overflow:auto; } }
-  `}</style><header><h1>{title}</h1>{subtitle && <p className="wa-hint">{subtitle}</p>}</header>{children}</main>;
+    .campaign-notice { padding:16px; border-radius:var(--wa-radius-sm); }
+    .campaign-notice > strong { display:block; margin-bottom:6px; }
+    .campaign-notice p + p { margin-top:6px; }
+    .campaign-page--review, .campaign-page--bid { font-size:14px; }
+    .campaign-page--review h1, .campaign-page--bid h1 { font-size:24px; }
+    .campaign-page--review .wa-btn, .campaign-page--bid .wa-btn { min-height:44px; font-size:14px; }
+    .campaign-page--review .wa-table, .campaign-page--bid .wa-table { font-size:14px; }
+    .campaign-page--review .wa-table td { padding:16px 18px; }
+    .campaign-page--review .wa-table th, .campaign-page--bid .wa-table th { font-size:13px; padding:12px 18px; }
+    .campaign-page--review .campaign-notice > strong { font-size:16px; }
+    .campaign-page--review .wa-table th:first-child:last-child { width:auto; }
+    .campaign-page--bid .wa-table td { padding:10px 18px; }
+    .campaign-eligibility-table .wa-table td { padding:8px 12px; }
+    .campaign-eligibility-table .wa-table th { font-size:10px; letter-spacing:.04em; }
+    .campaign-location { color:var(--wa-text-muted); font-size:12px; margin-bottom:8px; }
+    .campaign-resource-total { border-top:1px solid var(--wa-border); padding-top:12px; }
+    .campaign-builder-layout > aside[aria-label="Settings"] select { text-overflow:ellipsis; padding-right:12px; }
+    .campaign-page .wa-select { appearance:auto; }
+    .campaign-page .campaign-structure .wa-select { padding-right:4px; }
+    .campaign-drafting-availability { color:var(--wa-text-muted); border-top:1px solid var(--wa-border); padding-top:8px; margin-top:8px!important; font-size:11px; }
+    .campaign-accounting { font-weight:600; padding-top:16px; }
+    .campaign-page .campaign-asset-toolbar [role="tab"][aria-selected="true"] { background:var(--wa-surface); color:var(--wa-text); }
+    .campaign-page .campaign-filter { border-radius:var(--wa-radius-pill); padding:5px 10px; min-height:28px; }
+    .campaign-asset-search, .campaign-copy-destination { display:flex!important; flex-direction:column; align-items:flex-start; gap:6px; }
+    .campaign-copy-destination .wa-select { width:auto; min-width:200px; }
+    .campaign-token-label { color:var(--wa-text-muted); font-weight:400; }
+    .campaign-amount { display:flex; align-items:center; width:200px; max-width:100%; position:relative; }
+    .campaign-amount .wa-input { width:100%; height:44px; padding-right:52px; margin-top:6px; }
+    .campaign-amount > span { position:absolute; right:12px; padding-top:6px; color:var(--wa-text-muted); }
+    .campaign-page dialog .wa-input:not([type="number"]) { width:100%; }
+    .campaign-page dialog label { font-size:13px; }
+    .campaign-page--bid [aria-label="Bid basis"] .wa-btn { min-height:26px; padding:4px 8px; font-size:12px; }
+    .campaign-bid-entry[hidden] { display:none; }
+    .campaign-page--bid .campaign-bid-secondary .campaign-bid-rows { font-size:13px; }
+    .campaign-page--bid .campaign-bid-secondary .campaign-bid-rows small { font-size:12px; }
+    .campaign-page--bid .campaign-bid-secondary .wa-stack { gap:10px; }
+  `}</style><header>{layout !== 'default' && <nav className="campaign-location" aria-label="Campaign location">Arcana / {title}</nav>}<h1>{title}</h1>{subtitle && <p className="wa-hint">{subtitle}</p>}</header>{children}</main>;
 }
 export function money(value: number | null | undefined, currency: string): string {
   return value == null ? 'Not measured' : new Intl.NumberFormat('en', { style: 'currency', currency }).format(value);
@@ -111,4 +148,8 @@ export function exposureEquation(bid: number, topOfSearch: number, audience: num
   const multiplier = 1 + topOfSearch / 100;
   const value = bid * multiplier * (1 + audience / 100);
   return `${money(bid, currency)} × ${multiplier}${audience === 0 ? '' : ` × ${1 + audience / 100}`} = ${exactMoney(value, currency)}${exactMoney(value, currency) === money(value, currency) ? '' : ` → ${money(value, currency)} rounded`}`;
+}
+
+export function MoneyInput({ currency, ...props }: ComponentProps<typeof Input> & { currency: string }) {
+  return <span className="campaign-amount"><Input {...props} /><span>{currency}</span></span>;
 }

@@ -15,7 +15,7 @@ import { AssetPicker } from '../campaigns-assets/picker';
 import NamingScreen, { NamingReady } from '../campaigns-naming/view';
 import EligibilityScreen from '../campaigns-eligibility/view';
 import UpdateScreen from '../campaigns-update/view';
-import { fixtureNaming, fixtureReverseName, builderContext, builderRecipe, savedDraft, validatedDraft, blockedDraft, fixtureReview, validationChecks, fixtureId, assetSnapshot, creationResult, ready } from './render-fixture';
+import { fixtureCpcRationale, fixtureNaming, fixtureReverseName, builderContext, builderRecipe, savedDraft, validatedDraft, blockedDraft, fixtureReview, validationChecks, fixtureId, assetSnapshot, creationResult, ready } from './render-fixture';
 
 export interface CampaignVisualCase { screen: string; key: string; state: ScreenState | 'ready'; text: string; render: () => ReactNode }
 const noop = () => {};
@@ -39,14 +39,14 @@ add('campaigns-draft', 'bid-exceeded', 'Top-of-search exposure exceeds the limit
 add('campaigns-draft', 'bid-manual', 'Enter bid manually', () => <BidEditor {...bidProps} evidence={null} />);
 add('campaigns-draft', 'bid-calculation', 'Base bid formula', () => <BidEditor {...bidProps} expanded />);
 add('campaigns-draft', 'bid-reconcile-warning', 'Source totals do not reconcile', () => <BidEditor {...bidProps} expanded keyword={{ ...bidProps.keyword, basis: 'keyword_cpc' }} evidence={{ ...bidProps.evidence, reportedCpc: 1.2 }} />);
-add('campaigns-draft', 'bid-verified-cpc', 'Source reconciled', () => <BidEditor {...bidProps} expanded keyword={{ ...bidProps.keyword, basis: 'keyword_cpc' }} />);
+add('campaigns-draft', 'bid-rationale', 'Source reconciled', () => <BidEditor {...bidProps} rationaleExpanded frozenRationale={fixtureCpcRationale} keyword={{ ...bidProps.keyword, basis: 'keyword_cpc' }} />);
 add('campaigns-draft', 'bid-sqp-unmeasured', 'SQP value: not measured', () => <BidEditor {...bidProps} keyword={{ ...bidProps.keyword, basis: 'sqp_value' }} />);
 add('campaigns-draft', 'validation', 'Fix draft issues', () => <DraftReady data={{ ...draftData, draft: blockedDraft, step: 'validation' }} />);
 add('campaigns-draft', 'confirm-unavailable', 'Creation in Amazon is not available yet', () => <CreationConfirm marketplaceLabel={builderContext.profile.countryCode} review={fixtureReview} checks={validationChecks} executor={unavailable} onExport={noop} onBack={noop} />);
 add('campaigns-draft', 'confirm-executor-fixture', 'Yes, create 1 campaign in Amazon', () => <CreationConfirm marketplaceLabel={builderContext.profile.countryCode} review={fixtureReview} checks={validationChecks} executor={available} onExport={noop} onBack={noop} />);
 add('campaigns-draft', 'partial', 'Campaign partially created', () => <CreationResult result={creationResult(false)} onRetry={noop} onBack={noop} />);
-add('campaigns-draft', 'retry-unavailable', 'Yes, retry 1 keyword in Amazon', () => <KeywordRetry result={creationResult(false)} executor={unavailable} onBack={noop} onExport={noop} />);
-add('campaigns-draft', 'retry-executor-fixture', 'Successful resources will not be created again', () => <KeywordRetry result={creationResult(false)} executor={available} onBack={noop} onExport={noop} />);
+add('campaigns-draft', 'retry-unavailable', 'Yes, retry 1 keyword in Amazon', () => <KeywordRetry plan={fixtureReview.plan} result={creationResult(false)} executor={unavailable} onBack={noop} />);
+add('campaigns-draft', 'retry-executor-fixture', 'Successful resources will not be created again', () => <KeywordRetry plan={fixtureReview.plan} result={creationResult(false)} executor={available} onBack={noop} />);
 add('campaigns-draft', 'complete', '0 duplicated resources', () => <CreationResult result={creationResult(true)} onRetry={noop} onBack={noop} />);
 add('campaigns-draft', 'result-not-recorded', 'No creation result has been recorded', () => <DraftReady data={{ ...draftData, step: 'result' }} />);
 for (const tab of ['library', 'used', 'upload'] as const) add('campaigns-assets', tab, tab === 'used' ? 'Synthetic mirrored creative' : 'Pick a creative you already have', () => <CampaignPage title="Pick a creative you already have"><AssetPicker snapshot={assetSnapshot} used={[{ id: fixtureId(9), amazonAssetId: 'synthetic-asset', name: 'Synthetic mirrored creative', kind: 'sb_video', usedInCampaignIds: ['synthetic-campaign'] }]} canRefresh onRefresh={async () => {}} initialTab={tab} /></CampaignPage>);

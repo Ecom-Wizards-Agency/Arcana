@@ -425,7 +425,7 @@ function UpdateFields({
             <CampaignEndDateInput id="update-end-date" disabled={state.clearEndDate} value={state.endDate} onChange={(value) => update('endDate', value)} />
           </Field>
         </div>
-        <label className="wa-row" htmlFor="update-clear-date">
+        <label className="wa-row" style={{ display: 'flex', alignItems: 'center', gap: 8 }} htmlFor="update-clear-date">
           <Checkbox id="update-clear-date" checked={state.clearEndDate} onChange={(event) => update('clearEndDate', event.target.checked)} />
           <span>Explicitly clear the current end date</span>
         </label>
@@ -746,7 +746,7 @@ export function CampaignBuilder({
             <div className="wa-stack" style={{ gap: '0.75rem' }}>
               {advancedDocument === null && validationIssues.length > 0 ? (
                 <Banner tone="warn" role="status" data-testid="campaign-validation">
-                  {validationIssues.length} field {validationIssues.length === 1 ? 'needs' : 'fields need'} attention. First: {validationIssues[0]}
+                  {validationIssues.length} {validationIssues.length === 1 ? 'field needs' : 'fields need'} attention. First: {validationIssues[0]}
                 </Banner>
               ) : null}
               <div className="wa-row">

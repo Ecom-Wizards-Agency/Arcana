@@ -13,7 +13,7 @@ export async function captureCampaignStates(page: Page, testInfo: TestInfo) {
   expect(profile).toBeTruthy();
   const cases = campaignRouteCases(fixture, profile!.label);
   expect(cases).toHaveLength(72); expect(new Set(cases.map((item) => `${item.screen}--${item.key}`)).size).toBe(72);
-  const directory = process.env['WP_SCRATCH'] ? resolve(process.env['WP_SCRATCH'], 'tmp', 'wp270-round2', 'screenshots') : resolve(testInfo.project.outputDir, '..', 'wp270-round2', 'screenshots'); await mkdir(directory, { recursive: true });
+  const directory = process.env['WP_SCRATCH'] ? resolve(process.env['WP_SCRATCH'], 'tmp', 'wp270-round3', 'screenshots') : resolve(testInfo.project.outputDir, '..', 'wp270-round3', 'screenshots'); await mkdir(directory, { recursive: true });
   try {
     // Created only in the disposable browser database; production has no fixture table.
     await db.sql`create table public.campaign_screen_fixtures (id uuid primary key, org_id uuid not null references public.orgs(id), profile_id uuid not null references public.ad_profiles(id), created_by uuid not null, screen_id text not null, mode text not null, payload jsonb not null)`;
@@ -37,6 +37,7 @@ export async function captureCampaignStates(page: Page, testInfo: TestInfo) {
       await expect(page.getByRole('link', { name: 'Sign in', exact: true })).toHaveCount(0);
       expect(new URL(page.url()).searchParams.get('profile')).toBe(fixture.fixtureProfileId);
       if (item.action === 'edit') await page.getByRole('button', { name: 'Edit draft', exact: true }).click();
+      if (item.action === 'rationale') await page.locator('.campaign-bid-secondary > summary').click();
       if (item.action === 'calculation') await page.getByRole('button', { name: 'View bid calculation', exact: true }).click();
       if (item.action === 'used') await page.getByRole('tab', { name: 'Used in this account' }).click();
       if (item.action === 'keyword-set') await page.getByLabel('Campaign structure').selectOption('set-product');
@@ -58,10 +59,26 @@ export async function captureCampaignStates(page: Page, testInfo: TestInfo) {
         await expect(page.locator('.campaign-live-preview')).toBeInViewport({ ratio: 1 });
         await expect(page.getByRole('link', { name: 'Reverse Builder', exact: true })).toBeInViewport({ ratio: 1 });
       }
-      if (item.key.startsWith('bid-')) {
+      if (item.key.startsWith('bid-') && item.key !== 'bid-rationale') {
         await expect(page.getByRole('heading', { name: 'Set starting bid', exact: true })).toBeInViewport({ ratio: 1 });
         await expect(page.getByRole('button', { name: 'Use this bid', exact: true })).toBeInViewport({ ratio: 1 });
         if (item.key === 'bid-reconcile-warning') await expect(page.getByText('Source totals do not reconcile', { exact: true })).toBeInViewport({ ratio: 1 });
+      }
+      if (item.key === 'bid-rationale') {
+        await expect(page.getByRole('heading', { name: 'The bid, and why', exact: true })).toBeInViewport({ ratio: 1 });
+        await expect(page.locator('.campaign-bid-secondary')).toHaveAttribute('open', '');
+        await expect(page.getByLabel('Bid evidence')).toBeInViewport({ ratio: 1 });
+        await expect(page.getByText(/1 – 30 May 2026/)).toBeInViewport({ ratio: 1 });
+        await expect(page.locator('.campaign-rationale blockquote')).toBeInViewport({ ratio: 1 });
+      }
+      if (item.key === 'retry-unavailable') {
+        await expect(page.getByText(/Unresolved keyword: “synthetic lantern”/)).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Export bulk sheet', exact: true })).toBeDisabled();
+        await expect(page.getByText(/Export the bulk sheet to create these campaigns/)).toHaveCount(0);
+      }
+      if (item.screen === 'campaigns-assets' && item.key === 'used') {
+        await expect(page.getByRole('button', { name: 'Reuse asset', exact: true })).toBeDisabled();
+        await expect(page.getByText('Thumbnail unavailable. Refresh the asset library before reuse.')).toBeVisible();
       }
       if (item.key === 'edit') { await expect(page.getByLabel('Edited values summary')).toBeVisible(); await expect(page.getByRole('button', { name: 'Save draft', exact: true })).toBeInViewport({ ratio: 1 }); }
       if (item.key.startsWith('confirm-')) { await expect(page.getByText('Created resources cannot be deleted through rollback.')).toBeVisible(); }

@@ -3,13 +3,13 @@ import { CAMPAIGN_UNAVAILABLE_COPY } from '../../src/screens/campaigns/unavailab
 import { randomUUID, createHash } from 'node:crypto';
 import { serializeCampaignCreationPlanFingerprint } from '@wizard-ads/shared';
 import { campaignCreationReviewFreshness } from '@wizard-ads/shared/campaign-creation-approval';
-import { fixtureNaming, builderContext, builderRecipe, savedDraft, validatedDraft, blockedDraft, fixtureReview, fixtureId, assetSnapshot, creationResult } from '../../src/screens/campaigns/render-fixture';
+import { fixtureCpcRationale, fixtureNaming, builderContext, builderRecipe, savedDraft, validatedDraft, blockedDraft, fixtureReview, fixtureId, assetSnapshot, creationResult } from '../../src/screens/campaigns/render-fixture';
 import type { E2EState } from './fixture';
 import { USERS } from './fixture';
 export interface CampaignRouteCase {
   id: string; screen: string; key: string; path: string; step?: string;
   mode: 'data' | 'loading' | 'error'; payload: unknown; expected: string;
-  action?: 'edit' | 'calculation' | 'reverse-read' | 'reverse-unparseable' | 'used' | 'keyword-set';
+  action?: 'edit' | 'rationale' | 'calculation' | 'reverse-read' | 'reverse-unparseable' | 'used' | 'keyword-set';
 }
 export function campaignRouteCases(fixture: E2EState, profileLabel = builderContext.profile.label): CampaignRouteCase[] {
   const context = { ...builderContext, profile: { ...builderContext.profile, id: fixture.fixtureProfileId, label: profileLabel } };
@@ -37,11 +37,11 @@ export function campaignRouteCases(fixture: E2EState, profileLabel = builderCont
   add('campaigns', 'review', { view: 'ready', context, step: 'review', initialRecipe: recipe }, 'Review campaign draft', undefined, 'review');
   for (const [key, value] of [['draft', draft], ['validated', validated], ['blocked', blocked]] as const) add('campaigns-draft', key, { ...draftData, draft: value }, key === 'blocked' ? 'Fix draft issues' : 'Review campaign draft', undefined, 'review');
   add('campaigns-draft', 'edit', draftData, 'Save draft', 'edit', 'review');
-  for (const key of ['within-range', 'exceeded', 'manual', 'calculation', 'reconcile-warning', 'verified-cpc', 'sqp-unmeasured']) {
+  for (const key of ['within-range', 'exceeded', 'manual', 'calculation', 'reconcile-warning', 'rationale', 'sqp-unmeasured']) {
     const nextContext = { ...context, bidEvidence: key === 'manual' ? [] : context.bidEvidence.map((evidence) => ({ ...evidence, reportedCpc: key === 'reconcile-warning' ? 1.2 : evidence.reportedCpc })) };
-    const basis = key === 'sqp-unmeasured' ? 'sqp_value' : ['verified-cpc', 'reconcile-warning'].includes(key) ? 'keyword_cpc' : 'manual';
-    const nextDraft = { ...draft, recipe: { ...recipe, topOfSearch: key === 'exceeded' ? 700 : recipe.topOfSearch, keywords: recipe.keywords.map((keyword) => ({ ...keyword, basis })) } };
-    add('campaigns-draft', `bid-${key}`, { ...draftData, context: nextContext, draft: nextDraft, step: 'bid' }, key === 'exceeded' ? 'Top-of-search exposure exceeds the limit' : key === 'reconcile-warning' ? 'Source totals do not reconcile' : key === 'verified-cpc' ? 'Source reconciled' : key === 'sqp-unmeasured' ? 'SQP value: not measured' : 'Allowed base bid', ['calculation', 'reconcile-warning', 'verified-cpc'].includes(key) ? 'calculation' : undefined, 'bid');
+    const basis = key === 'sqp-unmeasured' ? 'sqp_value' : ['rationale', 'reconcile-warning'].includes(key) ? 'keyword_cpc' : 'manual';
+    const nextDraft = { ...draft, ...(key === 'rationale' ? { rationale: draft.rationale.map((item) => ({ ...item, sentence: fixtureCpcRationale })) } : {}), recipe: { ...recipe, topOfSearch: key === 'exceeded' ? 700 : recipe.topOfSearch, keywords: recipe.keywords.map((keyword) => ({ ...keyword, basis })) } };
+    add('campaigns-draft', `bid-${key}`, { ...draftData, context: nextContext, draft: nextDraft, step: 'bid' }, key === 'exceeded' ? 'Top-of-search exposure exceeds the limit' : key === 'reconcile-warning' ? 'Source totals do not reconcile' : key === 'rationale' ? 'Source reconciled' : key === 'sqp-unmeasured' ? 'SQP value: not measured' : 'Allowed base bid', key === 'rationale' ? 'rationale' : ['calculation', 'reconcile-warning'].includes(key) ? 'calculation' : undefined, 'bid');
   }
   add('campaigns-draft', 'validation', { ...draftData, draft: blocked, step: 'validation' }, 'Fix draft issues', undefined, 'validation');
   for (const available of [false, true]) add('campaigns-draft', available ? 'confirm-executor-fixture' : 'confirm-unavailable', { ...draftData, draft: validated, review, step: 'confirm', executorAvailable: available, ...(available ? { fixtureExecutor: 'inert' } : {}) }, 'Yes, create 1 campaign in Amazon', undefined, 'confirm');

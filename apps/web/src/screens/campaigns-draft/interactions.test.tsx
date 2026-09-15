@@ -78,7 +78,7 @@ describe('executor presentation boundary and resource results', () => {
     expect((screen.getByRole('button', { name: 'Yes, create 1 campaign in Amazon' }) as HTMLButtonElement).disabled).toBe(true);
   });
   it('renders only one unresolved keyword retry, separately disabled when the executor is absent', () => {
-    render(<KeywordRetry result={creationResult(false)} executor={{ available: false }} onBack={noop} onExport={noop} />);
+    render(<KeywordRetry plan={fixtureReview.plan} result={creationResult(false)} executor={{ available: false }} onBack={noop} />);
     expect((screen.getByRole('button', { name: 'Yes, retry 1 keyword in Amazon' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('Reuse the created campaign')).toBeTruthy(); expect(screen.getByText('Reuse the created ad group')).toBeTruthy(); expect(screen.getByText('Keep the created product ad')).toBeTruthy();
   });

@@ -25,7 +25,7 @@ describe('builder source and naming interactions', () => {
   it('uses the design vocabulary for the six saved convention tokens', () => {
     const naming = { variable_order: ['Goal','AdType','MatchType','Keyword','Custom1','Counter'], delimiter: ' | ', custom1_value: 'QA' };
     render(<NamingReady data={{ view: 'ready', profileId: fixtureId(2), profiles: [builderContext.profile], naming, canEdit: true, presets: [] }} initialName="Rank | SP | Exact | synthetic keyword | QA | 03" initiallyRead />);
-    for (const label of ['Role · Rank', 'Ad type · SP', 'Match · Exact', 'Keyword · synthetic keyword', 'Agency · QA', 'Index · 03']) expect(screen.getByText(label)).toBeTruthy();
+    for (const label of ['Role · Rank', 'Ad type · SP', 'Match · Exact', 'Keyword · synthetic keyword', 'Agency · QA', 'Index · 03']) expect(screen.getByText((_, element) => element?.classList.contains('wa-badge') === true && element.textContent === label)).toBeTruthy();
   });
   it('reads reverse-name chips and submits a same-profile convention copy through the guarded route', async () => {
     const fetch = vi.fn(async () => Response.json({ copied: true })); vi.stubGlobal('fetch', fetch);
@@ -33,7 +33,7 @@ describe('builder source and naming interactions', () => {
     render(<NamingReady data={{ view: 'ready', profileId: fixtureId(2), profiles: [builderContext.profile], naming: builderContext.naming, canEdit: true, presets: [preset] }} />);
     const name = savedDraft.plan.nodes.find((node) => node.kind === 'campaign.create')!.payload.name;
     fireEvent.change(screen.getByLabelText('Existing campaign name'), { target: { value: name } }); fireEvent.click(screen.getByRole('button', { name: 'Read it' }));
-    expect(screen.getByText('Keyword · synthetic lantern')).toBeTruthy();
+    expect(screen.getByText((_, element) => element?.classList.contains('wa-badge') === true && element.textContent === 'Keyword · synthetic lantern')).toBeTruthy();
     fireEvent.change(screen.getByLabelText('Existing campaign name'), { target: { value: 'unparseable' } }); fireEvent.click(screen.getByRole('button', { name: 'Read it' }));
     expect(screen.getByText('This name does not match the selected naming convention.')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Use for this profile' }));

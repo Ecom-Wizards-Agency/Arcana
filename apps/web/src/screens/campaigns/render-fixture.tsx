@@ -80,3 +80,5 @@ export const ready = { view: 'ready' as const, context: builderContext, step: 'p
 
 export const fixtureNaming = { ...builderContext.naming!, variable_order: ['Goal', 'AdType', 'MatchType', 'Keyword', 'Custom1', 'Counter'] };
 export const fixtureReverseName = generateCampaignName(namingSettingsFromStrategy(fixtureNaming), { goal: 'Rank', campaignType: 'SKW', matchType: 'EXACT', productName: 'Synthetic lantern', keywordText: 'synthetic lantern', counter: 3 }, '2026-06-10');
+
+export const fixtureCpcRationale = campaignBidRationale({ keyword: builderRecipe.keywords[0]!.text, basis: 'keyword_cpc', bid: builderRecipe.keywords[0]!.bid, currency: builderContext.profile.currencyCode, topOfSearch: builderRecipe.topOfSearch, audienceAdjustment: builderRecipe.audienceAdjustment, evidence: builderContext.bidEvidence[0]! });

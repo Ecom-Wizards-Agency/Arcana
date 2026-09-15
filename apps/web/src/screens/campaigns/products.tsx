@@ -1,16 +1,21 @@
 'use client';
 import { useState } from 'react';
 import { CAMPAIGN_AD_TYPE_SNAPSHOT, spMarketplaceBidCapability, type CampaignBuilderAdType, type CampaignBuilderContext } from '@wizard-ads/shared';
+import { formatShellDate } from '../../ui/date-format';
 import { Button, Input, Select, Notice, money } from './ui';
 
+export const DRAFTING_UNAVAILABLE = 'Drafting for this ad type is not available in Arcana yet';
+
 export function AdTypeCards({ context, selected, onSelect }: { context: CampaignBuilderContext; selected: CampaignBuilderAdType; onSelect: (type: CampaignBuilderAdType) => void }) {
+  const snapshot = CAMPAIGN_AD_TYPE_SNAPSHOT.version.match(/\.(\d{4}-\d{2}-\d{2})\.(v\d+)$/);
   const bidRules = spMarketplaceBidCapability(context.profile.marketplace ?? undefined);
   return <section className="wa-stack"><h2>Choose the ad type first</h2><p className="wa-hint">What you can set differs by type, so the form changes rather than showing fields that will be ignored.</p><div className="campaign-ad-types" data-capability-version={CAMPAIGN_AD_TYPE_SNAPSHOT.version}>
     {CAMPAIGN_AD_TYPE_SNAPSHOT.entries.map(({ adType, name, cost, rows, source }) => <Button key={adType} aria-pressed={adType === selected} onClick={() => onSelect(adType)} title={source} className="campaign-ad-type" style={{ background: adType === selected ? 'var(--wa-indigo-soft)' : 'var(--wa-surface-2)', borderColor: adType === selected ? 'var(--wa-indigo)' : 'var(--wa-border)' }}>
       <strong>{name}</strong><p className="wa-hint">{adType} · {cost}</p>
       {rows.map((row) => <div key={row.label} className="wa-hint"><span style={{ color: row.supported ? 'var(--wa-good-text)' : 'var(--wa-text-dim)' }}>{row.supported ? '✓' : '—'}</span> {row.label}</div>)}
+      {adType !== 'SP' && <p className="campaign-drafting-availability">{DRAFTING_UNAVAILABLE}</p>}
     </Button>)}
-  </div><p className="wa-hint">These lists come from a versioned capability snapshot, not from memory. Amazon changes what a type supports, and an old help article is not current API authority — a control we cannot verify is shown as unavailable rather than offered and then rejected on push.</p><small className="wa-hint">Snapshot {CAMPAIGN_AD_TYPE_SNAPSHOT.version}{selected === 'SP' ? bidRules ? ` · Marketplace bids: ${money(bidRules.bidMin, bidRules.currencyCode)} to ${money(bidRules.bidMax, bidRules.currencyCode)} · ${bidRules.decimalPlaces} decimal places` : ' · Marketplace bid limits: not measured' : ''}</small></section>;
+  </div><p className="wa-hint">These lists come from a versioned capability snapshot, not from memory. Amazon changes what a type supports, and an old help article is not current API authority — a control we cannot verify is shown as unavailable rather than offered and then rejected on push.</p><small className="wa-hint">Snapshot {snapshot ? `${formatShellDate(snapshot[1]!)} · Version ${snapshot[2]}` : 'version unavailable'}{selected === 'SP' ? bidRules ? ` · Marketplace bids: ${money(bidRules.bidMin, bidRules.currencyCode)} to ${money(bidRules.bidMax, bidRules.currencyCode)} · ${bidRules.decimalPlaces} decimal places` : ' · Marketplace bid limits: not measured' : ''}</small></section>;
 }
 export function Products({ context, selected, onSelect }: { context: CampaignBuilderContext; selected: string[]; onSelect: (keys: string[]) => void }) {
   const [search, setSearch] = useState(''); const [filter, setFilter] = useState('all');
