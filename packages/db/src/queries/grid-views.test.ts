@@ -7,7 +7,7 @@ import { listGridViews, saveGridViews, removeGridView } from './grid-views.js';
 import type { GridSavedView } from '@wizard-ads/shared';
 
 const view: GridSavedView = { id: 'synthetic-view', name: 'Synthetic analysis', entity: 'targets',
-  columns: ['targeting', 'spend'], widths: {}, pinned: ['targeting'], density: 'compact',
+  columns: ['targeting', 'spend'], widths: { targeting: 220 }, alignments: { spend: 'left' }, pinned: ['targeting'], density: 'compact',
   sort: [], filter: { groups: [] }, groupBy: [], collapsedGroupIds: [], dateRange: null, updatedAt: '2026-09-14' };
 describe('org saved views', () => {
   let db: TestDatabase;
@@ -56,5 +56,17 @@ describe('org saved views', () => {
     const rows = await db.sql<{ indexdef: string }[]>`select indexdef from pg_indexes where indexname='bid_series_daily_org_profile_target_latest'`;
     expect(rows).toHaveLength(1);
     expect(rows[0]!.indexdef).toContain('(org_id, profile_id, target_id, date DESC, loaded_at DESC)');
+  });
+  it('round trips all three column presets with profile scope, order, pinning, widths and alignment', async () => {
+    const [profile] = await db.sql<{ id: string }[]>`select id from public.ad_profiles where org_id=${a.orgId} limit 1`;
+    const presets = ['Rank review', 'Bid work', 'Audit'].map((name, index) => ({ ...view,
+      id: `preset-${index}`, name, columns: ['spend', 'targeting'], pinned: ['spend'],
+      widths: { spend: 140 }, alignments: { spend: 'left' as const },
+    }));
+    expect(await withAuthenticatedOrgEditor(db, a, (tx) => saveGridViews(tx, { profileId: profile!.id, views: presets }))).toBe(presets.length);
+    const loaded = await withAuthenticatedReadSnapshot(db, a, (tx) => listGridViews(tx, 'targets', profile!.id));
+    expect(loaded.filter((item) => item.id.startsWith('preset-'))).toEqual([...presets].sort((left, right) => left.name.localeCompare(right.name)));
+    const unscoped = await withAuthenticatedReadSnapshot(db, a, (tx) => listGridViews(tx, 'targets', null));
+    expect(unscoped.filter((item) => item.id.startsWith('preset-'))).toHaveLength(0);
   });
 });

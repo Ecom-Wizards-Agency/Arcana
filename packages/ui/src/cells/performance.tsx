@@ -1,20 +1,24 @@
 import type { CSSProperties, ReactNode } from 'react';
 import type { PerformanceVerdict } from '@wizard-ads/shared';
+import { NumericValue } from '../primitives/NumericValue.js';
 import { deltaColor, tokens } from '../theme.js';
 
 export function NotMeasuredCell({ reason, label = '—' }: { reason: string; label?: string }): ReactNode {
   return <span title={reason} aria-label={`${label === '—' ? 'Not measured' : label}: ${reason}`} style={{ color: tokens.color.textFaint }}>{label}</span>;
 }
-export const SIGNALS_TOOLTIP = 'R: organic rank; T: top-of-search impression share; I: SQP impression share; P: SQP purchase share. Filled means measured; a dashed outline means not measured.';
+export { SIGNALS_TOOLTIP } from './signals.js';
+export { SignalsLegend } from './SignalsLegend.js';
+import { SIGNAL_AXES } from './signals.js';
 export function SignalsCell({ axes }: { axes: readonly { key: 'R' | 'T' | 'I' | 'P'; value: number | null; reason: string }[] }): ReactNode {
   return <span aria-label="Signals" style={{ display: 'inline-flex', gap: 4 }}>
-    {(['R', 'T', 'I', 'P'] as const).map((key) => {
+    {SIGNAL_AXES.map(({ key, grain }) => {
       const axis = axes.find((item) => item.key === key);
       const value = axis?.value ?? null;
       const strength = value === null ? 0 : key === 'R' ? 1 / Math.log2(value + 1) : Math.min(1, Math.max(0, value));
       return <span key={key} data-axis={key} data-measured={value !== null} aria-label={key} title={value === null ? axis?.reason ?? 'Not measured' : `${key}: ${key === 'R' ? value : `${(value * 100).toFixed(1)}%`}`}
         style={{ position: 'relative', width: 28, height: 24, boxSizing: 'border-box', display: 'inline-block', overflow: 'hidden', borderRadius: 2,
-          border: value === null ? `1px dashed ${tokens.color.textMuted}` : `1px solid ${tokens.color.border}`,
+          border: value === null ? `1px dotted ${tokens.color.textMuted}` : `1px solid ${tokens.color.border}`,
+          borderBottom: `2px ${grain === 'daily' ? 'solid' : 'dashed'} ${tokens.color.textMuted}`,
           background: value === null ? 'transparent' : tokens.color.surfaceHover }}>
         {value === null ? null : <span aria-hidden="true" style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: `${Math.max(4, Math.min(1, strength) * 100)}%`, background: key === 'R' ? tokens.color.indigo : key === 'T' ? tokens.color.accent : tokens.color.good }} />}
       </span>;
@@ -55,7 +59,7 @@ export function VerdictCell({ verdict }: { verdict: PerformanceVerdict }): React
   return <span title={verdict.reason} style={style}>{verdict.diagnosis}</span>;
 }
 export function DeltaCell({ value, suffix = '', better = null }: { value: number | null; suffix?: string; better?: 'higher' | 'lower' | null }): ReactNode {
-  return value === null ? <NotMeasuredCell reason="Comparison not measured" /> : <span style={{ color: deltaColor(value, better), fontVariantNumeric: 'tabular-nums' }}>{value > 0 ? '+' : ''}{Number(value.toFixed(1))}{suffix}</span>;
+  return value === null ? <NotMeasuredCell reason="Comparison not measured" /> : <NumericValue value={`${value > 0 ? '+' : ''}${Number(value.toFixed(1))}${suffix}`} style={{ color: deltaColor(value, better), fontVariantNumeric: 'tabular-nums' }} />;
 }
 export function NotTheQueryChip(): ReactNode {
   return <span title="This target can match other search queries; its performance is not evidence for this literal wording." style={{ fontSize: 9, padding: '1px 4px', borderRadius: 3, color: tokens.color.textMuted, background: tokens.color.surfaceHover }}>not the query</span>;

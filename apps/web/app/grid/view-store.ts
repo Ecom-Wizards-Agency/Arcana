@@ -22,7 +22,7 @@ export function browserViewStore(actor: OrgActor, profileId: string): DbViewStor
       return result['views'].map((view) => GridSavedView.parse(view));
     },
     async save(views) {
-      const result = await response(fetch('/grid/views', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profileId: null, views }) }));
+      const result = await response(fetch('/grid/views', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profileId, views }) }));
       if (result['count'] !== views.length) throw new Error('View count mismatch');
       return views.length;
     },

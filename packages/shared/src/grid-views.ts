@@ -201,6 +201,7 @@ export const GridSavedView = z.object({
   columns: strings,
   pinned: strings,
   widths: z.record(z.string(), z.number().finite()).readonly(),
+  alignments: z.record(z.string(), z.enum(['left', 'right'])).readonly().optional(),
   density: z.enum(['compact', 'normal', 'comfortable']).optional(),
   filter: z.object({ groups: z.array(z.object({ filters: z.array(z.object({
     key: z.string(),

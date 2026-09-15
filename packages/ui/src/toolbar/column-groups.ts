@@ -74,3 +74,20 @@ export function searchColumns(columns: readonly GridColumn[], query: string): Gr
     return words.every((word) => haystack.includes(word));
   });
 }
+
+/** The manager groups settings by the entity they describe. Period variants stay together. */
+export function managerColumnGroups(columns: readonly GridColumn[]): Array<{ id: string; label: string; columns: GridColumn[] }> {
+  const order = ['Target settings', 'Campaign settings', 'Ad group settings', 'Ad performance', 'Rank & organic', 'SQP', 'Brand Analytics', 'Optimizer', 'Identifiers'];
+  const subject = (column: GridColumn): string => {
+    if (column.id.endsWith('_id') || ['asin', 'sku', 'profile'].includes(column.id)) return 'Identifiers';
+    if (column.subject === 'RANK & ORGANIC') return 'Rank & organic';
+    if (column.subject === 'SQP') return 'SQP';
+    if (column.subject === 'BRAND ANALYTICS') return 'Brand Analytics';
+    if (column.id === 'rpc_category' || column.id === 'verdict') return 'Optimizer';
+    if (column.id.startsWith('campaign_') || ['ad_product', 'budget_amount', 'portfolio_name'].includes(column.id)) return 'Campaign settings';
+    if (column.id.startsWith('ad_group_') || column.id === 'default_bid') return 'Ad group settings';
+    if (column.kind === 'metric' || ['top_of_search_share', 'top_of_search_range', 'spend_share', 'acos_vs_target'].includes(column.id)) return 'Ad performance';
+    return 'Target settings';
+  };
+  return order.map((label) => ({ id: label, label, columns: columns.filter((column) => subject(column) === label) })).filter((group) => group.columns.length > 0);
+}

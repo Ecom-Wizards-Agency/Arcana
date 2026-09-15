@@ -19,6 +19,8 @@ import type { FormatContext } from '../format.js';
 import { metricSpec } from '../metrics.js';
 import type { GridRow } from '../rows.js';
 import { parseFieldId, resolveField } from '../rows.js';
+import { NumericValue } from '../primitives/NumericValue.js';
+import { tokens } from '../theme.js';
 import { StatusChip } from '../primitives/StatusChip.js';
 import { deltaColor } from '../theme.js';
 import {
@@ -56,7 +58,7 @@ export function GridCell({ row, column, context, totalsRow, collapsedGroupIds, o
   const ref = parseFieldId(column.id);
 
   if (isGroupedRow(row) && row.groupDepth >= 0 && column.kind === 'dimension') {
-    if (row.groupColumnId !== column.id) return null;
+    if (row.groupColumnId !== column.id) return value == null ? null : <span>{formatValue(value, column.scale, context)}<sup style={groupCount}>{formatInteger(row.groupSize, context.locale)}</sup></span>;
     const collapsed = collapsedGroupIds.has(row.id);
     return (
       <span data-testid={`group-level-${row.groupDepth + 1}`} style={groupCell}>
@@ -78,7 +80,8 @@ export function GridCell({ row, column, context, totalsRow, collapsedGroupIds, o
         )}
         {row.groupDepth === 0 ? null : <span aria-hidden style={groupBranch}>↳</span>}
         <span style={groupValue}>{formatValue(value, column.scale, context)}</span>
-        <span style={groupCount}>{formatInteger(row.groupSize, context.locale)} rows</span>
+        <sup style={groupCount}>{formatInteger(row.groupSize, context.locale)} rows</sup>
+        {totalsRow && resolveField(row, 'spend') !== null && typeof resolveField(totalsRow, 'spend') === 'number' && totalsRow.totals.spend > 0 ? <span data-share-bar role="meter" aria-label="Share of total spend" aria-valuemin={0} aria-valuemax={100} aria-valuenow={row.totals.spend / totalsRow.totals.spend * 100} title={`${formatValue(row.totals.spend / totalsRow.totals.spend, 'percent', context)} of total spend`} style={{ display: 'inline-block', flexShrink: 0, width: tokens.space(8), height: tokens.space(1), background: tokens.color.surfaceHover }}><span style={{ display: 'block', height: '100%', width: `${Math.min(1, row.totals.spend / totalsRow.totals.spend) * 100}%`, background: tokens.color.indigo }} /></span> : null}
       </span>
     );
   }
@@ -92,9 +95,9 @@ export function GridCell({ row, column, context, totalsRow, collapsedGroupIds, o
     const low = resolveField(row, 'suggested_bid_low');
     const high = resolveField(row, 'suggested_bid_high');
     return (
-      <span data-testid="suggested-bid-cell" style={{ ...twoLineCell, minWidth: '100%', width: 'max-content' }}
+      <span data-testid="suggested-bid-cell" style={{ ...twoLineCell, minWidth: 0, width: '100%' }}
         title={`${formatValue(value, column.scale, context)} · ${formatValue(low, column.scale, context)} – ${formatValue(high, column.scale, context)}`}>
-        <span>{formatValue(value, column.scale, context)}</span>
+        <NumericValue value={formatValue(value, column.scale, context)} />
         {value === null ? null : (
           <span style={cellSubline}>
             {formatValue(low, column.scale, context)} – {formatValue(high, column.scale, context)}
@@ -108,9 +111,7 @@ export function GridCell({ row, column, context, totalsRow, collapsedGroupIds, o
     const spec = metricSpec(ref.metric);
     const numeric = typeof value === 'number' ? value : null;
     return (
-      <span title={formatDelta(numeric, column.scale, context)} style={{ ...deltaStyle(deltaColor(numeric, spec?.better ?? null)), display: 'block', width: 'max-content', minWidth: '100%' }}>
-        {formatDelta(numeric, column.scale, context)}
-      </span>
+      <NumericValue value={formatDelta(numeric, column.scale, context)} style={deltaStyle(deltaColor(numeric, spec?.better ?? null))} />
     );
   }
 
@@ -119,11 +120,10 @@ export function GridCell({ row, column, context, totalsRow, collapsedGroupIds, o
   const share = isGroupedRow(row) && row.groupDepth >= 0 && (ref?.part === 'value' || ref?.part === 'comparison')
     && metricSpec(ref.metric)?.derived === null && typeof value === 'number'
     && typeof denominator === 'number' && denominator > 0 ? value / denominator : null;
-  return <span title={column.scale !== 'text' || column.cell === 'numeric' ? formatted : undefined}
-    style={column.scale !== 'text' || column.cell === 'numeric' ? { display: 'block', width: 'max-content', minWidth: '100%' } : undefined}>
-    {formatted}
+  return <span style={{ display: 'block', minWidth: 0, width: '100%' }}>
+    {column.scale !== 'text' || column.cell === 'numeric' ? <NumericValue value={formatted} /> : formatted}
     {share === null ? null : <span style={{ ...cellSubline, marginLeft: '0.375rem' }}>
-      {formatValue(share, 'percent', context)} of total
+      <span data-share-bar role="meter" aria-label="Share of total" aria-valuenow={share * 100} aria-valuemin={0} aria-valuemax={100} style={{ display: 'inline-block', width: tokens.space(12), height: tokens.space(1), background: tokens.color.surfaceHover }}><span style={{ display: 'block', width: `${Math.min(1, share) * 100}%`, height: '100%', background: tokens.color.indigo }} /></span>{formatValue(share, 'percent', context)} of total
     </span>}
   </span>;
 }

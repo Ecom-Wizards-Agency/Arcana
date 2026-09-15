@@ -22,7 +22,7 @@
  * over the bar never lights it up. The id is still checked against this bar's
  * own dimensions on drop, in case the drag came from a grid of another entity.
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { DragEvent, ReactNode } from 'react';
 import type { GridColumn } from '../columns.js';
 import {
@@ -49,12 +49,25 @@ import {
 } from './styles.js';
 
 export interface GroupBarProps {
+  restingHidden?: boolean;
   dimensions: readonly GridColumn[];
   groupBy: readonly string[];
   onChange: (columnIds: string[]) => void;
 }
 
-export function GroupBar({ dimensions, groupBy, onChange }: GroupBarProps): ReactNode {
+export function GroupBar({ dimensions, groupBy, onChange, restingHidden = false }: GroupBarProps): ReactNode {
+  const root = useRef<HTMLDivElement>(null);
+  const [draggedDimension, setDraggedDimension] = useState<string | null>(null);
+  useEffect(() => {
+    const start = (event: globalThis.DragEvent) => {
+      const viewport = root.current?.closest('[data-testid="grid-viewport"]');
+      if (viewport && !viewport.contains(event.target as Node)) return;
+      if (hasDragPayload(event.dataTransfer, DIMENSION_DRAG_TYPE)) setDraggedDimension(readDragPayload(event.dataTransfer, DIMENSION_DRAG_TYPE));
+    };
+    const end = () => setDraggedDimension(null);
+    document.addEventListener('dragstart', start); document.addEventListener('dragend', end); document.addEventListener('drop', end);
+    return () => { document.removeEventListener('dragstart', start); document.removeEventListener('dragend', end); document.removeEventListener('drop', end); };
+  }, []);
   const [barActive, setBarActive] = useState(false);
   const [chipTarget, setChipTarget] = useState<string | null>(null);
   const remaining = dimensions.filter((column) => !groupBy.includes(column.id));
@@ -92,11 +105,13 @@ export function GroupBar({ dimensions, groupBy, onChange }: GroupBarProps): Reac
 
   return (
     <div
+      ref={root}
+      hidden={restingHidden && groupBy.length === 0 && draggedDimension === null}
       data-testid="grid-group-bar"
       data-drop-active={barActive ? 'true' : 'false'}
       role="group"
       aria-label="Group by"
-      style={barActive ? groupBarActive : groupBar}
+      style={{ ...(barActive ? groupBarActive : groupBar), ...(restingHidden && groupBy.length === 0 && draggedDimension === null ? { display: 'none' } : {}) }}
       onDragOver={(event) => {
         if (!accepts(event)) return;
         event.preventDefault();
@@ -170,7 +185,7 @@ export function GroupBar({ dimensions, groupBy, onChange }: GroupBarProps): Reac
         })}
       </ol>
       {groupBy.length === 0 ? (
-        <span style={groupHint}>Drag a column header here to group. Drop another to nest.</span>
+        <span style={groupHint}>{draggedDimension ? `Drop to group by ${dimensions.find((column) => column.id === draggedDimension)?.header ?? draggedDimension}. Drop again to nest a second level.` : 'Drag a column header here to group. Drop another to nest.'}</span>
       ) : null}
       <select
         aria-label="Add grouping level"

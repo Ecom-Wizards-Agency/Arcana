@@ -59,3 +59,8 @@ export * from './primitives/EmptyState.js';
 export { TrendChart, niceTicks, windowBand, stackEndLabelYs } from './charts/TrendChart.js';
 export type { TrendChartProps, TrendPoint, TrendSeries, ChartWindow, ValueScale } from './charts/TrendChart.js';
 export * from './charts/BidCorridorChart.js';
+
+export * from './date-range/model.js';
+export * from './date-range/DateRangePicker.js';
+export * from './toolbar/ColumnManager.js';
+export * from './primitives/NumericValue.js';

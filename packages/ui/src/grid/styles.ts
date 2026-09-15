@@ -333,8 +333,8 @@ export function bodyRowStyle(state: BodyRowState): CSSProperties {
     outlineOffset: -2,
     background: state.selected
       ? tokens.color.indigoSoft
-      : state.group !== null && !state.group.isLeaf
-        ? tokens.color.surfaceAlt
+      : state.group !== null
+        ? state.group.depth === 0 ? tokens.color.indigoSoft : tokens.color.surfaceAlt
         : state.index % 2 === 0
           ? tokens.color.surface
           : tokens.color.surfaceAlt,

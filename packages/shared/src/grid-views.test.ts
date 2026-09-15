@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeGridRowColumns, encodeGridRowColumns, encodeGridPerformance, decodeGridPerformance, parseGridView, serializeGridView, type GridSavedView, type GridTransportRow, GridSavedView as GridSavedViewSchema } from './grid-views.js';
 const view: GridSavedView = {
   id: 'synthetic', name: '分析 café', entity: 'targets', columns: ['targeting', 'spend'],
-  widths: { targeting: 301 }, pinned: ['targeting'], density: 'compact',
+  widths: { targeting: 301 }, alignments: { targeting: 'left', spend: 'right' }, pinned: ['targeting'], density: 'compact',
   filter: { groups: [{ filters: [{ key: 'SPEND', logical_operator: 'AND', conditions: [{ operator: '>', values: ['12'] }] }] }] },
   sort: [{ columnId: 'spend', direction: 'desc' }], groupBy: ['campaign_name'],
   collapsedGroupIds: ['group-one'], dateRange: { start: '2026-08-01', end: '2026-08-31' }, updatedAt: '2026-09-01',

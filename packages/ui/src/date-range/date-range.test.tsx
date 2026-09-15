@@ -1,0 +1,62 @@
+// @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { DateRangePicker } from './DateRangePicker.js';
+import { comparisonRange, mismatchPercentage, rangeDays, rangePresets } from './model.js';
+
+afterEach(cleanup);
+const period = { start: '2026-07-30', end: '2026-08-28' };
+const comparison = { start: '2026-06-30', end: '2026-07-29' };
+function mount() {
+  const apply = vi.fn();
+  render(<DateRangePicker period={period} comparison={comparison} today="2026-08-29" factsThrough="2026-08-28" factsComplete presetHref={(_, id) => `?preset=${id}`} onApply={apply} />);
+  fireEvent.click(document.querySelector('summary')!);
+  return apply;
+}
+describe('date and comparison picker', () => {
+  for (const preset of rangePresets('2026-08-29')) it(`stages ${preset.label} until Apply`, () => {
+    const apply = mount();
+    fireEvent.click(screen.getByRole('link', { name: preset.label }));
+    expect(apply).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('From')).toHaveProperty('value', preset.range.start);
+    fireEvent.click(screen.getByRole('button', { name: 'Apply range' }));
+    expect(apply).toHaveBeenCalledWith(expect.objectContaining({ period: preset.range, mode: 'previous', preset: preset.id }));
+  });
+  for (const [mode, label] of [['previous', 'Previous period'], ['year', 'Same period last year'], ['custom', 'Custom'], ['none', 'None']] as const) it(`applies comparison ${mode}`, () => {
+    const apply = mount();
+    const fieldset = screen.getByText('COMPARE AGAINST').closest('fieldset')!;
+    fireEvent.click(within(fieldset).getByRole('button', { name: label }));
+    fireEvent.click(screen.getByRole('button', { name: 'Apply range' }));
+    expect(apply).toHaveBeenCalledWith(expect.objectContaining({ mode, comparison: comparisonRange(period, mode, comparison) }));
+  });
+  it('supports custom dates, tints both windows, discloses freshness and computes mismatch', () => {
+    mount();
+    expect(screen.getByText(/Facts load through 28 Aug 2026/)).toBeTruthy();
+    expect(document.querySelectorAll('[data-selected="true"]').length).toBe(30);
+    expect(document.querySelectorAll('[data-comparison="true"]').length).toBe(29);
+    fireEvent.click(within(screen.getByText('COMPARE AGAINST').closest('fieldset')!).getByRole('button', { name: 'Custom' }));
+    fireEvent.change(screen.getByLabelText('Comparison from'), { target: { value: '2026-07-02' } });
+    expect(screen.getByRole('status').textContent).toContain('7.1%');
+    fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-08-30' } });
+    expect(screen.getByText(/Selected.*facts incomplete/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(document.querySelector('details')!.open).toBe(false);
+  });
+  it('selects calendar endpoints and rejects reversed custom input', () => {
+    const apply = mount();
+    fireEvent.click(screen.getByRole('button', { name: '2 Jul 2026' }));
+    fireEvent.click(screen.getByRole('button', { name: '8 Jul 2026' }));
+    expect(screen.getByLabelText('From')).toHaveProperty('value', '2026-07-02');
+    expect(screen.getByLabelText('To')).toHaveProperty('value', '2026-07-08');
+    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-07-09' } });
+    expect(screen.getByRole('alert')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Apply range' })).toHaveProperty('disabled', true);
+    expect(apply).not.toHaveBeenCalled();
+  });
+  it('uses inclusive lengths and clamps leap-day year comparisons', () => {
+    expect(rangeDays(period)).toBe(30);
+    expect(mismatchPercentage(period, { start: '2026-02-01', end: '2026-02-28' })).toBeCloseTo(7.142857);
+    expect(mismatchPercentage(period, comparison)).toBe(0);
+    expect(comparisonRange({ start: '2024-02-29', end: '2024-03-02' }, 'year', comparison)).toEqual({ start: '2023-02-28', end: '2023-03-02' });
+  });
+});
