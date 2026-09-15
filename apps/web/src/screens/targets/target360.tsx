@@ -143,6 +143,7 @@ export function Target360({ model, currencyCode, back, savedView, onClose, showL
     })}</section> : null}
     <section className={styles.panel} aria-label="Provider associations" data-state={model.graph?.status ?? 'missing'}>
       <h2>Provider associations</h2>
+      {model.graph?.observation ? <p>Provider target state: {model.graph.observation.state} · {model.graph.observation.source} · {model.graph.observation.sourceEventAt}</p> : null}
       {!model.graph || model.graph.status === 'missing' ? <p>No provider associations measured for this target.</p> : <>
         <p>{model.graph.status === 'stale' ? 'Provider association evidence is stale.' : model.graph.status === 'partial' ? 'Provider association evidence is partial.' : 'Observed provider associations.'}
           {' '}{model.graph.rows.length} resolved · {model.graph.unresolvedCount} awaiting endpoint evidence.</p>

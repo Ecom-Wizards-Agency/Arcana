@@ -1,3 +1,4 @@
+import { EvidenceRetryPendingError } from './evidence-reconciliation.js';
 import { IngestionRegistry, ReportCoverageCompletion } from './ingestion-registry.js';
 import { ingestionSource } from './ingestion-sources.js';
 import { ControlMirrorMergeCounts, KeywordMirrorMergeCounts } from '@wizard-ads/shared/sp-write-mirror';
@@ -481,7 +482,7 @@ export class SyncWorker {
       });
       throw new FencedClaimQuarantined(category);
     }
-    if (error instanceof SqpWorkflowPendingError) {
+    if (error instanceof SqpWorkflowPendingError || error instanceof EvidenceRetryPendingError) {
       const retryIn = `${error.retryAfterSeconds} seconds`;
       if (job.claim !== null) {
         if (!this.store.deferClaim) {

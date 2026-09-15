@@ -42,7 +42,7 @@ beforeAll(async () => {
 }, 60000);
 afterAll(async () => { await db?.drop(); });
 
-it('stores eight deliveries with exact readback and queues eight projections; budget awaits WP-312', async () => {
+it('stores eight deliveries with exact readback and queues eight projections; budget exposes source handoff', async () => {
   for (let i = 0; i < 8; i++) {
     const e = event(i);
     const receipt = await retain(e, `initial-${i}`);
@@ -50,7 +50,7 @@ it('stores eight deliveries with exact readback and queues eight projections; bu
     const result = await projectStreamExtensionEvent(db, { orgId: org, profileId: profile, datasetId: e.record.datasetId, eventIdentity: e.identity });
     expect(result.verifiedLoadedRows).toBe(1);
     const evidence = await readStreamExtensionEvidence(db, { orgId: org, profileId: profile, datasetId: e.record.datasetId, asOf: at, maxAgeMs: 60000 });
-    expect(evidence.count).toBe(i === 1 ? 0 : 1);
+    expect(evidence.count).toBe(1);
     expect(evidence.selectionAuthority).toBe(false);
   }
   expect(await db.sql`select identity from public.marketing_stream_extension_events where org_id=${org}`).toHaveLength(8);
@@ -106,6 +106,6 @@ it('reads eight authenticated health rows with normalized persisted timestamps a
   expect(health.reduce((sum, row) => sum + row.stored, 0)).toBe(10);
   expect(health.every((row) => !row.enabled && !row.confirmed)).toBe(true);
   expect(health.find((row) => row.datasetId === 'ads-campaign-management-campaigns')).toMatchObject({
-    stored: 2, latestEventAt: '2026-09-02T12:00:00.000Z', duplicates: null, rejected: null, deadLettered: null,
+    stored: 2, latestEventAt: '2026-09-02T12:00:00.000Z', duplicates: 1, rejected: 0, deadLettered: 0,
   });
 });

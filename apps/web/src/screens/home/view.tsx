@@ -1,3 +1,4 @@
+import { StreamEvidencePanel } from '../creative/stream-evidence';
 import { ProviderDiagnostics } from '../recommendations/provider-diagnostics';
 import { EmptyState, formatValue } from '@wizard-ads/ui';
 import { remainingBudget, resolvePacingThresholds } from '@wizard-ads/core';
@@ -42,7 +43,7 @@ export function HomeContent({ profile, context, home }: HomeReady) {
         <small data-tone={home.breakEvenAcos === null ? 'neutral' : 'good'}>{home.breakEvenAcos === null ? 'not measured' : 'confirmed'}</small>
       </div>
     </section>
-    <ProviderDiagnostics evidence={home.providerDiagnostics} />
+    <ProviderDiagnostics evidence={home.providerDiagnostics} /><StreamEvidencePanel evidence={home.providerBudget} title="Provider budget advice" />
     <div className="wa-home-grid">
       <ProposalsInbox key={profile.id} proposals={home.proposals} canDecide={home.canDecide} profileId={profile.id} capped={home.proposalsCapped} />
       <HomeCard title="Flags" subtitle="Raised and noted sit as peers. A suppressed flag is never hidden in a disclosure.">

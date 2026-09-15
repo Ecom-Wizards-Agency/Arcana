@@ -265,8 +265,10 @@ they do not establish hosted capability.
 - `AssetLibraryClient`: validated upload, single and asynchronous batch
   registration, counted search, and exact ID/version lookup. URLs and upload
   handles remain transient. Registration acceptance, processing, specification
-  checks and moderation are separate observations. No runtime upload/registration
-  admission is installed; campaign write authority cannot authorize these calls.
+  checks and moderation are separate observations. The DB admits an exact immutable request against separately issued asset
+  authority. Worker execution validates bytes and provider scope before reserving
+  an attempt; campaign write authority cannot authorize these calls. No production
+  upload/registration caller is composed.
 - `ModerationClient`: v4 result reads and SD creative moderation. Ad and creative
   versions require verified associations to Asset Library versions. The public
   Unified Pre-moderation contract exposes submission; this implementation parses
@@ -276,13 +278,38 @@ they do not establish hosted capability.
   mirror or adopt Ads v1. Remaining SB target/negative and localization contracts
   remain unsupported pending their prerequisites and a named consumer.
 
-The eight additional Stream datasets have a separate canonical fixture envelope
-and durable evidence path. Their provider wire adapters remain unsupported on
-this integration base. A `fixture.v1` binding is synthetic test evidence only;
-production intake does not enable that adapter. Diagnostics are source-labelled;
-SP budget advice awaits the WP-312 provider evidence contract. Clickstream has no
-person-level shape. Prompt/video extension report metadata is explicitly disabled
-and unsupported until provider IDs resolve and the report-family seam is present.
+The eight additional Stream datasets register strict `fixture.v1` parsers with
+synthetic recorded payloads. Each uses the existing SQS durable receipt boundary,
+one `marketing_stream.extensions.project` job on `integrations`, independently
+verified event counts and WP-256 partial coverage. These fixtures do not establish
+Amazon wire parity. Unknown versions are refused; live contract/access evidence
+is required before activation.
+
+Both `OPENSPELL_STREAM_EXTENSIONS_ENABLED=1` and an exact
+`OPENSPELL_STREAM_EXTENSIONS_DESTINATION_ARN` are required for intake. Projection
+execution also requires an explicit job claimant and a confirmed, enabled,
+capability-verified binding matching the advertiser, profile, region and queue.
+No event schedule is installed. After opt-in, startup and bounded 60-second
+DB-only reconciliation repair missing work using the existing queue custody,
+backoff and eight-attempt ceiling. Existing normalizer claimant sets stay intact.
+
+Stored observations feed Campaigns, Ad groups, Products, Targets, Target 360,
+Creatives, Creative detail, Creative campaign, Timeline, Time Machine,
+Recommendations, Home and Sync status. Aggregate measures require verified
+creative/asset/campaign associations throughout the event window. Windows remain
+separate from report totals; zero is rendered only when measured. Provider budget
+advice exposes `readStreamBudgetHandoff` with Stream provenance, no observed usage
+and no approval authority for the WP-292 consumer.
+
+Accepted asset registrations enqueue the existing `asset-library.search` consumer
+once. Search persists immutable ownership/version evidence before coverage.
+`OPENSPELL_ASSET_RECONCILIATION_ENABLED=1` and an explicit search claimant opt into
+restart repair; interrupted writes become uncertain and cannot be uploaded again.
+Only an independently verified read can settle an uncertain provider identity.
+The shared/DB `readAssetSelectionEvidence` seam provides scope-specific moderation
+to the builder; builder wiring remains with its owner. Prompt/video extension
+reports remain disabled and unsupported until real identity mapping and capability
+evidence exist, followed by reporting recovery and separate activation.
 
 Public contract references:
 

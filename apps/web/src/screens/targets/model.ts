@@ -6,6 +6,7 @@ import { loadBidHistory, loadTargetChanges, loadTargetPerformance, loadTargetRan
 export interface Target360GraphEvidence {
   status: 'observed' | 'partial' | 'stale' | 'missing';
   unresolvedCount: number;
+  observation?: { state: string; sourceEventAt: string; source: string };
   rows: { relation: ProviderGraphAssociation['relation']; kind: ProviderGraphAssociation['to']['kind'];
     providerId: string; version: string | null; source: 'product_api' | 'marketing_stream';
     sourceEventAt: string; stale: boolean }[];
@@ -28,7 +29,8 @@ export async function loadTargetGraphEvidence(handle: QueryHandle, args: {
     providerId:edge.to.providerId,version:edge.to.version,source:nodes.get(key)!.source,
     sourceEventAt:edge.sourceEventAt,stale:Date.parse(args.asOf)-Date.parse(edge.sourceEventAt)>args.maxAgeMs}));
   const unresolvedCount=graph.unresolved.filter((entry) => matches(entry.association)).length;
-  return {rows,unresolvedCount,status:rows.length===0 ? unresolvedCount>0 ? 'partial' : 'missing'
+  const node = nodes.get(key);
+  return {rows,unresolvedCount,...(node ? { observation: { state: node.state, sourceEventAt: node.sourceEventAt, source: node.source } } : {}),status:rows.length===0 ? node ? Date.parse(args.asOf)-Date.parse(node.sourceEventAt)>args.maxAgeMs ? 'stale' : 'partial' : unresolvedCount>0 ? 'partial' : 'missing'
     : rows.every((row) => row.stale) ? 'stale' : unresolvedCount>0 || rows.some((row) => row.stale) ? 'partial' : 'observed'};
 }
 

@@ -13,6 +13,7 @@
  */
 export const PACKAGE_NAME = '@wizard-ads/core' as const;
 
+export * from './stream-consumer.js';
 export * from './asset-eligibility.js';
 export * from './provider-graph.js';
 export * from './types.js';

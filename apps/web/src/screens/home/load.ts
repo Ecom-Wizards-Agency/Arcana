@@ -1,3 +1,5 @@
+import type { StreamConsumerEvidence } from '@wizard-ads/shared';
+import { readStreamConsumerEvidence } from '../creative/stream-evidence-load';
 import type { StreamExtensionEvidence } from '@wizard-ads/shared';
 import { analyzeAccount, classifyCampaignCategory, computePacing, evaluate, pacingFlag } from '@wizard-ads/core';
 import { readStreamExtensionEvidence, listHomeInsights, listHomeMarketGaps, listRecommendations } from '@wizard-ads/db';
@@ -38,7 +40,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       loadProfileDailyRows(handle, actor.orgId, profile.id, profile.label, { start: `${reportDate.slice(0, 8)}01`, end: reportDate }),
       loadProfileDailyRows(handle, actor.orgId, profile.id, profile.label, comparison),
     ]);
-    const provider: { providerDiagnostics?: StreamExtensionEvidence } = { providerDiagnostics: await readStreamExtensionEvidence(handle, { ...scope, datasetId: 'sponsored-ads-campaign-diagnostics-recommendations', asOf: new Date().toISOString(), maxAgeMs: 86400000 }) };
+    const provider: { providerBudget?: StreamConsumerEvidence; providerDiagnostics?: StreamExtensionEvidence } = { providerBudget: await readStreamConsumerEvidence(handle, { ...scope, datasets: ['sp-budget-recommendations'], asOf: new Date().toISOString(), maxAgeMs: 86400000 }), providerDiagnostics: await readStreamExtensionEvidence(handle, { ...scope, datasetId: 'sponsored-ads-campaign-diagnostics-recommendations', asOf: new Date().toISOString(), maxAgeMs: 86400000 }) };
     const pacing = computePacing(monthRows, reportDate, profile.monthlyBudget);
     const pacingAlert = pacingFlag(pacing, null);
     const flags = evaluate(analyzeAccount(profile.label, reportDate, analysisRows,

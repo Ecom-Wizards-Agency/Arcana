@@ -1,3 +1,4 @@
+import { StreamEvidencePanel } from '../creative/stream-evidence';
 import { ProviderDiagnostics } from './provider-diagnostics';
 import { formatShellDate, formatTimestamp, formatDateWindow } from '../../ui/date-format';
 import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
@@ -39,13 +40,13 @@ function renderEmpty(_props: Extract<ScreenData, { view: 'empty'; }>['props']) {
   </main>);
 }
 
-function renderReady({ run, proposals, profile, runs, role, providerDiagnostics }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ run, proposals, profile, runs, role, providerDiagnostics, providerBudget }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main
     style={main}
     data-interactive="true"
     data-release-artifact={RELEASE_ARTIFACT.recommendationReview}
   >
-    <ProviderDiagnostics evidence={providerDiagnostics} />
+    <ProviderDiagnostics evidence={providerDiagnostics} /><StreamEvidencePanel evidence={providerBudget} title="Provider budget advice" />
     <header style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
       <div style={{ alignItems: 'center', display: 'flex', justifyContent: 'space-between' }}>
         <h1 style={heading}>Recommendations</h1>

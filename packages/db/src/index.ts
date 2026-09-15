@@ -100,6 +100,7 @@ export { prepareOptimizerRetry, readOptimizerRetryExclusions } from './queries/s
 export * from './queries/marketing-stream-extensions.js';
 export * from './queries/provider-graph.js';
 export * from './queries/asset-evidence.js';
+export * from './queries/asset-registration.js';
 export * from './queries/campaign-drafts.js';
 export * from './queries/naming-presets.js';
 export * from './queries/keyword-sets.js';

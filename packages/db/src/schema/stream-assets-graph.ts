@@ -25,6 +25,7 @@ export const marketingStreamExtensionBindings = pgTable('marketing_stream_extens
 
 /** Infrastructure-only receipt: deliberately has no inferred tenant column. */
 export const marketingStreamExtensionReceipts = pgTable('marketing_stream_extension_receipts', {
+  orgId: uuid('org_id'), profileId: uuid('profile_id'), datasetId: text('dataset_id'),
   deliveryId: text('delivery_id').primaryKey(), bodyFingerprint: text('body_fingerprint').notNull(),
   receivedAt: ts('received_at').notNull(), receipt: jsonb('receipt').$type<StreamExtensionReceipt>().notNull(),
   deadLetteredAt: ts('dead_lettered_at'), expiresAt: ts('expires_at').notNull(),
@@ -53,7 +54,7 @@ export const marketingStreamExtensionProjections = pgTable('marketing_stream_ext
   orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
   profileId: uuid('profile_id').notNull(), identity: text('identity').notNull(),
   status: text('status').notNull().default('pending'), attempts: integer('attempts').notNull().default(0),
-  retryAfter: ts('retry_after'), reason: text('reason'),
+  retryAfter: ts('retry_after'), reason: text('reason'), lastAttemptKey: text('last_attempt_key'),
 }, t => [
   primaryKey({ columns: [t.orgId, t.profileId, t.identity] }),
   foreignKey({ columns: [t.orgId, t.profileId, t.identity],
@@ -132,3 +133,19 @@ export const providerEntityAssociations = pgTable('provider_entity_associations'
   index('provider_association_resolution').on(t.orgId, t.profileId, t.resolution),
   index('provider_association_retention').on(t.expiresAt),
 ]);
+
+export const assetRegistrationAuthorities = pgTable('asset_registration_authorities', {
+  id: uuid('id').primaryKey(), orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+  profileId: uuid('profile_id').notNull(), actorId: uuid('actor_id').notNull(),
+  enabled: boolean('enabled').notNull().default(false), request: jsonb('request').notNull(), expiresAt: ts('expires_at').notNull(),
+}, t => [foreignKey({ columns: [t.orgId,t.profileId], foreignColumns: [adProfiles.orgId,adProfiles.id] }).onDelete('cascade')]);
+export const assetRegistrationIntents = pgTable('asset_registration_intents', {
+  id: uuid('id').primaryKey(), orgId: uuid('org_id').notNull().references(() => orgs.id, { onDelete: 'cascade' }),
+  profileId: uuid('profile_id').notNull(), actorId: uuid('actor_id').notNull(),
+  authorityId: uuid('authority_id').notNull().unique().references(() => assetRegistrationAuthorities.id),
+  request: jsonb('request').notNull(), status: text('status').notNull().default('admitted'), outcome: jsonb('outcome'),
+  attemptedAt: ts('attempted_at'), observedAt: ts('observed_at'), searchJobId: uuid('search_job_id').unique(),
+  createdAt: ts('created_at').notNull().defaultNow(),
+}, t => [foreignKey({ columns: [t.orgId,t.profileId], foreignColumns: [adProfiles.orgId,adProfiles.id] }).onDelete('cascade'),
+  index('asset_registration_reconciliation').on(t.status,t.attemptedAt),
+  check('asset_registration_intents_status_check',sql`${t.status} in ('admitted','attempting','uncertain','accepted','refused')`)]);

@@ -1,3 +1,6 @@
+import type { ReactNode } from 'react';
+import { readStreamConsumerEvidence } from '../creative/stream-evidence-load';
+import { StreamEvidencePanel } from '../creative/stream-evidence';
 import { ShellFreshnessBanner } from '../../ui/shell-evidence';
 
 import type { ScreenActor } from '../../server/page-read';
@@ -114,7 +117,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
 
   return {
     view: 'ready' as const, props: {
-      entity, profile, period, comparison, params, slot1: (<GridCockpit
+      entity, profile, period, comparison, params, ...({ streamEvidence: (<GridStreamEvidence access={access} orgId={orgId} profileId={profile.id} entity={entity} campaignId={params.campaign ?? null} asin={params.asin ?? null} />) } as { streamEvidence?: ReactNode }), slot1: (<GridCockpit
         handle={entry.handle} actor={actor}
         orgId={orgId}
         profile={profile}
@@ -236,4 +239,13 @@ async function GridFreshness({ handle, actor, profileId }: {
 }) {
   const crosscheck = await GridCrosscheck({ handle, actor, profileId });
   return <ShellFreshnessBanner>{crosscheck}</ShellFreshnessBanner>;
+}
+
+async function GridStreamEvidence({ access, orgId, profileId, entity, campaignId, asin }: { campaignId: string | null; asin: string | null; access: ScreenActor; orgId: string; profileId: string; entity: EntityLevel }) {
+  const dataset = entity === 'campaigns' ? 'ads-campaign-management-campaigns' : entity === 'ad_groups' ? 'ads-campaign-management-adgroups'
+    : entity === 'products' ? 'ads-campaign-management-ads' : entity === 'targets' ? 'ads-campaign-management-targets' : null;
+  if (dataset === null) return null;
+  const evidence = await access.readSql((sql) => readStreamConsumerEvidence({ sql }, { orgId, profileId,
+    datasets: [dataset], campaignId, asin, asOf: new Date().toISOString(), maxAgeMs: 86400000 }));
+  return <StreamEvidencePanel evidence={evidence} />;
 }
