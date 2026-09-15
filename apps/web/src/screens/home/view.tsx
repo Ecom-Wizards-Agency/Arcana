@@ -79,6 +79,18 @@ export function HomeContent({ profile, context, home }: HomeReady) {
         </div>}
         <ol className="wa-home-cut-order" aria-label="Budget cut order">{['Waste', 'Discovery', 'Profit', 'Rank — operator only'].map((label, index) =>
           <li key={label} data-tone={index === 3 ? 'warn' : 'neutral'}>{index + 1} {label}</li>)}</ol>
+        {home.portfolioPacing.length > 0 ? <section aria-label="Portfolio pacing"><h3>Portfolio pacing</h3>
+          <ul className="wa-home-events">{home.portfolioPacing.map((row) => <li key={row.evidence.portfolioId}>
+            <strong>{row.evidence.name ?? row.evidence.portfolioId}</strong><p>{row.availability === 'measured' ? 'Measured' : row.availability === 'partial' ? 'Partial evidence' : 'Not measured'}
+              {row.pace === null ? '' : ` · pace ${row.pace.toFixed(2)}×`}</p>
+            <p>{row.evidence.period === null ? 'Budget period unavailable' : `${row.evidence.period.start} to ${row.evidence.period.end}`} · through {row.evidence.asOf}</p>
+            <p>Month-to-date spend for current members {row.evidence.currency === profile.currencyCode ? money(row.evidence.spend) : '—'} · Remaining for this period {row.evidence.currency === profile.currencyCode ? money(row.remainingAmount) : '—'}</p>
+            <p>{row.evidence.memberCampaigns} campaigns · {row.evidence.observedCampaignDays} of {row.evidence.expectedCampaignDays} campaign-days observed</p>
+            {!row.evidence.membershipComplete ? <p>Historical campaign membership is not verified.</p> : null}
+            {row.evidence.unassignedCampaigns > 0 ? <p>{row.evidence.unassignedCampaigns} profile campaigns have no portfolio assignment.</p> : null}
+            <p>{row.evidence.oldestLoadedAt === null ? 'Spend freshness unavailable' : <>Oldest spend load <time dateTime={row.evidence.oldestLoadedAt}>{row.evidence.oldestLoadedAt}</time></>}</p>
+          </li>)}</ul>
+        </section> : null}
       </HomeCard>
       <div className="wa-home-right-stack">
         <HomeCard title="Rank watch" subtitle="Where ads and organic disagree.">
@@ -97,9 +109,20 @@ export function HomeContent({ profile, context, home }: HomeReady) {
             </li>)}</ul>}
         </HomeCard>
       </div>
-      <HomeCard title="Campaigns near their limit" subtitle="Which campaigns are running out of daily budget.">
-        <EmptyState variant="not-measured" title="Not measured" body="Budget exhaustion is only visible in Amazon’s hourly Marketing Stream feed. Budget usage from that feed is not available for this profile. The daily budget we store does not say whether a campaign ever ran out." />
-        <p className="wa-home-caption">When the feed is on, this lists each campaign with the share of the day it spent its budget, worst first.</p>
+      <HomeCard title="Campaigns near their limit" subtitle="Campaign budget usage at the provider observation time.">
+        {home.budgetUsage.availability === 'disabled' ? <EmptyState variant="not-measured" title="Not measured" body="Budget usage sources are off for this profile. Enable an approved Ads API or Marketing Stream source to collect observations." /> : <>
+          <p className="wa-home-caption">{home.budgetUsage.measuredCampaigns} of {home.budgetUsage.totalCampaigns} campaigns have current usage evidence · {home.budgetUsage.availability}</p>
+          {home.budgetUsage.campaigns.length === 0 ? <EmptyState variant="not-measured" title="Not measured" body="No campaign budget usage observations are available." /> :
+            <ul className="wa-home-events" aria-label="Campaign budget usage">{home.budgetUsage.campaigns.map((row) => <li key={`${row.adProduct}-${row.campaignId}`}>
+              <strong>{row.campaignName ?? row.campaignId}</strong>
+              <p>{row.observation?.usagePercent == null ? 'Usage not measured' : `${row.observation.usagePercent.toLocaleString('en-US')}% used`}
+                {row.availability === 'stale' ? ' · stale observation' : row.availability === 'partial' ? ' · partial evidence' : row.availability === 'unavailable' ? ' · current usage unavailable' : ''}</p>
+              <p>{row.nearLimit === null ? 'Near-limit classification not measured' : row.nearLimit ? 'Near limit' : 'Below the near-limit policy threshold'}</p>
+              <p>Remaining at observation time: {row.observation?.currency === profile.currencyCode ? money(row.remainingAmount) : '—'}</p>
+              {row.observation === null ? null : <p>{row.observation.source === 'amazon_ads_api' ? 'Ads API' : 'Marketing Stream'} · <time dateTime={row.observation.providerUpdatedAt}>{row.observation.providerUpdatedAt}</time></p>}
+            </li>)}</ul>}
+        </>}
+        <p className="wa-home-caption">Ads API and eligible Marketing Stream observations show usage at a point in time. They do not measure the share of a day spent exhausted.</p>
       </HomeCard>
       <HomeCard title="Market position" subtitle="Distance to the product behind you, not your rank on its own.">
         {home.market.length === 0 ? <>

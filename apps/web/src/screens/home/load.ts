@@ -1,5 +1,5 @@
-import { analyzeAccount, classifyCampaignCategory, computePacing, evaluate, pacingFlag } from '@wizard-ads/core';
-import { listHomeInsights, listHomeMarketGaps, listRecommendations } from '@wizard-ads/db';
+import { analyzeAccount, classifyCampaignCategory, computePacing, computePortfolioPacing, evaluate, pacingFlag, selectBudgetUsage } from '@wizard-ads/core';
+import { listHomeInsights, listHomeMarketGaps, listRecommendations, listPortfolioSpendEvidence, readBudgetUsageEvidence } from '@wizard-ads/db';
 import { loadCampaignDailyRows, loadHomeRankWatch, loadProfileDailyRows } from '../../../app/_lib/dashboard-data';
 import { kpiTiles, totalsOf } from '../../optimizer/view';
 import { addDays, precedingPeriod, periodFromParams } from '../../../app/_lib/periods';
@@ -27,7 +27,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
     ? periodFromParams({ from, to }, today) : precedingPeriod(period);
   const home = await access.read(async (handle, actor) => {
     const scope = { orgId: actor.orgId, profileId: profile.id };
-    const [role, proposals, events, ranks, market, campaigns, monthRows, comparisonRows] = await Promise.all([
+    const [role, proposals, events, ranks, market, campaigns, monthRows, comparisonRows, budgetEvidence, portfolioEvidence] = await Promise.all([
       requireOrgRole(handle, actor),
       listRecommendations(handle, { ...scope, statuses: ['proposed'], limit: 20000 }),
       listHomeInsights(handle, { ...scope, start: addDays(today, -6), end: today }),
@@ -36,6 +36,8 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       loadCampaignDailyRows(handle, actor.orgId, profile.id, profile.label, analysisWindow),
       loadProfileDailyRows(handle, actor.orgId, profile.id, profile.label, { start: `${reportDate.slice(0, 8)}01`, end: reportDate }),
       loadProfileDailyRows(handle, actor.orgId, profile.id, profile.label, comparison),
+      readBudgetUsageEvidence(handle, scope),
+      listPortfolioSpendEvidence(handle, { ...scope, asOf: reportDate }),
     ]);
     const pacing = computePacing(monthRows, reportDate, profile.monthlyBudget);
     const pacingAlert = pacingFlag(pacing, null);
@@ -54,6 +56,8 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       }),
       proposalsCapped: proposals.length === 20000,
       events, ranks: ranks.map((row) => ({ ...row, spend: null as number | null })), market, pacing,
+      budgetUsage: selectBudgetUsage(budgetEvidence, new Date().toISOString()),
+      portfolioPacing: portfolioEvidence.map(computePortfolioPacing),
       activeFlags: pacingAlert === null ? flags.active : [pacingAlert, ...flags.active],
       suppressedFlags: flags.suppressed,
       weekStart: addDays(weekEnd, -6), weekEnd,

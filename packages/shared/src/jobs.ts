@@ -28,6 +28,8 @@ export const JobType = z.enum([
   'marketing_stream.normalize',
   'report.unified.advance',
   'translation.request',
+  'budget_usage.collect',
+  'budget_usage.stream',
 ]);
 export type JobType = z.infer<typeof JobType>;
 
@@ -281,8 +283,15 @@ export const TargetTranslationJob = z.strictObject({
 });
 export type TargetTranslationJob = z.infer<typeof TargetTranslationJob>;
 
+export const BudgetUsageCollectJob = z.object({ ...jobBase, type: z.literal('budget_usage.collect') });
+export type BudgetUsageCollectJob = z.infer<typeof BudgetUsageCollectJob>;
+export const BudgetUsageStreamJob = z.object({ ...jobBase, type: z.literal('budget_usage.stream') });
+export type BudgetUsageStreamJob = z.infer<typeof BudgetUsageStreamJob>;
+
 export const JobPayload = z.discriminatedUnion('type', [
   EntitySyncJob,
+  BudgetUsageCollectJob,
+  BudgetUsageStreamJob,
   ReportRequestJob,
   ReportPollJob,
   ReportFetchJob,

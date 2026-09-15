@@ -65,6 +65,8 @@ export function createMarketingStreamNormalizeHandler(input: {
   contexts?: MarketingStreamRuntimeContextLoader;
   resolveScopes?: typeof marketingStreamScopesForMessageIds;
   blocks?: MarketingStreamProjectionBlockStore;
+  /** Optional budget reader continuation; called only after verified projection persistence. */
+  onBudgetNormalized?: (scope: { orgId: string; profileId: string }, observedAt: Date) => Promise<void>;
 }): (payload: MarketingStreamNormalizeJob) => Promise<Record<string, unknown>> {
   const store = input.store ?? new DbMarketingStreamStore(input.handle);
   const contexts = input.contexts ?? new DbMarketingStreamRuntimeContextLoader(input.handle);
@@ -183,6 +185,10 @@ export function createMarketingStreamNormalizeHandler(input: {
           transitionAt,
         ),
       );
+    }
+
+    if (snapshot.events.some((event) => event.dataset === 'budget_usage')) {
+      await input.onBudgetNormalized?.({ orgId: payload.orgId, profileId: payload.profileId }, observedAt);
     }
 
     return {

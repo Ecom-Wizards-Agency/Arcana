@@ -1,4 +1,7 @@
 import { registerTargetTranslation } from './translation/register.js';
+import { registerBudgetUsageSources } from './budget-usage/register.js';
+import { createBudgetUsageStore } from './budget-usage/composition.js';
+import { createBudgetUsageProvider } from './budget-usage/provider.js';
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
 import { runSpApiConnectionPass } from './spapi-connections.js';
 import { registerIntegrationSources } from './integration-sources.js';
@@ -66,6 +69,8 @@ if (!Number.isFinite(reportStaleHours) || reportStaleHours <= 0) {
 const handle = createDb({ connectionString: config.databaseUrl, max: config.maxConcurrentJobs + 2 });
 const store = new PostgresWorkerStore(handle, undefined, {
   claimProtocol: config.claimProtocol,
+  ...((config.jobTypes === undefined || config.jobTypes.includes('budget_usage.collect'))
+    ? { budgetUsageApiEnabled: config.budgetUsageApiEnabled } : {}),
   ...((config.spWrites.dispatchEnabled || config.spWrites.reconcileEnabled)
     ? { keywordMirror: createKeywordMirrorCapability(handle) } : {}),
 });
@@ -133,12 +138,20 @@ const sqpRequest = runsSqpJobs && config.spApiClientId && config.spApiClientSecr
 const sqpSchedules = sqpRequest
   ? new PostgresWeeklySqpScheduler(handle, store)
   : undefined;
+const budgetUsageStore = createBudgetUsageStore(handle);
 const integrations = {
     economicsSync: createMrpEconomicsSync(handle),
     rankSync: createDataDiveRankSyncHandler({ handle }),
     keepaSync: createKeepaSyncHandler(handle),
     ...(sqpRequest === undefined ? {} : { sqpRequest }),
-    marketingStreamNormalize: createMarketingStreamNormalizeHandler({ handle, queue: store }),
+    marketingStreamNormalize: createMarketingStreamNormalizeHandler({ handle, queue: store,
+      ...(config.budgetUsageStreamEnabled ? { onBudgetNormalized: async (scope: { orgId: string; profileId: string }, observedAt: Date) => {
+        const settings = await budgetUsageStore.config(scope);
+        if (!settings.streamEnabled) return;
+        await store.enqueue({ ...scope, type: 'budget_usage.stream' }, observedAt,
+          ['budget-usage', 'stream', scope.profileId, observedAt.toISOString()].join(':'));
+      } } : {}),
+    }),
   };
 const worker = new SyncWorker({
   workerId: config.workerId,
@@ -150,7 +163,11 @@ const worker = new SyncWorker({
   sbVideo,
   unifiedReporting,
   integrations: { marketingStreamNormalize: integrations.marketingStreamNormalize },
-  sources: (registry) => { registerIntegrationSources(registry, integrations); registerTargetTranslation(registry, handle); },
+  sources: (registry) => {
+    registerIntegrationSources(registry, integrations); registerTargetTranslation(registry, handle);
+    registerBudgetUsageSources(registry, { store: budgetUsageStore, provider: createBudgetUsageProvider(handle),
+      apiEnabled: config.budgetUsageApiEnabled, streamEnabled: config.budgetUsageStreamEnabled });
+  },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,
   pollIntervalMs: config.pollIntervalMs,

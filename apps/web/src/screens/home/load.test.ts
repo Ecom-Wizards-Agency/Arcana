@@ -1,15 +1,23 @@
-import { expect, it, vi } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
+import { BudgetUsageConfig } from '@wizard-ads/shared';
 import type { ScreenActor } from '../../server/page-read';
 import { withoutBudget } from './fixtures';
 const mocks = vi.hoisted(() => ({
   performance: vi.fn(), role: vi.fn(), proposals: vi.fn(), events: vi.fn(), market: vi.fn(),
   campaigns: vi.fn(), ranks: vi.fn(), month: vi.fn(),
+  budget: vi.fn(), portfolios: vi.fn(),
 }));
 vi.mock('../cockpit/load', () => ({ load: mocks.performance }));
 vi.mock('../../server/org-role', () => ({ requireOrgRole: mocks.role }));
-vi.mock('@wizard-ads/db', () => ({ listRecommendations: mocks.proposals, listHomeInsights: mocks.events, listHomeMarketGaps: mocks.market }));
+vi.mock('@wizard-ads/db', () => ({ listRecommendations: mocks.proposals, listHomeInsights: mocks.events, listHomeMarketGaps: mocks.market,
+  readBudgetUsageEvidence: mocks.budget, listPortfolioSpendEvidence: mocks.portfolios }));
 vi.mock('../../../app/_lib/dashboard-data', () => ({ loadCampaignDailyRows: mocks.campaigns, loadHomeRankWatch: mocks.ranks, loadProfileDailyRows: mocks.month }));
 import { load } from './load';
+
+beforeEach(() => {
+  mocks.budget.mockResolvedValue({ orgId: 'synthetic-org', profileId: withoutBudget.profile.id, config: BudgetUsageConfig.parse({}), campaigns: [], observations: [], sources: [], totalCampaigns: 0 });
+  mocks.portfolios.mockResolvedValue([]);
+});
 
 it('loads the whole pacing month and derives viewer authority from the authenticated read', async () => {
   const base = { ...withoutBudget, period: { start: '2026-06-25', end: '2026-06-28' }, today: '2026-06-29',
@@ -24,6 +32,8 @@ it('loads the whole pacing month and derives viewer authority from the authentic
   const data = await load({ read } as unknown as ScreenActor, { searchParams: {}, params: {} });
   expect(read).toHaveBeenCalledTimes(1);
   expect(mocks.role).toHaveBeenCalledWith(handle, actor);
+  expect(mocks.budget).toHaveBeenCalledWith(handle, { orgId: actor.orgId, profileId: base.profile.id });
+  expect(mocks.portfolios).toHaveBeenCalledWith(handle, { orgId: actor.orgId, profileId: base.profile.id, asOf: '2026-06-28' });
   expect(mocks.month).toHaveBeenCalledWith(handle, actor.orgId, base.profile.id, base.profile.label, { start: '2026-06-01', end: '2026-06-28' });
   expect(mocks.events).toHaveBeenCalledWith(handle, { orgId: actor.orgId, profileId: base.profile.id, start: '2026-06-23', end: '2026-06-29' });
   expect(mocks.ranks).toHaveBeenCalledWith(handle, actor.orgId, base.profile.id, '2026-06-28');

@@ -160,6 +160,8 @@ export function bidRecommendationTargetKey(target: BidRecommendationTarget): str
 }
 /** One successful range observation; legacy ledger accounting can be unknown. */
 export const ReportCoverageObservation = FreshnessCoverage.extend({
+  /** Immutable source run for collectors whose accounting can change at the same provider time. */
+  sourceRunId: Uuid.optional(),
   orgId: Uuid,
   profileId: Uuid,
   grain: z.string().min(1),

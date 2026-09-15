@@ -1405,6 +1405,9 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
     adProduct: AdProduct,
     campaignIds: readonly string[],
   ): Promise<BudgetUsageResult> {
+    if (new Set(campaignIds).size !== campaignIds.length || campaignIds.some((id) => id.trim() === '')) {
+      throw new AdsApiParseError('budget usage request identities must be distinct and nonempty');
+    }
     const usage: BudgetUsage[] = [];
     const failures: BudgetUsageFailure[] = [];
     const endpoint = BUDGET_USAGE_ENDPOINTS[adProduct];

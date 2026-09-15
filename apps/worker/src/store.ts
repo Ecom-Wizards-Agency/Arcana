@@ -22,6 +22,7 @@ import {
   reconcileEntityChangeLinks,
   reportRequests,
   recordReportCoverage,
+  publishBudgetUsageCoverage,
   upsertReportCoverage,
   quarantineReportCreate,
   type ReportCreateEvidence,
@@ -57,6 +58,7 @@ type AttributedReportCounts = WorkerReportAccountingShape;
 import type { AdsProfileContext } from './ads-api.js';
 import type { CampaignFactRow, ParsedFactBatch } from './parsers.js';
 import { defaultSchedules, type ScheduleSpec } from './schedules.js';
+import { ensureBudgetUsageSchedules } from './budget-usage/schedules.js';
 
 export type ReportRequestState = Omit<
   WorkerReportLedger,
@@ -272,6 +274,7 @@ export class ClaimOwnershipLost extends Error {
 
 export interface PostgresWorkerStoreOptions {
   claimProtocol?: 'legacy' | 'fenced';
+  budgetUsageApiEnabled?: boolean;
   keywordMirror?: KeywordMirrorCapability;
 }
 
@@ -289,6 +292,7 @@ export class PostgresWorkerStore implements WorkerStore {
   private readonly keywordMirror: KeywordMirrorCapability | undefined;
   private readonly reportedDisabledSbKeywords = new Set<string>();
   private readonly claimProtocol: 'legacy' | 'fenced';
+  private readonly budgetUsageApiEnabled: boolean | undefined;
 
   constructor(
     readonly handle: DbHandle,
@@ -297,6 +301,7 @@ export class PostgresWorkerStore implements WorkerStore {
   ) {
     this.logger = logger ?? { info: (message, details) => console.info(message, details ?? {}) };
     this.claimProtocol = options.claimProtocol ?? 'legacy';
+    this.budgetUsageApiEnabled = options.budgetUsageApiEnabled;
     this.keywordMirror = options.keywordMirror;
   }
 
@@ -824,10 +829,13 @@ export class PostgresWorkerStore implements WorkerStore {
    * them, while a later reactivation enables the same rows again.
    */
   async ensureIntegrationSchedules(): Promise<number> {
+    // Other runtimes also reconcile integrations. Only explicit budget composition owns these schedules.
+    const budgetSchedules = this.budgetUsageApiEnabled === undefined ? 0
+      : await ensureBudgetUsageSchedules(this.handle, this.budgetUsageApiEnabled);
     const [relation] = await this.handle.sql<{ relation: string | null }[]>`
       select to_regclass('public.integration_connections')::text as relation
     `;
-    if (!relation?.relation) return 0;
+    if (!relation?.relation) return budgetSchedules;
 
     const [result] = await this.handle.sql<{ changed: string }[]>`
       with active_connections as (
@@ -899,7 +907,7 @@ export class PostgresWorkerStore implements WorkerStore {
       )
       select ((select count(*) from disabled) + (select count(*) from upserted))::text as changed
     `;
-    return Number(result?.changed ?? 0);
+    return budgetSchedules + Number(result?.changed ?? 0);
   }
 
   async unscheduledProfiles(): Promise<{ orgId: string; profileId: string }[]> {
@@ -987,6 +995,9 @@ export class PostgresWorkerStore implements WorkerStore {
   }
 
   async recordCoverage(observation: ReportCoverageObservation, verifiedLoadedRows: number) {
+    if (observation.reportType === 'campaign_budget_usage') {
+      return publishBudgetUsageCoverage(this.handle, observation, verifiedLoadedRows);
+    }
     return upsertReportCoverage(this.handle, observation, verifiedLoadedRows);
   }
 
