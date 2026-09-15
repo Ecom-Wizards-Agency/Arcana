@@ -156,12 +156,14 @@ export async function readStreamExtensionEvidence(handle: QueryHandle, input: {
     on p.org_id=e.org_id and p.profile_id=e.profile_id and p.identity=e.identity
     where e.org_id=${input.orgId} and e.profile_id=${input.profileId} and e.dataset_id=${input.datasetId}
       and e.event_time<=${input.asOf} and e.received_at<=${input.asOf} and e.expires_at>${input.asOf} and p.status='projected'
-    order by e.entity_key,e.event_time desc,e.revision desc,e.identity`;
+    order by e.entity_key,e.revision desc,e.event_time desc,e.identity`;
   const groups = new Map<string, StreamExtensionEvent[]>();
   for (const row of rows) { const group = groups.get(row.entity_key) ?? []; group.push(StreamExtensionEvent.parse(row.event)); groups.set(row.entity_key, group); }
   const events = [...groups.values()].flatMap((group) => {
     const latest = group[0]!;
-    const sameVersion = group.filter((e) => e.record.eventTime === latest.record.eventTime && e.record.revision === latest.record.revision);
+    // Within this transport, graph reconciliation compares revisions before source time.
+    // A conflicting payload at the same revision stays conflicted across timestamps.
+    const sameVersion = group.filter((e) => e.record.revision === latest.record.revision);
     return new Set(sameVersion.map((e) => e.payloadFingerprint)).size === 1 ? [latest] : [];
   });
   return StreamExtensionEvidence.parse({ events, count: events.length, source: 'amazon_marketing_stream', selectionAuthority: false,
@@ -266,30 +268,40 @@ export async function failStreamProjectionAttempt(handle: Pick<DbHandle, 'sql'>,
     where org_id=${input.orgId} and profile_id=${input.profileId} and identity=${input.eventIdentity}`;
 }
 
-/** Startup repairs missing/dead work; active queue claims remain owned by its existing reaper. */
+/** Startup repairs missing/dead work; active queue claims remain owned by its existing reaper.
+ * Disabled bindings wait outside the batch and can re-enter after explicit re-enablement. */
 export async function reconcileStreamExtensionWork(handle: Pick<DbHandle, 'sql'>, enabled = false, limit = 100) {
   const counts = { requested: 0, attempted: 0, succeeded: 0, failed: 0, refused: 0 };
   if (!enabled) return counts;
   if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error('Invalid Stream reconciliation bound');
   await handle.sql.begin(async (sql) => {
-    const rows = await sql<{ org_id: string; profile_id: string; identity: string; dataset_id: StreamExtensionDataset; attempts: number; queue_attempts: number; admitted: boolean }[]>`
+    const rows = await sql<{ org_id: string; profile_id: string; identity: string; dataset_id: StreamExtensionDataset; attempts: number; queue_attempts: number }[]>`
       select p.org_id,p.profile_id,p.identity,e.dataset_id,p.attempts,
         (select coalesce(sum(greatest(j.attempts,1)),0)::int from public.sync_jobs j
           where j.org_id=p.org_id and j.profile_id=p.profile_id and j.job_type='marketing_stream.extensions.project'
-            and j.payload->>'eventIdentity'=p.identity) as queue_attempts,
-        exists(select 1 from public.marketing_stream_extension_bindings b where b.org_id=p.org_id and b.profile_id=p.profile_id
-          and b.dataset_id=e.dataset_id and b.subscription_id=e.event #>> '{record,subscriptionId}'
-          and b.enabled and b.confirmed and b.capability_verified) as admitted
+            and j.payload->>'eventIdentity'=p.identity) as queue_attempts
       from public.marketing_stream_extension_projections p join public.marketing_stream_extension_events e using(org_id,profile_id,identity)
-      where p.status in ('pending','retrying','projected') and (p.retry_after is null or p.retry_after<=now()) and e.expires_at>now()
+      where (p.status in ('pending','retrying','projected') or p.status='blocked' and p.reason='binding_refused')
+        and p.reason is distinct from 'recovery_exhausted'
+        and (p.retry_after is null or p.retry_after<=now()) and e.expires_at>now()
+        and exists(select 1 from public.marketing_stream_extension_bindings b where b.org_id=p.org_id and b.profile_id=p.profile_id
+          and b.dataset_id=e.dataset_id and b.subscription_id=e.event #>> '{record,subscriptionId}'
+          and b.enabled and b.confirmed and b.capability_verified)
         and not exists(select 1 from public.sync_jobs j where j.org_id=p.org_id and j.profile_id=p.profile_id
           and j.job_type='marketing_stream.extensions.project' and j.payload->>'eventIdentity'=p.identity and j.status in ('queued','running'))
         and not exists(select 1 from public.sync_jobs done where done.org_id=p.org_id and done.profile_id=p.profile_id
           and done.job_type='marketing_stream.extensions.project' and done.payload->>'eventIdentity'=p.identity and done.status='succeeded')
-      order by e.received_at limit ${limit} for update of p skip locked`;
+      order by e.received_at,p.identity limit ${limit} for update of p skip locked`;
     for (const row of rows) {
       counts.requested++;
-      if (!row.admitted || row.attempts >= 8 || row.queue_attempts >= 8) { counts.refused++; continue; }
+      if (row.attempts >= 8 || row.queue_attempts >= 8) {
+        // Record refusal once so the next bounded pass reaches later work. Preserve
+        // projected status: exhausting a coverage retry must not hide durable facts.
+        const refused = await sql`update public.marketing_stream_extension_projections set reason='recovery_exhausted'
+          where org_id=${row.org_id} and profile_id=${row.profile_id} and identity=${row.identity} returning identity`;
+        if (refused.length !== 1) throw new Error('Stream recovery refusal count mismatch');
+        counts.refused++; continue;
+      }
       counts.attempted++;
       const key = `stream-recovery:${row.identity}:${row.queue_attempts}`;
       const payload = { type: 'marketing_stream.extensions.project', orgId: row.org_id, profileId: row.profile_id,
