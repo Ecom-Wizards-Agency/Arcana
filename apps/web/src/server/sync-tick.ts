@@ -18,7 +18,7 @@
  *     the rows that need it belong to profiles that are already provisioned.
  *  3. **Provision** defaults for any newly enabled profile, before the enqueue,
  *     so a profile switched on in the UI syncs this tick.
- *  4. **Enqueue** the explicitly gated daily Creative observations, then due
+ *  4. **Enqueue** the daily Creative observations, then due
  *     recommendation runs in TypeScript (their required ids are minted first)
  *     and the remaining SQL schedules; finally **requeue** jobs a killed tick
  *     stranded.
@@ -33,10 +33,10 @@ import type { Sql } from '@wizard-ads/db';
 import type { JobType } from '@wizard-ads/shared';
 import {
   DEFAULT_VERCEL_CRON_JOB_TYPES,
-  resolveCreativeSyncPilotPolicy,
+  resolveCreativeSyncPolicy,
   vercelCronJobTypesFromEnv,
 } from '@wizard-ads/worker/deployment-role';
-import type { CreativeSyncPilotPolicy } from '@wizard-ads/worker/deployment-role';
+import type { CreativeSyncPolicy } from '@wizard-ads/worker/deployment-role';
 import type { DailyCreativeSyncEnqueueResult } from '@wizard-ads/db';
 import { requireValidRecommendationLaneIntent } from '../optimizer/readiness';
 
@@ -54,16 +54,12 @@ export function cronSyncJobTypesFromEnv(
     : current;
 }
 
-/**
- * Source merge is inert. Only the exact producer value `1`, together with the
- * already-completed report-lane handoff, permits the cron tick to enqueue a
- * Creative observation. A malformed or premature opt-in fails before the
- * database and Amazon client are constructed.
- */
-export function creativeSyncPilotFromEnv(
+/** Resolve observation eligibility independently of queue lane ownership. */
+export function creativeSyncPolicyFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
-): CreativeSyncPilotPolicy {
-  return resolveCreativeSyncPilotPolicy(env);
+  profileSyncEnabled = true,
+): CreativeSyncPolicy {
+  return resolveCreativeSyncPolicy(env, profileSyncEnabled);
 }
 
 /**

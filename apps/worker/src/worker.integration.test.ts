@@ -2343,7 +2343,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     await database.sql`delete from public.sync_schedules where profile_id = ${profileId}`;
     const store = new PostgresWorkerStore(database);
     const specs = defaultSchedules(['spCampaigns']);
-    expect(await store.provisionSchedules(orgId, profileId, specs)).toBe(4);
+    expect(await store.provisionSchedules(orgId, profileId, specs)).toBe(5);
     // Idempotent: the scope key now includes `variant`, so re-provisioning is
     // a no-op rather than a unique violation.
     expect(await store.provisionSchedules(orgId, profileId, specs)).toBe(0);
@@ -2477,7 +2477,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     const provisioner = new ScheduleProvisioner(store, 60_000, quietLogger);
     provisioner.start();
     const expectedCatalogueSchedules = 0;
-    const expectedSchedules = 1 + 3 * DEFAULT_REPORT_TYPES.length + expectedCatalogueSchedules;
+    const expectedSchedules = 2 + 3 * DEFAULT_REPORT_TYPES.length + expectedCatalogueSchedules;
     await waitFor(async () => {
       const [row] = await database.sql<{ n: string }[]>`
         select count(*) as n from public.sync_schedules where profile_id = ${profileId}
@@ -2490,7 +2490,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
       select count(*) as n, count(distinct variant) as variants
         from public.sync_schedules where profile_id = ${profileId}
     `;
-    // One entity pass and three variants per report type. Disabled catalogue admission writes no schedules.
+    // One entity and one Creative pass plus three variants per report type. Disabled catalogue admission writes no schedules.
     expect(Number(counts?.n)).toBe(expectedSchedules);
     expect(Number(counts?.variants)).toBe(3 + expectedCatalogueSchedules);
     const [catalogue] = await database.sql<{ n: string; enabled: string }[]>`
@@ -2519,7 +2519,7 @@ describe.skipIf(!available)('worker + real Postgres', () => {
                (${orgId}, 'mrp', 'schedule-test-mrp', 'active')
       `;
       const store = new PostgresWorkerStore(database);
-      expect(await store.ensureIntegrationSchedules()).toBe(3);
+      expect(await store.ensureIntegrationSchedules()).toBe(4);
       expect(await store.ensureIntegrationSchedules()).toBe(0);
 
       const schedules = await database.sql<{

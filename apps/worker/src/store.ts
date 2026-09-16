@@ -1,3 +1,4 @@
+import { ensureCreativeSyncSchedules } from '@wizard-ads/db';
 import { provisionSpApiReportJobs } from './spapi-report-scheduler.js';
 import { ProviderCollectionConfig } from '@wizard-ads/shared';
 import { providerEvidenceSchedule } from './schedules.js';
@@ -1095,11 +1096,13 @@ export class PostgresWorkerStore implements WorkerStore {
         insert into public.sync_schedules
           (org_id, profile_id, job_type, report_type, variant, cadence, lookback_days,
            window_offset_days, payload)
-        values
-          (${orgId}, ${profileId}, ${spec.jobType}::public.sync_job_type,
-           ${spec.reportType}::public.report_type, ${spec.variant},
-           ${spec.cadence}::interval, ${spec.lookbackDays}, ${spec.windowOffsetDays},
-           ${JSON.stringify(spec.payload)}::jsonb)
+        select ${orgId}, ${profileId}, ${spec.jobType}::public.sync_job_type,
+               ${spec.reportType}::public.report_type, ${spec.variant},
+               ${spec.cadence}::interval, ${spec.lookbackDays}, ${spec.windowOffsetDays},
+               ${JSON.stringify(spec.payload)}::jsonb
+         where ${spec.jobType} <> 'creative.sync' or exists (
+           select 1 from public.ad_profiles where id = ${profileId} and org_id = ${orgId} and sync_enabled
+         )
         on conflict (profile_id, job_type, report_type, variant) do nothing
         returning id
       `;
@@ -1171,10 +1174,11 @@ export class PostgresWorkerStore implements WorkerStore {
     // Other runtimes also reconcile integrations. Only explicit budget composition owns these schedules.
     const budgetSchedules = this.budgetUsageApiEnabled === undefined ? 0
       : await ensureBudgetUsageSchedules(this.handle, this.budgetUsageApiEnabled);
+    const creative = await ensureCreativeSyncSchedules(this.handle);
     const [relation] = await this.handle.sql<{ relation: string | null }[]>`
       select to_regclass('public.integration_connections')::text as relation
     `;
-    if (!relation?.relation) return budgetSchedules;
+    if (!relation?.relation) return budgetSchedules + creative;
 
     const ownSources = this.ownCollectorsEnabled ? this.handle.sql`
         union select p.org_id,p.id,'own_bids.collect'::public.sync_job_type,interval '1 day','{}'::jsonb from public.ad_profiles p where p.sync_enabled
@@ -1254,7 +1258,7 @@ export class PostgresWorkerStore implements WorkerStore {
       select ((select count(*) from disabled) + (select count(*) from upserted))::text as changed
     `;
     const spapi = await provisionSpApiReportJobs(this.handle);
-    return budgetSchedules + Number(result?.changed ?? 0) + spapi.enqueued + spapi.disabledScopes;
+    return budgetSchedules + creative + Number(result?.changed ?? 0) + spapi.enqueued + spapi.disabledScopes;
   }
 
   private async ensureProviderEvidenceSchedules(): Promise<void> {
@@ -1303,7 +1307,10 @@ export class PostgresWorkerStore implements WorkerStore {
       select p.org_id, p.id
         from public.ad_profiles p
        where p.sync_enabled
-         and not exists (select 1 from public.sync_schedules s where s.profile_id = p.id)
+         and not exists (
+           select 1 from public.sync_schedules s
+            where s.profile_id = p.id and s.job_type <> 'creative.sync'
+         )
     `;
     return rows.map((row) => ({ orgId: row.org_id, profileId: row.id }));
   }

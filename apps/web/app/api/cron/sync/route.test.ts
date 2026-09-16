@@ -24,6 +24,7 @@ const doubles = vi.hoisted(() => ({
   authoritySql: vi.fn(async () => [] as unknown[]),
   begin: vi.fn(async () => { throw new Error('scheduled producer must not open a transaction here'); }),
   closed: 0,
+  creativeEnqueue: vi.fn(async () => ({ requestedProfiles: 0, eligibleProfiles: 0, ineligibleProfiles: 0, deferredPendingProfiles: 0, enqueuedJobs: 0, deduplicatedJobs: 0, observations: [] })),
   bidSeriesSync: vi.fn(async () => ({ profiles: 1, written: 2 })),
   tickDeps: [] as SyncTickDeps[],
 }));
@@ -37,6 +38,7 @@ vi.mock('@wizard-ads/db', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
+    enqueueDailyCreativeSyncJobs: doubles.creativeEnqueue,
     createDb: (): DbHandle => ({
       sql: Object.assign(
         (...args: unknown[]) => doubles.authoritySql(...(args as [])),
@@ -72,8 +74,7 @@ const ENV_KEYS = [
   'CRON_SECRET',
   'DATABASE_URL',
   'OPENSPELL_EVO_REPORT_LANE_READY',
-  'OPENSPELL_CREATIVE_SYNC_PRODUCER_READY',
-  'OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST',
+  'OPENSPELL_CREATIVE_SYNC_DISABLED',
   'OPENSPELL_RECOMMENDATION_LANE_READY',
   'OPENSPELL_RECOMMENDATION_LANE_REVISION',
   'WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS',
@@ -113,6 +114,7 @@ describe('GET /api/cron/sync', () => {
     doubles.authoritySql.mockImplementation(async () => doubles.authorityRows);
     doubles.begin.mockClear();
     doubles.closed = 0;
+    doubles.creativeEnqueue.mockClear();
     doubles.tickDeps = [];
   });
 
@@ -172,28 +174,40 @@ describe('GET /api/cron/sync', () => {
     });
   });
 
-  it('fails closed before database or Amazon wiring for premature Creative activation', async () => {
-    process.env['CRON_SECRET'] = SECRET;
-    process.env['OPENSPELL_EVO_REPORT_LANE_READY'] = '0';
-    process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'] = '1';
-    process.env['OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST'] =
-      '11111111-2222-4333-8444-555555555555';
+  it('composes the creative producer by default for the Vercel report lane', async () => {
+    configureWiredTick();
     const response = await GET(request(`Bearer ${SECRET}`));
-    expect(response.status).toBe(503);
-    await expect(response.json()).resolves.toEqual({
-      error: 'cron queue ownership is not configured safely',
+    expect(response.status).toBe(200);
+    expect(doubles.tickDeps).toHaveLength(1);
+    expect(doubles.tickDeps[0]?.creativeSyncSchedules).toBeTypeOf('function');
+    await expect(doubles.tickDeps[0]?.creativeSyncSchedules?.()).resolves.toMatchObject({
+      requestedProfiles: 0, enqueuedJobs: 0, observations: [],
     });
+    expect(doubles.creativeEnqueue).toHaveBeenCalledExactlyOnceWith(expect.anything(), undefined, expect.any(Date), 'legacy');
   });
 
-  it('fails closed before database or Amazon wiring when the active cohort is absent', async () => {
-    process.env['CRON_SECRET'] = SECRET;
+  it('stops Vercel production when Evo owns the report lane', async () => {
+    configureWiredTick();
     process.env['OPENSPELL_EVO_REPORT_LANE_READY'] = '1';
-    process.env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'] = '1';
     const response = await GET(request(`Bearer ${SECRET}`));
-    expect(response.status).toBe(503);
-    await expect(response.json()).resolves.toEqual({
-      error: 'cron queue ownership is not configured safely',
-    });
+    expect(response.status).toBe(200);
+    expect(doubles.tickDeps[0]?.creativeSyncSchedules).toBeUndefined();
+  });
+
+  it('honors the deployment kill switch before producing any observations', async () => {
+    configureWiredTick();
+    process.env['OPENSPELL_CREATIVE_SYNC_DISABLED'] = '1';
+    const response = await GET(request(`Bearer ${SECRET}`));
+    expect(response.status).toBe(200);
+    expect(doubles.tickDeps[0]?.creativeSyncSchedules).toBeUndefined();
+    expect(doubles.authoritySql).not.toHaveBeenCalled();
+  });
+
+  it('refuses a malformed creative kill switch before database wiring', async () => {
+    process.env['CRON_SECRET'] = SECRET;
+    process.env['OPENSPELL_CREATIVE_SYNC_DISABLED'] = 'true';
+    expect((await GET(request(`Bearer ${SECRET}`))).status).toBe(503);
+    expect(doubles.tickDeps).toHaveLength(0);
   });
 
   it('passes the cron logger and deadline into the bid-series producer', async () => {

@@ -1,5 +1,6 @@
 import { reconcileEvidenceOnWorkerStart, startEvidenceReconciliation } from './evidence-reconciliation.js';
 import { assertStreamQueueDestination, streamExtensionPolicyFromEnv } from './stream-dataset-adapters.js';
+import { createCreativeSyncProducer } from './creative-sync-producer.js';
 import { registerAssetLibrarySource } from './asset-library.js';
 import { registerSpApiReportSources, postgresSpReportDependencies } from './spapi-report-sources.js';
 import { registerProviderEvidence, postgresProviderEvidenceDependencies } from './provider-evidence.js';
@@ -224,6 +225,8 @@ const bidSeries = config.startsBackgroundPasses && adsApi
 const recommendationObserver = config.startsBackgroundPasses
   ? new RecommendationObservationPass(handle, console)
   : undefined;
+const creativeSync = createCreativeSyncProducer(handle, config.deploymentRole);
+creativeSync?.start();
 authHealth?.start();
 reaper?.start();
 provisioner?.start();
@@ -246,6 +249,7 @@ async function performShutdown(): Promise<WorkerShutdownEvidence> {
   bidSeries?.stop();
   recommendationObserver?.stop();
   await evidenceRecovery?.stop();
+  await creativeSync?.stop();
   await spWritePolling?.stop();
   await marketingStream?.stop();
   await amazonConnections?.stop();

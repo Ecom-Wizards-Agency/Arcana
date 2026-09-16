@@ -8,6 +8,13 @@ import { CreativeChangeCertainty } from './change-certainty.js';
 import { CampaignCreationAmazonModerationStatus } from './campaign-creation.js';
 import { ProductMetadataSnapshot } from './ads-catalogue.js';
 
+/** Deployment eligibility is independent of report-lane ownership. */
+export const CreativeSyncPolicy = z.discriminatedUnion('enabled', [
+  z.object({ enabled: z.literal(true), reason: z.null() }),
+  z.object({ enabled: z.literal(false), reason: z.enum(['deployment_disabled', 'profile_sync_disabled']) }),
+]);
+export type CreativeSyncPolicy = z.infer<typeof CreativeSyncPolicy>;
+
 const count = z.number().int().nonnegative();
 const money = z.number().nonnegative();
 

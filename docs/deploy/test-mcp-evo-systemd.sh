@@ -85,12 +85,13 @@ if [[ -e "$script_dir/mcp-evo.compose.yaml" \
   exit 1
 fi
 
-test_tmp="$(mktemp -d /tmp/openspell-mcp-health-test.XXXXXX)"
+test_tmp_root="${TMPDIR:-/tmp}"
+test_tmp="$(mktemp -d "$test_tmp_root/openspell-mcp-health-test.XXXXXX")"
 server_pid=
 cleanup() {
   if [[ -n "$server_pid" ]]; then kill "$server_pid" 2>/dev/null || true; fi
   case "$test_tmp" in
-    /tmp/openspell-mcp-health-test.*)
+    "$test_tmp_root"/openspell-mcp-health-test.*)
       find "$test_tmp" -depth -delete 2>/dev/null || true
       ;;
   esac
@@ -122,8 +123,7 @@ if find "$package_fixture" \( -type f -o -type d \) -perm /022 -print -quit \
   echo "MCP runtime packaging fixture contains unsafe writable content" >&2
   exit 1
 fi
-(cd "$package_fixture" && node node_modules/tsx/dist/cli.mjs -e \
-  '(async () => { await import("@wizard-ads/core"); await import("@wizard-ads/db"); })()')
+
 
 second_package_fixture="$test_tmp/package-second"
 if ! pnpm --dir "$repo_root" --config.inject-workspace-packages=true \
@@ -138,6 +138,11 @@ if ! diff -qr "$package_fixture" "$second_package_fixture" >"$test_tmp/package-d
   cat "$test_tmp/package-differences.log" >&2
   exit 1
 fi
+
+# Compare the two freshly normalized artifacts before executing either runtime.
+# Loading tsx/esbuild may create local caches; those are not deploy output.
+(cd "$package_fixture" && node node_modules/tsx/dist/cli.mjs -e \
+  '(async () => { await import("@wizard-ads/core"); await import("@wizard-ads/db"); })()')
 
 install -d -m 0755 "$package_fixture/systemd"
 install -m 0644 "$mcp_unit" "$package_fixture/systemd/openspell-mcp.service"

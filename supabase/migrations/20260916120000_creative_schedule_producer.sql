@@ -1,0 +1,94 @@
+set local lock_timeout = '5s';
+select pg_advisory_xact_lock(pg_catalog.hashtextextended('wizard-ads:schema-ddl:v1', 0));
+
+-- Creative observations use the profile-local, pending-report-aware producer.
+-- Generic scheduling must not bypass its kill switch or report-lane ownership.
+create or replace function public.enqueue_due_schedules(p_now timestamptz default now())
+returns table (schedule_id uuid, job_id uuid, dedupe_key text, enqueued boolean)
+language plpgsql
+security definer
+set search_path = pg_catalog, public, pg_temp
+as $$
+declare
+  v_sched record;
+  v_slot timestamptz;
+  v_next timestamptz;
+  v_key text;
+  v_payload jsonb;
+  v_job_id uuid;
+  v_end date;
+  v_start date;
+  v_week_start date;
+  v_now timestamptz;
+  v_hour integer;
+begin
+  perform app.assert_service_role('enqueue_due_schedules');
+  v_now := coalesce(p_now, now());
+  for v_sched in
+    select schedule.*, profile.timezone, profile.sync_enabled,
+           profile.preferred_sync_hour
+      from public.sync_schedules schedule
+      join public.ad_profiles profile on profile.id = schedule.profile_id
+     where schedule.enabled and profile.sync_enabled
+       and schedule.next_run_at <= v_now
+       and schedule.job_type not in ('recommendations.run', 'creative.sync')
+     order by schedule.next_run_at
+     for update of schedule skip locked
+  loop
+    v_slot := v_sched.next_run_at;
+    v_key := v_sched.id::text || ':'
+      || pg_catalog.to_char(v_slot at time zone 'UTC', 'YYYYMMDD"T"HH24MI');
+    v_payload := pg_catalog.jsonb_build_object(
+      'type', v_sched.job_type::text,
+      'orgId', v_sched.org_id,
+      'profileId', v_sched.profile_id
+    ) || coalesce(v_sched.payload, '{}'::jsonb);
+    if v_sched.job_type = 'report.request' then
+      v_end := (v_now at time zone v_sched.timezone)::date
+               - 1 - v_sched.window_offset_days;
+      v_start := v_end - (coalesce(v_sched.lookback_days, 1) - 1);
+      v_payload := v_payload || pg_catalog.jsonb_build_object(
+        'reportType', v_sched.report_type::text,
+        'startDate', pg_catalog.to_char(v_start, 'YYYY-MM-DD'),
+        'endDate', pg_catalog.to_char(v_end, 'YYYY-MM-DD')
+      );
+    elsif v_sched.job_type = 'sqp.categorize' then
+      v_end := (v_now at time zone v_sched.timezone)::date;
+      v_week_start := v_end - extract(dow from v_end)::integer;
+      v_payload := v_payload || pg_catalog.jsonb_build_object(
+        'weekStart', pg_catalog.to_char(v_week_start, 'YYYY-MM-DD')
+      );
+    end if;
+    begin
+      insert into public.sync_jobs
+        (org_id, profile_id, schedule_id, job_type, payload, priority,
+         dedupe_key, run_after)
+      values (
+        v_sched.org_id, v_sched.profile_id, v_sched.id, v_sched.job_type,
+        v_payload, v_sched.priority, v_key, v_now
+      ) returning id into v_job_id;
+    exception when unique_violation then
+      v_job_id := null;
+    end;
+    v_hour := coalesce(v_sched.preferred_sync_hour, 4);
+    v_next := (
+      pg_catalog.date_trunc('day', v_now at time zone v_sched.timezone)
+      + pg_catalog.make_interval(hours => v_hour)
+    ) at time zone v_sched.timezone;
+    while v_next <= v_now loop
+      v_next := v_next + v_sched.cadence;
+    end loop;
+    update public.sync_schedules
+       set next_run_at = v_next, last_enqueued_at = v_now
+     where id = v_sched.id;
+    schedule_id := v_sched.id;
+    job_id := v_job_id;
+    dedupe_key := v_key;
+    enqueued := v_job_id is not null;
+    return next;
+  end loop;
+end;
+$$;
+
+comment on function public.enqueue_due_schedules(timestamptz) is
+  'Enqueue schedules excluding recommendation and Creative producers with profile-local report windows and SQP week starts; recommendation production is a separate readiness-gated lane.';

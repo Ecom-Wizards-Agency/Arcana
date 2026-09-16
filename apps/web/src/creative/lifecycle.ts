@@ -54,8 +54,8 @@ export function creativeLifecycle(evidence: CreativeLifecycleEvidence): Creative
         ...EMPTY_BASE,
         state: 'inactive',
         eyebrow: 'Automatic sync inactive',
-        title: 'Creative sync is not active for this profile',
-        body: 'Arcana has not been enabled to inventory Sponsored Brands Video ads and Amazon Asset IDs for this profile.',
+        title: 'Profile sync is switched off',
+        body: 'Enable profile sync to schedule creative observations.',
       };
     }
     return {

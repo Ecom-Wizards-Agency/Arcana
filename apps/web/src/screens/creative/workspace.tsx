@@ -46,7 +46,7 @@ export function CreativeWorkspaceView(props: WorkspaceProps) {
     router.replace(`/creative?${params}`, { scroll: false });
   };
   const reset = () => { setSearch(''); setCampaignType('all'); setAttributionState('all'); setSort('spend_desc'); };
-  if (!workspace.assets.length) return <section className={styles.empty} data-testid="creative-not-measured"><h2>Creative performance is not measured</h2><p>The pilot is enabled, but no assets or attributable facts are available for this window.</p><a href={`/sync-status?profile=${new URLSearchParams(query).get('profile') ?? ''}`}>Sync status →</a></section>;
+  if (!workspace.assets.length) return <section className={styles.empty} data-testid="creative-not-measured"><h2>Creative performance is not measured</h2><p>No assets or attributable facts are available for this window.</p><a href={`/sync-status?profile=${new URLSearchParams(query).get('profile') ?? ''}`}>Sync status →</a></section>;
   return <section aria-label="Creative workspace" className={detailOnly ? styles.detail : styles.split}>
     {detailOnly ? <LinkButton href={`/creative?${query}`} size="sm">← All creatives</LinkButton> : <aside className={styles.pane} aria-label="Creative list">
       <div className={styles.paneHeader}><div className={styles.paneTitle}><strong className={styles.eyebrow}>Creative</strong><a href={`/creative/eligibility?${query}`}>Asset eligibility →</a></div>

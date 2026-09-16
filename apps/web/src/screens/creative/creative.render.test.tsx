@@ -18,7 +18,7 @@ verifyScreen(descriptor, [
   { state: 'gated', name: 'explains an unavailable database', render: () => <Screen data={{ view: 'gated', props: { entry: { state: 'no-database' } } }} />, text: 'database' },
   { state: 'gated', name: 'explains missing organization membership', render: () => <Screen data={{ view: 'gated', props: { entry: { state: 'no-org', context: { ...context, active: null, memberships: [] } } } }} />, text: 'organisation' },
   { state: 'empty', name: 'shows an empty profile roster without invented data', render: () => <Screen data={{ view: 'empty', props: {} }} />, text: "profiles" },
-  { state: 'not-measured', name: 'does not substitute measured results for absent evidence', render: () => <Screen data={ready} />, text: "Creative sync is not active for this profile" }
+  { state: 'not-measured', name: 'does not substitute measured results for absent evidence', render: () => <Screen data={ready} />, text: "Creative performance is not measured until the first creative sync completes" }
 ]);
 
 describe('Creatives list and overview evidence', () => {
@@ -31,15 +31,41 @@ describe('Creatives list and overview evidence', () => {
     expect(host.textContent).toContain('Evidence date 1 Aug 2026 – 29 Aug 2026');
     expect(host.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}/);
   });
-  it('names the hosted pilot gate and keeps its sync link', () => {
-    render(renderVisualFixture('pilot-off'));
-    expect(screen.getByTestId('creative-pilot-gated').textContent).toContain('creativeSyncPilotFromEnv');
+  it('explains the deployment kill switch and keeps its sync link', () => {
+    render(renderVisualFixture('sync-off'));
+    expect(screen.getByTestId('creative-sync-disabled').textContent).toContain('Creative sync is switched off for this deployment');
+    expect(screen.getByTestId('creative-sync-disabled').textContent).toContain('deployment_disabled');
     expect(screen.queryByRole('complementary', { name: 'Creative list' })).toBeNull();
-    expect(within(screen.getByTestId('creative-pilot-gated')).getByRole('link', { name: 'Sync status →' }).getAttribute('href')).toContain('/sync-status?profile=');
+    expect(within(screen.getByTestId('creative-sync-disabled')).getByRole('link', { name: 'Sync status →' }).getAttribute('href')).toContain('/sync-status?profile=');
   });
-  it('shows an enabled pilot without facts as not measured', () => {
+  it('shows a new profile without facts as not measured', () => {
     render(renderVisualFixture('no-facts'));
-    expect(screen.getByTestId('creative-not-measured').textContent).toContain('not measured');
+    expect(screen.getByTestId('creative-not-measured').textContent).toContain('not measured until the first creative sync completes');
+    expect(within(screen.getByTestId('creative-not-measured')).getByRole('link', { name: 'Sync status →' }).getAttribute('href')).toContain('/sync-status?profile=');
+  });
+  it('keeps observed assets without performance unmeasured before the first sync', () => {
+    const data = visualFixture('selected-asset');
+    if (data.view !== 'ready') throw new Error('Expected ready fixture');
+    data.props.evidence.snapshot = null;
+    for (const asset of data.props.workspace.assets) asset.performance = null;
+    expect(data.props.workspace.assets).toHaveLength(2);
+    render(<Screen data={data} />);
+    expect(screen.getByTestId('creative-not-measured').textContent).toContain('not measured until the first creative sync completes');
+  });
+  it('explains disabled profile sync separately from the deployment switch', () => {
+    const data = structuredClone(ready);
+    data.props.evidence.producerEligible = false;
+    data.props.evidence.reason = 'profile_sync_disabled';
+    render(<Screen data={data} />);
+    expect(screen.getByTestId('creative-profile-sync-disabled').textContent).toContain('Profile sync is switched off');
+    expect(screen.queryByTestId('creative-sync-disabled')).toBeNull();
+  });
+  it('shows the deployment switch on eligibility screens too', () => {
+    const data = visualFixture('sync-off');
+    if (data.view !== 'ready') throw new Error('Expected ready fixture');
+    data.props.mode = 'eligibility';
+    render(<Screen data={data} />);
+    expect(screen.getByTestId('creative-sync-disabled').textContent).toContain('deployment_disabled');
   });
   it('selects the requested asset, retains both list rows and keeps all shipped controls', () => {
     render(renderVisualFixture('selected-asset'));

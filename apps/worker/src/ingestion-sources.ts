@@ -16,7 +16,7 @@ export const INGESTION_SOURCES: readonly IngestionSource[] = [
   { jobType: 'ads.validation_configurations.sync', source: 'amazon_ads_validation_configurations', laneAffinity: ['integrations'], counts: ['requestedMembers','pages','sourceRows','parsedRows','refusedRows','duplicates','canonicalRows','writtenRows','existingRows','verifiedRows'] },
   { jobType: 'ads.change_history.sync', source: 'amazon_ads_change_history', laneAffinity: ['integrations'], counts: ['requestedMembers','pages','sourceRows','parsedRows','refusedRows','duplicates','canonicalRows','writtenRows','existingRows','verifiedRows'] },
   { jobType: 'entity.sync', source: 'amazon_ads', laneAffinity: ['vercel-default', 'vercel-reduced'], counts: ['listed', 'upserted', 'duplicates'] },
-  { jobType: 'creative.sync', source: 'amazon_ads', laneAffinity: ['evo-report', 'evo-report-unified'], counts: ['adsReceived', 'adsPersisted'] },
+  { jobType: 'creative.sync', source: 'amazon_ads', laneAffinity: ['vercel-default', 'evo-report', 'evo-report-unified'], counts: ['adsReceived', 'adsPersisted'] },
   ...(['report.request', 'report.poll', 'report.fetch'] as const).map((jobType) => ({
     jobType, source: 'amazon_reporting_v3',
     laneAffinity: ['vercel-default', 'evo-report', 'evo-report-unified'] as IngestionLane[],

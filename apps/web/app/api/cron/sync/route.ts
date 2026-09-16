@@ -57,7 +57,7 @@ import {
   runBidSeriesSync,
 } from '@wizard-ads/worker';
 import {
-  creativeSyncPilotFromEnv,
+  creativeSyncPolicyFromEnv,
   cronSyncJobTypesFromEnv,
   runSyncTick,
 } from '../../../../src/server/sync-tick';
@@ -90,11 +90,11 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   let jobTypes;
-  let creativeSyncPilot;
+  let creativeSyncPolicy;
   let recommendationLaneIntent;
   try {
     jobTypes = cronSyncJobTypesFromEnv();
-    creativeSyncPilot = creativeSyncPilotFromEnv();
+    creativeSyncPolicy = creativeSyncPolicyFromEnv();
     recommendationLaneIntent = recommendationLaneIntentFromEnv();
   } catch {
     return NextResponse.json(
@@ -150,10 +150,10 @@ export async function GET(request: Request): Promise<Response> {
             },
           }
         : {}),
-      ...(creativeSyncPilot.enabled
+      ...(creativeSyncPolicy.enabled && jobTypes.includes('creative.sync')
         ? {
             creativeSyncSchedules: () =>
-              enqueueDailyCreativeSyncJobs(handle, creativeSyncPilot.profileIds),
+              enqueueDailyCreativeSyncJobs(handle, undefined, new Date(), 'legacy'),
           }
         : {}),
       budgetMs: DRAIN_BUDGET_MS,

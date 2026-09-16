@@ -188,21 +188,27 @@ Fenced Evo work never releases on elapsed shutdown time and remains quarantined 
 not drain. A stopped worker instance cannot be started again. Any unprovable fenced settlement is a
 fatal fixed-category queue error, so the process cannot continue claiming after custody is lost.
 
-### Bounded Creative pilot preflight
+### Creative sync policy and read-only preflight
 
-The daily Creative producer remains off unless the Vercel deployment has all
-three exact values: the report-lane handoff, the producer gate, and a non-empty
-`OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST` containing unique comma-separated
-profile UUIDs. When the producer gate is absent or `0`, the cohort is not parsed
-and no Creative job is offered.
+Creative sync is enabled by default for every profile with profile sync enabled,
+including newly connected profiles. It requires no producer-ready flag or profile
+allowlist. `OPENSPELL_CREATIVE_SYNC_DISABLED=1` stops new Creative production with
+reason code `deployment_disabled`; unset or `0` permits it. Profile sync disabled
+returns `profile_sync_disabled`. Other kill-switch values fail configuration validation.
+The report-lane handoff controls ownership separately from creative eligibility. Vercel produces
+while it owns the report lane; the Evo report worker produces under fenced database authority.
+Both use the same daily schedule producer, which defers pending reports and advances schedules
+only after reconciling the offered jobs. Generic SQL scheduling excludes Creative schedules.
+Apply `20260916120000_creative_schedule_producer.sql` before deploying this worker/web release;
+it prevents the generic scheduler from constructing incomplete Creative payloads.
+Already queued work and retained observations are not deleted by the kill switch.
 
-Before activating the producer, run the read-only preflight against the stopped
-or running candidate configuration:
+The optional read-only cohort preflight remains available for inspecting an Evo
+candidate. Its `OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST` selects only the diagnostic
+cohort and does not control production:
 
 ```bash
-pnpm --filter @wizard-ads/worker creative:preflight \
-  --health-url http://127.0.0.1:3000/healthz \
-  --expected-revision "$APPROVED_REVISION"
+pnpm --filter @wizard-ads/worker creative:preflight --health-url http://127.0.0.1:3000/healthz --expected-revision "$APPROVED_REVISION"
 ```
 
 The command reads the cohort from the deployment environment, inspects the
