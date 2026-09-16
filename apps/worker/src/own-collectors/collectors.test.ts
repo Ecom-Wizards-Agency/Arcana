@@ -33,7 +33,7 @@ for (const type of ['own_bids.collect','own_listings.collect','prompts.collect']
   });
 });
 it('adds three integration jobs and preserves report lanes',()=>{
-  expect(ingestionLaneJobTypes('integrations')).toEqual(['own_bids.collect','own_listings.collect','prompts.collect','translation.request','keepa.sync','rank.sync','economics.sync','sqp.request']);
+  expect(ingestionLaneJobTypes('integrations')).toEqual(['asset-library.search','retail.report.request','aba.report.request','catalogue.report.request','provider.evidence.collect','own_bids.collect','own_listings.collect','prompts.collect','translation.request','keepa.sync','rank.sync','economics.sync','sqp.request']);
   expect(ingestionLaneJobTypes('evo-report')).toEqual(['creative.sync','report.request','report.poll','report.fetch']);
   expect(ingestionLaneJobTypes('evo-report-unified')).toEqual(['creative.sync','report.request','report.poll','report.fetch','report.unified.advance']);
 });
