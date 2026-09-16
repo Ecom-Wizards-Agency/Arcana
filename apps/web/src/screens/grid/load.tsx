@@ -1,9 +1,25 @@
+import { readAdvertisedCatalogueProducts, withAuthenticatedActor, readSpReportEvidence, type DbHandle } from '@wizard-ads/db';
+import { CatalogueProducts } from './catalogue-products';
+import type { ReactNode } from 'react';
+import { readStreamConsumerEvidence } from '../creative/stream-evidence-load';
+import { StreamEvidencePanel } from '../creative/stream-evidence';
 import { ShellFreshnessBanner } from '../../ui/shell-evidence';
 import { loadCoreGridEvidence } from './core-report-rows';
-
 import type { ScreenActor } from '../../server/page-read';
-
 import type { ScreenParams } from '../types';
+import { ENTITY_LEVELS } from '@wizard-ads/ui';
+import type { EntityLevel } from '@wizard-ads/ui';
+import type { OrgActor, SpEvidence } from '@wizard-ads/shared';
+import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
+import { loadProfileDailyRows } from '../../../app/_lib/dashboard-data';
+import { withExistingDatabase } from '../../../app/_lib/db';
+import { periodFromParams, precedingPeriod, settledComparisonWindows, todayIso } from '../../../app/_lib/periods';
+import { listProfiles } from '../../../app/_lib/profiles';
+import { Cockpit } from '../../ui/cockpit';
+import { kpiTiles, totalsOf } from '../../optimizer/view';
+import { CrosscheckChip } from '../../../app/crosscheck/panel';
+
+
 
 /**
  * `/grid` — the entity grid.
@@ -26,36 +42,17 @@ import type { ScreenParams } from '../types';
  * the org the gate resolved rather than by a profile id anybody could paste.
  */
 
-import {
-  ENTITY_LEVELS
-} from '@wizard-ads/ui';
 
-import type { EntityLevel } from '@wizard-ads/ui';
 
-import { withAuthenticatedActor, readSpReportEvidence, type DbHandle } from '@wizard-ads/db';
 
-import type { OrgActor, SpEvidence } from '@wizard-ads/shared';
 
-import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
 
-import { loadProfileDailyRows } from '../../../app/_lib/dashboard-data';
 
-import { withExistingDatabase } from '../../../app/_lib/db';
 
-import {
-  periodFromParams,
-  precedingPeriod,
-  settledComparisonWindows,
-  todayIso,
-} from '../../../app/_lib/periods';
 
-import { listProfiles } from '../../../app/_lib/profiles';
 
-import { Cockpit } from '../../ui/cockpit';
 
-import { kpiTiles, totalsOf } from '../../optimizer/view';
 
-import { CrosscheckChip } from '../../../app/crosscheck/panel';
 
 interface PageProps {
   searchParams: Promise<{
@@ -117,7 +114,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
 
   return {
     view: 'ready' as const, props: {
-      ...({ sourceEvidence: data.sourceEvidence } as { sourceEvidence?: SpEvidence }), ...(coreEvidence.length ? { coreEvidence } : {}), entity, profile, period, comparison, params, slot1: (<GridCockpit
+      ...({ sourceEvidence: data.sourceEvidence } as { sourceEvidence?: SpEvidence }), ...(coreEvidence.length ? { coreEvidence } : {}), entity, profile, period, comparison, params, ...({ streamEvidence: (<GridStreamEvidence access={access} orgId={orgId} profileId={profile.id} entity={entity} campaignId={params.campaign ?? null} asin={params.asin ?? null} />) } as { streamEvidence?: ReactNode }), catalogue: entity==='products'?<CatalogueProductsRead access={access} orgId={orgId} profileId={profile.id} asin={params.asin}/>:null, slot1: (<GridCockpit
         handle={entry.handle} actor={actor}
         orgId={orgId}
         profile={profile}
@@ -239,4 +236,18 @@ async function GridFreshness({ handle, actor, profileId }: {
 }) {
   const crosscheck = await GridCrosscheck({ handle, actor, profileId });
   return <ShellFreshnessBanner>{crosscheck}</ShellFreshnessBanner>;
+}
+
+async function CatalogueProductsRead({access,orgId,profileId,asin}:{access:ScreenActor;orgId:string;profileId:string;asin?:string}) {
+  const data=await access.read(handle=>readAdvertisedCatalogueProducts(handle,{orgId,profileId,...(asin?{asin}:{}),staleAfter:new Date(Date.now()-48*60*60*1000).toISOString()}));
+  return <CatalogueProducts data={data}/>;
+}
+
+async function GridStreamEvidence({ access, orgId, profileId, entity, campaignId, asin }: { campaignId: string | null; asin: string | null; access: ScreenActor; orgId: string; profileId: string; entity: EntityLevel }) {
+  const dataset = entity === 'campaigns' ? 'ads-campaign-management-campaigns' : entity === 'ad_groups' ? 'ads-campaign-management-adgroups'
+    : entity === 'products' ? 'ads-campaign-management-ads' : entity === 'targets' ? 'ads-campaign-management-targets' : null;
+  if (dataset === null) return null;
+  const evidence = await access.readSql((sql) => readStreamConsumerEvidence({ sql }, { orgId, profileId,
+    datasets: [dataset], campaignId, asin, asOf: new Date().toISOString(), maxAgeMs: 86400000 }));
+  return <StreamEvidencePanel evidence={evidence} />;
 }

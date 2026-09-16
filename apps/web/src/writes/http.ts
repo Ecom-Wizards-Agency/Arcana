@@ -24,13 +24,16 @@ export function spWriteHttpFailure(error: unknown): Response | null {
   if (error instanceof JsonMutationError) return Response.json({ code: error.code }, { status: error.status });
   const sqlCode = error !== null && typeof error === 'object' && 'code' in error ? error.code : undefined;
   const code = error instanceof SpWriteApplicationError ? error.code
+    : sqlCode === 'restore_mirror_stale' || sqlCode === 'restore_active_reversion' ? 'source_changed'
     : sqlCode === '42501' ? 'authorization_refused'
     : sqlCode === '23505' ? 'identity_conflict'
     : sqlCode === '55000' || sqlCode === 'P0002' ? 'source_changed'
     : sqlCode === '22023' || sqlCode === '22P02' ? 'invalid_request' : 'outcome_unknown';
   const status = { not_found: 404, invalid_request: 400, unsupported_source: 422,
     source_changed: 409, identity_conflict: 409, authorization_refused: 403, outcome_unknown: 503 }[code];
-  return Response.json({ code }, { status });
+  const detail = error !== null && typeof error === 'object' && 'detail' in error ? error.detail : sqlCode;
+  const reason = typeof detail === 'string' && ['gate_disabled','profile_not_allowlisted','restore_mirror_stale','restore_active_reversion','source_changed'].includes(detail) ? detail : undefined;
+  return Response.json({ code, ...(reason ? { reason } : {}) }, { status });
 }
 
 export function handleSpWriteMutation<T>(request: Request, schema: InputSchema<T>,
@@ -41,13 +44,18 @@ export function handleSpWriteMutation<T>(request: Request, schema: InputSchema<T
     if (!parsed.success) throw new JsonMutationError(400, 'invalid_request');
     const approval = SpWriteConfirmedApprovalRequest.safeParse(parsed.data);
     if (approval.success) {
-      const rows = await context.sql<{ artifact_text: string }[]>`
-        select artifact_text from public.sp_write_preview_evidence
-         where org_id = ${context.actor.orgId}::uuid and profile_id = ${approval.data.profileId}::uuid
-           and plan_id = ${approval.data.approval.plan.planId}::uuid
+      const rows = await context.sql<{ artifact_text: string; restore: boolean }[]>`
+        select e.artifact_text,p.artifact#>>'{source,restoreProposal,kind}'='restore_proposal' as restore
+        from public.sp_write_preview_evidence e join public.sp_write_plans p
+          on p.org_id=e.org_id and p.profile_id=e.profile_id and p.plan_id=e.plan_id
+         where e.org_id = ${context.actor.orgId}::uuid and e.profile_id = ${approval.data.profileId}::uuid
+           and e.plan_id = ${approval.data.approval.plan.planId}::uuid
       `;
       for (const row of rows) {
         const evidence = SpWriteSourceEvidence.parse(JSON.parse(row.artifact_text));
+        // A restore uses the recorded old value, not a fresh method recommendation.
+        // SQL still verifies its immutable source, current mirror and write authority.
+        if (row.restore) continue;
         if (evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v2') continue;
         for (const source of evidence.provenance.rows) {
           if (source.method !== undefined) assertExecutableMethod(source.method.methodId, source.method.methodVersion);

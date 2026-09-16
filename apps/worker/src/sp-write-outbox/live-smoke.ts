@@ -7,7 +7,8 @@ import { createDb, connectionStringFromEnv } from '@wizard-ads/db';
 import { createSpWriteRuntimeLedger, type LoadVerifiedSpWriteExecutionIdentity } from '@wizard-ads/db/sp-write-persistence';
 import { readSpWriteDatabaseTime, reconcileSpWriteObservation } from '@wizard-ads/db/sp-write-worker';
 import { Uuid } from '@wizard-ads/shared';
-import { verifySpWriteApprovalArtifacts, verifySpWriteBoundedAuthorizationFingerprint } from '@wizard-ads/shared/sp-writes';
+import { verifySpWriteApprovalArtifacts, verifySpWriteBoundedAuthorizationFingerprint,
+  type ApproveSpWritePlan, type SpWriteBoundedAuthorization, type SpWritePlan } from '@wizard-ads/shared/sp-writes';
 import { hasher } from './artifacts.js';
 import { createSpWriteOutboxLoop } from './loop.js';
 import { spWritePolicyFromEnv } from './policy.js';
@@ -26,6 +27,14 @@ export async function readLiveWriteAuthorization(root: string, now = new Date().
     entity.routeKey !== 'sp.v3.keywords.update' || entity.allowedChangeKeys.length !== 1
     || entity.allowedChangeKeys[0] !== 'keyword.bid'))) throw new Error('Live smoke supports exact keyword bid cycles only');
   return authorization;
+}
+
+/** Shared with the offline proof; restore proposals remain forward plans with their own exact inverse. */
+export function verifyLiveWriteSmokePlans(plan: SpWritePlan, inverse: SpWritePlan, request: ApproveSpWritePlan,
+  authorization: SpWriteBoundedAuthorization, now: string) {
+  if (plan.direction !== 'forward' || request.approvalMode !== 'bounded_live_test'
+    || request.preapprovedInversePlan === null) throw new Error('A preapproved bounded forward/inverse receipt is required');
+  return verifySpWriteApprovalArtifacts(plan, inverse, request, authorization, now, hasher);
 }
 
 /** This entry never issues approval, changes gates, or admits an unrelated plan. */
@@ -49,11 +58,11 @@ export async function runLiveWriteSmoke(root: string, identity: LoadVerifiedSpWr
     const inverse = await runtime.loadVerifiedExecution(inverseIdentity);
     if (inverse === null) throw new Error('The immutable preapproved inverse is missing');
     const receipt = forward.authorization;
-    verifySpWriteApprovalArtifacts(forward.plan, inverse.plan, {
+    verifyLiveWriteSmokePlans(forward.plan, inverse.plan, {
       approvalRequestId: receipt.approvalRequestId, plan: receipt.plan, approvalMode: receipt.approvalMode,
       confirmationVersion: receipt.confirmationVersion, boundedAuthorization: receipt.boundedAuthorization,
       preapprovedInversePlan: receipt.preapprovedInversePlan,
-    }, authorization, await readSpWriteDatabaseTime(database), hasher);
+    }, authorization, await readSpWriteDatabaseTime(database));
     loop = createSpWriteOutboxLoop({ database, claimantId: 'authorized-live-write-smoke',
       policy: () => { const current = spWritePolicyFromEnv(env);
         return { ...current, profileIds: current.profileIds.filter((id) => id === identity.profileId), planIds: [identity.planId, inverseId] }; },

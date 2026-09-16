@@ -122,7 +122,41 @@ test('target stages an immutable change and review records approval without outb
     await expect(page.getByText('The bid series is empty.',{exact:false})).toBeVisible();
     await captureThemes('empty-series');
     await page.getByRole('tab',{name:'Shelf',exact:true}).click();
-    await expect(page.getByText('Not measured. Listing snapshots are not collected yet.')).toBeVisible();
+    await expect(page.getByText('Not measured. No scoped listing observations are available.')).toBeVisible();
+    await expect(page.getByText("Product evidence is missing for this target's advertised ASINs.")).toBeVisible();
     await captureThemes('not-measured');
+    const scope = { orgId, profileId: fixtureProfileId, marketplace: 'US' };
+    const observedAt = new Date().toISOString();
+    const provenance = { source: 'synthetic-export', sourceIdentity: 'own-listing', observedAt, collectedAt: observedAt };
+    const fields = [{ field: 'price', value: 19, provenance }, { field: 'inStock', value: true, provenance }];
+    const listingRows = await db.sql`insert into public.own_listing_observations(id,org_id,profile_id,marketplace,asin,field,observed_at,collected_at,observation)
+      select ${orgId}::text||':browser:'||(f->>'field'),${orgId},${fixtureProfileId},'US','B0TEST0001',f->>'field',${observedAt},${observedAt},f
+      from jsonb_array_elements(${JSON.stringify(fields)}::jsonb) f returning id`;
+    expect(listingRows).toHaveLength(fields.length);
+    await page.goto(targetUrl);
+    await page.getByRole('tab',{name:'Shelf',exact:true}).click();
+    await expect(page.getByText('B0TEST0001 · partial')).toBeVisible();
+    await expect(page.getByText('Moderation unavailable.')).toBeVisible();
+    await captureThemes('own-listing-partial');
+    const bidObservation = { scope, sourceIdentity: 'own-bid', campaignId: 'c-1', adGroupId: 'ag-1', targetId: 'kw-1', targetKind: 'keyword',
+      observedAt, collectedAt: observedAt, bid: { value: 5, provenance }, bidOrigin: 'explicit', placementProvenance: provenance, audienceProvenance: provenance,
+      bidding: { strategy: 'manual', placements: { topOfSearch: 100, restOfSearch: 0, productPages: 0, amazonBusiness: 0 }, shopperCohorts: [], offAmazonBudgetControlStrategy: null } };
+    const bidRows = await db.sql`insert into public.own_effective_bid_observations(id,org_id,profile_id,marketplace,target_id,observed_at,collected_at,observation)
+      values(${orgId}::text||':browser:bid',${orgId},${fixtureProfileId},'US','kw-1',${observedAt},${observedAt},${JSON.stringify(bidObservation)}::jsonb) returning id`;
+    expect(bidRows).toHaveLength(1);
+    await page.goto(targetUrl);
+    await expect(page.getByText('Latest own observation:', { exact: false })).toBeVisible();
+    await captureThemes('own-bid-without-band');
+    const defaultObservedAt = new Date().toISOString();
+    const inheritedProvenance = { ...provenance, observedAt: defaultObservedAt, collectedAt: defaultObservedAt };
+    const inherited = { ...bidObservation, sourceIdentity: 'own-inherited-bid', observedAt: defaultObservedAt, collectedAt: defaultObservedAt,
+      bidOrigin: 'inherited', bid: { value: 5, provenance: inheritedProvenance }, placementProvenance: inheritedProvenance, audienceProvenance: inheritedProvenance,
+      inheritance: { targetBidAbsentAt: defaultObservedAt, defaultBidObservedAt: defaultObservedAt } };
+    const inheritedRows = await db.sql`insert into public.own_effective_bid_observations(id,org_id,profile_id,marketplace,target_id,observed_at,collected_at,observation)
+      values(${orgId}::text||':browser:inherited',${orgId},${fixtureProfileId},'US','kw-1',${defaultObservedAt},${defaultObservedAt},${JSON.stringify(inherited)}::jsonb) returning id`;
+    expect(inheritedRows).toHaveLength(1);
+    await page.goto(targetUrl);
+    await expect(page.getByText(`Inherited ad-group default · observed ${defaultObservedAt}`)).toBeVisible();
+    await captureThemes('own-inherited-bid');
   } finally { await db.close(); }
 });

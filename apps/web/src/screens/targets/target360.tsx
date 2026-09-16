@@ -1,12 +1,15 @@
 'use client';
+
 import { AbaEvidencePanel } from '../grid/spapi-evidence';
+import { ProviderEvidencePanel } from '../recommendations/provider-evidence';
+import { ProductShelf } from './product-shelf';
 import { useEffect, useRef, useState } from 'react';
 import { BidCorridorChart, TrendChart } from '@wizard-ads/ui';
 import { corridorReading, corridorSummary, targetBidChecks } from '@wizard-ads/core';
-import { normalizeQueuedBidOverride, parseGridView, serializeGridView, type GridSavedView } from '@wizard-ads/shared';
+import { normalizeQueuedBidOverride, parseGridView, serializeGridView, type GridSavedView, type ListingFieldObservation } from '@wizard-ads/shared';
 import type { Target360Model } from './model';
-import styles from './target360.module.css';
 import { CoreReportEvidencePanel } from '../grid/core-report-evidence';
+import styles from './target360.module.css';
 const tabs = ['Corridor', 'Shelf', 'Rank', 'Changes', 'Performance'] as const;
 const defaultTarget: NonNullable<GridSavedView['target']> = { series: { bid: true, realisedCpc: true, suggestedBand: true, maxCpc: true, dailySpend: true, acos: true }, maxCpcExpanded: true };
 const seriesLabels = { bid: 'Bid', realisedCpc: 'Realised CPC', suggestedBand: 'Amazon suggested band', maxCpc: 'Max CPC', dailySpend: 'Daily spend', acos: 'ACOS' };
@@ -25,6 +28,9 @@ export function Target360({ model, currencyCode, back, savedView, onClose, showL
   const [comparisons, setComparisons] = useState<Record<string, Target360Model>>({});
   const money = (value: number | null) => value === null ? 'Not measured' : new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(value);
   const percent = (value: number | null) => value === null ? 'Not measured' : `${(value * 100).toFixed(1)}%`;
+  const latestOwn = model.payload.ownBidEvidence?.at(-1);
+  const listingLabels: Record<ListingFieldObservation['field'], string> = { price: 'Price', buyBoxPrice: 'Buy Box price', rating: 'Rating', reviewCount: 'Reviews', bsr: 'Sales rank', lightningDeal: 'Lightning deal', coupon: 'Coupon source values', inStock: 'In stock', ownsBuyBox: 'Owns Buy Box', suppressed: 'Listing suppressed', title: 'Title' };
+  const listingValue = (f: ListingFieldObservation): string => f.field === 'price' || f.field === 'buyBoxPrice' ? money(f.value) : typeof f.value === 'boolean' ? f.value ? 'Yes' : 'No' : f.field === 'bsr' ? `${f.value.rank} in ${f.value.category}` : String(f.value);
   const summary = corridorSummary(model.payload.points);
   const hasSeries = model.payload.points.some((p) => [p.bid,p.cpc,p.low,p.median,p.high,p.maxCpc].some((value) => value !== null));
   const current = model.bidContext;
@@ -114,16 +120,18 @@ export function Target360({ model, currencyCode, back, savedView, onClose, showL
         ]} />{current?.targetAcos == null ? <p className={styles.meta}>Target ACOS setting is missing; no target line is shown.</p> : null}</section>
       </div>
       <aside className={`${styles.panel} ${styles.summary}`}><h2>WHAT THIS SHOWS</h2><dl>
-        <dt>Bid</dt><dd>{money(summary.bid)}{summary.bid !== null && model.payload.points.every((p) => p.bid === summary.bid) ? <small>Unchanged for all {model.payload.points.length} measured days</small> : null}</dd><dt>Realised CPC</dt><dd>{money(summary.cpcAverage)}{summary.cpcAverage === null ? '' : ' avg'}<small>Highest single day {money(summary.highestCpc)}{summary.highestDate ? ` on ${summary.highestDate}` : ''}</small></dd>
+        <dt>Bid</dt><dd>{money(summary.bid)}{latestOwn?.observation.bidOrigin === 'inherited' && latestOwn.date === model.payload.points.at(-1)?.date && latestOwn.observedBid === summary.bid ? <small>Inherited ad-group default · observed {latestOwn.observation.inheritance?.defaultBidObservedAt}</small> : null}{summary.bid !== null && model.payload.points.every((p) => p.bid === summary.bid) ? <small>Unchanged for all {model.payload.points.length} measured days</small> : null}</dd><dt>Realised CPC</dt><dd>{money(summary.cpcAverage)}{summary.cpcAverage === null ? '' : ' avg'}<small>Highest single day {money(summary.highestCpc)}{summary.highestDate ? ` on ${summary.highestDate}` : ''}</small></dd>
         <dt>Suggested median</dt><dd>{money(summary.median)}{summary.previousMedian ? <small>Was {money(summary.previousMedian.median)} on {summary.previousMedian.date}.</small> : null}</dd>
-        <dt>Bid vs band</dt><dd>{summary.bandPosition}</dd><dt>Max CPC</dt><dd>{money(summary.maxCpc)}<small>{summary.bid !== null && maxPlacement ? `${money(summary.bid)} base × (1 + ${maxPlacement.pct}% ${maxPlacement.name.toLowerCase()})` : summary.bid !== null && zeroPlacements ? `${money(summary.bid)} base × (1 + 0% placement uplift)` : 'Placement formula not measured.'}</small></dd>
-      </dl><strong>Reading</strong><p>{corridorReading(model.payload.points, money)}</p>{!hasSeries ? <p className={styles.honesty}>The bid series is empty. No reference values or invented numbers are plotted.</p> : null}</aside>
+        <dt>Bid vs band</dt><dd>{summary.bandPosition}</dd><dt>Max CPC</dt><dd>{money(summary.maxCpc)}<small>{summary.bid !== null && maxPlacement ? `${money(summary.bid)} base × (1 + ${maxPlacement.pct}% ${maxPlacement.name.toLowerCase()})` : summary.bid !== null && zeroPlacements ? `${money(summary.bid)} base × (1 + 0% placement uplift)` : 'Configured exposure not measured.'}</small></dd>
+      </dl>      {latestOwn ? <><p>Latest own observation: {latestOwn.observation.observedAt}. {latestOwn.composition === 'placement_only' ? 'Configured exposure uses separate placement scenarios.' : 'Configured exposure is unavailable because modifier evidence is incomplete or its combination is unsupported.'}</p><p>Audience observed: {latestOwn.observation.audienceProvenance?.observedAt ?? 'Not measured'}. {latestOwn.observation.audienceProvenance && latestOwn.observation.bidding?.shopperCohorts.length === 0 ? 'No audience adjustments observed.' : null}</p>{latestOwn.observation.bidding?.shopperCohorts.map((cohort, i) => <p key={i}>{cohort.shopperCohortType}: +{cohort.percentage}% · {cohort.audienceSegments.map((segment) => `${segment.audienceSegmentType}: ${segment.audienceId}`).join(', ')}</p>)}</> : null}<strong>Reading</strong><p>{corridorReading(model.payload.points, money)}</p>{!hasSeries ? <p className={styles.honesty}>The bid series is empty. No reference values or invented numbers are plotted.</p> : null}</aside>
     </section> : <section id={`target-${tab}`} role="tabpanel" className={styles.tabContent}>
-      {tab === 'Shelf' ? <><h2>Shelf</h2><p>Not measured. Listing snapshots are not collected yet.</p></> : null}
+
+      {tab === 'Shelf' ? <><h2>Shelf</h2>{model.payload.listingEvidence?.some((e) => e.fields.length) ? model.payload.listingEvidence.map((e) => <section key={e.asin}><h3>{e.asin} · {e.availability}</h3><dl>{e.fields.map(({ observation: f, availability }) => <div key={f.field}><dt>{listingLabels[f.field]} · {availability}</dt><dd>{listingValue(f)} · <small>{f.provenance.source} · {f.provenance.observedAt}</small></dd></div>)}</dl><p>Moderation unavailable.</p></section>) : <p>Not measured. No scoped listing observations are available.</p>}</> : null}
       {tab === 'Rank' ? <><section aria-label="Rank observations"><h2>Rank observations</h2>{model.ranks.length === 0 ? <p>No rank observations measured for this keyword and profile in this period.</p> : <table><thead><tr><th>Date</th><th>ASIN</th><th>Organic rank</th><th>Sponsored rank</th></tr></thead><tbody>{model.ranks.map((r,i) => <tr key={i}><td>{r.date}</td><td>{r.asin}</td><td>{r.organicRank ?? 'Not measured'}</td><td>{r.sponsoredRank ?? 'Not measured'}</td></tr>)}</tbody></table>}</section>
     <section aria-label="SQP query evidence"><h2>SQP query evidence</h2>{model.searchEvidence?.sqp.length ? <table><thead><tr><th>ASIN</th><th>Query</th><th>Provider week</th><th>Impression share</th><th>Purchase share</th><th>Observed</th></tr></thead><tbody>{model.searchEvidence.sqp.map(row => <tr key={`${row.asin}:${row.start}`}><td>{row.asin}</td><td>{row.query}</td><td>{row.start} to {row.end}</td><td>{percent(row.impressionShare)}</td><td>{percent(row.purchaseShare)}</td><td>{row.observedAt}</td></tr>)}</tbody></table> : <p>Not measured for this exact query, ASIN and period.</p>}</section>
     <AbaEvidencePanel evidence={model.searchEvidence?.aba} selectedAsin={model.searchEvidence?.asin ?? ''} query={model.payload.target.targeting} />
       </> : null}
+      {tab === 'Shelf' ? <ProductShelf products={model.shelf}/> : null}
       {tab === 'Changes' ? <><h2>Changes</h2>{model.changes.length === 0 ? <p>No entity changes recorded in this period.</p> : <table><thead><tr><th>Date</th><th>Field</th><th>Before</th><th>After</th><th>Source</th></tr></thead><tbody>{model.changes.map((r) => <tr key={r.id}><td>{r.date}</td><td>{r.field}</td><td>{r.oldValue ?? 'Not measured'}</td><td>{r.newValue ?? 'Not measured'}</td><td>{r.source}</td></tr>)}</tbody></table>}</> : null}
       {tab === 'Performance' ? <><h2>Performance</h2>{model.performance.length === 0 ? <p>No target facts measured in this period.</p> : <table><thead><tr><th>Date</th><th>Impressions</th><th>Clicks</th><th>Spend</th><th>Sales</th><th>Orders</th><th>ACOS</th><th>Top-of-search share</th></tr></thead><tbody>{model.performance.map((r) => <tr key={r.date}><td>{r.date}</td><td>{r.impressions ?? 'Not measured'}</td><td>{r.clicks ?? 'Not measured'}</td><td>{money(r.spend)}</td><td>{money(r.sales)}</td><td>{r.orders ?? 'Not measured'}</td><td>{percent(r.acos)}</td><td>{percent(r.topOfSearchShare)}</td></tr>)}</tbody></table>}</> : null}
     </section>}
@@ -147,5 +155,20 @@ export function Target360({ model, currencyCode, back, savedView, onClose, showL
       const other = p.profileId === model.profileId && p.targetId === model.payload.target.targetId ? model : comparisons[key];
       return <section key={key}><button className="wa-btn" onClick={() => update({ ...view, compare: view.compare!.filter((c) => c !== p) })}>Remove {other?.payload.target.targeting ?? p.targetId}</button>{other ? <BidCorridorChart title={other.payload.target.targeting} ariaLabel={`Compare ${other.payload.target.targeting}`} currencyCode={other.currencyCode} points={other.payload.points} /> : <p aria-busy="true">Loading comparison {p.targetId}…</p>}</section>;
     })}</section> : null}
+    <ProviderEvidencePanel evidence={model.providerEvidence} consumer="targets" />
+    <section className={styles.panel} aria-label="Provider associations" data-state={model.graph?.status ?? 'missing'}>
+      <h2>Provider associations</h2>
+      {model.graph?.observation ? <p>Provider target state: {model.graph.observation.state} · {model.graph.observation.source} · {model.graph.observation.sourceEventAt}</p> : null}
+      {!model.graph || model.graph.status === 'missing' ? <p>No provider associations measured for this target.</p> : <>
+        <p>{model.graph.status === 'stale' ? 'Provider association evidence is stale.' : model.graph.status === 'partial' ? 'Provider association evidence is partial.' : 'Observed provider associations.'}
+          {' '}{model.graph.rows.length} resolved · {model.graph.unresolvedCount} awaiting endpoint evidence.</p>
+        {model.graph.rows.length>0 ? <table><thead><tr><th>Association</th><th>Entity</th><th>Source</th><th>Observed</th></tr></thead>
+          <tbody>{model.graph.rows.map((row) => <tr key={`${row.relation}:${row.kind}:${row.providerId}:${row.version ?? ''}`}>
+            <td>{row.relation.replaceAll('_',' ')}</td><td>{row.kind.replaceAll('_',' ')} · {row.providerId}{row.version ? ` · ${row.version}` : ''}</td>
+            <td>{row.source === 'marketing_stream' ? 'Amazon Marketing Stream' : 'Amazon Ads API'}</td>
+            <td>{row.sourceEventAt.slice(0,10)}{row.stale ? ' · Stale' : ''}</td>
+          </tr>)}</tbody></table> : null}
+      </>}
+    </section>
   </article>;
 }

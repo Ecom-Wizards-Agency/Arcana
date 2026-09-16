@@ -1,8 +1,11 @@
 /** Contracts for authoritative ad-to-creative-to-asset attribution. */
 import { z } from 'zod';
+import { AssetEligibilityEvidence, AssetModerationObservation } from './asset-evidence.js';
+import { AssetLibraryObservation } from './asset-library.js';
 import { AdProduct, AmazonId, IsoDate, Placement, Uuid } from './primitives.js';
 import { TimelineDaily, TimelineEvent } from './timeline-events.js';
 import { CampaignCreationAmazonModerationStatus } from './campaign-creation.js';
+import { ProductMetadataSnapshot } from './ads-catalogue.js';
 
 const count = z.number().int().nonnegative();
 const money = z.number().nonnegative();
@@ -216,6 +219,10 @@ export const CreativeWorkspaceAsset = z.object({
   firstSeenAt: z.iso.datetime().nullable(), durationSeconds: z.number().positive().nullable(),
   width: count.nullable(), height: count.nullable(), advertisedAsin: z.string().nullable(),
   moderation: CampaignCreationAmazonModerationStatus.nullable(),
+  assetLibrary: z.array(AssetLibraryObservation).optional(),
+  eligibility: z.array(AssetEligibilityEvidence).optional(),
+  assetLibraryEvidence: z.array(z.object({ observation: AssetLibraryObservation, expiresAt: z.iso.datetime() })).optional(),
+  moderationEvidence: z.array(z.object({ observation: AssetModerationObservation, expiresAt: z.iso.datetime() })).optional(),
   campaignIds: z.array(z.string()), adGroupIds: z.array(z.string()),
   /** Campaigns from creative_placements overlapping the selected window only. */
   placementCampaignIds: z.array(z.string()),
@@ -237,15 +244,22 @@ export const CreativeWorkspacePlacement = z.object({
 export type CreativeWorkspacePlacement = z.infer<typeof CreativeWorkspacePlacement>;
 export const CreativeWorkspaceChange = z.object({
   id: z.string(), assetIds: z.array(z.string()), campaignId: z.string().nullable(), adGroupId: z.string().nullable(),
-  kind: z.enum(['Bid', 'Placement', 'Creative']), field: z.string(), oldValue: z.unknown(), newValue: z.unknown(),
+  kind: z.enum(['Bid', 'Placement', 'Creative', 'Listing', 'Promotion']), field: z.string(), oldValue: z.unknown(), newValue: z.unknown(),
   observedAt: z.iso.datetime(), certainty: CreativeChangeCertainty,
   scope: z.string(), effect: z.enum(['direct', 'whole campaign']),
 });
 export type CreativeWorkspaceChange = z.infer<typeof CreativeWorkspaceChange>;
+export const CreativeListingObservation = z.object({
+  id: z.string(), asin: z.string(), marketplaceId: z.string(), previous: ProductMetadataSnapshot,
+  current: ProductMetadataSnapshot,
+});
+export type CreativeListingObservation = z.infer<typeof CreativeListingObservation>;
 export const CreativeWorkspace = z.object({
+  listingCoverage: z.object({ measuredFields: count, staleFields: count }).optional(),
   assets: z.array(CreativeWorkspaceAsset), campaigns: z.array(CreativeWorkspaceCampaign),
   placements: z.array(CreativeWorkspacePlacement), changes: z.array(CreativeWorkspaceChange),
-  history: z.array(TimelineDaily), events: z.array(TimelineEvent),
+  listingChanges: z.array(CreativeListingObservation),
+  history: z.array(z.lazy(() => TimelineDaily)), events: z.array(z.lazy(() => TimelineEvent)),
   minClicks: z.number().nonnegative().nullable(), targetAcos: z.number().positive().nullable(),
 });
 export type CreativeWorkspace = z.infer<typeof CreativeWorkspace>;

@@ -3,7 +3,9 @@ import { ChangeQueueRestoreBatchPreview, COORDINATED_RESTORE_UNAVAILABLE } from 
 import type { ScreenActor } from '../../server/page-read';
 import { context, profile as baseProfile } from '../synthetic-render-fixtures';
 const mocks=vi.hoisted(()=>({preview:vi.fn(),entries:vi.fn(),profiles:vi.fn(),role:vi.fn()}));
-vi.mock('@wizard-ads/db',()=>({getReversionBatchPreview:mocks.preview,listChangeQueue:mocks.entries,readRestoreProposal:vi.fn()}));
+vi.mock('@wizard-ads/db',()=>({
+  readStreamConsumerSource:vi.fn(async()=>({
+    events:[],scope:{orgId:'00000000-0000-4000-8000-000000000001',profileId:'00000000-0000-4000-8000-000000000002',amazonProfileId:'313',region:'EU'},graph:{observations:[],associations:[],persistedObservations:0,persistedAssociations:0},truncated:false})),getReversionBatchPreview:mocks.preview,listChangeQueue:mocks.entries,readRestoreProposal:vi.fn()}));
 vi.mock('../../recommendations/data',()=>({listOrgProfiles:mocks.profiles}));
 vi.mock('../../server/org-role',()=>({requireOrgRole:mocks.role}));
 vi.mock('../../server/request-context',()=>({authenticationDestination:()=>null}));
@@ -27,7 +29,7 @@ it.each([false,true])('loads every physical row and propagates active-reversion 
   expect(data.view).toBe('ready');
   if(data.view!=='ready') throw new Error('Expected a complete restore preview');
   expect(data.props.preview?.rows).toHaveLength(2);
-  expect(data.props.preview?.blockedReason).toBe(activeReversion?'This batch already has an active reversion export.':null);
+  expect(data.props.preview?.blockedReason).toBe(activeReversion?'This batch already has an active restore batch.':null);
   for(const result of data.props.preview!.rows) expect(result).toMatchObject({state:'unsupported',why:COORDINATED_RESTORE_UNAVAILABLE,now:null});
   expect(read).toHaveBeenCalledTimes(1);
 });

@@ -1,0 +1,174 @@
+{
+  "fixtureVersion": "wp313.round1",
+  "provenance": "synthetic-recorded",
+  "providerContractStatus": "unverified",
+  "records": [
+    {
+      "contractVersion": "fixture.v1",
+      "datasetId": "sponsored-ads-campaign-diagnostics-recommendations",
+      "subscriptionId": "sub-0",
+      "advertiserId": "advertiser",
+      "marketplaceId": "market",
+      "region": "EU",
+      "destinationArn": "arn:aws:sqs:eu-west-1:000000000000:synthetic",
+      "eventId": "event-0",
+      "revision": 1,
+      "eventTime": "2026-09-15T12:00:00.000Z",
+      "window": null,
+      "observation": {
+        "campaignId": "campaign",
+        "recommendationId": "diagnostic",
+        "diagnosticCode": "budget",
+        "severity": "info"
+      }
+    },
+    {
+      "contractVersion": "fixture.v1",
+      "datasetId": "sp-budget-recommendations",
+      "subscriptionId": "sub-1",
+      "advertiserId": "advertiser",
+      "marketplaceId": "market",
+      "region": "EU",
+      "destinationArn": "arn:aws:sqs:eu-west-1:000000000000:synthetic",
+      "eventId": "event-1",
+      "revision": 1,
+      "eventTime": "2026-09-15T12:00:00.000Z",
+      "window": null,
+      "observation": {
+        "campaignId": "campaign",
+        "recommendationId": "budget",
+        "currency": "USD",
+        "recommendedBudget": 10
+      }
+    },
+    {
+      "contractVersion": "fixture.v1",
+      "datasetId": "ads-campaign-management-campaigns",
+      "subscriptionId": "sub-2",
+      "advertiserId": "advertiser",
+      "marketplaceId": "market",
+      "region": "EU",
+      "destinationArn": "arn:aws:sqs:eu-west-1:000000000000:synthetic",
+      "eventId": "event-2",
+      "revision": 1,
+      "eventTime": "2026-09-15T12:00:00.000Z",
+      "window": null,
+      "observation": {
+        "entityId": "campaign",
+        "adProduct": "SB",
+        "operation": "patch",
+        "state": "enabled"
+      }
+    },
+    {
+      "contractVersion": "fixture.v1",
+      "datasetId": "ads-campaign-management-adgroups",
+      "subscriptionId": "sub-3",
+      "advertiserId": "advertiser",
+      "marketplaceId": "market",
+      "region": "EU",
+      "destinationArn": "arn:aws:sqs:eu-west-1:000000000000:synthetic",
+      "eventId": "event-3",
+      "revision": 1,
+      "eventTime": "2026-09-15T12:00:00.000Z",
+      "window": null,
+      "observation": {
+        "entityId": "group",
+        "adProduct": "SB",
+        "operation": "patch",
+        "campaignId": "campaign"
+      }
+    },
+    {
+      "contractVersion": "fixture.v1",
+      "datasetId": "ads-campaign-management-ads",
+      "subscriptionId": "sub-4",
+      "advertiserId": "advertiser",
+      "marketplaceId": "market",
+      "region": "EU",
+      "destinationArn": "arn:aws:sqs:eu-west-1:000000000000:synthetic",
+      "eventId": "event-4",
+      "revision": 1,
+      "eventTime": "2026-09-15T12:00:00.000Z",
+      "window": null,
+      "observation": {
+        "entityId": "ad",
+        "adProduct": "SB",
+        "operation": "patch",
+        "campaignId": "campaign",
+        "adGroupId": "group"
+      }
+    },
+    {
+      "contractVersion": "fixture.v1",
+      "datasetId": "ads-campaign-management-targets",
+      "subscriptionId": "sub-5",
+      "advertiserId": "advertiser",
+      "marketplaceId": "market",
+      "region": "EU",
+      "destinationArn": "arn:aws:sqs:eu-west-1:000000000000:synthetic",
+      "eventId": "event-5",
+      "revision": 1,
+      "eventTime": "2026-09-15T12:00:00.000Z",
+      "window": null,
+      "observation": {
+        "entityId": "target",
+        "adProduct": "SB",
+        "operation": "patch",
+        "campaignId": "campaign",
+        "adGroupId": "group"
+      }
+    },
+    {
+      "contractVersion": "fixture.v1",
+      "datasetId": "sb-clickstream",
+      "subscriptionId": "sub-6",
+      "advertiserId": "advertiser",
+      "marketplaceId": "market",
+      "region": "EU",
+      "destinationArn": "arn:aws:sqs:eu-west-1:000000000000:synthetic",
+      "eventId": "event-6",
+      "revision": 1,
+      "eventTime": "2026-09-15T12:00:00.000Z",
+      "window": {
+        "start": "2026-09-15T11:00:00.000Z",
+        "end": "2026-09-15T12:00:00.000Z"
+      },
+      "observation": {
+        "campaignId": "campaign",
+        "creativeId": "creative",
+        "clicks": 0
+      }
+    },
+    {
+      "contractVersion": "fixture.v1",
+      "datasetId": "sb-rich-media",
+      "subscriptionId": "sub-7",
+      "advertiserId": "advertiser",
+      "marketplaceId": "market",
+      "region": "EU",
+      "destinationArn": "arn:aws:sqs:eu-west-1:000000000000:synthetic",
+      "eventId": "event-7",
+      "revision": 1,
+      "eventTime": "2026-09-15T12:00:00.000Z",
+      "window": {
+        "start": "2026-09-15T11:00:00.000Z",
+        "end": "2026-09-15T12:00:00.000Z"
+      },
+      "observation": {
+        "campaignId": "campaign",
+        "creativeId": "creative",
+        "engagements": 7
+      }
+    }
+  ],
+  "expected": {
+    "source": 8,
+    "parsed": 8,
+    "refused": 0,
+    "stored": 8,
+    "verified": 8,
+    "duplicateDeliveries": 8,
+    "canonicalOnReplay": 8
+  }
+}

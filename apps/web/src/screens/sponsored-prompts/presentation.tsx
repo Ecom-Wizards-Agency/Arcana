@@ -2,9 +2,9 @@ import { formatShellTimestamp } from '../../ui/date-format';
 import { dateLabel } from '../creative/format';
 import type { CSSProperties, ReactNode } from 'react';
 import { analyzeSponsoredPrompts } from '@wizard-ads/core';
-import { sponsoredPromptConsoleUrl, type SponsoredPromptDisplayRow } from '@wizard-ads/shared';
+import { EXTENSION_REPORT_SUPPORT, sponsoredPromptConsoleUrl, type SponsoredPromptDisplayRow } from '@wizard-ads/shared';
 import { DataGrid, tokens } from '@wizard-ads/ui';
-import { Button, LinkButton } from "../../ui/primitives";
+import { Button, LinkButton } from '../../ui/primitives';
 import type { SponsoredPromptsData } from './load';
 
 const Missing = DataGrid.cells.NotMeasuredCell;
@@ -25,11 +25,13 @@ export function PromptsPresentation({ data, expanded = false, onToggle, importCo
   const unchangedSpend = analysis.unchanged.length && analysis.unchanged.every((row) => row.spend !== null) ? analysis.unchanged.reduce((sum, row) => sum + row.spend!, 0) : null;
   return <main aria-label="Sponsored prompts" style={{ maxWidth: 1200, minWidth: 0, margin: '0 auto', color: tokens.color.text, fontFamily: tokens.font.sans }}>
     <h1 style={{ fontSize: tokens.font.size.xl, margin: '0 0 0.5rem' }}>Sponsored prompts</h1>
-    <p style={muted}>Manual import · {snapshot.latestObservationAt ? <>last observation <time dateTime={snapshot.latestObservationAt}>{formatShellTimestamp(snapshot.latestObservationAt)}</time></> : 'no observations imported'} · {analysis.live} live, {analysis.paused} paused · <Metric value={analysis.thirtyDays.spend} currency={currencyCode} /> imported spend in the last 30 complete calendar days{analysis.sinceVisit ? <> · <Metric value={analysis.sinceVisit.spend} currency={currencyCode} /> since your last visit</> : ' · first visit; no previous visit marker'} · tables scroll sideways</p>
+    <p style={muted}>{snapshot.scheduledImports?.length ? 'Scheduled export and manual imports' : 'Manual import'} · {snapshot.latestObservationAt ? <>last observation <time dateTime={snapshot.latestObservationAt}>{formatShellTimestamp(snapshot.latestObservationAt)}</time></> : 'no observations imported'} · {analysis.live} live, {analysis.paused} paused · <Metric value={analysis.thirtyDays.spend} currency={currencyCode} /> imported spend in the last 30 complete calendar days{analysis.sinceVisit ? <> · <Metric value={analysis.sinceVisit.spend} currency={currencyCode} /> since your last visit</> : ' · first visit; no previous visit marker'} · tables scroll sideways</p>
     <section style={{ ...panel, background: tokens.color.warnSoft, borderColor: tokens.color.warnBorder, margin: '1.5rem 0' }}>
       <h2 style={{ fontSize: tokens.font.size.base, margin: '0 0 0.5rem' }}>There is no bulk pause, and pausing does not hold</h2>
-      <p style={{ ...muted, margin: 0 }}>Amazon offers no prompts API or bulk sheet. Pause a prompt in the Ads Console, one ad at a time. A paused prompt can return. This screen shows what changed in your imports and opens the campaign page where you can find the ad.</p>
+      <p style={{ ...muted, margin: 0 }}>This screen supports manual prompt controls. Pause a prompt in the Ads Console, one ad at a time. A paused prompt can return. This screen shows what changed in your imports and opens the campaign page where you can find the ad.</p>
     </section>
+    {snapshot.scheduledImports?.map((r) => <p key={r.referenceId} style={muted}>Scheduled export observed <time dateTime={r.observedAt}>{formatShellTimestamp(r.observedAt)}</time>; collected {formatShellTimestamp(r.collectedAt)}.</p>)}
+    <section aria-label="Provider prompt reporting" style={panel}><h2 style={{ fontSize: tokens.font.size.base }}>Provider reports unavailable</h2><p style={muted}>Provider extension IDs must resolve to these prompts before report measurements can be shown. Imported intervals remain separate.</p><ul>{EXTENSION_REPORT_SUPPORT.filter((r) => r.consumer === 'sponsored_prompts').map((r) => <li key={r.reportTypeId}>{r.reportTypeId}: unsupported; disabled</li>)}</ul></section>
     {importControl}
     {snapshot.prompts.length === 0 ? <section style={{ ...panel, borderStyle: 'dashed', margin: '1.5rem 0' }}><h2 style={{ fontSize: tokens.font.size.lg }}>Not measured</h2><p style={muted}>Import an export to see newly sponsored prompts, returns and their cost. No prompt observations have been imported for this profile.</p></section> : <>
       <h2 style={{ margin: '1.5rem 0 0.8rem', fontSize: tokens.font.size.xs }}>WHAT CHANGED{snapshot.lastVisitedAt ? ` SINCE ${dateLabel(snapshot.lastVisitedAt)}` : ' · FIRST VISIT'}</h2>

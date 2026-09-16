@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { signIn } from './support/auth';
 import { readState } from './support/fixture';
 
@@ -14,10 +14,10 @@ test('captures every saved optimizer state in the operator shell', async ({ page
   await expect(page.getByRole('heading', { name: 'Optimize Now', exact: true })).toBeVisible();
   const shell = (await page.content()).replace(/<script[\s\S]*?<\/script>/g, '');
   const rendered = JSON.parse(execFileSync(process.execPath, ['--import', 'tsx', 'e2e/support/render-optimizer.ts'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })) as { states: string[]; markup: Record<string, string>; css: string };
-  expect(rendered.states).toHaveLength(35);
+  expect(rendered.states).toHaveLength(52);
   expect(rendered.states).toEqual(expect.arrayContaining(['choose-campaigns', 'run-settings', 'missing-group-setting']));
   expect(Object.keys(rendered.markup)).toEqual(rendered.states);
-  const directory = resolve(testInfo.project.outputDir, '..', 'wp269');
+  const directory = testInfo.outputPath('optimizer');
   await mkdir(directory, { recursive: true });
   const screenshots: Array<{ state: string; path: string }> = [];
   for (const state of rendered.states) {
@@ -56,6 +56,24 @@ test('captures every saved optimizer state in the operator shell', async ({ page
       await expect(page.getByRole('button', { name: /Yes, apply/ })).toHaveCount(0);
     }
     if (state === 'confirm-both') await expect(page.getByRole('button', { name: 'Yes, apply 2 changes to Amazon', exact: true })).toBeVisible();
+    if (state.startsWith('restore-')) {
+      await expect(page.getByTestId('restore-source')).toHaveCount(1);
+      await expect(page.getByTestId('restore-source')).toContainText('Restore of batch');
+      if (['restore-environment-disabled', 'restore-profile-disabled'].includes(state)) await expect(page.getByRole('button', { name: 'Yes, apply 1 changes to Amazon', exact: true })).toBeDisabled();
+      if (['restore-confirm', 'restore-retry-confirm'].includes(state)) {
+        await expect(page.getByRole('table', { name: 'Immutable restore preview' }).locator('tbody tr')).toHaveCount(1);
+        await expect(page.getByRole('button', { name: 'Yes, apply 1 changes to Amazon', exact: true })).toBeEnabled();
+      }
+      if (state === 'restore-export') {
+        await expect(page.getByRole('heading', { name: 'Amazon writes are not enabled for this profile' })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Export restore proposal (1 changes)', exact: true })).toBeEnabled();
+        await expect(page.getByRole('button', { name: /Yes, apply/ })).toHaveCount(0);
+      }
+      if (state === 'restore-partial') await expect(page.getByTestId('optimizer-result-counts')).toHaveText('Requested 2 · Attempted 2 · Accepted 1 · Failed 1 · Confirmed in sync 1');
+      if (state === 'restore-single') await expect(page.getByTestId('optimizer-result-counts')).toHaveText('Requested 1 · Attempted 1 · Accepted 1 · Failed 0 · Confirmed in sync 0');
+      if (state === 'restore-conflict') await expect(page.getByText('Observed state conflicts with the request')).toBeVisible();
+      if (state === 'restore-retry-preview') await expect(page.getByRole('table', { name: 'Refreshed retry changes' }).locator('tbody tr')).toHaveCount(1);
+    }
     const path = join(directory, `${state}.png`);
     await page.screenshot({ path, fullPage: true, animations: 'disabled', style: 'nextjs-portal { display: none; }' });
     expect((await readFile(path)).byteLength, `${state}: screenshot has content`).toBeGreaterThan(1000);

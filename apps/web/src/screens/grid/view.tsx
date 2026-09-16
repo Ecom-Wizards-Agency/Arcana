@@ -1,17 +1,14 @@
 import { RetailEvidencePanel, AbaEvidencePanel } from './spapi-evidence';
-import { type CSSProperties } from 'react';
+import { Suspense, type CSSProperties } from 'react';
 import { CoreReportEvidencePanel } from './core-report-evidence';
-
-import {
-  ENTITY_LABELS,
-  tokens
-} from '@wizard-ads/ui';
-
+import { ENTITY_LABELS, tokens } from '@wizard-ads/ui';
 import { gateMessage } from '../../ui/gate-message';
-
 import { GridWorkspace } from '../../../app/grid/grid-client';
-
 import type { load } from './load';
+
+
+
+
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
 
@@ -49,11 +46,12 @@ function renderEmpty({ data }: Extract<ScreenData, { view: 'empty'; }>['props'])
   </main>);
 }
 
-function renderReady({ sourceEvidence, entity, profile, period, comparison, params, slot1: _slot1, actor, freshness: _freshness, coreEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ catalogue, sourceEvidence, entity, profile, period, comparison, params, slot1: _slot1, actor, freshness: _freshness, coreEvidence, streamEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main style={main}>
     <h1 className="wa-sr-only">{ENTITY_LABELS[entity]}</h1>
     <p className="wa-sr-only">{profile.label} · {profile.countryCode} · {profile.currencyCode} · {period.start} to {period.end}</p>
 
+    {catalogue?<Suspense fallback={<p>Loading current catalogue facts…</p>}>{catalogue}</Suspense>:null}
     <GridWorkspace
       key={`${profile.id}:${entity}:${period.start}:${period.end}:${params.campaign ?? ''}:${params.view ?? ''}:${params.asin ?? ''}`}
       actor={actor}
@@ -69,6 +67,7 @@ function renderReady({ sourceEvidence, entity, profile, period, comparison, para
     {coreEvidence?.some((item) => item.status !== 'unmeasured') ? <CoreReportEvidencePanel evidence={coreEvidence} /> : null}
     {entity === 'products' ? <RetailEvidencePanel evidence={sourceEvidence} start={period.start} end={period.end} {...(params.asin ? { asin: params.asin } : {})} /> : entity === 'search_terms' || entity === 'targets' ? <AbaEvidencePanel evidence={sourceEvidence} selectedAsin={params.asin ?? ''} /> : null}
 
+    <Suspense fallback={null}>{streamEvidence}</Suspense>
   </main>);
 }
 

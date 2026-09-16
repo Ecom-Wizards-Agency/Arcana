@@ -1,3 +1,5 @@
+import type { StreamConsumerEvidence } from '@wizard-ads/shared';
+import { readStreamConsumerEvidence } from '../creative/stream-evidence-load';
 import { getReversionBatchPreview, listChangeQueue, readRestoreProposal } from '@wizard-ads/db';
 import { ChangeQueueSource, ChangeQueueState, Uuid } from '@wizard-ads/shared';
 import { TimeMachineEntryId, TimeMachineInstant } from '@wizard-ads/shared/time-machine-writes';
@@ -10,6 +12,7 @@ import { pageReadErrorMessage } from '../../server/authenticated-page-read';
 import { authenticationDestination } from '../../server/request-context';
 import { resolveQueueViewQuery } from './saved-view';
 import { classifyRestoreRow } from '../../../../../packages/core/src/restore-preview';
+import { optimizerBatchHref } from '../optimizer/navigation';
 
 function one(value: string | string[] | undefined) { return Array.isArray(value) ? value[0] : value; }
 function date(value: string | undefined): string | null {
@@ -19,7 +22,7 @@ function date(value: string | undefined): string | null {
 }
 export function queueCursor(query: ScreenParams['searchParams']) {
   const observedAt = one(query['before_at']), id = one(query['before_id']);
-  if (!observedAt || !id || (!TimeMachineEntryId.safeParse(id).success && !/^(?:queued|restore):[0-9a-f-]{36}$/.test(id))) return null;
+  if (!observedAt || !id || (!TimeMachineEntryId.safeParse(id).success && !/^(?:amazon|queued|restore):[0-9a-f-]{36}$/.test(id))) return null;
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/.test(observedAt) || !date(observedAt.slice(0,10)) || !Number.isFinite(Date.parse(observedAt))) return null;
   const instant = TimeMachineInstant.safeParse(observedAt);
   return instant.success ? { observedAt: instant.data, id } : null;
@@ -44,6 +47,11 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       const proposalId=one(query['proposal']);
       const proposal=proposalId && Uuid.safeParse(proposalId).success ? await readRestoreProposal(database,{orgId:actor.orgId,profileId:profile.id,planId:proposalId}) : null;
       if(proposalId && proposal===null) notFound();
+      if (proposal) {
+        const source = proposal.preview.plan.source;
+        if (source.kind !== 'apply_batch' || !source.restoreProposal) notFound();
+        redirect(optimizerBatchHref('confirm', source.restoreProposal.sourceBatchId, profile.id, { plan: proposal.preview.plan.id }));
+      }
       const batch = one(query['batch']);
       const preview = batch && Uuid.safeParse(batch).success ? await getReversionBatchPreview(database, { orgId: actor.orgId, batchId: batch }) : null;
       if (batch && (preview === null || preview.profileId !== profile.id)) notFound();
@@ -63,16 +71,16 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       }));
       preserved['profile'] = profile.id;
       return { view: 'ready' as const, props: { profileId: profile.id, currencyCode: profile.currencyCode,
-        role, viewActor:actor, proposal, entries: entries.slice(0,50), hasOlder: entries.length > 50, cursor, query: preserved,
+        role, viewActor:actor, proposal, ...({ streamEvidence: await readStreamConsumerEvidence(database, { orgId: actor.orgId, profileId: profile.id, datasets: ['ads-campaign-management-campaigns','ads-campaign-management-adgroups','ads-campaign-management-ads','ads-campaign-management-targets'], asOf: new Date().toISOString(), maxAgeMs: 86400000, history: true, ...(from ? { from } : {}), ...(to ? { to: new Date(Date.parse(to)+86400000).toISOString() } : {}) }) } as { streamEvidence?: StreamConsumerEvidence }), entries: entries.slice(0,50), hasOlder: entries.length > 50, cursor, query: preserved,
         partial: freshness?.partial ?? true,
         preview: preview === null ? null : { batchId: preview.batchId, label: preview.tag,
-          blockedReason: preview.activeReversionBatchId === null ? null : 'This batch already has an active reversion export.',
+          blockedReason: preview.activeReversionBatchId === null ? null : 'This batch already has an active restore batch.',
           rows: preview.rows.map((row) => classifyRestoreRow({ row, exportedAt: preview.exportedAt })) } } };
     });
   } catch (error) {
     const destination = authenticationDestination(error);
     if (destination !== null) redirect(destination);
-    if (error instanceof Error && 'digest' in error && String(error.digest).startsWith('NEXT_HTTP_ERROR_FALLBACK')) throw error;
+    if (error instanceof Error && 'digest' in error && (String(error.digest).startsWith('NEXT_HTTP_ERROR_FALLBACK') || String(error.digest).startsWith('NEXT_REDIRECT'))) throw error;
     return { view: 'error' as const, props: { message: pageReadErrorMessage(error, 'The change history is unavailable') } };
   }
 }

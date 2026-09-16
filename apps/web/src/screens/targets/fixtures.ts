@@ -12,6 +12,8 @@ export const targetFixture: Target360Model = {
   ranks: [{ date: '2026-08-13', asin: 'SYNTHETIC1', organicRank: 1, sponsoredRank: 3 }],
   performance: Array.from({ length:13 },(_,i) => ({ date:`2026-08-${String(i+1).padStart(2,'0')}`, impressions:100,clicks:10,spend:20+i,sales:100,orders:2,acos:(20+i)/100,cpc:(20+i)/10,topOfSearchShare:null })),
   changes: [{ id:'1',date:'2026-08-01',field:'bid',oldValue:'4',newValue:'5',source:'sync' }],
+  shelf: [],
+  graph: { status: 'missing', rows: [], unresolvedCount: 0 },
   bidContext: { profileId:'00000000-0000-4000-8000-000000000001',profileLabel:'Synthetic profile',targetId:'synthetic',targetLabel:'Synthetic keyword',campaignId:'synthetic-campaign',campaignLabel:'Synthetic campaign',oldBid:{amount:'5',currencyCode:'USD'},readAt:'2026-08-13T12:00:00.000000Z',
     organicRank:1,protectionRank:2,suggestedLow:4,suggestedMedian:8.4,suggestedHigh:11,maxIncrease:1,maxDecrease:0.5,bidFloor:1,bidCeiling:12,campaignBudget:100,targetAcos:0.3,placementModifiers:{topOfSearch:100,restOfSearch:0,productPages:0},
     settingSource:'Synthetic sourced settings' },

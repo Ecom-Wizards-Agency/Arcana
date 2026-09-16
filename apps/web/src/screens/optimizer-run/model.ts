@@ -25,6 +25,8 @@ export function operationHeadline(detail: SpWriteOperationDetail, _workerEnabled
   const c = operationCounts(detail);
   if (c.pending === c.requested) return 'Approved · waiting for the worker';
   if (c.pending > 0) return `Applying ${c.requested} changes · ${c.succeeded} accepted by Amazon · ${c.pending} waiting to send`;
+  const conflicts = detail.snapshot.accounting.observationConflict + detail.snapshot.accounting.observationMissing;
+  if (conflicts > 0) return `${conflicts} change${conflicts === 1 ? ' conflicts' : 's conflict'} with the current synchronized state.`;
   if (c.observed === c.requested && c.failed + c.refused + c.ambiguous === 0) return `${c.observed} change${c.observed === 1 ? '' : 's'} applied and confirmed in sync.`;
   const attention = c.failed + c.refused;
   if (attention > 0 && c.observed > 0) return `${c.observed} change${c.observed === 1 ? '' : 's'} applied. ${attention} need${attention === 1 ? 's' : ''} attention.`;

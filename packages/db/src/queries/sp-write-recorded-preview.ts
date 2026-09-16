@@ -132,7 +132,7 @@ export async function loadRecordedSpWritePreview(
       preview = SpWritePreview.parse({ ...source, binding: spWritePlanBinding(plan) });
       if (source.evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v1'
         || source.evidence.schemaVersion === 'openspell.sp-write-preview-evidence.v3') {
-        if (source.evidence.provenance.rows.some((row) => row.method === undefined)) reasons.add('source_changed');
+        if (plan.source.restoreProposal === undefined && source.evidence.provenance.rows.some((row) => row.method === undefined)) reasons.add('source_changed');
         // Reuse the query-only source builder; its transient timestamps are discarded.
         // The immutable saved evidence remains the only preview returned to callers.
         try {
@@ -140,7 +140,10 @@ export async function loadRecordedSpWritePreview(
             requestId: plan.id, profileId: plan.profileId, applyBatchId: plan.source.applyBatchId,
             ...(plan.source.forwardRowIds === undefined ? {} : { forwardRowIds: plan.source.forwardRowIds }),
             ...(plan.source.retryOrigin === undefined ? {} : { retryOrigin: plan.source.retryOrigin }),
-          });
+          }, plan.source.restoreProposal?.sourceRowIds);
+          if (plan.source.restoreProposal !== undefined
+            && JSON.stringify(current.plan.source.kind === 'apply_batch' ? current.plan.source.restoreProposal : null)
+              !== JSON.stringify(plan.source.restoreProposal)) reasons.add('source_changed');
           if (JSON.stringify(current.evidence) !== JSON.stringify(source.evidence)) reasons.add('source_changed');
         } catch (error) {
           if (!(error instanceof SpWriteApplicationError) || error.code === 'outcome_unknown') throw error;
@@ -156,7 +159,7 @@ export async function loadRecordedSpWritePreview(
             and recommendation.profile_id = apply_row.profile_id and recommendation.id = apply_row.recommendation_id
           where apply_row.org_id = ${plan.orgId}::uuid and apply_row.profile_id = ${plan.profileId}::uuid
             and apply_row.batch_id = ${plan.source.applyBatchId}::uuid
-            and (${plan.source.forwardRowIds ?? null}::uuid[] is null or apply_row.id = any(${plan.source.forwardRowIds ?? null}::uuid[]))
+            and (${plan.source.restoreProposal?.sourceRowIds ?? plan.source.forwardRowIds ?? null}::uuid[] is null or apply_row.id = any(${plan.source.restoreProposal?.sourceRowIds ?? plan.source.forwardRowIds ?? null}::uuid[]))
         `;
         if (!intact?.matches) reasons.add('source_changed');
       }
@@ -172,13 +175,30 @@ export async function loadRecordedSpWritePreview(
             on e.org_id=${plan.orgId}::uuid and e.profile_id=${plan.profileId}::uuid
               and e.source_row_id=a.source_row_id and e.retry_plan_id=a.plan_id
         ) select not exists(select 1 from public.sp_write_cycle_plans c
+          join public.sp_write_plans owner_plan on owner_plan.org_id=c.org_id and owner_plan.profile_id=c.profile_id and owner_plan.plan_id=c.plan_id
           join public.sp_write_plan_actions a on a.org_id=c.org_id and a.profile_id=c.profile_id and a.plan_id=c.plan_id
           cross join lateral jsonb_array_elements(a.artifact->'sources') item
           where c.org_id=${plan.orgId}::uuid and c.profile_id=${plan.profileId}::uuid and c.direction='forward'
+            and (owner_plan.artifact#>'{source,restoreProposal}' is null)=${plan.source.restoreProposal === undefined}
             and c.plan_id<>${plan.id}::uuid and item->>'kind'='apply_row'
             and (item->>'applyRowId')::uuid=any(${ids}::uuid[])
             and not exists(select 1 from ancestors where ancestors.plan_id=c.plan_id and ancestors.source_row_id::text=item->>'applyRowId')) as current`;
       if (!ownership?.current) reasons.add('source_changed');
+      if (plan.source.restoreProposal !== undefined) {
+        const [restoreOwner] = await sql<{ current: boolean }[]>`
+          with recursive ancestors(plan_id) as (
+            select ${parentPlanId}::uuid where ${parentPlanId}::uuid is not null
+            union select edge.parent_plan_id from app.sp_write_forward_lineage edge join ancestors a on edge.retry_plan_id=a.plan_id
+              where edge.org_id=${plan.orgId}::uuid and edge.profile_id=${plan.profileId}::uuid
+          ) select not exists(select 1 from public.sp_write_restore_proposals proposal
+            join public.sp_write_cycle_plans cycle on cycle.org_id=proposal.org_id and cycle.profile_id=proposal.profile_id and cycle.plan_id=proposal.plan_id
+            where proposal.org_id=${plan.orgId}::uuid and proposal.profile_id=${plan.profileId}::uuid
+              and proposal.source_batch_id=${plan.source.applyBatchId}::uuid and proposal.plan_id<>${plan.id}::uuid
+              and not exists(select 1 from ancestors where plan_id=proposal.plan_id))
+            and not exists(select 1 from public.apply_batches child where child.org_id=${plan.orgId}::uuid and child.profile_id=${plan.profileId}::uuid
+              and child.source_batch_id=${plan.source.applyBatchId}::uuid and child.status<>'abandoned') as current`;
+        if (!restoreOwner?.current) reasons.add('source_changed');
+      }
     }
     // A forward approval binds the frozen grant version. A newly approved inverse
     // uses the current grant, as the existing inverse admission contract specifies.
@@ -293,6 +313,7 @@ export async function loadRecordedSpWritePreview(
       currentRows, freshness: { checkedAt: row.checked_at,
         status: reasons.has('entity_unavailable') || reasons.has('unsupported_action') ? 'unavailable'
           : reasons.size > 0 ? 'stale' : 'current', reasons: [...reasons] },
+      gates: { environmentEnabled: row.gate_enabled, profileAllowlisted: row.grant_matches },
       admission: await priorAdmission(sql, preview),
     });
 }

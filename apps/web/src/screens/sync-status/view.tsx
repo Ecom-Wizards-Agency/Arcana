@@ -1,17 +1,18 @@
 import { SpSourceStatus } from '../grid/spapi-evidence';
+import { ProviderEvidencePanel } from '../recommendations/provider-evidence';
 import { formatShellDate, formatTimestamp, formatDateWindow } from '../../ui/date-format';
 import { TableFrame } from '../../ui/primitives';
 import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
 import { CoreReportEvidencePanel } from '../grid/core-report-evidence';
 import { reportAccountingLabel } from '../../data/sync-status';
-
 import { ReportLifecycleTables } from '../../../app/sync-status/report-lifecycle-tables';
-
 import { Shell } from '../settings/frame';
-
 import { colors, heading, muted, page, subheading, table, td, th } from '../../ui/tokens';
-
 import type { load } from './load';
+
+
+
+
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
 
@@ -34,8 +35,8 @@ function renderGated({ result }: Extract<ScreenData, { view: 'gated'; }>['props'
   </main>);
 }
 
-function renderReady({ context, status, sources, coreEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
-  return (<main style={page}>
+function renderReady({ context, status, sources, coreEvidence, providerEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+  return (<main style={page}>{providerEvidence?.map((item) => <section key={item.profileId}><h2>Profile {item.profileId}</h2><ProviderEvidencePanel evidence={item.evidence} consumer="sync-status" /></section>)}
     <Shell context={context} current="sync">
       <h1 style={heading}>Sync status</h1>
       {coreEvidence ? <CoreReportEvidencePanel evidence={coreEvidence} title="Report family coverage" /> : null}
@@ -80,7 +81,18 @@ function renderReady({ context, status, sources, coreEvidence }: Extract<ScreenD
       {status.freshness.length === 0 ? <ScreenState title="No profiles yet." body="Choose a connected profile or check again after the next sync." /> : null}
 
       <section aria-label="SP-API source status"><h2>SP-API sources</h2>{sources?.length ? sources.map(source => <SpSourceStatus key={source.family} evidence={source.evidence} label={source.family} />) : <p>Select a profile to inspect retail, ABA and catalogue source evidence.</p>}</section>
+      <h2 style={subheading}>Additional Stream datasets</h2>
+      <p style={muted}>Bindings and projections default off. Event time determines age; replay does not renew evidence. Counters include only verified binding scope; unmatched delivery failures remain in the infrastructure ledger.</p>
+      {status.streams ? <TableFrame><table style={table}><thead><tr>{['Dataset', 'Bindings', 'Enabled', 'Confirmation', 'Stored', 'Latest event', 'Maximum lag', 'Duplicates / rejected / dead-lettered'].map((label) => <th style={th} key={label}>{label}</th>)}</tr></thead><tbody>
+        {status.streams.map((row) => <tr key={row.datasetId} data-testid="stream-extension-row"><td style={td}>{row.datasetId}</td><td style={td}>{row.bindingCount}</td><td style={td}>{row.enabled ? 'on' : 'off'}</td><td style={td}>{row.confirmed ? 'confirmed' : 'missing confirmation'}</td><td style={td}>{row.stored}</td><td style={td}>{formatTimestamp(row.latestEventAt)}</td><td style={td}>{row.maximumLagSeconds === null ? '—' : `${row.maximumLagSeconds}s`}</td><td style={td}>{[row.duplicates, row.rejected, row.deadLettered].map((n) => n === null ? 'unmeasured' : n).join(' / ')}</td></tr>)}
+      </tbody></table></TableFrame> : <p style={muted}>Choose a profile to inspect Stream bindings.</p>}
       <ReportLifecycleTables deadLetters={status.deadLetters} lifecycle={status.lifecycle} />
+
+      <h2 style={subheading}>Catalogue and Amazon history sources</h2>
+      <TableFrame><table style={table}><thead><tr><th style={th}>Profile</th><th style={th}>Marketplace</th><th style={th}>Family</th><th style={th}>Gate</th><th style={th}>Covered window</th><th style={th}>Source age</th><th style={th}>Source rows</th><th style={th}>Verified rows</th><th style={th}>Cursor</th></tr></thead><tbody>
+        {status.catalogue.map((row)=><tr key={`${row.profileLabel}:${row.marketplaceId}:${row.family}:${row.selectorKey??'unselected'}`} data-testid="catalogue-source-row"><td style={td}>{row.profileLabel}</td><td style={td}>{row.marketplaceId}</td><td style={td}>{row.family}</td><td style={td}>{row.enabled&&row.reportingRecoveryVerified?'enabled':row.reportingRecoveryVerified?'source off':'recovery unverified'}</td><td style={td}>{row.coveredFrom&&row.coveredThrough?`${formatTimestamp(row.coveredFrom)} – ${formatTimestamp(row.coveredThrough)}`:'Not measured'}</td><td style={td}>{formatTimestamp(row.observedAt)}</td><td style={td}>{row.sourceRows??'Unavailable'}</td><td style={td}>{row.loadedRows??'Unavailable'}</td><td style={{...td,color:row.cursorFailure?colors.bad:undefined}}>{row.cursorFailure??(row.loadedRows===null?'Not run':'ok')}</td></tr>)}
+      </tbody></table></TableFrame>
+      {status.catalogue.length===0?<ScreenState variant="not-measured" title="Catalogue sources not provisioned" body="Product Metadata, Product Eligibility, Validation Configurations and Change History remain unavailable until an operator provisions their disabled gates."/>:null}
 
       <h2 style={subheading}>Jobs</h2>
       <TableFrame><table style={table}>

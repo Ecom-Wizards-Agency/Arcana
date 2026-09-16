@@ -18,6 +18,21 @@ function observedNumber(value: unknown): number | null {
 /** Display recorded values without exposing provider field names or JSON. */
 export function creativeChangeText(change: CreativeWorkspaceChange, currencyCode: string): string {
   if (change.kind === 'Creative') return 'First seen in this ad group';
+  if (change.kind === 'Listing' || change.kind === 'Promotion') {
+    const labels: Record<string, string> = { price: 'Price', buyBoxPrice: 'Buy Box price', lightningDeal: 'Lightning deal',
+      coupon: 'Coupon', inStock: 'In stock', ownsBuyBox: 'Owns Buy Box', suppressed: 'Listing suppressed',
+      rating: 'Rating', reviewCount: 'Reviews', bsr: 'Sales rank', title: 'Title' };
+    const valueText = (value: unknown): string => {
+      if (value === null || value === undefined) return 'not observed';
+      if (change.field === 'price' || change.field === 'buyBoxPrice') return money(observedNumber(value), currencyCode);
+      if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+      // The tuple retains provider units; do not guess currency or percent units.
+      if (change.field === 'coupon' && Array.isArray(value) && value.length === 2) return `one-time source value ${value[0]}, Subscribe & Save source value ${value[1]}`;
+      if (change.field === 'bsr' && typeof value === 'object' && 'rank' in value && 'category' in value) return `${value.rank} in ${value.category}`;
+      return typeof value === 'number' || typeof value === 'string' ? String(value) : 'not observed';
+    };
+    return `${labels[change.field] ?? 'Listing field'}: ${valueText(change.oldValue)} → ${valueText(change.newValue)}`;
+  }
   if (change.kind === 'Bid') {
     const bid = (value: unknown) => {
       const number = observedNumber(value);
