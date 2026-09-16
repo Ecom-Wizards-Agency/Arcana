@@ -1,3 +1,5 @@
+'use client';
+
 import { ListingEvidencePanel } from '../grid/spapi-evidence';
 import { StreamEvidencePanel } from '../creative/stream-evidence';
 import { useState } from 'react';
@@ -10,7 +12,6 @@ import { timelineDates, timelineSummary, timelineValue, timelineEffect, timeline
 import { Button, EmptyState } from '../../ui/primitives';
 import type { TimelineData } from './load';
 import { ManualEventForm } from './manual-event-form';
-'use client';
 import './timeline.css';
 const names = { experiment: 'experiment', apply_batch: 'apply batch', amazon_change: 'Amazon observed', promotion: 'promotion', market: 'market', listing: 'listing', supply: 'supply' };
 const date = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });

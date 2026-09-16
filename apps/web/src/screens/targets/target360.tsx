@@ -1,3 +1,5 @@
+'use client';
+
 import { AbaEvidencePanel } from '../grid/spapi-evidence';
 import { ProviderEvidencePanel } from '../recommendations/provider-evidence';
 import { ProductShelf } from './product-shelf';
@@ -7,7 +9,6 @@ import { corridorReading, corridorSummary, targetBidChecks } from '@wizard-ads/c
 import { normalizeQueuedBidOverride, parseGridView, serializeGridView, type GridSavedView, type ListingFieldObservation } from '@wizard-ads/shared';
 import type { Target360Model } from './model';
 import { CoreReportEvidencePanel } from '../grid/core-report-evidence';
-'use client';
 import styles from './target360.module.css';
 const tabs = ['Corridor', 'Shelf', 'Rank', 'Changes', 'Performance'] as const;
 const defaultTarget: NonNullable<GridSavedView['target']> = { series: { bid: true, realisedCpc: true, suggestedBand: true, maxCpc: true, dailySpend: true, acos: true }, maxCpcExpanded: true };
