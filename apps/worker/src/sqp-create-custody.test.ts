@@ -11,7 +11,7 @@ function dependencies(createReport: SqpWorkflowDependencies['api']['createReport
     processingStatus: 'IN_PROGRESS', reportDocumentId: null, createdTime: null }),
     getReportDocument: vi.fn(), downloadReportDocument: vi.fn() },
     checkpoints: new InMemorySqpWorkflowCheckpoints(), providerGate: { beforeCall: async () => {} },
-    data: { listVocabulary: vi.fn(), promoteFacts: vi.fn(), listPpcFacts: vi.fn(), persistProposals: vi.fn() },
+    data: { listVocabulary: vi.fn(), promoteFacts: vi.fn(), verifyFacts: vi.fn(), listPpcFacts: vi.fn(), persistProposals: vi.fn() },
     now: () => new Date('2026-08-23T00:00:00Z'),
   } satisfies SqpWorkflowDependencies;
 }

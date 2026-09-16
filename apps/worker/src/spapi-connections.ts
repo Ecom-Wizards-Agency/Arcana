@@ -1,12 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { createSpApiConnectionLifecycle, settleSpApiConnection, type DbHandle } from '@wizard-ads/db';
 import { NotConfigured, type SpApiConnectionInstallation, type SpApiConnectionOperation } from '@wizard-ads/shared';
+import { exchangeLwaAuthorizationCode, SpApiCodeExchangeError, type FetchLike } from '@wizard-ads/sp-api';
 
-/** WP-300 fills this exchange; custody, admission, revocation and health are implemented. */
+/** Worker-owned credentials; the application tier never constructs this capability. */
 export async function exchangeSpApiAuthorizationCode(
-  _installation: SpApiConnectionInstallation, _code: string, _signal: AbortSignal,
+  installation: SpApiConnectionInstallation, code: string, signal: AbortSignal,
+  credentials?: { clientId: string; clientSecret: string; fetch?: FetchLike },
 ): Promise<string> {
-  throw new NotConfigured();
+  if (!credentials?.clientSecret || installation.clientId !== credentials.clientId) throw new NotConfigured();
+  return exchangeLwaAuthorizationCode({ ...credentials, redirectUri: installation.redirectUri, code, signal });
 }
 
 export interface SpApiConnectionRuntimeOptions {
@@ -35,7 +38,8 @@ export async function runSpApiConnectionPass(
       refresh = await (options.exchange ?? exchangeSpApiAuthorizationCode)(claim.installation, claim.code, bounded);
     } catch (error) {
       const operation = await settleSpApiConnection(options.handle, id, claim.leaseId, {
-        reason: error instanceof NotConfigured ? 'not_configured' : 'exchange_uncertain',
+        reason: error instanceof NotConfigured ? 'not_configured'
+          : error instanceof SpApiCodeExchangeError ? error.outcome : 'exchange_uncertain',
       });
       return { outcome: 'observed', operation };
     }

@@ -795,7 +795,7 @@ describe('SB keyword sync gate and accounting', () => {
     const { adapter } = makeAdapter(underlying({ listSbKeywords }), { sbKeywordSyncEnabled: enabled });
     const result = await adapter.listEntities(profile, false);
     expect(listSbKeywords).toHaveBeenCalledTimes(enabled === true ? 1 : 0);
-    expect(result.excludedEntityTypes).toEqual(enabled === true ? undefined : { SB: ['keyword'] });
+    expect(result.excludedEntityTypes).toEqual({ ...(enabled === true ? {} : { SB: ['keyword'] }), SD: ['product_ad', 'target', 'negative'] });
     expect(result.rows).toHaveLength(enabled === true ? 1 : 0);
     if (enabled) expect(result.rows[0]).toMatchObject({ ...keyword, profileId: profile.id });
     expect(result.failures).toHaveLength(0);

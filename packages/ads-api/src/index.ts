@@ -16,12 +16,15 @@
  * budget usage — are closed here.
  */
 export const PACKAGE_NAME = '@wizard-ads/ads-api' as const;
+export { PROVIDER_READ_CONTRACTS } from './provider-contracts.js';
+export { providerReadContract, buildProviderEvidenceRequest, parseProviderEvidenceResponse, providerFingerprint, ProviderEvidenceProtocolError } from './provider-evidence.js';
 
 // Client
 export { AdsApiClient, amazonAdProduct } from './client.js';
 export type { MappedListResult, ReportDownload, ExportDownload } from './client.js';
 
 // Worker-owned authorization and refresh.
+export { defaultCoreReportConfiguration, validateCoreReportWindow, assertCoreReportAdmission, parseCoreReport } from './report-families.js';
 export {
   ADS_SCOPE,
   TOKEN_REFRESH_MARGIN_SECONDS,

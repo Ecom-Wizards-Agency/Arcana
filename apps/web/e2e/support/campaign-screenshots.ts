@@ -13,7 +13,7 @@ export async function captureCampaignStates(page: Page, testInfo: TestInfo) {
   expect(profile).toBeTruthy();
   const cases = campaignRouteCases(fixture, profile!.label);
   expect(cases).toHaveLength(72); expect(new Set(cases.map((item) => `${item.screen}--${item.key}`)).size).toBe(72);
-  const directory = process.env['WP_SCRATCH'] ? resolve(process.env['WP_SCRATCH'], 'tmp', 'wp270-round3', 'screenshots') : resolve(testInfo.project.outputDir, '..', 'wp270-round3', 'screenshots'); await mkdir(directory, { recursive: true });
+  const directory = resolve(testInfo.project.outputDir, '..', 'wp270-round3', 'screenshots'); await mkdir(directory, { recursive: true });
   try {
     // Created only in the disposable browser database; production has no fixture table.
     await db.sql`create table public.campaign_screen_fixtures (id uuid primary key, org_id uuid not null references public.orgs(id), profile_id uuid not null references public.ad_profiles(id), created_by uuid not null, screen_id text not null, mode text not null, payload jsonb not null)`;

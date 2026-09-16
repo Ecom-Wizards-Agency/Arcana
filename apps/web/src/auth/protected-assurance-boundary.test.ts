@@ -12,12 +12,18 @@ describe('protected assurance boundary', () => {
       source('src/server/request-context.ts'),
       source('src/grid/request-context.ts'),
       source('app/api/amazon/oauth/start/route.ts'),
-      source('app/api/amazon/oauth/callback/route.ts'),
+      source('src/oauth/ads-callback.ts'),
+      source('src/oauth/spapi-routes.ts'),
     ]);
     for (const contents of files) {
       expect(contents).toContain('currentOperatorIdentity');
       expect(contents).toContain('authorizeOperatorRole');
     }
+    const callback = await source('app/api/amazon/oauth/callback/route.ts');
+    expect(callback).toContain("import { receiveAmazonConsent } from '../../../../../src/oauth/ads-callback'");
+    expect(callback).toContain("return receiveAmazonConsent(request, consumeOAuthQuery('/api/amazon/oauth/callback'))");
+    const sellerCallback = await source('app/api/amazon/spapi/oauth/callback/route.ts');
+    expect(sellerCallback).toContain("return receiveSpApiConsent(request, consumeOAuthQuery('/api/amazon/spapi/oauth/callback'))");
     expect(await source('app/api/grid/rows/route.ts')).toContain('enforceAssurance: enforceGridAssurance');
   });
 

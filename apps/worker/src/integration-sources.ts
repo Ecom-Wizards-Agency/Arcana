@@ -38,7 +38,8 @@ export function registerIntegrationSources(
       coverage: { target: (result, plan): CoverageTarget => {
         const range = dates?.(result, plan.context) ?? { start: localDate(plan.context, plan.observedAt), end: localDate(plan.context, plan.observedAt) };
         const counted = counts(result);
-        return { reportType, grain: reportType, earliestDate: IsoDate.parse(range.start), coveredThrough: IsoDate.parse(range.end),
+        return { reportType, grain: type === 'sqp.request' ? `${reportType}:${range.start}:${range.end}` : reportType,
+          ...(type === 'sqp.request' ? { verifiedStartDate: IsoDate.parse(range.start) } : {}), earliestDate: IsoDate.parse(range.start), coveredThrough: IsoDate.parse(range.end),
           observedAt: typeof result['observedAt'] === 'string' ? result['observedAt'] : plan.observedAt.toISOString(),
           status: counted.refusedRows > 0 || result['profileMatched'] === false
             || (typeof result['asinsSkippedByCap'] === 'number' && result['asinsSkippedByCap'] > 0)
@@ -73,6 +74,7 @@ export function registerIntegrationSources(
     // Old completed checkpoints have no observation timestamp. Keep their date conservative.
     return { ...result, observedAt: result['observedAt'] ?? `${payload.weekEnd}T23:59:59.999Z` };
   }, (result) => {
+    if (result['status'] !== 'completed') throw new Error('SQP coverage requires a completed workflow');
     const ingestion = record(result['ingestion']);
     const canonicalRows = count(ingestion, 'canonicalRows');
     const expectedWrites = ingestion['status'] === 'already_promoted' ? 0 : canonicalRows;

@@ -14,7 +14,7 @@
  * indirection for its own sake: the end-to-end test points them at a local
  * mock, which is the only way to exercise the callback without a live grant.
  */
-import { AmazonConnectionInstallation } from '@wizard-ads/shared';
+import { AmazonConnectionInstallation, SpApiDeployment } from '@wizard-ads/shared';
 
 export function required(name: string, env: NodeJS.ProcessEnv = process.env): string {
   const value = env[name];
@@ -61,6 +61,28 @@ export interface AmazonOAuthConfig extends AmazonConnectionInstallation {
 
 export function amazonConnectionsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env['OPENSPELL_AMAZON_CONNECTIONS_ENABLED'] === '1';
+}
+
+export function spApiConnectionsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env['OPENSPELL_SPAPI_CONNECTIONS_ENABLED'] === '1';
+}
+
+/** Deployment-owned consent URL. No request header or query can choose a host. */
+export function spApiOAuthConfig(env: NodeJS.ProcessEnv = process.env) {
+  const deployment = SpApiDeployment.parse({
+    clientId: required('SP_API_LWA_CLIENT_ID', env), applicationId: required('SP_API_APPLICATION_ID', env),
+    redirectUri: required('SP_API_OAUTH_REDIRECT_URI', env), region: required('SP_API_OAUTH_REGION', env),
+  });
+  const endpoints = { NA: 'https://sellercentral.amazon.com', EU: 'https://sellercentral-europe.amazon.com', FE: 'https://sellercentral.amazon.co.jp' };
+  let authorizeUrl = `${endpoints[deployment.region]}/apps/authorize/consent`;
+  // Offline browser fixture only. Production cannot configure an arbitrary endpoint.
+  if (env['WIZARD_ADS_E2E_AUTH'] === '1' && env['NODE_ENV'] !== 'production' && env['SP_API_TEST_CONSENT_URL']) {
+    const url = new URL(env['SP_API_TEST_CONSENT_URL']);
+    if (url.protocol !== 'http:' || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+      || url.username || url.password || url.search || url.hash) throw new Error('Invalid synthetic consent endpoint');
+    authorizeUrl = url.href;
+  }
+  return { ...deployment, authorizeUrl, beta: env['SP_API_OAUTH_BETA'] === '1' };
 }
 
 export function amazonOAuthConfig(env: NodeJS.ProcessEnv = process.env): AmazonOAuthConfig {

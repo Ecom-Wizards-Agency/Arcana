@@ -1,11 +1,14 @@
+import type { SpEvidence } from '@wizard-ads/shared';
+import { readProviderEvidence } from '@wizard-ads/db';
 import type { ScreenActor } from '../../server/page-read';
+import { readCoreReportEvidence } from '@wizard-ads/db';
 
 import type { ScreenParams } from '../types';
 
 import { redirect } from 'next/navigation';
 
 import {
-  readResearchProfile,
+  readResearchProfile, readSpReportEvidence,
   listContextualNegativeExports,
   loadContextualNegativeReviewSnapshot
 } from '@wizard-ads/db';
@@ -64,6 +67,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
         return { view: 'empty' as const, props: {} };
       }
 
+      const providerEvidence = await readProviderEvidence(snapshot, { orgId: actor.orgId, profileId: profile.id, consumer: 'query-intelligence' });
       const scopes = await listQueryIntelligenceScopes(snapshot, {
         orgId: actor.orgId,
         profileId: profile.id,
@@ -79,6 +83,9 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       const categoryResult = QueryCategory.safeParse(rawCategory);
       const category = categoryResult.success ? categoryResult.data : null;
       const search = one(query['q'])?.slice(0, 160) ?? '';
+      const endDate = scope?.weekEnd ?? new Date().toISOString().slice(0, 10);
+      const startDate = scope?.weekStart ?? new Date(Date.parse(endDate) - 6 * 86_400_000).toISOString().slice(0, 10);
+      const coreEvidence = await readCoreReportEvidence(snapshot, { orgId: actor.orgId, profileId: profile.id, families: ['sbSearchTerm'], startDate, endDate, limit: 100 });
 
       const reviewScope = {
         orgId: actor.orgId,
@@ -96,8 +103,9 @@ export async function load(access: ScreenActor, input: ScreenParams) {
         marketplaceId: scope.marketplaceId,
       });
       const model = buildQueryIntelligenceModel(source);
+      const aba = await readSpReportEvidence(snapshot, { orgId: actor.orgId, profileId: profile.id, family: 'aba', start: scope.weekStart, end: scope.weekEnd });
 
-      return { view: 'ready' as const, props: { profile, scope, scopes, category, search, model, contextualReview, contextualExports, role } };
+      return { view: 'ready' as const, props: { ...(providerEvidence ? { providerEvidence } : {}), ...({ aba } as { aba?: SpEvidence }), profile, scope, scopes, category, search, model, contextualReview, contextualExports, role, ...(coreEvidence.length ? { coreEvidence } : {}) } };
     });
   } catch (error) {
     const authDestination = authenticationDestination(error);

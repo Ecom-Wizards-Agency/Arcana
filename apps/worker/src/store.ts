@@ -1,3 +1,6 @@
+import { provisionSpApiReportJobs } from './spapi-report-scheduler.js';
+import { ProviderCollectionConfig } from '@wizard-ads/shared';
+import { providerEvidenceSchedule } from './schedules.js';
 import type { ReportCoverageObservation } from '@wizard-ads/shared';
 import { mergeControlMirror, mergeKeywordMirror, readKeywordMirrorStart } from '@wizard-ads/db/sp-write-worker';
 import type { ControlMirrorMergeCounts, KeywordMirrorMergeCounts, KeywordMirrorMergeRequest } from '@wizard-ads/shared/sp-write-mirror';
@@ -43,6 +46,8 @@ import {
   type StagedReportDate,
 } from '@wizard-ads/db';
 import { MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
+import { readCoreReportCapability, promoteCoreReportWindow, coreReportGrain } from '@wizard-ads/db';
+import type { CoreReportConfiguration, CoreFeatureReportType, CoreReportCapability, CoreReportPromotion } from '@wizard-ads/shared';
 import {
   WorkerReportAccounting,
   type ReportCoverageAccounting,
@@ -56,7 +61,7 @@ import {
 type AttributedReportCounts = WorkerReportAccountingShape;
 import type { AdsProfileContext } from './ads-api.js';
 import type { CampaignFactRow, ParsedFactBatch } from './parsers.js';
-import { defaultSchedules, type ScheduleSpec } from './schedules.js';
+import { defaultSchedules, coreFamilySchedules, type ScheduleSpec } from './schedules.js';
 
 export type ReportRequestState = Omit<
   WorkerReportLedger,
@@ -98,6 +103,7 @@ export interface EntitySyncOptions {
   readStartedAt?: string;
   /** Unlisted kinds are not refreshed or tombstoned; requires an ad-product scope. */
   excludedEntityTypes?: readonly EntityRow['entityType'][];
+  preserveCampaignNegativeTargets?: boolean;
   adProduct?: 'SP' | 'SB' | 'SD';
   /**
    * A full pass re-lists every entity the profile has, so an id the mirror
@@ -133,6 +139,7 @@ export interface StoreLogger {
 const MAX_LOGGED_DUPLICATE_IDS = 20;
 
 export interface WorkerStore {
+  coreReportCapability?(orgId: string, profileId: string, family: CoreFeatureReportType): Promise<CoreReportCapability | null>;
   /** WP-256 source-neutral producer. Required when installing additional ingestion sources. */
   recordCoverage?(observation: ReportCoverageObservation, verifiedLoadedRows: number): Promise<{ offered: number; written: number; unchanged: number }>;
   claim(workerId: string, limit: number, jobTypes?: readonly JobType[]): Promise<ClaimedJob[]>;
@@ -250,7 +257,7 @@ export interface WorkerStore {
   finishAttributedReport(
     reportRequestId: string,
     counts: AttributedReportCounts,
-    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null; coverage?: ReportCoverageAccounting },
+    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null; coverage?: ReportCoverageAccounting; promotion?: CoreReportPromotion },
   ): Promise<void>;
 }
 
@@ -271,6 +278,7 @@ export class ClaimOwnershipLost extends Error {
 }
 
 export interface PostgresWorkerStoreOptions {
+  ownCollectorsEnabled?: boolean;
   claimProtocol?: 'legacy' | 'fenced';
   keywordMirror?: KeywordMirrorCapability;
 }
@@ -286,6 +294,7 @@ type ExistingEntity = { amazonId: string; deletedAt: Date | string | null; snaps
 
 export class PostgresWorkerStore implements WorkerStore {
   private readonly logger: StoreLogger;
+  private readonly ownCollectorsEnabled: boolean;
   private readonly keywordMirror: KeywordMirrorCapability | undefined;
   private readonly reportedDisabledSbKeywords = new Set<string>();
   private readonly claimProtocol: 'legacy' | 'fenced';
@@ -298,6 +307,7 @@ export class PostgresWorkerStore implements WorkerStore {
     this.logger = logger ?? { info: (message, details) => console.info(message, details ?? {}) };
     this.claimProtocol = options.claimProtocol ?? 'legacy';
     this.keywordMirror = options.keywordMirror;
+    this.ownCollectorsEnabled = options.ownCollectorsEnabled === true;
   }
 
   /** Activation requires explicit composition; construction never queries the DB. */
@@ -512,7 +522,14 @@ export class PostgresWorkerStore implements WorkerStore {
         tombstoned += keywordMirror.tombstoned;
         continue;
       }
-      const existing = await this.existingEntities(profile.id, entityType, adProduct);
+      const allExisting = await this.existingEntities(profile.id, entityType);
+      const priorById = new Map(allExisting.map((row) => [row.amazonId, row]));
+      for (const row of incoming) {
+        const prior = priorById.get(row.amazonId);
+        if (prior && prior.snapshot['adProduct'] !== row.adProduct) throw new Error('entity mirror product identity changed');
+        if (prior && row.entityType === 'negative' && (prior.snapshot['keywordText'] == null) !== (row.keywordText === null)) throw new Error('negative mirror identity kind changed');
+      }
+      const existing = adProduct ? allExisting.filter((row) => row.snapshot['adProduct'] === adProduct) : allExisting;
       const byId = new Map(existing.map((row) => [row.amazonId, row]));
       const seen = new Set<string>();
 
@@ -535,7 +552,7 @@ export class PostgresWorkerStore implements WorkerStore {
         }
       }
 
-      const missing = full ? existing.filter((row) => !row.deletedAt && !seen.has(row.amazonId)) : [];
+      const missing = full ? existing.filter((row) => !row.deletedAt && !seen.has(row.amazonId) && !(options.preserveCampaignNegativeTargets && entityType === 'negative' && row.snapshot['scope'] === 'campaign' && row.snapshot['keywordText'] == null)) : [];
       tombstoned += missing.length;
       if (missing.length > 0) {
         const ids = missing.map((row) => row.amazonId);
@@ -591,6 +608,7 @@ export class PostgresWorkerStore implements WorkerStore {
       startDate: payload.startDate,
       endDate: payload.endDate,
       creativeSyncSnapshotId: payload.creativeSyncSnapshotId ?? null,
+      familyConfiguration: payload.familyConfiguration ?? null,
     }).onConflictDoNothing();
     return this.getReportRequest(jobId, payload.orgId, payload.profileId);
   }
@@ -695,10 +713,11 @@ export class PostgresWorkerStore implements WorkerStore {
       requested_at: Date | string;
       poll_attempts: number;
       creative_sync_snapshot_id: string | null;
+      family_configuration: CoreReportConfiguration | null;
     }[]>`
       select id, org_id, profile_id, report_type, start_date::text, end_date::text,
              source, amazon_report_id, requested_at, poll_attempts,
-             creative_sync_snapshot_id
+             creative_sync_snapshot_id, family_configuration
         from public.report_requests
        where id = ${reportRequestId}
          and org_id = ${orgId}
@@ -718,6 +737,7 @@ export class PostgresWorkerStore implements WorkerStore {
       requestedAt: asDate(row.requested_at),
       pollAttempts: Number(row.poll_attempts),
       creativeSyncSnapshotId: row.creative_sync_snapshot_id,
+      familyConfiguration: row.family_configuration,
     };
   }
 
@@ -782,6 +802,22 @@ export class PostgresWorkerStore implements WorkerStore {
     return written;
   }
 
+  async provisionCoreFamilySchedules(orgId: string, profileId: string): Promise<{ offered: number; written: number; existing: number }> {
+    const capabilities = await this.handle.sql<{ family: string }[]>`select family from public.report_family_capabilities where org_id=${orgId} and profile_id=${profileId} and enabled=true`;
+    const enabled = new Set(capabilities.map((row) => row.family));
+    const schedules = coreFamilySchedules().filter((spec) => enabled.has(spec.reportType));
+    if (!schedules.length) return { offered: 0, written: 0, existing: 0 };
+    let written = 0;
+    for (const spec of schedules) {
+      const rows = await this.handle.sql`insert into public.sync_schedules (org_id,profile_id,job_type,report_type,variant,cadence,lookback_days,window_offset_days,payload,enabled) values (${orgId},${profileId},'report.request',${spec.reportType}::public.report_type,${spec.variant},${spec.cadence}::interval,${spec.lookbackDays},${spec.windowOffsetDays},${JSON.stringify(spec.payload)}::jsonb,false) on conflict (profile_id,job_type,report_type,variant) do nothing returning id`;
+      written += rows.length;
+    }
+    const persisted = await this.handle.sql<{ report_type: string; variant: string }[]>`select report_type::text,variant from public.sync_schedules where org_id=${orgId} and profile_id=${profileId} and report_type::text=any(${schedules.map((spec) => spec.reportType)}) and variant in ('default','restatement','comparison')`;
+    const expected = new Set(schedules.map((spec) => `${spec.reportType}:${spec.variant}`));
+    if (persisted.length !== expected.size || persisted.some((row) => !expected.has(`${row.report_type}:${row.variant}`))) throw new Error('family schedule readback mismatch');
+    return { offered: schedules.length, written, existing: persisted.length - written };
+  }
+
   /**
    * Clamp any already-provisioned schedule whose window Amazon will not accept.
    *
@@ -824,11 +860,18 @@ export class PostgresWorkerStore implements WorkerStore {
    * them, while a later reactivation enables the same rows again.
    */
   async ensureIntegrationSchedules(): Promise<number> {
+    await this.ensureProviderEvidenceSchedules();
     const [relation] = await this.handle.sql<{ relation: string | null }[]>`
       select to_regclass('public.integration_connections')::text as relation
     `;
     if (!relation?.relation) return 0;
 
+    const ownSources = this.ownCollectorsEnabled ? this.handle.sql`
+        union select p.org_id,p.id,'own_bids.collect'::public.sync_job_type,interval '1 day','{}'::jsonb from public.ad_profiles p where p.sync_enabled
+        union select s.org_id,s.profile_id,'own_listings.collect'::public.sync_job_type,interval '1 day','{}'::jsonb from selected_profiles s where s.provider='keepa'
+        union select r.org_id,r.profile_id,(case when r.family='prompts' then 'prompts.collect' else 'own_listings.collect' end)::public.sync_job_type,interval '1 day','{}'::jsonb
+          from public.collector_export_references r join public.ad_profiles p on p.org_id=r.org_id and p.id=r.profile_id
+          where r.enabled and p.sync_enabled and r.marketplace=p.country_code` : this.handle.sql``;
     const [result] = await this.handle.sql<{ changed: string }[]>`
       with active_connections as (
         select c.org_id, c.provider::text as provider, c.config
@@ -867,13 +910,14 @@ export class PostgresWorkerStore implements WorkerStore {
             ('mrp',     'economics.sync',   '1 day',  '{}'::jsonb)
           ) as m(provider, job_type, cadence, payload)
             on m.provider = s.provider
+        ${ownSources}
       ),
       disabled as (
         update public.sync_schedules schedule
            set enabled = false
          where schedule.variant = 'integration'
-           and schedule.job_type in (
-             'keepa.sync', 'rank.sync', 'economics.sync', 'sqp.categorize'
+           and schedule.job_type::text in (
+             'keepa.sync', 'rank.sync', 'economics.sync', 'sqp.categorize', 'own_bids.collect', 'own_listings.collect', 'prompts.collect'
            )
            and schedule.enabled
            and not exists (
@@ -899,7 +943,30 @@ export class PostgresWorkerStore implements WorkerStore {
       )
       select ((select count(*) from disabled) + (select count(*) from upserted))::text as changed
     `;
-    return Number(result?.changed ?? 0);
+    const spapi = await provisionSpApiReportJobs(this.handle);
+    return Number(result?.changed ?? 0) + spapi.enqueued + spapi.disabledScopes;
+  }
+
+  private async ensureProviderEvidenceSchedules(): Promise<void> {
+    if (process.env['OPENSPELL_PROVIDER_EVIDENCE_SCHEDULE_OWNER'] !== '1') return;
+    const [relation] = await this.handle.sql<{ relation: string | null }[]>`select to_regclass('public.provider_evidence_configs')::text as relation`;
+    if (!relation?.relation) return;
+    const enabled = process.env['OPENSPELL_PROVIDER_EVIDENCE_ENABLED'] === '1';
+    const rows = await this.handle.sql<{ config: unknown; enabled: boolean }[]>`select config,enabled from public.provider_evidence_configs`;
+    const keep: string[] = [];
+    for (const row of rows) {
+      const config = ProviderCollectionConfig.parse(row.config);
+      const spec = providerEvidenceSchedule(config, enabled && row.enabled);
+      if (!spec) continue;
+      keep.push(spec.variant);
+      const written = await this.handle.sql`insert into public.sync_schedules(org_id,profile_id,job_type,report_type,variant,cadence,payload,enabled)
+        values(${config.scope.orgId},${config.scope.profileId},'provider.evidence.collect',null,${spec.variant},${spec.cadence}::interval,${JSON.stringify(spec.payload)}::jsonb,true)
+        on conflict(profile_id,job_type,report_type,variant) do update set cadence=excluded.cadence,payload=excluded.payload,enabled=true returning id`;
+      if (written.length !== 1) throw new Error('Provider collection schedule count mismatch');
+    }
+    await this.handle.sql`update public.sync_schedules set enabled=false where job_type='provider.evidence.collect' and enabled and not (variant=any(${keep}))`;
+    const verified = await this.handle.sql<{ variant: string }[]>`select variant from public.sync_schedules where job_type='provider.evidence.collect' and enabled`;
+    if (verified.length !== keep.length || verified.some((row) => !keep.includes(row.variant))) throw new Error('Provider collection schedule readback mismatch');
   }
 
   async unscheduledProfiles(): Promise<{ orgId: string; profileId: string }[]> {
@@ -1013,16 +1080,29 @@ export class PostgresWorkerStore implements WorkerStore {
     if (counts.parsed !== counts.loaded) throw new ParsedLoadedMismatch(counts.parsed, counts.loaded);
   }
 
+  async coreReportCapability(orgId: string, profileId: string, family: CoreFeatureReportType): Promise<CoreReportCapability | null> {
+    return readCoreReportCapability(this.handle, orgId, profileId, family);
+  }
+
   async finishAttributedReport(
     reportRequestId: string,
     input: AttributedReportCounts,
-    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null; coverage?: ReportCoverageAccounting },
+    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null; coverage?: ReportCoverageAccounting; promotion?: CoreReportPromotion },
   ): Promise<void> {
     const counts = WorkerReportAccounting.parse(input);
+    let superseded = false;
     const finish = async (sql: QueryHandle['sql']) => {
+      const promoted = options.promotion ? await promoteCoreReportWindow({ sql }, options.promotion) : null;
+      superseded = promoted?.superseded === true;
+      if (superseded) {
+        counts.promotedRows = 0;
+        counts.canonicalRows = 0;
+        counts.unpromotedRows = counts.parsedRows;
+      }
+      if (promoted && promoted.loadedRows !== counts.canonicalRows) throw new Error('report family completion readback mismatch');
       const rows = await sql<{ id: string; accounting_complete: boolean }[]>`
         update public.report_requests
-           set status = ${options.status}::public.report_status,
+           set status = ${superseded ? 'failed' : options.status}::public.report_status,
                completed_at = now(), next_poll_at = null,
                source_rows = ${counts.sourceRows},
                rows_parsed = ${counts.parsedRows},
@@ -1031,7 +1111,7 @@ export class PostgresWorkerStore implements WorkerStore {
                unpromoted_rows = ${counts.unpromotedRows},
                rows_loaded = ${counts.canonicalRows},
                bytes_downloaded = ${options.bytesDownloaded},
-               error = ${options.error ?? null}
+               error = ${superseded ? 'report family superseded by newer facts' : options.error ?? null}
          where id = ${reportRequestId}
          returning id, accounting_complete
       `;
@@ -1041,13 +1121,23 @@ export class PostgresWorkerStore implements WorkerStore {
       if (rows[0]?.accounting_complete !== true) {
         throw new Error('attributed report durable accounting did not reconcile');
       }
-      if (options.status === 'completed' && options.coverage !== undefined) {
-        await recordReportCoverage({ sql }, reportRequestId, options.coverage);
+      if (!superseded && options.status === 'completed' && options.coverage !== undefined) {
+        if (options.promotion && promoted) {
+          const p = options.promotion;
+          await upsertReportCoverage({ sql }, {
+            orgId: p.orgId, profileId: p.profileId, reportType: p.parsed.configuration.family,
+            grain: coreReportGrain(p.parsed.configuration), source: 'amazon_reporting_v3', status: 'complete',
+            earliestDate: p.startDate, coveredThrough: p.endDate, settledThrough: null,
+            observedAt: promoted.observedAt, sourceRows: counts.sourceRows, parsedRows: counts.parsedRows,
+            loadedRows: promoted.loadedRows, refusedRows: counts.refusedRows, countsMatch: true,
+          }, promoted.loadedRows);
+        } else await recordReportCoverage({ sql }, reportRequestId, options.coverage);
       }
     };
     // Existing callers retain ledger-only completion; the ingestion hook supplies coverage.
-    if (options.coverage === undefined) await finish(this.handle.sql);
+    if (options.coverage === undefined && options.promotion === undefined) await finish(this.handle.sql);
     else await this.handle.sql.begin(finish);
+    if (superseded) throw new PermanentJobError('report family superseded by newer facts');
   }
 
   private async upsertCampaignFacts(kind: 'sb' | 'sd', rows: readonly CampaignFactRow[]): Promise<number> {

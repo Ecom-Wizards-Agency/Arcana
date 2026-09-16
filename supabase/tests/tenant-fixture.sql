@@ -21,7 +21,14 @@ language plpgsql
 set search_path = pg_catalog, public, pg_temp
 as $$
 declare
+  v_family_table text;
   v_org uuid;
+  v_provider_config uuid := gen_random_uuid();
+  v_provider_run uuid := gen_random_uuid();
+  v_provider_evidence uuid := gen_random_uuid();
+  v_provider_scope jsonb;
+  v_provider_config_json jsonb;
+  v_provider_counts jsonb;
   v_conn uuid;
   v_profile uuid;
   v_run uuid;
@@ -31,6 +38,9 @@ declare
   v_experiment uuid;
   v_asset uuid;
   v_spapi uuid;
+  v_adapter_plan jsonb;
+  v_adapter_row jsonb;
+  v_adapter_report jsonb;
   v_stream_binding uuid;
   v_report uuid;
   v_recommendation uuid;
@@ -378,6 +388,47 @@ begin
   insert into public.spapi_profile_bindings
     (org_id, profile_id, connection_id, marketplace_id)
   values (v_org, v_profile, v_spapi, 'ATVPDKIKX0DER');
+  if to_regclass('public.spapi_report_sources') is not null then
+    -- RLS evidence only. Neither credentials nor this fixture enables a report source.
+    insert into public.spapi_report_sources(org_id,profile_id,connection_id,family)
+    values(v_org,v_profile,v_spapi,'retail');
+    v_adapter_plan := jsonb_build_object(
+      'scope',jsonb_build_object('orgId',v_org,'profileId',v_profile,'connectionId',v_spapi,
+        'marketplaceId','ATVPDKIKX0DER','sellingPartnerId',p_slug || '-seller','region','NA'),
+      'family','retail','requestId','fixture-spapi-retail','start',p_date::text,'end',p_date::text,
+      'requestedAt',to_char(p_date::timestamp,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+      'contractVersion','amazon-models:3659f96867bfc669aca7a524c2f95744ff0e4478');
+    v_adapter_row := jsonb_build_object('kind','retail','key','fixture-total','date',p_date::text,
+      'grain','total','asin',null,'parentAsin',null,'sales',0,'currency','USD',
+      'units',0,'orderItems',0,'sessions',0,'pageViews',0,'reportedUnitSessionPercentage',null);
+    v_adapter_report := jsonb_build_object('plan',v_adapter_plan,'reportId','fixture-provider-retail',
+      'documentId','fixture-document-retail','observedAt',v_adapter_plan->>'requestedAt',
+      'payloadFingerprint',repeat('a',64),'rows',jsonb_build_array(v_adapter_row),'complete',true,
+      'counts',jsonb_build_object('sourceRows',1,'parsedRows',1,'refusedRows',0,'duplicateRows',0,'addedRows',0,'canonicalRows',1));
+    insert into public.spapi_report_runs(org_id,profile_id,family,request_id,revision,checkpoint)
+    values(v_org,v_profile,'retail','fixture-spapi-retail',0,jsonb_build_object('plan',v_adapter_plan,
+      'revision',0,'state','planned','reportId',null,'documentId',null,'observedAt',null,'receipt',null));
+    insert into public.spapi_report_receipts(org_id,profile_id,family,request_id,selling_partner_id,marketplace_id,
+      start_date,end_date,observed_at,report)
+    values(v_org,v_profile,'retail','fixture-spapi-retail',p_slug || '-seller','ATVPDKIKX0DER',
+      p_date,p_date,p_date::timestamptz,v_adapter_report);
+    insert into public.fact_retail_sales_traffic_daily(org_id,selling_partner_id,marketplace_id,date,row_key,
+      profile_id,connection_id,grain,observed_at,report_request_id,payload)
+    values(v_org,p_slug || '-seller','ATVPDKIKX0DER',p_date,'fixture-total',v_profile,v_spapi,'total',
+      p_date::timestamptz,'fixture-spapi-retail',v_adapter_row);
+    insert into public.fact_aba_search_terms_periodic(org_id,selling_partner_id,marketplace_id,date,row_key,
+      profile_id,connection_id,grain,observed_at,report_request_id,payload)
+    values(v_org,p_slug || '-seller','ATVPDKIKX0DER',p_date,'fixture-query',v_profile,v_spapi,'query',
+      p_date::timestamptz,'fixture-spapi-aba',jsonb_build_object('kind','aba','key','fixture-query',
+        'date',p_date::text,'end',p_date::text,'department','All','query','Synthetic fixture query',
+        'frequencyRank',1,'slot',0,'asin',null,'clickShare',null,'conversionShare',null,'complete',false));
+    insert into public.spapi_listing_observations(org_id,selling_partner_id,marketplace_id,date,row_key,
+      profile_id,connection_id,grain,observed_at,report_request_id,payload)
+    values(v_org,p_slug || '-seller','ATVPDKIKX0DER',p_date,'fixture-listing',v_profile,v_spapi,'listing',
+      p_date::timestamptz,'fixture-spapi-catalogue',jsonb_build_object('kind','catalogue','key','fixture-listing',
+        'date',p_date::text,'listingId','fixture-listing','sku','fixture-sku','asin','B0TEST0001',
+        'fields',jsonb_build_object('title','Synthetic fixture listing')));
+  end if;
   insert into public.fact_sales_traffic_daily (org_id, profile_id, date, asin, sessions)
   values (v_org, v_profile, p_date, 'B0TEST0001', 10);
   insert into public.fact_sqp_weekly (org_id, profile_id, week_start, asin, search_query, search_volume)
@@ -837,6 +888,60 @@ begin
       values(v_org,v_profile,v_research_schedule,'c-1');
   end if;
 
+  if to_regclass('public.report_family_capabilities') is not null then
+    -- Storage-only fixtures for the catalog-driven RLS audit; these cannot be
+    -- read as a supported report family or enable a provider request.
+    insert into public.report_family_capabilities(org_id,profile_id,family,marketplace) values(v_org,v_profile,'rls_fixture','synthetic');
+    insert into public.report_family_attempts(report_request_id,org_id,profile_id,configuration,source_rows,parsed_rows,refused_rows,duplicate_rows,canonical_rows,verified_rows,refusals,observed_at)
+      values(v_report,v_org,v_profile,'{}',0,0,0,0,0,0,'[]',p_date);
+    insert into public.report_family_watermarks(org_id,profile_id,family,variant,period_start,period_end,report_request_id,requested_at,observed_at,canonical_rows)
+      values(v_org,v_profile,'rls_fixture','fixture',p_date,p_date,v_report,p_date,p_date,0);
+    foreach v_family_table in array array['fact_advertised_product_daily','fact_purchased_product_daily','fact_sb_target_daily','fact_sb_search_term_daily','fact_sb_placement_daily','fact_ad_group_daily','fact_sd_target_daily','fact_sd_matched_target_daily','fact_traffic_quality_daily','fact_ads_report_periodic'] loop
+      execute format('create table if not exists public.%I partition of public.%I for values from (%L) to (%L)',v_family_table||'_'||to_char(p_date,'YYYYMM'),v_family_table,date_trunc('month',p_date)::date,(date_trunc('month',p_date)+interval '1 month')::date);
+      execute format('alter table public.%I enable row level security',v_family_table||'_'||to_char(p_date,'YYYYMM'));
+      execute format('revoke all on public.%I from anon, authenticated',v_family_table||'_'||to_char(p_date,'YYYYMM'));
+      execute format('grant all on public.%I to service_role',v_family_table||'_'||to_char(p_date,'YYYYMM'));
+      execute format('insert into public.%I(org_id,profile_id,date,period_end,family,variant,ad_product,dimensions,row_data,report_request_id,observed_at) values($1,$2,$3,$3,''rls_fixture'',''fixture'',''SP'',''{}'',''{}'',$4,$3)',v_family_table) using v_org,v_profile,p_date,v_report;
+    end loop;
+  end if;
+
+  if to_regclass('public.provider_evidence_configs') is not null then
+  v_provider_scope := jsonb_build_object('orgId',v_org,'profileId',v_profile,'marketplaceId','synthetic-market','amazonProfileId',p_slug||'-profile-1');
+  v_provider_config_json := jsonb_build_object('id',v_provider_config,'scope',v_provider_scope,'family','tactical','operation','tactical.ListRecommendations','enabled',false,'request','{}'::jsonb,'maxPages',2,'maxRows',100,'cadence','manual');
+  v_provider_counts := jsonb_build_object('source',1,'parsed',1,'refused',0,'duplicates',0,'conflicts',0,'canonical',1,'written',1,'existing',0,'readback',1);
+  insert into public.provider_evidence_configs(id,org_id,profile_id,config) values(v_provider_config,v_org,v_profile,v_provider_config_json);
+  insert into public.provider_recommendation_runs(id,org_id,profile_id,config_id,run) values(v_provider_run,v_org,v_profile,v_provider_config,jsonb_build_object('id',v_provider_run,'config',v_provider_config_json,'status','complete','page',1,'nextToken',null,'startedAt',now(),'observedAt',now(),'counts',v_provider_counts,'incomplete',false));
+  insert into public.provider_recommendations(id,org_id,profile_id,family,namespace,provider_id,version,evidence)
+  values(v_provider_evidence,v_org,v_profile,'tactical','synthetic-fixture','synthetic',repeat('a',64),jsonb_build_object(
+    'family','tactical','namespace','synthetic-fixture','providerId','synthetic','identityMethod','provider','version',repeat('a',64),'apiVersion','synthetic-v1','contractHash',repeat('b',64),'transport','http','scope',v_provider_scope,
+    'entity',jsonb_build_object('adProduct','SP','entityType','unknown','entityId',null,'campaignId',null,'adGroupId',null,'mapping','unresolved'),
+    'kind','synthetic','action','unknown','current',jsonb_build_object('value',null,'units',null,'currency',null),'proposed',jsonb_build_object('value',null,'units',null,'currency',null),
+    'estimates','[]'::jsonb,'objective',null,'horizon',null,'attribution',null,'eligibility','unknown','generatedAt',null,'expiresAt',null,'retrievedAt',now(),'observedAt',now(),'payload','{}'::jsonb));
+  insert into public.provider_recommendation_run_rows(org_id,profile_id,run_id,evidence_id) values(v_org,v_profile,v_provider_run,v_provider_evidence);
+  end if;
+
+  if to_regclass('public.own_effective_bid_observations') is not null then
+    insert into public.own_effective_bid_observations(id,org_id,profile_id,marketplace,target_id,observed_at,collected_at,observation)
+    values(v_org::text||':own-bid',v_org,v_profile,'US','collector-fixture-target','1970-01-01','1970-01-01',
+      jsonb_build_object('scope',jsonb_build_object('orgId',v_org,'profileId',v_profile,'marketplace','US'),
+      'sourceIdentity','fixture','campaignId','fixture','adGroupId','fixture','targetId','collector-fixture-target','targetKind','keyword',
+      'observedAt','1970-01-01T00:00:00.000Z','collectedAt','1970-01-01T00:00:00.000Z','bid',null,'bidOrigin','unknown','bidding',null,'placementProvenance',null,'audienceProvenance',null));
+  end if;
+  if to_regclass('public.own_listing_observations') is not null then
+    insert into public.own_listing_observations(id,org_id,profile_id,marketplace,asin,field,observed_at,collected_at,observation)
+    values(v_org::text||':own-listing',v_org,v_profile,'US','B000000291','price','1970-01-01','1970-01-01',
+      jsonb_build_object('field','price','value',1,'provenance',jsonb_build_object('source','synthetic','sourceIdentity','fixture','observedAt','1970-01-01T00:00:00.000Z','collectedAt','1970-01-01T00:00:00.000Z')));
+    insert into public.own_listing_changes(id,org_id,profile_id,marketplace,asin,observed_at,change)
+    select id,org_id,profile_id,marketplace,asin,observed_at,jsonb_build_object('id',id,'scope',jsonb_build_object('orgId',v_org,'profileId',v_profile,'marketplace','US'),
+      'asin',asin,'previous',null,'current',observation,'certainty',jsonb_build_object('kind','first','from',null,'to','1970-01-01T00:00:00.000Z','widthDays',null))
+    from public.own_listing_observations where id=v_org::text||':own-listing';
+    insert into public.collector_export_references(id,org_id,profile_id,marketplace,family,object_key)
+      values(v_org,v_org,v_profile,'US','listing','fixture.json');
+    insert into public.collector_import_receipts(id,org_id,profile_id,marketplace,reference_id,fingerprint,observed_at,collected_at,receipt)
+      values(v_org::text||':import',v_org,v_profile,'US',v_org,repeat('a',64),'1970-01-01','1970-01-01',
+        jsonb_build_object('counts',jsonb_build_object('sourceRows',0,'parsedRows',0,'refusedRows',0,'loadedRows',0,'verifiedLoadedRows',0),
+          'inserted',0,'alreadyPresent',0,'outputIdentities','[]'::jsonb,'observedAt',null,'state','missing'));
+  end if;
   return v_org;
 end;
 $$;

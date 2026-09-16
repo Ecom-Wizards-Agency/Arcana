@@ -1,5 +1,7 @@
+import type { SpEvidence, SpRetailSpendEvidence } from '@wizard-ads/shared';
+import { readProviderEvidence } from '@wizard-ads/db';
 import { analyzeAccount, classifyCampaignCategory, computePacing, evaluate, pacingFlag } from '@wizard-ads/core';
-import { listHomeInsights, listHomeMarketGaps, listRecommendations } from '@wizard-ads/db';
+import { listHomeInsights, listHomeMarketGaps, listRecommendations, readSpReportEvidence, readSpRetailSpendEvidence } from '@wizard-ads/db';
 import { loadCampaignDailyRows, loadHomeRankWatch, loadProfileDailyRows } from '../../../app/_lib/dashboard-data';
 import { kpiTiles, totalsOf } from '../../optimizer/view';
 import { addDays, precedingPeriod, periodFromParams } from '../../../app/_lib/periods';
@@ -27,7 +29,8 @@ export async function load(access: ScreenActor, input: ScreenParams) {
     ? periodFromParams({ from, to }, today) : precedingPeriod(period);
   const home = await access.read(async (handle, actor) => {
     const scope = { orgId: actor.orgId, profileId: profile.id };
-    const [role, proposals, events, ranks, market, campaigns, monthRows, comparisonRows] = await Promise.all([
+    const providerEvidence = await readProviderEvidence(handle, { ...scope, consumer: 'home' });
+    const [role, proposals, events, ranks, market, campaigns, monthRows, comparisonRows, retail, retailSpend, previousRetail] = await Promise.all([
       requireOrgRole(handle, actor),
       listRecommendations(handle, { ...scope, statuses: ['proposed'], limit: 20000 }),
       listHomeInsights(handle, { ...scope, start: addDays(today, -6), end: today }),
@@ -36,12 +39,17 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       loadCampaignDailyRows(handle, actor.orgId, profile.id, profile.label, analysisWindow),
       loadProfileDailyRows(handle, actor.orgId, profile.id, profile.label, { start: `${reportDate.slice(0, 8)}01`, end: reportDate }),
       loadProfileDailyRows(handle, actor.orgId, profile.id, profile.label, comparison),
+      readSpReportEvidence(handle, { ...scope, family: 'retail', start: period.start, end: period.end }),
+      readSpRetailSpendEvidence(handle, { ...scope, start: period.start, end: period.end }),
+      readSpReportEvidence(handle, { ...scope, family: 'retail', start: comparison.start, end: comparison.end }),
     ]);
     const pacing = computePacing(monthRows, reportDate, profile.monthlyBudget);
     const pacingAlert = pacingFlag(pacing, null);
     const flags = evaluate(analyzeAccount(profile.label, reportDate, analysisRows,
       campaigns.map((row) => ({ ...row, category: classifyCampaignCategory(row.campaignName) }))), null, profile.goalLens);
     return {
+      ...({ retail, previousRetail, retailSpend: retailSpend ?? undefined } as { retail?: SpEvidence; previousRetail?: SpEvidence; retailSpend?: SpRetailSpendEvidence }),
+      ...(providerEvidence ? { providerEvidence } : {}),
       tiles: kpiTiles(totalsOf(accountRows.filter((row) => row.date >= period.start && row.date <= period.end)), totalsOf(comparisonRows)),
       // No confirmed profile break-even economics exist in the current read contract.
       breakEvenAcos: null as number | null,

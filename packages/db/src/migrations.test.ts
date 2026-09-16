@@ -1,3 +1,4 @@
+import { WorkerReportType } from '@wizard-ads/shared';
 import { JobType } from '@wizard-ads/shared';
 import { readFile } from 'node:fs/promises';
 import { is, getTableName } from 'drizzle-orm';
@@ -284,7 +285,7 @@ describe.skipIf(!available)('migrations', () => {
     expect(constraint?.definition).toContain('(report_type IS NOT NULL)');
   });
 
-  it('adds sbAds only to the durable worker report ledger enum', async () => {
+  it('adds feature families only to the durable worker report ledger enum', async () => {
     const labels = await database.sql<{ enumlabel: string }[]>`
       select e.enumlabel
         from pg_catalog.pg_enum e
@@ -292,7 +293,7 @@ describe.skipIf(!available)('migrations', () => {
        where t.typname = 'report_type'
        order by e.enumsortorder
     `;
-    expect(labels.map((row) => row.enumlabel).at(-1)).toBe('sbAds');
+    expect(labels.map((row) => row.enumlabel)).toEqual(WorkerReportType.options);
   });
 
   it('keeps Unified sidecar lifecycle and one-input accounting closed', async () => {
@@ -929,13 +930,20 @@ describe.skipIf(!available)('migrations', () => {
               and not attribute.attisdropped
          )
       ),
+      column_scoped_actual as (
+        select * from actual
+        union all
+        select name::name, 'SELECT'::text from (values ('provider_evidence_configs','config'),('provider_recommendation_runs','run')) v(name,private_column)
+        where has_column_privilege('authenticated','public.'||name,'org_id','SELECT')
+          and not has_column_privilege('authenticated','public.'||name,private_column,'SELECT')
+      ),
       missing as (
         select table_name, privilege from expected
         except
-        select table_name, privilege from actual
+        select table_name, privilege from column_scoped_actual
       ),
       unexpected as (
-        select table_name, privilege from actual
+        select table_name, privilege from column_scoped_actual
         except
         select table_name, privilege from expected
       )
@@ -1272,17 +1280,24 @@ describe.skipIf(!available)('migrations', () => {
     await database.sql`insert into public.org_members(org_id,user_id,role) values (${org!.id},${userId},'owner')`;
     return { orgId: org!.id, userId };
   }
-  function spInstallation() {
+  function spInstallation(profileId: string = randomUUID()) {
     return { requestId: randomUUID(), nonceHash: 'a'.repeat(64), clientId: 'synthetic-client',
       redirectUri: 'https://example.test/callback', label: 'Synthetic connection',
-      sellingPartnerId: 'synthetic-seller', marketplaceIds: ['synthetic-marketplace'] };
+      applicationId: 'synthetic-application', region: 'NA' as const,
+      bindings: [{ profileId, marketplaceId: 'ATVPDKIKX0DER' }] };
+  }
+  async function spProfile(orgId: string) {
+    const [profile] = await database.sql<{ id: string }[]>`insert into public.ad_profiles
+      (org_id,amazon_profile_id,region,country_code,currency_code,timezone,account_type,amazon_account_id)
+      values (${orgId},${randomUUID()},'NA','US','USD','UTC','seller','synthetic-seller') returning id`;
+    return profile!.id;
   }
   async function spConsent() {
-    const actor = await connectionActor(); const input = spInstallation();
+    const actor = await connectionActor(); const input = spInstallation(await spProfile(actor.orgId));
     const lifecycle = createSpApiConnectionLifecycle(database, () => true);
     const operation = await lifecycle.begin(actor, input);
     const submission = { operationId: operation.operationId, nonceHash: input.nonceHash,
-      code: ['synthetic',randomUUID(),'consent'].join('-') };
+      code: ['synthetic',randomUUID(),'consent'].join('-'), sellingPartnerId: 'synthetic-seller' };
     await lifecycle.submit(actor, submission);
     return { actor, input, lifecycle, operation, submission };
   }
@@ -1350,14 +1365,14 @@ describe.skipIf(!available)('migrations', () => {
   it('revokes only the selected SP connection and its pending reconnect', async () => {
     const c = await spConsent(); const claim = (await c.lifecycle.custody.claim(randomUUID()))!;
     const completed = await c.lifecycle.custody.attach(c.operation.operationId,claim.leaseId,'synthetic-grant');
-    const other = { ...spInstallation(), label: 'Other synthetic connection' };
+    const other = { ...spInstallation(await spProfile(c.actor.orgId)), label: 'Other synthetic connection' };
     const otherOperation = await c.lifecycle.begin(c.actor,other);
-    await c.lifecycle.submit(c.actor,{ operationId: otherOperation.operationId,nonceHash: other.nonceHash,code: 'other-consent' });
+    await c.lifecycle.submit(c.actor,{ operationId: otherOperation.operationId,nonceHash: other.nonceHash,code: 'other-consent',sellingPartnerId: 'synthetic-seller' });
     await c.lifecycle.revoke(c.actor,completed.connectionId!);
     expect(await c.lifecycle.operation(c.actor,otherOperation.operationId)).toMatchObject({ state: 'queued' });
     await c.lifecycle.cancel(c.actor,otherOperation.operationId);
-    const reconnect = await c.lifecycle.begin(c.actor,spInstallation());
-    await c.lifecycle.submit(c.actor,{ operationId: reconnect.operationId,nonceHash: 'a'.repeat(64),code: 'reconnect-consent' });
+    const reconnect = await c.lifecycle.begin(c.actor,{ ...c.input, requestId: randomUUID() });
+    await c.lifecycle.submit(c.actor,{ operationId: reconnect.operationId,nonceHash: 'a'.repeat(64),code: 'reconnect-consent',sellingPartnerId: 'synthetic-seller' });
     const reconnectClaim = (await c.lifecycle.custody.claim(randomUUID()))!;
     await c.lifecycle.revoke(c.actor,completed.connectionId!);
     expect(await c.lifecycle.custody.attach(reconnect.operationId,reconnectClaim.leaseId,'must-not-attach')).toMatchObject({ state: 'cancelled' });

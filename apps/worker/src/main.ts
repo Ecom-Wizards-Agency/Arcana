@@ -1,7 +1,10 @@
 import { registerAssetLibrarySource } from './asset-library.js';
+import { registerSpApiReportSources, postgresSpReportDependencies } from './spapi-report-sources.js';
+import { registerProviderEvidence, postgresProviderEvidenceDependencies } from "./provider-evidence.js";
+import { registerOwnCollectors, postgresOwnCollectors } from './own-collectors/index.js';
 import { registerTargetTranslation } from './translation/register.js';
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
-import { runSpApiConnectionPass } from './spapi-connections.js';
+import { exchangeSpApiAuthorizationCode, runSpApiConnectionPass } from './spapi-connections.js';
 import { registerIntegrationSources } from './integration-sources.js';
 import { createKeywordMirrorCapability, createSpWriteWorker } from './sp-write-outbox/composition.js';
 import { startSpWritePolling } from './sp-write-outbox/polling.js';
@@ -68,6 +71,7 @@ if (!Number.isFinite(reportStaleHours) || reportStaleHours <= 0) {
 const handle = createDb({ connectionString: config.databaseUrl, max: config.maxConcurrentJobs + 2 });
 const store = new PostgresWorkerStore(handle, undefined, {
   claimProtocol: config.claimProtocol,
+  ownCollectorsEnabled: config.ownCollectorsEnabled,
   ...((config.spWrites.dispatchEnabled || config.spWrites.reconcileEnabled)
     ? { keywordMirror: createKeywordMirrorCapability(handle) } : {}),
 });
@@ -97,12 +101,16 @@ const adsApi = runsAmazonJobs ? createAdsApiClientFromEnv(handle) : undefined;
 const amazonConnections = config.amazonConnectionsEnabled
   ? new AmazonConnectionLoop(createAmazonConnectionStore(handle), createAmazonConnectionProvider(handle))
   : undefined;
+const { spApiClientSecret: clientSecret } = config;
 const spApiConnections = config.spApiConnectionsEnabled
   ? new ProviderConnectionLoop((signal) => runSpApiConnectionPass({
       handle,
       enabled: () => process.env['OPENSPELL_SPAPI_CONNECTIONS_ENABLED'] === '1',
       accepts: (installation) => installation.clientId === config.spApiClientId
+        && installation.applicationId === config.spApiApplicationId && installation.region === config.spApiConsentRegion
         && config.spApiConnectionRedirects.includes(installation.redirectUri),
+      exchange: (installation, code, signal) => exchangeSpApiAuthorizationCode(installation, code, signal,
+        config.spApiClientId && clientSecret ? { clientId: config.spApiClientId, clientSecret } : undefined),
     }, signal))
   : undefined;
 const unifiedReporting = adsApi && config.unifiedReporting.enabled
@@ -138,11 +146,12 @@ const sqpSchedules = sqpRequest
 const integrations = {
     economicsSync: createMrpEconomicsSync(handle),
     rankSync: createDataDiveRankSyncHandler({ handle }),
-    keepaSync: createKeepaSyncHandler(handle),
+    keepaSync: createKeepaSyncHandler(handle, { ownListingsEnabled: config.ownCollectorsEnabled }),
     ...(sqpRequest === undefined ? {} : { sqpRequest }),
     marketingStreamNormalize: createMarketingStreamNormalizeHandler({ handle, queue: store }),
   };
 const worker = new SyncWorker({
+  coreReportingEnabled: process.env['OPENSPELL_CORE_REPORTING_ENABLED'] === '1',
   workerId: config.workerId,
   store,
   adsApi,
@@ -152,7 +161,15 @@ const worker = new SyncWorker({
   sbVideo,
   unifiedReporting,
   integrations: { marketingStreamNormalize: integrations.marketingStreamNormalize },
-  sources: (registry) => { if (adsApi) registerAssetLibrarySource(registry, handle, adsApi); registerIntegrationSources(registry, integrations); registerTargetTranslation(registry, handle); },
+  sources: (registry) => {
+    if (adsApi) registerAssetLibrarySource(registry, handle, adsApi);
+    registerIntegrationSources(registry, integrations);
+    const { spApiClientId, spApiClientSecret: lwaKey } = config;
+    if (spApiClientId && lwaKey) registerSpApiReportSources(registry, postgresSpReportDependencies({ handle, clientId: spApiClientId, clientSecret: lwaKey }));
+    registerOwnCollectors(registry, postgresOwnCollectors(handle, config.ownCollectorDropRoot, config.ownCollectorsEnabled));
+    registerTargetTranslation(registry, handle);
+    registerProviderEvidence(registry, postgresProviderEvidenceDependencies(handle));
+  },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,
   pollIntervalMs: config.pollIntervalMs,

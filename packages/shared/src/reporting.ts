@@ -166,10 +166,14 @@ export const ReportCoverageObservation = FreshnessCoverage.extend({
   status: z.enum(['complete', 'partial']),
   coveredThrough: IsoDate,
   earliestDate: IsoDate,
+  /** Independently verified period boundary; absent for legacy request-only ranges. */
+  verifiedStartDate: IsoDate.optional(),
   settledThrough: IsoDate.nullable(),
 }).refine((row) => row.earliestDate <= row.coveredThrough &&
   (row.settledThrough === null || row.settledThrough <= row.coveredThrough),
-  'coverage date bounds do not reconcile');
+  'coverage date bounds do not reconcile').refine(row => row.verifiedStartDate === undefined ||
+  (row.verifiedStartDate >= row.earliestDate && row.verifiedStartDate <= row.coveredThrough),
+  'verified coverage boundary is outside the requested range');
 export type ReportCoverageObservation = z.infer<typeof ReportCoverageObservation>;
 
 /** Additional source accounting supplied by the worker after its load assertion. */

@@ -94,3 +94,23 @@ describe('Creatives list and overview evidence', () => {
     expect(link.getAttribute('rel')).toBe('noopener noreferrer');
   });
 });
+
+it('renders listing and promotion values in Creatives history rows', () => {
+  const data = visualFixture('history');
+  if (data.view !== 'ready') throw new Error('Expected ready fixture');
+  const base = data.props.workspace.changes[0]!;
+  data.props.workspace.changes = [
+    { ...base, id:'listing-price',kind:'Listing',field:'price',oldValue:10,newValue:12 },
+    { ...base, id:'listing-buybox',kind:'Listing',field:'buyBoxPrice',oldValue:null,newValue:12 },
+    { ...base, id:'promotion-deal',kind:'Promotion',field:'lightningDeal',oldValue:false,newValue:true },
+    { ...base, id:'promotion-coupon',kind:'Promotion',field:'coupon',oldValue:null,newValue:[-10,0] },
+    { ...base, id:'listing-stock',kind:'Listing',field:'inStock',oldValue:true,newValue:false },
+  ];
+  const host = render(<Screen data={data} />);
+  const rows = Array.from(host.container.querySelectorAll('[aria-label="Creative change history"] tbody tr')).map((row)=>row.textContent);
+  expect(rows).toHaveLength(5);
+  for (const text of ['Price: $10.00 → $12.00','Buy Box price: not observed → $12.00','Lightning deal: No → Yes',
+    'Coupon: not observed → one-time source value -10, Subscribe & Save source value 0','In stock: Yes → No']) {
+    expect(rows.some((row)=>row?.includes(text))).toBe(true);
+  }
+});

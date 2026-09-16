@@ -1,7 +1,11 @@
 import type { OrgProfile } from '../../recommendations/data';
+import type { CoreReportEvidence } from '@wizard-ads/shared';
 import { formatResearchPeriod } from './research-format';
 import { QueryResearch } from './research-view';
+import { AbaEvidencePanel } from '../grid/spapi-evidence';
+import { ProviderEvidencePanel } from '../recommendations/provider-evidence';
 import type { CSSProperties } from 'react';
+import { CoreReportEvidencePanel } from '../grid/core-report-evidence';
 
 import {
   type ContextualNegativeReviewLoad
@@ -21,7 +25,7 @@ import styles from '../../../app/query-intelligence/query-intelligence.module.cs
 
 import type { load } from './load';
 
-export type ScreenData = Awaited<ReturnType<typeof load>> | {view:'not-measured';props:{profile:OrgProfile}};
+export type ScreenData = Awaited<ReturnType<typeof load>> | {view:'not-measured';props:{profile:OrgProfile;coreEvidence?:CoreReportEvidence[];providerEvidence?:import("@wizard-ads/shared").ProviderEvidenceReadResult}};
 
 export default function ScreenView({ data }: { data: ScreenData; }) {
   switch (data.view) {
@@ -43,8 +47,10 @@ function renderEmpty(_props: Extract<ScreenData, { view: 'empty'; }>['props']) {
   </main>);
 }
 
-function renderNotMeasured({ profile }: Extract<ScreenData, { view: 'not-measured'; }>['props']) {
+function renderNotMeasured({ providerEvidence, profile, coreEvidence }: Extract<ScreenData, { view: 'not-measured'; }>['props']) {
   return (<main className="wa-stack">
+    <ProviderEvidencePanel evidence={providerEvidence} consumer="query-intelligence" />
+    {coreEvidence ? <CoreReportEvidencePanel evidence={coreEvidence} title="Sponsored Brands paid queries" /> : null}
     <header className="wa-page-head">
       <div>
         <h1 className="wa-page-title">Query Intelligence</h1>
@@ -65,8 +71,10 @@ function renderNotMeasured({ profile }: Extract<ScreenData, { view: 'not-measure
   </main>);
 }
 
-function renderReady({ profile, scope, scopes, category, search, model, contextualReview, contextualExports, role }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ providerEvidence, aba, profile, scope, scopes, category, search, model, contextualReview, contextualExports, role, coreEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main className="wa-stack" data-interactive="true">
+    <ProviderEvidencePanel evidence={providerEvidence} consumer="query-intelligence" />
+    {coreEvidence ? <CoreReportEvidencePanel evidence={coreEvidence} title="Sponsored Brands paid queries" /> : null}
     <header className="wa-page-head">
       <div>
         <h1 className="wa-page-title">Query Intelligence</h1>
@@ -126,6 +134,7 @@ function renderReady({ profile, scope, scopes, category, search, model, contextu
       </span>
     </form>
 
+    <AbaEvidencePanel evidence={aba} />
     <QueryResearch key={`${profile.id}:${scope.weekStart}:${category}:${search}`} initialCategory={category} initialSearch={search} profileId={profile.id} marketplaceId={scope.marketplaceId} facts={model.queryRows} ppc={model.ppcRows} vocabulary={model.vocabulary}/>
     {model.queryRows.length ? <details><summary>Attribution and contextual negative review</summary>
     <QueryIntelligenceWorkspace

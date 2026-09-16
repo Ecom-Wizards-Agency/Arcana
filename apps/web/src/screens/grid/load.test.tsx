@@ -6,11 +6,11 @@ import { context, profile } from '../synthetic-render-fixtures';
 import { load } from './load';
 
 const mocks = vi.hoisted(() => ({
-  freshness: vi.fn(), crosscheck: vi.fn(), profiles: vi.fn(), authenticate: vi.fn(), sql: vi.fn(),
+  source: vi.fn(), coreEvidence: vi.fn(), freshness: vi.fn(), crosscheck: vi.fn(), profiles: vi.fn(), authenticate: vi.fn(), sql: vi.fn(),
 }));
 vi.mock('../../server/load-freshness', () => ({ loadFreshness: mocks.freshness }));
 vi.mock('@wizard-ads/crosscheck-cli', () => ({ loadCrosscheckPanel: mocks.crosscheck }));
-vi.mock('@wizard-ads/db', () => ({ withAuthenticatedActor: mocks.authenticate }));
+vi.mock('@wizard-ads/db', () => ({ readSpReportEvidence: mocks.source, withAuthenticatedActor: mocks.authenticate, readCoreReportEvidence: mocks.coreEvidence }));
 vi.mock('../../../app/_lib/profiles', () => ({ listProfiles: mocks.profiles }));
 
 const actor = { orgId: context.active!.orgId, userId: context.user.id };
@@ -33,7 +33,9 @@ function deferred<T>() {
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  mocks.coreEvidence.mockResolvedValue([]);
   mocks.profiles.mockResolvedValue([profile]);
+  mocks.source.mockResolvedValue({ state: 'unavailable', reason: 'Disabled', report: null });
   mocks.authenticate.mockImplementation(async (_handle, _actor, run) => run(handle.sql));
 });
 
@@ -48,6 +50,7 @@ it('returns the workspace after one roster read and streams crosscheck without a
   expect(data.view).toBe('ready');
   expect(readNullable).toHaveBeenCalledTimes(1);
   expect(mocks.profiles).toHaveBeenCalledTimes(1);
+  expect(mocks.coreEvidence).toHaveBeenCalledWith({ sql: handle.sql }, expect.objectContaining({ orgId: actor.orgId, profileId: profile.id, families: ['spQueryMetrics', 'sbSearchTerm'] }));
   expect(mocks.freshness).not.toHaveBeenCalled();
   expect(mocks.crosscheck).not.toHaveBeenCalled();
   if (data.view !== 'ready') throw new Error('Missing workspace');
@@ -71,6 +74,7 @@ it('does not read freshness for empty or populated rosters', async () => {
   expect(await load(access(), { searchParams: {}, params: {} })).toMatchObject({ view: 'empty' });
   expect(mocks.freshness).not.toHaveBeenCalled();
   mocks.profiles.mockResolvedValue([profile]);
+  mocks.source.mockResolvedValue({ state: 'unavailable', reason: 'Disabled', report: null });
   mocks.freshness.mockRejectedValue(new Error('Synthetic freshness failure'));
   mocks.crosscheck.mockResolvedValue(null);
   const data = await load(access(), { searchParams: {}, params: {} });
