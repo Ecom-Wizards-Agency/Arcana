@@ -27,6 +27,7 @@ import { readLatestBidSeriesByTargetIds, listMarketPositionLinks, readMarketRank
 import { TenantStrategy, type GridMeasurement, type GridPerformanceEvidence } from '@wizard-ads/shared';
 import { parseCampaignName } from '@wizard-ads/campaigns';
 import { targetReadTimer } from '../../src/screens/grid/target-read-timing';
+import { loadCoreGridEvidence, coreEvidenceGridRows } from '../../src/screens/grid/core-report-rows';
 import { readGridPerformance } from '../../src/screens/grid/data-evidence';
 import type { QueryHandle } from '@wizard-ads/db';
 import type { EntityLevel, GridRow } from '@wizard-ads/ui';
@@ -131,7 +132,7 @@ export async function loadGridRows(
   // server/client boundary.
   const queryLimit = limit + 1;
   const rankDays: GridPerformanceEvidence['rankDays'] = {};
-  const performanceRead = readGridPerformance(handle, options.orgId, options.profileId, options.period.start, options.period.end);
+  const performanceRead = readGridPerformance(handle, options.orgId, options.profileId, options.period.start, options.period.end, level);
   const loaders: Record<EntityLevel, () => Promise<GridRow[]>> = {
     campaigns: () => loadCampaigns(handle, options, queryLimit),
     ad_groups: () => loadAdGroups(handle, options, queryLimit),
@@ -141,13 +142,19 @@ export async function loadGridRows(
     placements: () => loadPlacements(handle, options, queryLimit),
   };
   const read = async () => {
-      const [loadedRows, performance] = await Promise.all([loaders[level](), performanceRead]);
+      const [baseRows, performance, evidence, priorEvidence] = await Promise.all([loaders[level](), performanceRead,
+        loadCoreGridEvidence(handle, level, { orgId: options.orgId, profileId: options.profileId, startDate: options.period.start, endDate: options.period.end, limit: queryLimit }),
+        loadCoreGridEvidence(handle, level, { orgId: options.orgId, profileId: options.profileId, startDate: options.comparison.start, endDate: options.comparison.end, limit: queryLimit }),
+      ]);
+      const prior = new Map(coreEvidenceGridRows(priorEvidence, options.currencyCode).map((row) => [row.id, row]));
+      const added = coreEvidenceGridRows(evidence, options.currencyCode).map((row) => ({ ...row, comparison: prior.get(row.id)?.totals ?? null, measurement: { missing: row.measurement?.missing ?? [], comparisonMissing: prior.get(row.id)?.measurement?.missing ?? [] } }));
+      const loadedRows = [...baseRows, ...added];
       const rows = loadedRows.slice(0, limit);
       return {
         performance: { ...performance, rankDays: Object.fromEntries(rows.flatMap((row) => rankDays[row.id] ? [[row.id, rankDays[row.id]!]] : [])) },
         rows,
         rowCount: rows.length,
-        truncated: loadedRows.length > limit,
+        truncated: loadedRows.length > limit || evidence.some((item) => item.truncated) || priorEvidence.some((item) => item.truncated),
       };
   };
   return level === 'products' ? read() : withServerTiming(`grid.${level}`, read, (payload) => payload.rows.length);
@@ -514,15 +521,20 @@ async function loadProducts(handle: GridDataHandle, options: LoadGridOptions, li
     with products as (
       select asin,max(name) as product_name from public.product_ads
       where org_id=${orgId} and profile_id=${profileId} and asin is not null and deleted_at is null group by asin
-    ), mapped as (
-      select campaign_id,ad_group_id,min(asin) as asin from public.product_ads
-      where org_id=${orgId} and profile_id=${profileId} and asin is not null and deleted_at is null
-      group by campaign_id,ad_group_id having count(distinct asin)=1
+    ), measured as (
+      select date, dimensions->>'advertisedAsin' as asin,
+        (row_data->'metrics'->>'impressions')::numeric as impressions,
+        (row_data->'metrics'->>'clicks')::numeric as clicks,
+        (row_data->'metrics'->>'cost')::numeric as cost,
+        (row_data->'metrics'->>'sales7d')::numeric as sales_7d,
+        (row_data->'metrics'->>'purchases7d')::numeric as purchases_7d,
+        (row_data->'metrics'->>'unitsSoldClicks7d')::numeric as units_sold_7d
+      from public.fact_advertised_product_daily
+      where org_id=${orgId} and profile_id=${profileId} and family='spAdvertisedProduct' and variant='DAILY:legacy:v1'
     ), facts as (
-      select m.asin, ${windowSums(handle, period, comparison)} from public.fact_sp_target_daily f
-      join mapped m on m.campaign_id=f.campaign_id and m.ad_group_id=f.ad_group_id
-      where f.org_id=${orgId} and f.profile_id=${profileId} and (date between ${period.start} and ${period.end} or date between ${comparison.start} and ${comparison.end}) group by m.asin
-    ) select p.asin,p.product_name,f.impressions,f.clicks,f.spend,f.sales,f.orders,f.units,f.c_days,f.c_impressions,f.c_clicks,f.c_spend,f.c_sales,f.c_orders,f.c_units from products p left join facts f on f.asin=p.asin order by p.asin limit ${limit}`;
+      select asin, ${windowSums(handle, period, comparison)} from measured
+      where (date between ${period.start} and ${period.end} or date between ${comparison.start} and ${comparison.end}) group by asin
+    ) select coalesce(p.asin,f.asin) as asin,p.product_name,f.impressions,f.clicks,f.spend,f.sales,f.orders,f.units,f.c_days,f.c_impressions,f.c_clicks,f.c_spend,f.c_sales,f.c_orders,f.c_units from products p full join facts f on f.asin=p.asin order by coalesce(p.asin,f.asin) limit ${limit}`;
   const links = await listMarketPositionLinks(handle, orgId, profileId);
   const asins = [...new Set([...rows.map((row) => row.asin), ...links.flatMap((link) => [link.ownAsin, link.competitorAsin])])];
   const series = await readMarketRankSeries(handle, orgId, asins, period.end, period.end);
@@ -531,7 +543,7 @@ async function loadProducts(handle: GridDataHandle, options: LoadGridOptions, li
     const categories = [...new Set(tracked.flatMap((link) => link.category ? [link.category] : []))];
     const own = categories.length === 1 ? series.find((item) => item.asin === row.asin && item.category === categories[0]) : undefined;
     const competitors = series.filter((item) => tracked.some((link) => link.competitorAsin === item.asin && link.category === item.category));
-    return { id: `product:${row.asin}`, dimensions: { asin: row.asin, product_name: row.product_name,
+    return { id: `product:${row.asin}`, dimensions: { ad_product: 'SP', asin: row.asin, product_name: row.product_name,
       gap: own ? marketPositionGap(own, competitors, period.end) : null, ppc_measured: row.spend !== null },
       ...measurementOf(row), totals: totalsOf(row), comparison: comparisonOf(row), currencyCode: options.currencyCode };
   });
@@ -703,18 +715,18 @@ async function loadPlacements(
 function windowSums(handle: GridDataHandle, period: Period, comparison: Period) {
   const { sql } = handle;
   return sql`
-    sum(impressions) filter (where date between ${period.start} and ${period.end}) as impressions,
-    sum(clicks)      filter (where date between ${period.start} and ${period.end}) as clicks,
-    sum(cost)        filter (where date between ${period.start} and ${period.end}) as spend,
-    sum(sales_7d)    filter (where date between ${period.start} and ${period.end}) as sales,
-    sum(purchases_7d) filter (where date between ${period.start} and ${period.end}) as orders,
-    sum(units_sold_7d) filter (where date between ${period.start} and ${period.end}) as units,
+    case when bool_or(impressions is null) filter (where date between ${period.start} and ${period.end}) then null else sum(impressions) filter (where date between ${period.start} and ${period.end}) end as impressions,
+    case when bool_or(clicks is null) filter (where date between ${period.start} and ${period.end}) then null else sum(clicks)      filter (where date between ${period.start} and ${period.end}) end as clicks,
+    case when bool_or(cost is null) filter (where date between ${period.start} and ${period.end}) then null else sum(cost)        filter (where date between ${period.start} and ${period.end}) end as spend,
+    case when bool_or(sales_7d is null) filter (where date between ${period.start} and ${period.end}) then null else sum(sales_7d)    filter (where date between ${period.start} and ${period.end}) end as sales,
+    case when bool_or(purchases_7d is null) filter (where date between ${period.start} and ${period.end}) then null else sum(purchases_7d) filter (where date between ${period.start} and ${period.end}) end as orders,
+    case when bool_or(units_sold_7d is null) filter (where date between ${period.start} and ${period.end}) then null else sum(units_sold_7d) filter (where date between ${period.start} and ${period.end}) end as units,
     count(*)         filter (where date between ${comparison.start} and ${comparison.end}) as c_days,
-    sum(impressions) filter (where date between ${comparison.start} and ${comparison.end}) as c_impressions,
-    sum(clicks)      filter (where date between ${comparison.start} and ${comparison.end}) as c_clicks,
-    sum(cost)        filter (where date between ${comparison.start} and ${comparison.end}) as c_spend,
-    sum(sales_7d)    filter (where date between ${comparison.start} and ${comparison.end}) as c_sales,
-    sum(purchases_7d) filter (where date between ${comparison.start} and ${comparison.end}) as c_orders,
-    sum(units_sold_7d) filter (where date between ${comparison.start} and ${comparison.end}) as c_units
+    case when bool_or(impressions is null) filter (where date between ${comparison.start} and ${comparison.end}) then null else sum(impressions) filter (where date between ${comparison.start} and ${comparison.end}) end as c_impressions,
+    case when bool_or(clicks is null) filter (where date between ${comparison.start} and ${comparison.end}) then null else sum(clicks)      filter (where date between ${comparison.start} and ${comparison.end}) end as c_clicks,
+    case when bool_or(cost is null) filter (where date between ${comparison.start} and ${comparison.end}) then null else sum(cost)        filter (where date between ${comparison.start} and ${comparison.end}) end as c_spend,
+    case when bool_or(sales_7d is null) filter (where date between ${comparison.start} and ${comparison.end}) then null else sum(sales_7d)    filter (where date between ${comparison.start} and ${comparison.end}) end as c_sales,
+    case when bool_or(purchases_7d is null) filter (where date between ${comparison.start} and ${comparison.end}) then null else sum(purchases_7d) filter (where date between ${comparison.start} and ${comparison.end}) end as c_orders,
+    case when bool_or(units_sold_7d is null) filter (where date between ${comparison.start} and ${comparison.end}) then null else sum(units_sold_7d) filter (where date between ${comparison.start} and ${comparison.end}) end as c_units
   `;
 }

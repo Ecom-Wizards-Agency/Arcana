@@ -1,4 +1,5 @@
 import type { ScreenActor } from '../../server/page-read';
+import { readCoreReportEvidence } from '@wizard-ads/db';
 
 import type { ScreenParams } from '../types';
 
@@ -79,6 +80,9 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       const categoryResult = QueryCategory.safeParse(rawCategory);
       const category = categoryResult.success ? categoryResult.data : null;
       const search = one(query['q'])?.slice(0, 160) ?? '';
+      const endDate = scope?.weekEnd ?? new Date().toISOString().slice(0, 10);
+      const startDate = scope?.weekStart ?? new Date(Date.parse(endDate) - 6 * 86_400_000).toISOString().slice(0, 10);
+      const coreEvidence = await readCoreReportEvidence(snapshot, { orgId: actor.orgId, profileId: profile.id, families: ['sbSearchTerm'], startDate, endDate, limit: 100 });
 
       const reviewScope = {
         orgId: actor.orgId,
@@ -97,7 +101,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       });
       const model = buildQueryIntelligenceModel(source);
 
-      return { view: 'ready' as const, props: { profile, scope, scopes, category, search, model, contextualReview, contextualExports, role } };
+      return { view: 'ready' as const, props: { profile, scope, scopes, category, search, model, contextualReview, contextualExports, role, ...(coreEvidence.length ? { coreEvidence } : {}) } };
     });
   } catch (error) {
     const authDestination = authenticationDestination(error);

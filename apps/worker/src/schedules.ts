@@ -19,9 +19,25 @@
  */
 import { MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
 import type { ReportType } from '@wizard-ads/shared';
+import { CORE_REPORT_FAMILIES, CoreFeatureReportType } from '@wizard-ads/shared';
+import { defaultCoreReportConfiguration } from '@wizard-ads/ads-api';
 import { RECOMMENDATION_CADENCE } from './recommendation-cadence.js';
 
 export type ScheduleVariant = 'default' | 'restatement' | 'comparison';
+
+/** Provisioning never enables a family, even when capability evidence already exists. */
+export function coreFamilySchedules() {
+  return CoreFeatureReportType.options.flatMap((family) => {
+    const policy = CORE_REPORT_FAMILIES[family];
+    const recent = 3;
+    const restatement = Math.min(32, policy.maximumDateDifferenceDays + 1, policy.retentionDays);
+    return [
+      { variant: 'default', cadence: '1 day', lookbackDays: recent, windowOffsetDays: 0 },
+      { variant: 'restatement', cadence: '7 days', lookbackDays: restatement, windowOffsetDays: 0 },
+      { variant: 'comparison', cadence: '7 days', lookbackDays: Math.min(restatement, policy.retentionDays - restatement), windowOffsetDays: restatement },
+    ].map((schedule) => ({ ...schedule, jobType: 'report.request' as const, reportType: family, enabled: false as const, payload: { familyConfiguration: defaultCoreReportConfiguration(family) } }));
+  });
+}
 
 export interface ScheduleSpec {
   jobType: 'entity.sync' | 'report.request';

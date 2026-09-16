@@ -6,11 +6,11 @@ import { context, profile } from '../synthetic-render-fixtures';
 import { load } from './load';
 
 const mocks = vi.hoisted(() => ({
-  freshness: vi.fn(), crosscheck: vi.fn(), profiles: vi.fn(), authenticate: vi.fn(), sql: vi.fn(),
+  coreEvidence: vi.fn(), freshness: vi.fn(), crosscheck: vi.fn(), profiles: vi.fn(), authenticate: vi.fn(), sql: vi.fn(),
 }));
 vi.mock('../../server/load-freshness', () => ({ loadFreshness: mocks.freshness }));
 vi.mock('@wizard-ads/crosscheck-cli', () => ({ loadCrosscheckPanel: mocks.crosscheck }));
-vi.mock('@wizard-ads/db', () => ({ withAuthenticatedActor: mocks.authenticate }));
+vi.mock('@wizard-ads/db', () => ({ withAuthenticatedActor: mocks.authenticate, readCoreReportEvidence: mocks.coreEvidence }));
 vi.mock('../../../app/_lib/profiles', () => ({ listProfiles: mocks.profiles }));
 
 const actor = { orgId: context.active!.orgId, userId: context.user.id };
@@ -33,6 +33,7 @@ function deferred<T>() {
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  mocks.coreEvidence.mockResolvedValue([]);
   mocks.profiles.mockResolvedValue([profile]);
   mocks.authenticate.mockImplementation(async (_handle, _actor, run) => run(handle.sql));
 });
@@ -48,6 +49,7 @@ it('returns the workspace after one roster read and streams crosscheck without a
   expect(data.view).toBe('ready');
   expect(readNullable).toHaveBeenCalledTimes(1);
   expect(mocks.profiles).toHaveBeenCalledTimes(1);
+  expect(mocks.coreEvidence).toHaveBeenCalledWith({ sql: handle.sql }, expect.objectContaining({ orgId: actor.orgId, profileId: profile.id, families: ['spQueryMetrics', 'sbSearchTerm'] }));
   expect(mocks.freshness).not.toHaveBeenCalled();
   expect(mocks.crosscheck).not.toHaveBeenCalled();
   if (data.view !== 'ready') throw new Error('Missing workspace');

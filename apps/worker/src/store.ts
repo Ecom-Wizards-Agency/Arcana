@@ -43,6 +43,8 @@ import {
   type StagedReportDate,
 } from '@wizard-ads/db';
 import { MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
+import { readCoreReportCapability, promoteCoreReportWindow, coreReportGrain } from '@wizard-ads/db';
+import type { CoreReportConfiguration, CoreFeatureReportType, CoreReportCapability, CoreReportPromotion } from '@wizard-ads/shared';
 import {
   WorkerReportAccounting,
   type ReportCoverageAccounting,
@@ -56,7 +58,7 @@ import {
 type AttributedReportCounts = WorkerReportAccountingShape;
 import type { AdsProfileContext } from './ads-api.js';
 import type { CampaignFactRow, ParsedFactBatch } from './parsers.js';
-import { defaultSchedules, type ScheduleSpec } from './schedules.js';
+import { defaultSchedules, coreFamilySchedules, type ScheduleSpec } from './schedules.js';
 
 export type ReportRequestState = Omit<
   WorkerReportLedger,
@@ -98,6 +100,7 @@ export interface EntitySyncOptions {
   readStartedAt?: string;
   /** Unlisted kinds are not refreshed or tombstoned; requires an ad-product scope. */
   excludedEntityTypes?: readonly EntityRow['entityType'][];
+  preserveCampaignNegativeTargets?: boolean;
   adProduct?: 'SP' | 'SB' | 'SD';
   /**
    * A full pass re-lists every entity the profile has, so an id the mirror
@@ -133,6 +136,7 @@ export interface StoreLogger {
 const MAX_LOGGED_DUPLICATE_IDS = 20;
 
 export interface WorkerStore {
+  coreReportCapability?(orgId: string, profileId: string, family: CoreFeatureReportType): Promise<CoreReportCapability | null>;
   /** WP-256 source-neutral producer. Required when installing additional ingestion sources. */
   recordCoverage?(observation: ReportCoverageObservation, verifiedLoadedRows: number): Promise<{ offered: number; written: number; unchanged: number }>;
   claim(workerId: string, limit: number, jobTypes?: readonly JobType[]): Promise<ClaimedJob[]>;
@@ -250,7 +254,7 @@ export interface WorkerStore {
   finishAttributedReport(
     reportRequestId: string,
     counts: AttributedReportCounts,
-    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null; coverage?: ReportCoverageAccounting },
+    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null; coverage?: ReportCoverageAccounting; promotion?: CoreReportPromotion },
   ): Promise<void>;
 }
 
@@ -512,7 +516,14 @@ export class PostgresWorkerStore implements WorkerStore {
         tombstoned += keywordMirror.tombstoned;
         continue;
       }
-      const existing = await this.existingEntities(profile.id, entityType, adProduct);
+      const allExisting = await this.existingEntities(profile.id, entityType);
+      const priorById = new Map(allExisting.map((row) => [row.amazonId, row]));
+      for (const row of incoming) {
+        const prior = priorById.get(row.amazonId);
+        if (prior && prior.snapshot['adProduct'] !== row.adProduct) throw new Error('entity mirror product identity changed');
+        if (prior && row.entityType === 'negative' && (prior.snapshot['keywordText'] == null) !== (row.keywordText === null)) throw new Error('negative mirror identity kind changed');
+      }
+      const existing = adProduct ? allExisting.filter((row) => row.snapshot['adProduct'] === adProduct) : allExisting;
       const byId = new Map(existing.map((row) => [row.amazonId, row]));
       const seen = new Set<string>();
 
@@ -535,7 +546,7 @@ export class PostgresWorkerStore implements WorkerStore {
         }
       }
 
-      const missing = full ? existing.filter((row) => !row.deletedAt && !seen.has(row.amazonId)) : [];
+      const missing = full ? existing.filter((row) => !row.deletedAt && !seen.has(row.amazonId) && !(options.preserveCampaignNegativeTargets && entityType === 'negative' && row.snapshot['scope'] === 'campaign' && row.snapshot['keywordText'] == null)) : [];
       tombstoned += missing.length;
       if (missing.length > 0) {
         const ids = missing.map((row) => row.amazonId);
@@ -591,6 +602,7 @@ export class PostgresWorkerStore implements WorkerStore {
       startDate: payload.startDate,
       endDate: payload.endDate,
       creativeSyncSnapshotId: payload.creativeSyncSnapshotId ?? null,
+      familyConfiguration: payload.familyConfiguration ?? null,
     }).onConflictDoNothing();
     return this.getReportRequest(jobId, payload.orgId, payload.profileId);
   }
@@ -695,10 +707,11 @@ export class PostgresWorkerStore implements WorkerStore {
       requested_at: Date | string;
       poll_attempts: number;
       creative_sync_snapshot_id: string | null;
+      family_configuration: CoreReportConfiguration | null;
     }[]>`
       select id, org_id, profile_id, report_type, start_date::text, end_date::text,
              source, amazon_report_id, requested_at, poll_attempts,
-             creative_sync_snapshot_id
+             creative_sync_snapshot_id, family_configuration
         from public.report_requests
        where id = ${reportRequestId}
          and org_id = ${orgId}
@@ -718,6 +731,7 @@ export class PostgresWorkerStore implements WorkerStore {
       requestedAt: asDate(row.requested_at),
       pollAttempts: Number(row.poll_attempts),
       creativeSyncSnapshotId: row.creative_sync_snapshot_id,
+      familyConfiguration: row.family_configuration,
     };
   }
 
@@ -780,6 +794,22 @@ export class PostgresWorkerStore implements WorkerStore {
     }
     await this.repairOverlongLookbacks(profileId);
     return written;
+  }
+
+  async provisionCoreFamilySchedules(orgId: string, profileId: string): Promise<{ offered: number; written: number; existing: number }> {
+    const capabilities = await this.handle.sql<{ family: string }[]>`select family from public.report_family_capabilities where org_id=${orgId} and profile_id=${profileId} and enabled=true`;
+    const enabled = new Set(capabilities.map((row) => row.family));
+    const schedules = coreFamilySchedules().filter((spec) => enabled.has(spec.reportType));
+    if (!schedules.length) return { offered: 0, written: 0, existing: 0 };
+    let written = 0;
+    for (const spec of schedules) {
+      const rows = await this.handle.sql`insert into public.sync_schedules (org_id,profile_id,job_type,report_type,variant,cadence,lookback_days,window_offset_days,payload,enabled) values (${orgId},${profileId},'report.request',${spec.reportType}::public.report_type,${spec.variant},${spec.cadence}::interval,${spec.lookbackDays},${spec.windowOffsetDays},${JSON.stringify(spec.payload)}::jsonb,false) on conflict (profile_id,job_type,report_type,variant) do nothing returning id`;
+      written += rows.length;
+    }
+    const persisted = await this.handle.sql<{ report_type: string; variant: string }[]>`select report_type::text,variant from public.sync_schedules where org_id=${orgId} and profile_id=${profileId} and report_type::text=any(${schedules.map((spec) => spec.reportType)}) and variant in ('default','restatement','comparison')`;
+    const expected = new Set(schedules.map((spec) => `${spec.reportType}:${spec.variant}`));
+    if (persisted.length !== expected.size || persisted.some((row) => !expected.has(`${row.report_type}:${row.variant}`))) throw new Error('family schedule readback mismatch');
+    return { offered: schedules.length, written, existing: persisted.length - written };
   }
 
   /**
@@ -1013,16 +1043,29 @@ export class PostgresWorkerStore implements WorkerStore {
     if (counts.parsed !== counts.loaded) throw new ParsedLoadedMismatch(counts.parsed, counts.loaded);
   }
 
+  async coreReportCapability(orgId: string, profileId: string, family: CoreFeatureReportType): Promise<CoreReportCapability | null> {
+    return readCoreReportCapability(this.handle, orgId, profileId, family);
+  }
+
   async finishAttributedReport(
     reportRequestId: string,
     input: AttributedReportCounts,
-    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null; coverage?: ReportCoverageAccounting },
+    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null; coverage?: ReportCoverageAccounting; promotion?: CoreReportPromotion },
   ): Promise<void> {
     const counts = WorkerReportAccounting.parse(input);
+    let superseded = false;
     const finish = async (sql: QueryHandle['sql']) => {
+      const promoted = options.promotion ? await promoteCoreReportWindow({ sql }, options.promotion) : null;
+      superseded = promoted?.superseded === true;
+      if (superseded) {
+        counts.promotedRows = 0;
+        counts.canonicalRows = 0;
+        counts.unpromotedRows = counts.parsedRows;
+      }
+      if (promoted && promoted.loadedRows !== counts.canonicalRows) throw new Error('report family completion readback mismatch');
       const rows = await sql<{ id: string; accounting_complete: boolean }[]>`
         update public.report_requests
-           set status = ${options.status}::public.report_status,
+           set status = ${superseded ? 'failed' : options.status}::public.report_status,
                completed_at = now(), next_poll_at = null,
                source_rows = ${counts.sourceRows},
                rows_parsed = ${counts.parsedRows},
@@ -1031,7 +1074,7 @@ export class PostgresWorkerStore implements WorkerStore {
                unpromoted_rows = ${counts.unpromotedRows},
                rows_loaded = ${counts.canonicalRows},
                bytes_downloaded = ${options.bytesDownloaded},
-               error = ${options.error ?? null}
+               error = ${superseded ? 'report family superseded by newer facts' : options.error ?? null}
          where id = ${reportRequestId}
          returning id, accounting_complete
       `;
@@ -1041,13 +1084,23 @@ export class PostgresWorkerStore implements WorkerStore {
       if (rows[0]?.accounting_complete !== true) {
         throw new Error('attributed report durable accounting did not reconcile');
       }
-      if (options.status === 'completed' && options.coverage !== undefined) {
-        await recordReportCoverage({ sql }, reportRequestId, options.coverage);
+      if (!superseded && options.status === 'completed' && options.coverage !== undefined) {
+        if (options.promotion && promoted) {
+          const p = options.promotion;
+          await upsertReportCoverage({ sql }, {
+            orgId: p.orgId, profileId: p.profileId, reportType: p.parsed.configuration.family,
+            grain: coreReportGrain(p.parsed.configuration), source: 'amazon_reporting_v3', status: 'complete',
+            earliestDate: p.startDate, coveredThrough: p.endDate, settledThrough: null,
+            observedAt: promoted.observedAt, sourceRows: counts.sourceRows, parsedRows: counts.parsedRows,
+            loadedRows: promoted.loadedRows, refusedRows: counts.refusedRows, countsMatch: true,
+          }, promoted.loadedRows);
+        } else await recordReportCoverage({ sql }, reportRequestId, options.coverage);
       }
     };
     // Existing callers retain ledger-only completion; the ingestion hook supplies coverage.
-    if (options.coverage === undefined) await finish(this.handle.sql);
+    if (options.coverage === undefined && options.promotion === undefined) await finish(this.handle.sql);
     else await this.handle.sql.begin(finish);
+    if (superseded) throw new PermanentJobError('report family superseded by newer facts');
   }
 
   private async upsertCampaignFacts(kind: 'sb' | 'sd', rows: readonly CampaignFactRow[]): Promise<number> {

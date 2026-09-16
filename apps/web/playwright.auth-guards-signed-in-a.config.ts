@@ -6,19 +6,19 @@ import authConfig from './playwright.auth.config';
 
 export default defineConfig({
   ...authConfig,
-  testMatch: e2eTestMatch('auth-guards-signed-in'),
-  outputDir: './node_modules/.cache/playwright/auth-guards-signed-in',
+  testMatch: e2eTestMatch('auth-guards-signed-in-a'),
+  outputDir: './node_modules/.cache/playwright/auth-guards-signed-in-a',
   reporter: withE2ESummaryReporter(process.env['CI']
     ? [
         ['list'],
         [
           'html',
           {
-            outputFolder: './node_modules/.cache/playwright/reports/auth-guards-signed-in',
+            outputFolder: './node_modules/.cache/playwright/reports/auth-guards-signed-in-a',
             open: 'never',
           },
         ],
       ]
     : [['list']]),
-  projects: [{ name: 'auth-guards-signed-in', use: { ...devices['Desktop Chrome'] } }],
+  projects: [{ name: 'auth-guards-signed-in-a', use: { ...devices['Desktop Chrome'] } }],
 });

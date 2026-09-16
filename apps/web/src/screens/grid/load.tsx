@@ -1,4 +1,5 @@
 import { ShellFreshnessBanner } from '../../ui/shell-evidence';
+import { loadCoreGridEvidence } from './core-report-rows';
 
 import type { ScreenActor } from '../../server/page-read';
 
@@ -111,10 +112,11 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   }
 
   const { profile } = data;
+  const coreEvidence = await access.read((handle) => loadCoreGridEvidence(handle, entity, { orgId, profileId: profile.id, startDate: period.start, endDate: period.end, limit: 100 }));
 
   return {
     view: 'ready' as const, props: {
-      entity, profile, period, comparison, params, slot1: (<GridCockpit
+      ...(coreEvidence.length ? { coreEvidence } : {}), entity, profile, period, comparison, params, slot1: (<GridCockpit
         handle={entry.handle} actor={actor}
         orgId={orgId}
         profile={profile}

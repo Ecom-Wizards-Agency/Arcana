@@ -1,4 +1,5 @@
 import { type CSSProperties } from 'react';
+import { CoreReportEvidencePanel } from './core-report-evidence';
 
 import {
   ENTITY_LABELS,
@@ -47,7 +48,7 @@ function renderEmpty({ data }: Extract<ScreenData, { view: 'empty'; }>['props'])
   </main>);
 }
 
-function renderReady({ entity, profile, period, comparison, params, slot1: _slot1, actor, freshness: _freshness }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ entity, profile, period, comparison, params, slot1: _slot1, actor, freshness: _freshness, coreEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main style={main}>
     <h1 className="wa-sr-only">{ENTITY_LABELS[entity]}</h1>
     <p className="wa-sr-only">{profile.label} · {profile.countryCode} · {profile.currencyCode} · {period.start} to {period.end}</p>
@@ -64,6 +65,7 @@ function renderReady({ entity, profile, period, comparison, params, slot1: _slot
       asin={params.asin ?? null}
       campaignId={entity === 'campaigns' ? params.campaign ?? null : null}
     />
+    {coreEvidence?.some((item) => item.status !== 'unmeasured') ? <CoreReportEvidencePanel evidence={coreEvidence} /> : null}
 
   </main>);
 }

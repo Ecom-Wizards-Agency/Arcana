@@ -423,3 +423,30 @@ describe('unverified Sponsored Brands keywords', () => {
     expect(server.requestsFor('/sb/keywords/list')[0]?.json).toEqual({ maxResults: 1 });
   });
 });
+
+
+describe('tranche C read-only identity prerequisites (synthetic contract v1)', () => {
+  const fixtures = [
+    { method: 'listSpCampaignNegativeTargets' as const, http: 'POST', path: '/sp/campaignNegativeTargets/list', key: 'campaignNegativeTargetingClauses', rows: [{ targetId: '901', campaignId: '100', state: 'ENABLED', expression: [{ type: 'ASIN_SAME_AS', value: 'B000000001' }], resolvedExpression: [] }], product: 'SP' },
+    { method: 'listSdProductAds' as const, http: 'GET', path: '/sd/productAds/extended', rows: [{ adId: '902', campaignId: '100', adGroupId: '200', state: 'enabled', asin: 'B000000002' }], product: 'SD' },
+    { method: 'listSdTargets' as const, http: 'GET', path: '/sd/targets/extended', rows: [{ targetId: '903', campaignId: '100', adGroupId: '200', state: 'enabled', expression: [{ type: 'asinSameAs', value: 'B000000003' }], resolvedExpression: [], bid: 1 }], product: 'SD' },
+    { method: 'listSdNegativeTargets' as const, http: 'GET', path: '/sd/negativeTargets/extended', rows: [{ targetId: '904', campaignId: '100', adGroupId: '200', state: 'enabled', expression: [{ type: 'asinSameAs', value: 'B000000004' }], resolvedExpression: [] }], product: 'SD' },
+  ];
+  for (const f of fixtures) {
+    it(`${f.method} preserves product identity and counts every returned object`, async () => {
+      const json = f.key ? { [f.key]: f.rows } : f.rows;
+      const { client } = clientFor([{ method: f.http, match: f.path, responses: [{ status: 200, json }] }]);
+      const result = await client[f.method](PROFILE_ID, { maxPages: 2, maxResults: 100 });
+      expect(result.raw).toHaveLength(1);
+      expect(result.items).toHaveLength(1);
+      expect(result.skipped).toHaveLength(0);
+      expect(result.items[0]).toMatchObject({ adProduct: f.product });
+      expect(result.items.length + result.skipped.length).toBe(result.raw.length);
+    });
+    it(`${f.method} refuses malformed source values instead of losing them before accounting`, async () => {
+      const rows = [...f.rows, null];
+      const { client } = clientFor([{ method: f.http, match: f.path, responses: [{ status: 200, json: f.key ? { [f.key]: rows } : rows }] }]);
+      await expect(client[f.method](PROFILE_ID)).rejects.toThrow('malformed row');
+    });
+  }
+});

@@ -1,6 +1,12 @@
 /**
  * Bring up everything the end-to-end suite needs, in one place.
  *
+ * Each guard identity runs in two dev processes, each visiting an index half
+ * of GUARDED_ROUTES. The complete signed-in sweep exceeded an 8 GB heap after
+ * the campaign routes landed; 12 GB was a stopgap. Releasing compiled route
+ * graphs between halves keeps the heap ceiling at 8 GB and leaves room for
+ * Chromium, Postgres and native allocations on the 16 GB CI runner.
+ *
  * Three things, in order: a migrated database with two orgs and four users, the
  * fake Amazon, and a Next dev server pointed at both. Playwright's built-in
  * `webServer` is not used, because the server's environment depends on values
@@ -350,17 +356,11 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock, fixturePro
       stdio: ['ignore', 'inherit', 'inherit'],
       env: {
         ...process.env,
-        // Each authenticated suite owns one bounded dev process. The signed-in
-        // guard suite compiles every route in that one process; with the full
-        // Targets column set the webpack module cache crossed 4 GB while
-        // compiling /grid/translation and the server died mid-suite; with the
-        // Optimize Now screens it crossed 6 GB too. The e2e config also enables
-        // Next's webpack memory optimisations. Keep a bounded ceiling (the
-        // runner has 16 GB) without allowing a
-        // development-memory restart to discard an in-process fixture.
+        // Guard sweeps release their route graphs between halves (see above).
+        // Keep the dev heap bounded alongside Next's webpack optimisations.
         NODE_OPTIONS: appendNodeOption(
           process.env['NODE_OPTIONS'],
-          '--max-old-space-size=12288',
+          '--max-old-space-size=8192',
         ),
         NODE_ENV: 'development',
         DATABASE_URL: connectionString,

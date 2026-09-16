@@ -13,6 +13,7 @@
  */
 export const PACKAGE_NAME = '@wizard-ads/core' as const;
 
+export * from './report-metrics.js';
 export * from './types.js';
 export * from './num.js';
 export * from './rows.js';
