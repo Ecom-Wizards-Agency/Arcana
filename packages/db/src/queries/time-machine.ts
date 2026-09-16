@@ -892,6 +892,18 @@ export async function listChangeQueue(
       left join public.sp_write_restore_reviews review on review.org_id=p.org_id and review.profile_id=p.profile_id and review.plan_id=p.plan_id
       where p.org_id=${input.orgId}::uuid and p.profile_id=${input.profileId}::uuid
         and plan.artifact #>> '{source,restoreProposal,kind}'='restore_proposal'
+      union all
+      select 'creation:'||b.id::text,b.admitted_at,'campaign_creation',b.id::text,
+        coalesce((select node->'payload'->>'name' from jsonb_array_elements(b.artifact->'plan'->'nodes') node
+          where node->>'kind'='campaign.create' limit 1),'Campaign creation'),'creation',null::jsonb,
+        to_jsonb(b.node_count::text||' resources · Initial state paused'),
+        case when b.parent_batch_id is null then 'campaign_creation' else 'campaign_creation_retry' end,
+        app.campaign_creation_batch_state(b.id),b.id,
+        case when b.parent_batch_id is null then 'Campaign creation' else 'Retry of '||b.parent_batch_id::text end,
+        b.node_count,false,0,null::timestamptz,null::uuid,
+        '/campaigns/draft?profile='||b.profile_id::text||'&draft='||b.draft_id::text||'&batch='||b.id::text||'&step=result'
+      from public.campaign_creation_batches b where b.org_id=${input.orgId}::uuid and b.profile_id=${input.profileId}::uuid
+        and b.artifact->'plan'->>'schemaVersion'='openspell.campaign-creation-plan.v2'
     ) select jsonb_build_object('id',id,'when',to_char(at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
       'entity',entity,'entityType',entity_type,'entityId',entity_id,'field',field,'oldValue',old_value,'newValue',new_value,
       'source',source,'state',state,'batchId',batch_id,'batchLabel',batch_label,'batchCount',batch_count,
@@ -948,6 +960,10 @@ export async function countChangeQueue(handle: TimeMachineReadHandle, scope: { o
       and not exists(select 1 from public.queued_change_approvals a where a.org_id=q.org_id and a.profile_id=q.profile_id and a.change_id=q.id))
     +(select count(*) from public.sp_write_restore_proposals p where p.org_id=${scope.orgId}::uuid and p.profile_id=${scope.profileId}::uuid
       and not exists(select 1 from public.sp_write_restore_reviews r where r.org_id=p.org_id and r.profile_id=p.profile_id and r.plan_id=p.plan_id))
+    +(select count(*) from public.campaign_creation_batches b where b.org_id=${scope.orgId}::uuid and b.profile_id=${scope.profileId}::uuid
+      and b.artifact->'plan'->>'schemaVersion'='openspell.campaign-creation-plan.v2'
+      and app.campaign_creation_batch_state(b.id)<>'observed'
+      and not exists(select 1 from public.campaign_creation_batches child where child.parent_batch_id=b.id))
     +(select count(*) from public.entity_changes ec where ec.org_id=${scope.orgId}::uuid and ec.profile_id=${scope.profileId}::uuid
       and ec.source='sync' and ec.acknowledged_at is null))::int as count`;
   if (row === undefined) throw new Error('Change queue count unavailable');

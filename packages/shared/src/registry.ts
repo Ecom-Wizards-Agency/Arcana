@@ -11,6 +11,9 @@ interface RegistryEntry {
   exports: readonly { barrel: string; order: number; clause: string; after: string }[];
 }
 export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
+  { domain: 'campaign-creation-screen', contract: 'campaign-creation-screen.ts', schema: null, queries: null, migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 222, clause: '*', after: '' }] },
+  { domain: 'campaign-creation-admission', contract: 'campaign-creation-admission.ts', schema: null, queries: null, migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 221, clause: '*', after: '' }] },
+  { domain: 'campaign-creation-batch', contract: 'campaign-creation-batch.ts', schema: null, queries: null, migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 220, clause: '*', after: '' }] },
   {"domain": "sponsored-prompts", "contract": "sponsored-prompts.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 102, "clause": "*", "after": ""}]},
   {"domain":"campaign-builder","contract":"campaign-builder.ts","schema":null,"queries":null,"migrationPrefix":null,"exports":[{"barrel":"index.ts","order":102,"clause":"*","after":""}]},
   {domain: "brand-lens", contract: "brand-lens.ts", schema: null, queries: null, migrationPrefix: null, exports: [{barrel: "index.ts", order: 102, clause: "*", after: ""}]},

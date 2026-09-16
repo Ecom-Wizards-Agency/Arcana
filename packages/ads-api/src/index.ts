@@ -307,3 +307,5 @@ export {
   ExportFailedError,
   ReportFailedError,
 } from './errors.js';
+export type { SpCreationAdapter } from './sp-creation-adapter.js';
+export { createSpCreationBatchAdapter, type SpCreationBatchAdapter } from './sp-creation-batch-adapter.js';
