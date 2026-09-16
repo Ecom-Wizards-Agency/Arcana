@@ -45,6 +45,8 @@ export interface WorkerConfig {
    * profile-night directory under it.
    */
   crosscheckInboxDir: string | undefined;
+  ownCollectorDropRoot?: string;
+  ownCollectorsEnabled?: boolean;
   /** Hours between `/v2/profiles` auth probes. See `AuthHealthMonitor`. */
   authHealthcheckIntervalMs: number;
   /** How long a `running` job may hold its claim before another worker may take it. */
@@ -159,6 +161,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     spApiConnectionRedirects,
     sbKeywordSyncEnabled: sbKeywordSyncEnabledFromEnv(env),
     unifiedReporting,
+    ownCollectorDropRoot: env['OPENSPELL_OWN_COLLECTOR_DROP_ROOT'],
+    ownCollectorsEnabled: env['OPENSPELL_OWN_COLLECTORS_ENABLED'] === '1',
     crosscheckInboxDir: env['CROSSCHECK_INBOX_DIR'] || undefined,
     authHealthcheckIntervalMs:
       positiveInteger(env['WORKER_AUTH_HEALTHCHECK_MINUTES'], 60, 'WORKER_AUTH_HEALTHCHECK_MINUTES') * 60_000,
@@ -172,4 +176,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
       'SP_API_REPORT_MIN_INTERVAL_MS',
     ),
   };
+}
+/** Explicit source gate; credentials and existing connections never enable it. */
+export function providerEvidenceEnabledFromEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env['OPENSPELL_PROVIDER_EVIDENCE_ENABLED'] === '1';
 }

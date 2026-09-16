@@ -1,4 +1,6 @@
 import { provisionSpApiReportJobs } from './spapi-report-scheduler.js';
+import { ProviderCollectionConfig } from '@wizard-ads/shared';
+import { providerEvidenceSchedule } from './schedules.js';
 import type { ReportCoverageObservation } from '@wizard-ads/shared';
 import { mergeControlMirror, mergeKeywordMirror, readKeywordMirrorStart } from '@wizard-ads/db/sp-write-worker';
 import type { ControlMirrorMergeCounts, KeywordMirrorMergeCounts, KeywordMirrorMergeRequest } from '@wizard-ads/shared/sp-write-mirror';
@@ -276,6 +278,7 @@ export class ClaimOwnershipLost extends Error {
 }
 
 export interface PostgresWorkerStoreOptions {
+  ownCollectorsEnabled?: boolean;
   claimProtocol?: 'legacy' | 'fenced';
   keywordMirror?: KeywordMirrorCapability;
 }
@@ -291,6 +294,7 @@ type ExistingEntity = { amazonId: string; deletedAt: Date | string | null; snaps
 
 export class PostgresWorkerStore implements WorkerStore {
   private readonly logger: StoreLogger;
+  private readonly ownCollectorsEnabled: boolean;
   private readonly keywordMirror: KeywordMirrorCapability | undefined;
   private readonly reportedDisabledSbKeywords = new Set<string>();
   private readonly claimProtocol: 'legacy' | 'fenced';
@@ -303,6 +307,7 @@ export class PostgresWorkerStore implements WorkerStore {
     this.logger = logger ?? { info: (message, details) => console.info(message, details ?? {}) };
     this.claimProtocol = options.claimProtocol ?? 'legacy';
     this.keywordMirror = options.keywordMirror;
+    this.ownCollectorsEnabled = options.ownCollectorsEnabled === true;
   }
 
   /** Activation requires explicit composition; construction never queries the DB. */
@@ -855,11 +860,18 @@ export class PostgresWorkerStore implements WorkerStore {
    * them, while a later reactivation enables the same rows again.
    */
   async ensureIntegrationSchedules(): Promise<number> {
+    await this.ensureProviderEvidenceSchedules();
     const [relation] = await this.handle.sql<{ relation: string | null }[]>`
       select to_regclass('public.integration_connections')::text as relation
     `;
     if (!relation?.relation) return 0;
 
+    const ownSources = this.ownCollectorsEnabled ? this.handle.sql`
+        union select p.org_id,p.id,'own_bids.collect'::public.sync_job_type,interval '1 day','{}'::jsonb from public.ad_profiles p where p.sync_enabled
+        union select s.org_id,s.profile_id,'own_listings.collect'::public.sync_job_type,interval '1 day','{}'::jsonb from selected_profiles s where s.provider='keepa'
+        union select r.org_id,r.profile_id,(case when r.family='prompts' then 'prompts.collect' else 'own_listings.collect' end)::public.sync_job_type,interval '1 day','{}'::jsonb
+          from public.collector_export_references r join public.ad_profiles p on p.org_id=r.org_id and p.id=r.profile_id
+          where r.enabled and p.sync_enabled and r.marketplace=p.country_code` : this.handle.sql``;
     const [result] = await this.handle.sql<{ changed: string }[]>`
       with active_connections as (
         select c.org_id, c.provider::text as provider, c.config
@@ -898,13 +910,14 @@ export class PostgresWorkerStore implements WorkerStore {
             ('mrp',     'economics.sync',   '1 day',  '{}'::jsonb)
           ) as m(provider, job_type, cadence, payload)
             on m.provider = s.provider
+        ${ownSources}
       ),
       disabled as (
         update public.sync_schedules schedule
            set enabled = false
          where schedule.variant = 'integration'
-           and schedule.job_type in (
-             'keepa.sync', 'rank.sync', 'economics.sync', 'sqp.categorize'
+           and schedule.job_type::text in (
+             'keepa.sync', 'rank.sync', 'economics.sync', 'sqp.categorize', 'own_bids.collect', 'own_listings.collect', 'prompts.collect'
            )
            and schedule.enabled
            and not exists (
@@ -932,6 +945,28 @@ export class PostgresWorkerStore implements WorkerStore {
     `;
     const spapi = await provisionSpApiReportJobs(this.handle);
     return Number(result?.changed ?? 0) + spapi.enqueued + spapi.disabledScopes;
+  }
+
+  private async ensureProviderEvidenceSchedules(): Promise<void> {
+    if (process.env['OPENSPELL_PROVIDER_EVIDENCE_SCHEDULE_OWNER'] !== '1') return;
+    const [relation] = await this.handle.sql<{ relation: string | null }[]>`select to_regclass('public.provider_evidence_configs')::text as relation`;
+    if (!relation?.relation) return;
+    const enabled = process.env['OPENSPELL_PROVIDER_EVIDENCE_ENABLED'] === '1';
+    const rows = await this.handle.sql<{ config: unknown; enabled: boolean }[]>`select config,enabled from public.provider_evidence_configs`;
+    const keep: string[] = [];
+    for (const row of rows) {
+      const config = ProviderCollectionConfig.parse(row.config);
+      const spec = providerEvidenceSchedule(config, enabled && row.enabled);
+      if (!spec) continue;
+      keep.push(spec.variant);
+      const written = await this.handle.sql`insert into public.sync_schedules(org_id,profile_id,job_type,report_type,variant,cadence,payload,enabled)
+        values(${config.scope.orgId},${config.scope.profileId},'provider.evidence.collect',null,${spec.variant},${spec.cadence}::interval,${JSON.stringify(spec.payload)}::jsonb,true)
+        on conflict(profile_id,job_type,report_type,variant) do update set cadence=excluded.cadence,payload=excluded.payload,enabled=true returning id`;
+      if (written.length !== 1) throw new Error('Provider collection schedule count mismatch');
+    }
+    await this.handle.sql`update public.sync_schedules set enabled=false where job_type='provider.evidence.collect' and enabled and not (variant=any(${keep}))`;
+    const verified = await this.handle.sql<{ variant: string }[]>`select variant from public.sync_schedules where job_type='provider.evidence.collect' and enabled`;
+    if (verified.length !== keep.length || verified.some((row) => !keep.includes(row.variant))) throw new Error('Provider collection schedule readback mismatch');
   }
 
   async unscheduledProfiles(): Promise<{ orgId: string; profileId: string }[]> {

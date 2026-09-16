@@ -33,6 +33,10 @@ export const JobType = z.enum([
   'report.unified.advance',
   'translation.request',
   'asset-library.search',
+  'provider.evidence.collect',
+  'own_bids.collect',
+  'own_listings.collect',
+  'prompts.collect',
 ]);
 export type JobType = z.infer<typeof JobType>;
 
@@ -292,8 +296,14 @@ export const RetailReportJob = z.object({ ...jobBase, type: z.literal("retail.re
 export const AbaReportJob = z.object({ ...jobBase, type: z.literal("aba.report.request"), plan: SpReportPlan });
 export const CatalogueReportJob = z.object({ ...jobBase, type: z.literal("catalogue.report.request"), plan: SpReportPlan });
 
+export const OwnBidsCollectJob = z.object({ ...jobBase, type: z.literal('own_bids.collect') }).strict();
+export const OwnListingsCollectJob = z.object({ ...jobBase, type: z.literal('own_listings.collect') }).strict();
+export const PromptsCollectJob = z.object({ ...jobBase, type: z.literal('prompts.collect') }).strict();
+
 export const JobPayload = z.discriminatedUnion('type', [
   RetailReportJob, AbaReportJob, CatalogueReportJob,
+  z.strictObject({ ...jobBase, type: z.literal('provider.evidence.collect'), configId: Uuid }),
+  OwnBidsCollectJob, OwnListingsCollectJob, PromptsCollectJob,
   EntitySyncJob,
   AssetLibrarySearchJob,
   ReportRequestJob,

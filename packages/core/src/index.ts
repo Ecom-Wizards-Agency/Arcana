@@ -18,6 +18,7 @@ export * from './creative/performance.js';
 export * from './creative/certainty.js';
 export * from './creative/prompt-loop.js';
 export * from './spapi-evidence.js';
+export * from './provider-evidence.js';
 export * from './types.js';
 export * from './num.js';
 export * from './rows.js';
@@ -52,3 +53,4 @@ export { calculateCampaignStartingBid, campaignBidRationale } from './campaign-b
 export { campaignBuilderEligibility } from './campaign-builder/eligibility.js';
 export * from './dayparting/schedule.js';
 export * from './brand-lens/model.js';
+export * from './own-collectors.js';
