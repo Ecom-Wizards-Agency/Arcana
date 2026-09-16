@@ -29,7 +29,7 @@ function harness(b = binding, enabled = true) {
 }
 it('has only integrations affinity and no fabricated event schedule', () => {
   expect(ingestionSource('marketing_stream.extensions.project').laneAffinity).toEqual(['integrations']);
-  expect(ingestionSource('marketing_stream.normalize').laneAffinity).toEqual([]);
+  expect(ingestionSource('marketing_stream.normalize').laneAffinity).toEqual(['integrations']);
   for (const lane of ['vercel-default', 'vercel-reduced', 'evo-report', 'evo-report-unified', 'evo-recommendation'] as const)
     expect(ingestionLaneJobTypes(lane)).not.toContain('marketing_stream.extensions.project');
   expect(new Set<string>(defaultSchedules().map((s) => s.jobType)).has('marketing_stream.extensions.project')).toBe(false);
