@@ -1,5 +1,5 @@
 import type { OrgProfile } from '../../recommendations/data';
-import type { CoreReportEvidence } from '@wizard-ads/shared';
+import type { CoreReportEvidence, ProviderEvidenceReadResult } from '@wizard-ads/shared';
 import { formatResearchPeriod } from './research-format';
 import { QueryResearch } from './research-view';
 import { AbaEvidencePanel } from '../grid/spapi-evidence';
@@ -25,7 +25,7 @@ import styles from '../../../app/query-intelligence/query-intelligence.module.cs
 
 import type { load } from './load';
 
-export type ScreenData = Awaited<ReturnType<typeof load>> | {view:'not-measured';props:{profile:OrgProfile;coreEvidence?:CoreReportEvidence[];providerEvidence?:import("@wizard-ads/shared").ProviderEvidenceReadResult}};
+export type ScreenData = Awaited<ReturnType<typeof load>> | {view:'not-measured';props:{profile:OrgProfile;coreEvidence?:CoreReportEvidence[];providerEvidence?:ProviderEvidenceReadResult}};
 
 export default function ScreenView({ data }: { data: ScreenData; }) {
   switch (data.view) {
