@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { signIn } from './support/auth';
 import { readState } from './support/fixture';
 
@@ -17,7 +17,7 @@ test('captures every saved optimizer state in the operator shell', async ({ page
   expect(rendered.states).toHaveLength(52);
   expect(rendered.states).toEqual(expect.arrayContaining(['choose-campaigns', 'run-settings', 'missing-group-setting']));
   expect(Object.keys(rendered.markup)).toEqual(rendered.states);
-  const directory = resolve(process.env['WP_SCRATCH'] ?? testInfo.project.outputDir, 'tmp', 'screenshots', 'optimizer');
+  const directory = testInfo.outputPath('optimizer');
   await mkdir(directory, { recursive: true });
   const screenshots: Array<{ state: string; path: string }> = [];
   for (const state of rendered.states) {
