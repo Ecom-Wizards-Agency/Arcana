@@ -1,8 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { mkdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { join } from 'node:path';
 import { serializeApplyRows, type ApplyRow } from '@wizard-ads/shared';
 import { createDb, recordEntityChanges } from '@wizard-ads/db';
 import { signIn } from './support/auth';
@@ -38,8 +36,7 @@ test('acknowledging an observed change retains a visible receipt',async({page})=
 test('captures both screens at 1440 by 1024 in light and dark themes',async({page},testInfo)=>{
   await signIn(page,'admin');
   const {fixtureProfileId:profile}=await readState();
-  const screenshotDirectory=testInfo.outputPath('wp265-screenshots');
-  await page.setViewportSize({width:1440,height:1024});await mkdir(screenshotDirectory,{recursive:true});
+  await page.setViewportSize({width:1440,height:1024});
   await page.goto(`/change-queue?${new URLSearchParams({profile})}`);
   await expect(page.locator('[data-badge-source="change-queue"]')).not.toHaveText('—');
   await expect(page.locator('main[data-interactive="true"]')).toBeVisible();
