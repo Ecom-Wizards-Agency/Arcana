@@ -558,7 +558,7 @@ async function loadProducts(handle: GridDataHandle, options: LoadGridOptions, li
       case when m.snapshot->'price'->>'state'='returned' then (m.snapshot#>>'{price,value,amount}')::float8 end as catalogue_price,
       case when m.snapshot->'bestSellerRank'->>'state'='returned' then (m.snapshot#>>'{bestSellerRank,value}')::float8 end as catalogue_bsr,
       f.impressions,f.clicks,f.spend,f.sales,f.orders,f.units,f.c_days,f.c_impressions,f.c_clicks,f.c_spend,f.c_sales,f.c_orders,f.c_units
-      from products p full join facts f on f.asin=coalesce(p.asin,f.asin)
+      from products p full join facts f on f.asin=p.asin
       left join lateral(select marketplace_id,acquired_at,snapshot from public.ads_product_metadata_snapshots
         where org_id=${orgId} and profile_id=${profileId} and asin=coalesce(p.asin,f.asin) and ad_product='SP' and public.ads_catalogue_receipt_is_sealed(receipt_id)
           and (select count(distinct scoped.marketplace_id) from public.ads_product_metadata_snapshots scoped
