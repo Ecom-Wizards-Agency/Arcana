@@ -44,6 +44,7 @@ beforeAll(async () => {
 afterAll(async () => { await db?.drop(); });
 it('preserves worker zero-uplift maximum CPC and distinguishes missing modifier evidence', async () => {
   const model = await withAuthenticatedActor(db, { userId, orgId }, (sql) => loadTarget360({ sql }, args));
+  expect(model?.providerEvidence).toMatchObject({ rows: [], runs: [], totalCount: 0 });
   expect(model?.payload.points).toHaveLength(4);
   const points = model!.payload.points;
   expect(points[0]).toMatchObject({ bid: 5, storedMaxCpc: 5, maxCpc: 5, placementEvidence: 'known-zero' });
