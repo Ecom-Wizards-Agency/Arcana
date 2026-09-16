@@ -10,6 +10,8 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { addDays } from '@wizard-ads/core';
+import { CoreFeatureReportType } from '@wizard-ads/shared';
+import { readCoreReportEvidence } from '@wizard-ads/db';
 import type { ExperimentStatus } from '@wizard-ads/db';
 import { withMcpOperation } from './operation.js';
 import type { ServerContext, OperationContext } from './operation.js';
@@ -369,6 +371,15 @@ function registerExperimentTools(server: McpServer, context: ServerContext): voi
 }
 
 function registerReadTools(server: McpServer, context: ServerContext): void {
+  server.registerTool('get_report_family_facts', {
+    title: 'Report family facts', description: 'Read advertised/purchased product, SB/SD target, query, placement, ad-group and campaign traffic evidence at its original grain. Purchased sales are relationship evidence, not additional campaign revenue.',
+    inputSchema: { profile_id: profileIdSchema, family: CoreFeatureReportType, start_date: z.iso.date(), end_date: z.iso.date() }, annotations: { readOnlyHint: true },
+  }, audited(context, 'get_report_family_facts', async (args: { profile_id: string; family: CoreFeatureReportType; start_date: string; end_date: string }, operation) => {
+    const profile = await resolveProfile(operation.handle, operation.scope, args.profile_id);
+    if (args.start_date > args.end_date || Date.parse(args.end_date) - Date.parse(args.start_date) > 731 * 86_400_000) throw new ToolError('invalid_argument', 'Choose a period of at most 732 calendar days.');
+    const evidence = await readCoreReportEvidence(operation.handle, { orgId: operation.actor.orgId, profileId: profile.id, families: [args.family], startDate: args.start_date, endDate: args.end_date, limit: operation.config.maxRows });
+    return { payload: evidence, summary: { rows: evidence.reduce((sum, item) => sum + item.rowCount, 0) }, profileId: profile.id };
+  }));
   const { config } = context;
   const limitSchema = z
     .number()

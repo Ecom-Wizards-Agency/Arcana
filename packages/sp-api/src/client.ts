@@ -1,4 +1,3 @@
-import { gunzipSync } from 'node:zlib';
 import { SpApiAmbiguousOutcome, SpApiAuthError, SpApiError, SpApiParseError } from './errors.js';
 import type {
   CreateReportInput,
@@ -178,13 +177,51 @@ export class SpApiClient {
 
   /** Pre-signed report URLs receive no SP-API authorization header. */
   async downloadReportDocumentText(document: SpApiReportDocument): Promise<string> {
-    const response = await this.fetchImpl(document.url, { method: 'GET' });
+    const controller = new AbortController();
+    const limit = (value: number | undefined, fallback: number) => {
+      const bytes = value ?? fallback;
+      if (!Number.isSafeInteger(bytes) || bytes < 1) throw new SpApiParseError('Invalid report document byte limit');
+      return bytes;
+    };
+    const transportLimit = limit(this.options.maxDocumentBytes, 32 * 1024 * 1024);
+    const outputLimit = limit(this.options.maxDecompressedDocumentBytes, 128 * 1024 * 1024);
+    const bounded = (maximum: number) => {
+      let received = 0;
+      return new TransformStream<Uint8Array, Uint8Array<ArrayBuffer>>({ transform(chunk, stream) {
+        received += chunk.byteLength;
+        if (received > maximum) throw new SpApiParseError('Report document exceeds byte limit');
+        stream.enqueue(new Uint8Array(chunk));
+      } });
+    };
+    const response = await this.fetchImpl(document.url, { method: 'GET', signal: controller.signal });
     if (!response.ok) {
+      await response.body?.cancel();
       throw new SpApiError(`report document download failed with ${response.status}`, response.status, response.status >= 500);
     }
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    const decoded = document.compressionAlgorithm === 'GZIP' ? gunzipSync(bytes) : bytes;
-    return new TextDecoder().decode(decoded);
+    if (!response.body) throw new SpApiParseError('Report document has no body');
+    let stream = response.body.pipeThrough(bounded(transportLimit));
+    if (document.compressionAlgorithm === 'GZIP') {
+      // Node and DOM declarations name the accepted buffer union differently.
+      type GzipInput = NonNullable<Parameters<ReturnType<DecompressionStream['writable']['getWriter']>['write']>[0]>;
+      const compressed: ReadableStream<GzipInput> = stream;
+      stream = compressed.pipeThrough(new DecompressionStream('gzip'));
+    }
+    const reader = stream.pipeThrough(bounded(outputLimit)).getReader();
+    const decoder = new TextDecoder();
+    const parts: string[] = [];
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(decoder.decode(value, { stream: true }));
+      }
+      parts.push(decoder.decode());
+      return parts.join('');
+    } catch (error) {
+      controller.abort();
+      await reader.cancel(error).catch(() => undefined);
+      throw error;
+    } finally { reader.releaseLock(); }
   }
 
   /** JSON reports retain their existing convenience API; TSV uses the text method. */

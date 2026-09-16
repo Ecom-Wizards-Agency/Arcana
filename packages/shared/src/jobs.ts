@@ -7,11 +7,14 @@
  * counts parsed rows against loaded rows. Splitting them is what makes a killed
  * worker resumable instead of a lost report.
  */
+import { SpReportPlan } from './spapi-reports.js';
 import { z } from 'zod';
 import { AssetLibrarySearchJob } from './asset-library.js';
+import { CoreFeatureReportType, CoreReportConfiguration } from './report-families.js';
 import { AdProduct, AmazonId, IsoDate, Uuid } from './primitives.js';
 
 export const JobType = z.enum([
+  'retail.report.request', 'aba.report.request', 'catalogue.report.request',
   'entity.sync',
   'report.request',
   'report.poll',
@@ -56,7 +59,7 @@ export const ReportType = z.enum([
 export type ReportType = z.infer<typeof ReportType>;
 
 /** Additive report surfaces not yet implemented by the legacy Ads API client. */
-export const FeatureReportType = z.enum(['sbAds']);
+export const FeatureReportType = z.enum(['sbAds', ...CoreFeatureReportType.options]);
 export type FeatureReportType = z.infer<typeof FeatureReportType>;
 export const WorkerReportType = z.enum([
   ...ReportType.options,
@@ -106,6 +109,7 @@ export const ReportRequestJob = z.object({
   reportType: WorkerReportType,
   startDate: IsoDate,
   endDate: IsoDate,
+  familyConfiguration: CoreReportConfiguration.optional(),
   /** Required by the runtime for sbAds; forbidden there for base reports. */
   creativeSyncSnapshotId: Uuid.nullable().optional(),
 });
@@ -216,6 +220,7 @@ export const WorkerReportLedger = z.object({
   orgId: Uuid,
   profileId: Uuid,
   reportType: WorkerReportType,
+  familyConfiguration: CoreReportConfiguration.nullish(),
   startDate: IsoDate,
   endDate: IsoDate,
   source: z.string().min(1),
@@ -283,7 +288,12 @@ export const TargetTranslationJob = z.strictObject({
 });
 export type TargetTranslationJob = z.infer<typeof TargetTranslationJob>;
 
+export const RetailReportJob = z.object({ ...jobBase, type: z.literal("retail.report.request"), plan: SpReportPlan });
+export const AbaReportJob = z.object({ ...jobBase, type: z.literal("aba.report.request"), plan: SpReportPlan });
+export const CatalogueReportJob = z.object({ ...jobBase, type: z.literal("catalogue.report.request"), plan: SpReportPlan });
+
 export const JobPayload = z.discriminatedUnion('type', [
+  RetailReportJob, AbaReportJob, CatalogueReportJob,
   EntitySyncJob,
   AssetLibrarySearchJob,
   ReportRequestJob,

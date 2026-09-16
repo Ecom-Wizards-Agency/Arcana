@@ -21,7 +21,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-import type { JobPayload } from '@wizard-ads/shared';
+import type { JobPayload, CoreReportConfiguration } from '@wizard-ads/shared';
 import { count, ts } from './columns.js';
 import {
   reportStatus,
@@ -128,6 +128,7 @@ export const reportRequests = pgTable(
     startDate: date('start_date').notNull(),
     endDate: date('end_date').notNull(),
     amazonReportId: text('amazon_report_id'),
+    familyConfiguration: jsonb('family_configuration').$type<CoreReportConfiguration>(),
     status: reportStatus('status').notNull().default('pending'),
     source: text('source').notNull().default('amazon_api'),
     requestedAt: ts('requested_at').notNull().defaultNow(),

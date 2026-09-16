@@ -1,3 +1,4 @@
+import { RetailEvidencePanel } from '../grid/spapi-evidence';
 import { EmptyState, formatValue } from '@wizard-ads/ui';
 import { remainingBudget, resolvePacingThresholds } from '@wizard-ads/core';
 import { gateMessage } from '../../ui/gate-message';
@@ -18,7 +19,7 @@ export default function HomeScreen({ data }: { data: ScreenData }) {
   return <HomeContent {...data.props} />;
 }
 
-export function HomeContent({ profile, context, home }: HomeReady) {
+export function HomeContent({ profile, context, home, period }: HomeReady) {
   const pacing = home.pacing;
   const thresholds = resolvePacingThresholds();
   const money = (value: number | null) => value === null ? '—' : value.toLocaleString('en-US', { style: 'currency', currency: profile.currencyCode });
@@ -41,6 +42,7 @@ export function HomeContent({ profile, context, home }: HomeReady) {
         <small data-tone={home.breakEvenAcos === null ? 'neutral' : 'good'}>{home.breakEvenAcos === null ? 'not measured' : 'confirmed'}</small>
       </div>
     </section>
+    <RetailEvidencePanel evidence={home.retail} spend={home.retailSpend} previous={home.previousRetail} previousPeriod={home.comparison} start={period.start} end={period.end} />
     <div className="wa-home-grid">
       <ProposalsInbox key={profile.id} proposals={home.proposals} canDecide={home.canDecide} profileId={profile.id} capped={home.proposalsCapped} />
       <HomeCard title="Flags" subtitle="Raised and noted sit as peers. A suppressed flag is never hidden in a disclosure.">

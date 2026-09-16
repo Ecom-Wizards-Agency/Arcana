@@ -3,3 +3,8 @@ export * from './errors.js';
 export * from './auth.js';
 export * from './client.js';
 export * from './sqp.js';
+export * from './report-families.js';
+export * from './sales-traffic.js';
+export * from './aba-search-terms.js';
+export * from './catalogue-listings.js';
+export * from './fulfillment-outbound.js';

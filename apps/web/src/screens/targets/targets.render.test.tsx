@@ -38,6 +38,22 @@ it('renders each data tab, shelf gap and all fact/change rows', () => {
   fireEvent.click(screen.getByRole('tab',{name:'Shelf'}));
   expect(host.container.textContent).toContain('Listing snapshots are not collected');
 });
+it('keeps SQP and ABA evidence in the Rank tab after rank observations', () => {
+  const host = render(<Screen data={ready} />);
+  const evidence = '[aria-label="SQP query evidence"], [aria-label="ABA search-term evidence"]';
+  expect(host.container.querySelectorAll(evidence)).toHaveLength(0);
+  fireEvent.click(screen.getByRole('tab', { name: 'Rank' }));
+  const panel = screen.getByRole('tabpanel');
+  expect(panel.querySelectorAll(evidence)).toHaveLength(2);
+  const ranks = panel.querySelector('[aria-label="Rank observations"]')!;
+  expect(ranks.querySelectorAll('tbody tr')).toHaveLength(ready.ranks.length);
+  expect(ranks.nextElementSibling?.getAttribute('aria-label')).toBe('SQP query evidence');
+  expect(ranks.nextElementSibling?.nextElementSibling?.getAttribute('aria-label')).toBe('ABA search-term evidence');
+  for (const name of ['Changes', 'Performance', 'Corridor']) {
+    fireEvent.click(screen.getByRole('tab', { name }));
+    expect(host.container.querySelectorAll(evidence)).toHaveLength(0);
+  }
+});
 it('blocks a protected decrease until an override reason is recorded', () => {
   render(<Screen data={ready} />);
   fireEvent.change(screen.getByLabelText('Proposed bid'),{target:{value:'4'}});
