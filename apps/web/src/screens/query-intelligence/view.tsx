@@ -1,4 +1,5 @@
 import type { OrgProfile } from '../../recommendations/data';
+import type { CoreReportEvidence } from '@wizard-ads/shared';
 import { formatResearchPeriod } from './research-format';
 import { QueryResearch } from './research-view';
 import type { CSSProperties } from 'react';
@@ -22,7 +23,7 @@ import styles from '../../../app/query-intelligence/query-intelligence.module.cs
 
 import type { load } from './load';
 
-export type ScreenData = Awaited<ReturnType<typeof load>> | {view:'not-measured';props:{profile:OrgProfile}};
+export type ScreenData = Awaited<ReturnType<typeof load>> | {view:'not-measured';props:{profile:OrgProfile;coreEvidence?:CoreReportEvidence[]}};
 
 export default function ScreenView({ data }: { data: ScreenData; }) {
   switch (data.view) {
