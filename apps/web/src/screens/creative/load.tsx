@@ -1,5 +1,6 @@
 import type { SpEvidence, SpParsedReport } from '@wizard-ads/shared';
 import { readCoreReportEvidence, readCreativeWorkspace, readSpReportEvidence, readSpListingHistory, readLatestCreativeSyncJobState, readLatestCreativeSyncSnapshot } from '@wizard-ads/db';
+import { readProviderEvidence } from '@wizard-ads/db';
 import type { ScreenActor } from '../../server/page-read';
 import type { ScreenParams } from '../types';
 import type { CreativeLifecycleEvidence } from '../../creative/lifecycle';
@@ -21,6 +22,7 @@ export async function loadCreativeScreen(access: ScreenActor, input: ScreenParam
   const profiles = await access.readSql((sql) => listProfiles({ sql }, orgId));
   const profile = access.selectProfile(profiles);
   if (profile === null) return { view: 'empty' as const, props: {} };
+  const providerEvidence = await access.readSql((sql) => readProviderEvidence({ sql }, { orgId, profileId: profile.id, consumer: 'creative' }));
   const profileToday = todayIsoInTimeZone(profile.timezone);
   const from = one(input.searchParams['from']), to = one(input.searchParams['to']);
   const period = periodFromParamsThroughToday({ ...(from === undefined ? {} : { from }), ...(to === undefined ? {} : { to }) }, profileToday);
@@ -40,7 +42,7 @@ export async function loadCreativeScreen(access: ScreenActor, input: ScreenParam
   };
   const requestedTab = one(input.searchParams['tab']);
   const tab: CreativeTab = creativeTabs.find((value) => value === requestedTab) ?? 'overview';
-  return { view: 'ready' as const, props: { ...({ listingEvidence, listingReports } as { listingEvidence?: SpEvidence; listingReports?: SpParsedReport[] }), profile, period, profileToday, selectedPresetId, workspace, evidence, mode, tab, ...(coreEvidence.some((item) => item.status !== 'unmeasured') ? { coreEvidence } : {}),
+  return { view: 'ready' as const, props: { ...(providerEvidence ? { providerEvidence } : {}), ...({ listingEvidence, listingReports } as { listingEvidence?: SpEvidence; listingReports?: SpParsedReport[] }), profile, period, profileToday, selectedPresetId, workspace, evidence, mode, tab, ...(coreEvidence.some((item) => item.status !== 'unmeasured') ? { coreEvidence } : {}),
     selectedAssetId: input.params['assetId'] ?? one(input.searchParams['asset']) ?? null,
     campaignId: input.params['campaignId'] ?? null,
     sbKeywordSyncEnabled: process.env['OPENSPELL_SB_KEYWORD_SYNC_ENABLED'] === '1',

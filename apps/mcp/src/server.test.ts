@@ -164,6 +164,7 @@ describe.skipIf(!available)('the MCP server', () => {
           'get_flags',
           'get_pacing',
           'get_experiment',
+          'get_provider_evidence',
           'get_recommendations',
           'get_sync_status',
           'get_report_family_facts',
@@ -277,6 +278,23 @@ describe.skipIf(!available)('the MCP server', () => {
     } finally {
       await client.close();
     }
+  });
+
+  it('exports counted provider evidence with separate comparison and no execution authority', async () => {
+    const client = await connect(server, tokenB);
+    try {
+      const result = await call(client, 'get_provider_evidence', { profile_id: orgBProfile, limit: 10 });
+      expect(result.isError).toBe(false);
+      const rows = result.payload['rows'] as { recommendation: { scope: { profileId: string }; proposed: { value: unknown } }; comparison: { status: string } }[];
+      const persisted = await database.sql`select id from public.provider_recommendations where org_id=${orgBId} and profile_id=${orgBProfile}`;
+      expect(rows).toHaveLength(persisted.length);
+      expect(result.payload['returnedCount']).toBe(1);
+      expect(result.payload['totalCount']).toBe(1);
+      expect(rows[0]?.recommendation.scope.profileId).toBe(orgBProfile);
+      expect(rows[0]?.recommendation.proposed.value).toBeNull();
+      expect(rows[0]?.comparison.status).toBe('not-comparable');
+      expect(result.payload).not.toHaveProperty('approval');
+    } finally { await client.close(); }
   });
 
   it('recomputes ratios from summed bases when grouping', async () => {
@@ -581,7 +599,7 @@ describe.skipIf(!available)('the MCP server', () => {
       const visible = profiles.payload['profiles'] as { id: string }[];
       expect(visible.map((profile) => profile.id)).toEqual([orgBProfile]);
 
-      for (const tool of ['get_entity_data', 'get_sync_status', 'get_flags', 'get_recommendations']) {
+      for (const tool of ['get_entity_data', 'get_sync_status', 'get_flags', 'get_recommendations', 'get_provider_evidence']) {
         const result = await call(client, tool, {
           entity: 'keyword',
           profile_id: profileA,

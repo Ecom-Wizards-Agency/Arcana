@@ -20,6 +20,7 @@
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
+import { seedProviderReaderStates } from './support/provider-evidence';
 import { RELEASE_ARTIFACT } from '../src/ui/artifact-markers';
 
 const PROFILE = process.env['WIZARD_ADS_E2E_PROFILE_A'] ?? '';
@@ -32,6 +33,10 @@ async function openReview(page: Page): Promise<void> {
   await page.goto(`/recommendations?profile=${PROFILE}`);
   const review = page.locator('main[data-interactive="true"]');
   await expect(review).toBeVisible();
+  const providerEvidence = page.getByRole('region', { name: 'Amazon provider evidence' });
+  await expect(providerEvidence).toBeVisible();
+  await expect(providerEvidence).toContainText('Amazon recommendations and estimates');
+  await expect(providerEvidence.getByRole('button', { name: /apply|accept|approve|confirm/i })).toHaveCount(0);
   await expect(review).toHaveAttribute(
     'data-release-artifact',
     RELEASE_ARTIFACT.recommendationReview,
@@ -60,8 +65,18 @@ async function firstProposalId(page: Page): Promise<string> {
 }
 
 test.describe('recommendations review', () => {
+  let persistedProviderRows = 0;
+  test.beforeAll(async () => {
+    const counts = await seedProviderReaderStates(process.env['DATABASE_URL'] ?? '', PROFILE);
+    expect(counts.fixtureRows).toBe(3);
+    persistedProviderRows = counts.totalRows;
+  });
   test('shows every proposal in one full-width grid, with its work and its strategy', async ({ page }, info) => {
     await openReview(page);
+
+    const providerRows = page.locator('[data-provider-evidence-row]');
+    await expect(providerRows).toHaveCount(persistedProviderRows);
+    for (const state of ['measured','stale','expired']) await expect(providerRows.filter({ hasText: `Synthetic ${state} budget advice` })).toContainText(`Amazon · ${state}`);
 
     // Full width, one continuous grid, and none of the nested tables the
     // decision lanes used to be.
@@ -83,6 +98,9 @@ test.describe('recommendations review', () => {
       const screenshot = info.outputPath(`recommendations-full-grid-${theme}.png`);
       await page.screenshot({ path:screenshot,fullPage:true });
       await info.attach(`Recommendations ${theme}`,{path:screenshot,contentType:'image/png'});
+      const providerScreenshot = info.outputPath(`provider-evidence-${theme}.png`);
+      await page.getByRole('region', { name: 'Amazon provider evidence' }).screenshot({ path: providerScreenshot });
+      await info.attach(`Provider evidence ${theme}`, { path: providerScreenshot, contentType: 'image/png' });
     }
     // Decision-queue order survives the conversion: needs review leads, and the
     // lane the old sections carried is a column on the row.

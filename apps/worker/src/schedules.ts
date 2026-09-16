@@ -22,6 +22,14 @@ import type { ReportType } from '@wizard-ads/shared';
 import { CORE_REPORT_FAMILIES, CoreFeatureReportType } from '@wizard-ads/shared';
 import { defaultCoreReportConfiguration } from '@wizard-ads/ads-api';
 import { RECOMMENDATION_CADENCE } from './recommendation-cadence.js';
+import type { ProviderCollectionConfig } from '@wizard-ads/shared';
+
+/** Collection cadence is distinct from recommendation execution authority. */
+export function providerEvidenceSchedule(config: ProviderCollectionConfig, enabled: boolean): { cadence: string; payload: Record<string, unknown>; variant: string } | null {
+  if (!enabled || !config.enabled || config.cadence === 'manual' || config.family.includes('forecast') && config.cadence !== 'weekly') return null;
+  return { cadence: config.cadence === 'weekly' ? '7 days' : '1 day', variant: `provider:${config.id}`,
+    payload: { type: 'provider.evidence.collect', orgId: config.scope.orgId, profileId: config.scope.profileId, configId: config.id } };
+}
 
 /** Source rows, schedule opt-in and accepted report policy are all required. */
 export const SP_API_REPORT_CADENCES = {

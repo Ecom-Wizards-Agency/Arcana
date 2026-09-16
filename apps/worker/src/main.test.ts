@@ -15,6 +15,7 @@ describe('runtime job coverage', () => {
       'retail.report.request': 'registerSpApiReportSources(',
       'aba.report.request': 'registerSpApiReportSources(',
       'catalogue.report.request': 'registerSpApiReportSources(',
+      'provider.evidence.collect': 'registerProviderEvidence(',
       'translation.request': 'registerTargetTranslation(',
       'entity.sync': 'adsApi,',
       'report.request': 'adsApi,',

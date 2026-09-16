@@ -1,3 +1,4 @@
+import { readProviderEvidence } from '@wizard-ads/db';
 import type { ScreenActor } from '../../server/page-read';
 
 import type { ScreenParams } from '../types';
@@ -88,7 +89,8 @@ export async function load(access: ScreenActor, input: ScreenParams) {
         toProposalView(record, { strategySnapshot: run?.strategySnapshot ?? null, ...(run?.executionSnapshot === undefined ? {} : { executionSnapshot: run.executionSnapshot }) }),
       );
 
-      return { view: 'ready' as const, props: { run, proposals, profile, runs, role } };
+      const providerEvidence = await readProviderEvidence(database, { orgId: actor.orgId, profileId: profile.id, consumer: 'recommendations' });
+      return { view: 'ready' as const, props: { run, proposals, profile, runs, role, ...(providerEvidence ? { providerEvidence } : {}) } };
     });
   } catch (error) {
     unstable_rethrow(error);
