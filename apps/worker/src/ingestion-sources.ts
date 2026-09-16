@@ -3,6 +3,9 @@ import { IngestionSource, type IngestionLane, type JobType } from '@wizard-ads/s
 /** Ordered once so deployed claim-set serialization remains stable. */
 export const INGESTION_SOURCES: readonly IngestionSource[] = [
   { jobType: 'asset-library.search', source: 'amazon_ads', reportType: 'asset_library_assets', laneAffinity: ['integrations'], counts: ['sourceRows', 'parsedRows', 'loadedRows', 'refusedRows'] },
+  { jobType: 'retail.report.request', source: 'amazon_spapi', laneAffinity: ['integrations'], counts: ['sourceRows', 'parsedRows', 'refusedRows', 'canonicalRows', 'verifiedLoadedRows'] },
+  { jobType: 'aba.report.request', source: 'amazon_spapi', laneAffinity: ['integrations'], counts: ['sourceRows', 'parsedRows', 'refusedRows', 'canonicalRows', 'verifiedLoadedRows'] },
+  { jobType: 'catalogue.report.request', source: 'amazon_spapi', laneAffinity: ['integrations'], counts: ['sourceRows', 'parsedRows', 'refusedRows', 'canonicalRows', 'verifiedLoadedRows'] },
   { jobType: 'translation.request', source: 'target_translation', laneAffinity: ['integrations'], counts: ['requested', 'completed', 'superseded', 'alreadyCompleted'] },
   { jobType: 'entity.sync', source: 'amazon_ads', laneAffinity: ['vercel-default', 'vercel-reduced'], counts: ['listed', 'upserted', 'duplicates'] },
   { jobType: 'creative.sync', source: 'amazon_ads', laneAffinity: ['evo-report', 'evo-report-unified'], counts: ['adsReceived', 'adsPersisted'] },

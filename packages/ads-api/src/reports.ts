@@ -22,7 +22,8 @@
  * `columns` override so an operator can correct a rejected column set without
  * a code change.
  */
-import type { WorkerReportType } from '@wizard-ads/shared';
+import { CORE_REPORT_FAMILIES, CoreFeatureReportType, CoreReportConfiguration, type WorkerReportType } from '@wizard-ads/shared';
+import { defaultCoreReportConfiguration, validateCoreReportWindow } from './report-families.js';
 import { AdsApiConfigError } from './errors.js';
 
 export type AmazonAdProduct = 'SPONSORED_PRODUCTS' | 'SPONSORED_BRANDS' | 'SPONSORED_DISPLAY';
@@ -51,6 +52,10 @@ const SP_ATTRIBUTION = [
 ] as const;
 
 export const REPORT_SPECS: Readonly<Record<WorkerReportType, ReportSpec>> = {
+  ...Object.fromEntries(CoreFeatureReportType.options.map((family) => {
+    const spec = CORE_REPORT_FAMILIES[family];
+    return [family, { reportTypeId: spec.reportTypeId, adProduct: ({ SP: 'SPONSORED_PRODUCTS', SB: 'SPONSORED_BRANDS', SD: 'SPONSORED_DISPLAY' } as const)[spec.product], groupBy: [spec.groupBy, ...(spec.additionalGroupBy ?? [])], columns: defaultCoreReportConfiguration(family).columns, timeUnit: 'DAILY' }];
+  })) as unknown as Record<CoreFeatureReportType, ReportSpec>,
   spCampaigns: {
     reportTypeId: 'spCampaigns',
     adProduct: 'SPONSORED_PRODUCTS',
@@ -246,6 +251,7 @@ export interface CreateReportInput {
   /** Amazon's `filters` array, passed through untouched. */
   filters?: readonly Record<string, unknown>[];
   timeUnit?: 'DAILY' | 'SUMMARY';
+  familyConfiguration?: CoreReportConfiguration;
 }
 
 /**
@@ -260,6 +266,15 @@ export function defaultReportName(input: CreateReportInput): string {
 }
 
 export function buildReportRequestBody(input: CreateReportInput): Record<string, unknown> {
+  const family = CoreFeatureReportType.safeParse(input.reportType);
+  if (family.success) {
+    const configured = input.familyConfiguration ?? defaultCoreReportConfiguration(family.data, input.timeUnit);
+    const configuration = CoreReportConfiguration.parse({ ...configured, ...(input.columns ? { columns: input.columns } : {}) });
+    if (configuration.family !== family.data || (input.timeUnit !== undefined && input.timeUnit !== configuration.timeUnit) || input.filters?.length) throw new AdsApiConfigError('unsupported report family configuration');
+    validateCoreReportWindow(configuration, input.startDate, input.endDate);
+    const spec = CORE_REPORT_FAMILIES[family.data];
+    return { name: input.name ?? defaultReportName(input), startDate: input.startDate, endDate: input.endDate, configuration: { adProduct: REPORT_SPECS[family.data].adProduct, reportTypeId: spec.reportTypeId, groupBy: [spec.groupBy, ...(spec.additionalGroupBy ?? [])], columns: configuration.columns, timeUnit: configuration.timeUnit, format: configuration.format } };
+  }
   const spec = REPORT_SPECS[input.reportType];
   // Refuse an over-wide window here rather than spending an Amazon round trip
   // to be told the same thing in a 400. This is a caller/config error, so it is

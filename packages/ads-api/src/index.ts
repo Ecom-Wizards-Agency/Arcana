@@ -22,6 +22,7 @@ export { AdsApiClient, amazonAdProduct } from './client.js';
 export type { MappedListResult, ReportDownload, ExportDownload } from './client.js';
 
 // Worker-owned authorization and refresh.
+export { defaultCoreReportConfiguration, validateCoreReportWindow, assertCoreReportAdmission, parseCoreReport } from './report-families.js';
 export {
   ADS_SCOPE,
   TOKEN_REFRESH_MARGIN_SECONDS,

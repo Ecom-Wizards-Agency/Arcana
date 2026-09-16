@@ -13,6 +13,7 @@ import {
   persistContextualNegativeProposals,
   persistQueryVocabulary,
   promoteSqpWeeklyFacts,
+  verifySqpWeeklyPromotion,
   readSqpWeeklyFacts,
   readWeeklyPpcQueryFacts,
   SqpPersistenceError,
@@ -200,6 +201,26 @@ describe.skipIf(!available)('WP-59 SQP database persistence', () => {
        where profile_id = ${profileId} and request_identity = 'source-idempotent'
     `;
     expect(Number(ledger?.n)).toBe(1);
+  });
+
+  it('verifies immutable promotion evidence independently and refuses changed values or tenant scope', async () => {
+    const marketplaceId = 'marketplace-readback';
+    const input = promotionInput({ orgId, profileId, marketplaceId,
+      requestIdentity: 'source-readback', requestedAt: '2026-08-23T02:00:00Z',
+      rows: [fact(profileId, { marketplaceId })],
+    });
+    const first = await promoteSqpWeeklyFacts(database, input);
+    const verify = { ...input, promotionRunId: first.promotionRunId };
+    expect(await verifySqpWeeklyPromotion(database, verify)).toBe(1);
+    await expect(verifySqpWeeklyPromotion(database, {
+      ...verify, orgId: '88888888-8888-4888-8888-888888888888',
+    })).rejects.toBeInstanceOf(SqpPersistenceError);
+    await database.sql`update public.fact_sqp_weekly set search_volume = search_volume + 1
+      where org_id = ${orgId} and profile_id = ${profileId} and marketplace_id = ${marketplaceId}`;
+    await expect(verifySqpWeeklyPromotion(database, verify)).rejects.toThrow('different evidence');
+    await database.sql`delete from public.fact_sqp_weekly
+      where org_id = ${orgId} and profile_id = ${profileId} and marketplace_id = ${marketplaceId}`;
+    await expect(verifySqpWeeklyPromotion(database, verify)).rejects.toThrow('counts do not match offered rows');
   });
 
   it('rejects an older overlapping ASIN scope before any canonical replacement', async () => {

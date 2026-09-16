@@ -19,6 +19,9 @@ export interface SpApiClientOptions {
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => Date;
   maxRetries?: number;
+  /** Limits apply to streamed transport bytes and decompressed UTF-8 bytes independently. */
+  maxDocumentBytes?: number;
+  maxDecompressedDocumentBytes?: number;
 }
 
 export interface CreateReportInput {

@@ -4,15 +4,15 @@ import type { ScreenParams } from '../types';
 
 /** Agency connections and persisted worker progress. URL parameters never supply result counts. */
 
-import { latestAmazonConnection, readAmazonConnection } from '@wizard-ads/db';
+import { latestAmazonConnection, readAmazonConnection, latestSpApiConnection, createSpApiConnectionLifecycle } from '@wizard-ads/db';
 
-import { Uuid } from '@wizard-ads/shared';
+import { Uuid, type Region } from '@wizard-ads/shared';
 
-import { amazonConnectionsEnabled } from '../../env';
+import { amazonConnectionsEnabled, spApiConnectionsEnabled, spApiOAuthConfig } from '../../env';
 
 import { can } from '../../auth/roles';
 
-import { listConnections } from '../../data/connections';
+import { listConnections, loadSpApiConnections } from '../../data/connections';
 
 import { loadRoster } from '../../data/profiles';
 
@@ -21,6 +21,8 @@ interface Props {
     org?: string;
     operation?: string;
     oauth_error?: string;
+    spapi_operation?: string;
+    spapi_error?: string;
   }>;
 }
 
@@ -43,18 +45,29 @@ export async function load(access: ScreenActor, input: ScreenParams) {
 
   const actor = { orgId: org.orgId, userId: context.user.id };
   const enabled = amazonConnectionsEnabled();
-  const [{ connections, roster }, operation] = await Promise.all([
+  let spApiEnabled = false;
+  let consentRegion: Region | null = null;
+  try {
+    if (spApiConnectionsEnabled()) { consentRegion = spApiOAuthConfig().region; spApiEnabled = true; }
+  } catch { /* Fail closed. */ }
+  const [{ connections, roster, spApi }, operation, spApiOperation] = await Promise.all([
     access.readSql(async (sql) => ({
       connections: await listConnections({ sql }, org.orgId),
       roster: await loadRoster({ sql }, org.orgId),
+      spApi: await loadSpApiConnections({ sql }, org.orgId, consentRegion),
     })),
     enabled ? (query.operation !== undefined
       ? Uuid.safeParse(query.operation).success ? readAmazonConnection(handle, actor, query.operation) : null
       : latestAmazonConnection(handle, actor)) : null,
+    query.spapi_operation !== undefined
+      ? Uuid.safeParse(query.spapi_operation).success
+        ? createSpApiConnectionLifecycle(handle).operation(actor, query.spapi_operation) : null
+      : latestSpApiConnection(handle, actor),
   ]);
   const inProgress = operation !== null && ['awaiting_consent', 'queued', 'exchanging', 'discovering'].includes(operation.state);
   const mayConnect = can(org.role, 'manageConnection');
   const connected = connections.some((connection) => connection.status === 'active');
 
-  return { view: 'ready' as const, props: { context, query, operation, mayConnect, enabled, connections, inProgress, org, connected, roster } };
+  return { view: 'ready' as const, props: { context, query, operation, mayConnect, enabled, connections, inProgress, org, connected, roster,
+    spApi, spApiOperation, spApiEnabled } };
 }

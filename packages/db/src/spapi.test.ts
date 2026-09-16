@@ -116,7 +116,7 @@ describe.skipIf(!available)('SP-API profile bindings and Vault custody', () => {
       connectionId: created.id,
       marketplaceId: marketplaceA,
       region: 'NA',
-      enabled: true,
+      enabled: false,
     });
 
     await expect(upsertSpApiProfileBinding(database, {
@@ -218,6 +218,12 @@ describe.skipIf(!available)('SP-API profile bindings and Vault custody', () => {
   });
 
   it('resolves only the exact active profile and marketplace', async () => {
+    expect(await resolveActiveSpApiProfileBinding(database, {
+      orgId: orgA, profileId: profileA, marketplaceId: marketplaceA,
+    })).toBeNull();
+    await upsertSpApiProfileBinding(database, {
+      orgId: orgA, profileId: profileA, connectionId: connectionA, marketplaceId: marketplaceA, enabled: true,
+    });
     await expect(resolveActiveSpApiProfileBinding(database, {
       orgId: orgA,
       profileId: profileA,

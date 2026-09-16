@@ -166,6 +166,7 @@ describe.skipIf(!available)('the MCP server', () => {
           'get_experiment',
           'get_recommendations',
           'get_sync_status',
+          'get_report_family_facts',
           'group_by',
           'list_experiments',
           'list_profiles',
@@ -177,6 +178,18 @@ describe.skipIf(!available)('the MCP server', () => {
     } finally {
       await client.close();
     }
+  });
+
+  it('scopes feature family reads to the owning tenant and reports missing evidence', async () => {
+    const client = await connect(server, tokenA);
+    try {
+      const input = { family: 'sbPurchasedProduct', start_date: window.start, end_date: window.end };
+      const own = await call(client, 'get_report_family_facts', { ...input, profile_id: profileA });
+      expect(own.isError).toBe(false);
+      expect(JSON.stringify(own.payload)).toContain('unmeasured');
+      const denied = await call(client, 'get_report_family_facts', { ...input, profile_id: orgBProfile });
+      expect(denied.isError).toBe(true);
+    } finally { await client.close(); }
   });
 
   it('answers "top 10 wasted-spend targets last week" the same way SQL does', async () => {

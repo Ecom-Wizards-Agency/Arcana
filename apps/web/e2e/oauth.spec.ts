@@ -7,12 +7,16 @@
  * real: the browser, the cookies, the signed state, the server-side exchange,
  * the Vault RPC and the upsert.
  */
+import { readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import { createDb } from '@wizard-ads/db';
 import { signIn, signOut } from './support/auth';
 import { createNonce, createState, nonceCookieName } from '../src/oauth/state';
 import { BASE_URL, GRANT, GRANT_TOTAL, MOCK_PORT, STATE_KEY, USERS, readState } from './support/fixture';
+import { exerciseSpApiOnboarding } from './support/spapi-onboarding';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -37,7 +41,7 @@ test('an anonymous visitor is sent to the login page', async ({ page }) => {
   await expect(page.getByRole('link', { name: /sign up/i })).toHaveCount(0);
 });
 
-test('an admin connects Amazon and sees the profiles per region', async ({ page }) => {
+test('an admin connects Amazon Ads and Seller Central through worker custody', async ({ page }) => {
   await signIn(page, 'admin');
 
   await page.goto('/settings/connections');
@@ -65,6 +69,7 @@ test('an admin connects Amazon and sees the profiles per region', async ({ page 
   await page.goto('/settings/profiles');
   await expect(page.getByTestId('roster-count')).toContainText(`of ${GRANT_TOTAL + 1}`);
   await expect(page.getByTestId('profile-row')).toHaveCount(GRANT_TOTAL + 1);
+  await exerciseSpApiOnboarding(page);
 });
 
 test('the refresh token reached Vault and no column holds it', async () => {
@@ -157,4 +162,29 @@ test('a state replayed without its cookie is rejected', async ({ page }) => {
 
   await page.goto(callbackUrl(state));
   await expect(page.getByTestId('oauth-error')).toContainText('could not be verified');
+});
+
+// Real Next server output, including refusal paths; mock console calls cannot prove this.
+test('OAuth callbacks keep consent code and state out of actual Next request logs', async ({ request }) => {
+  const port = new URL(BASE_URL).port;
+  const paths = [CALLBACK, '/api/amazon/spapi/oauth/callback'];
+  const before = await readFile(resolve(tmpdir(), `oauth-next-${port}.log`), 'utf8');
+  const markers: string[] = [];
+  for (const path of paths) {
+    const state = 'synthetic-log-state-' + randomUUID();
+    const code = 'synthetic-log-code-' + randomUUID();
+    markers.push(state, code);
+    const response = await request.get(`${path}?${new URLSearchParams({ state, code, spapi_oauth_code: code })}`, { maxRedirects: 0 });
+    expect(response.status()).toBe(303);
+    expect(response.headers()['location']).not.toContain(state);
+    expect(response.headers()['location']).not.toContain(code);
+  }
+  await expect.poll(async () => {
+    const output = await readFile(resolve(tmpdir(), `oauth-next-${port}.log`), 'utf8');
+    return paths.every((path) => output.split(`GET ${path} 303`).length > before.split(`GET ${path} 303`).length);
+  }).toBe(true);
+  const output = await readFile(resolve(tmpdir(), `oauth-next-${port}.log`), 'utf8');
+  for (const marker of markers) expect(output.includes(marker)).toBe(false);
+  expect(output.includes('oauth/callback?')).toBe(false);
+
 });

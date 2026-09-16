@@ -1,3 +1,5 @@
+import { CORE_REPORT_FAMILIES, CoreFeatureReportType } from '@wizard-ads/shared';
+import { defaultCoreReportConfiguration } from '@wizard-ads/ads-api';
 import { gzipSync } from 'node:zlib';
 import type {
   ClaimedJob,
@@ -1973,3 +1975,57 @@ class TerminalPhaseFailureApi extends OneRowApi {
 function profile(): AdsProfileContext {
   return { id: profileId, orgId, amazonProfileId: 'profile-1', region: 'NA', currencyCode: 'USD', timezone: 'UTC' };
 }
+
+
+describe('core reporting through the existing fetch custody', () => {
+  for (const family of CoreFeatureReportType.options) for (const enabled of [false, true]) {
+    it(`${family} counts identities and makes no disabled provider calls (${enabled})`, async () => {
+      const configuration = defaultCoreReportConfiguration(family);
+      const spec = CORE_REPORT_FAMILIES[family];
+      const row = { date: '2026-09-01', ...Object.fromEntries(spec.required.map((key) => [key, 'synthetic-identity'])), ...Object.fromEntries(spec.defaultMetrics.map((key) => [key, 0])) };
+      let calls = 0;
+      class FamilyApi extends PayloadApi { override async downloadReport() { calls++; return super.downloadReport(); } }
+      const payload: Extract<JobPayload, { type: 'report.fetch' }> = { type: 'report.fetch', orgId, profileId, reportRequestId, amazonReportId: 'synthetic-report', downloadUrl: 'https://reports.invalid/synthetic' };
+      const job: ClaimedJob = { id: jobId, orgId, profileId, jobType: payload.type, payload, attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unit-worker' };
+      let claimed = false;
+      let completed: Parameters<WorkerStore['finishAttributedReport']>[1] | undefined;
+      let promotion: Parameters<WorkerStore['finishAttributedReport']>[2]['promotion'];
+      const store: WorkerStore = { ...stubStore(),
+        claim: async () => claimed ? [] : (claimed = true, [job]),
+        getReportRequest: async () => ({ id: reportRequestId, orgId, profileId, reportType: family, startDate: '2026-09-01', endDate: '2026-09-01', source: 'amazon_api', amazonReportId: 'synthetic-report', requestedAt: new Date('2026-09-02T00:00:00Z'), pollAttempts: 0, familyConfiguration: configuration }),
+        coreReportCapability: async () => ({ orgId, profileId, family, enabled: true, approvedConfigurations: [configuration], recoveryGateEvidence: 'synthetic-only', status: 'eligible', marketplace: 'synthetic', sbMultiAdGroupsEnabled: true, multiTouchEvidence: null, observedAt: '2026-09-02T00:00:00.000Z' }),
+        finishAttributedReport: async (_id, counts, options) => { completed = counts; promotion = options.promotion; },
+      };
+      const worker = new SyncWorker({ workerId: 'unit-worker', store, coreReportingEnabled: enabled, adsApi: new FamilyApi([row, row]), buckets: new RegionTokenBuckets(2), logger: { info: () => {}, error: () => {} } });
+      expect(await worker.drainOnce()).toBe(1);
+      expect(calls).toBe(enabled ? 1 : 0);
+      if (enabled) {
+        expect(completed).toEqual({ sourceRows: 2, parsedRows: 2, refusedRows: 0, promotedRows: 1, unpromotedRows: 1, canonicalRows: 1 });
+        expect(promotion?.parsed.rows).toHaveLength(1);
+        expect(promotion?.parsed.duplicateRows).toBe(1);
+      } else expect(completed).toBeUndefined();
+    });
+  }
+});
+
+it('quarantines a feature-family unknown create and refuses its unresolved replay before another create', async () => {
+  const configuration = defaultCoreReportConfiguration('spAdvertisedProduct');
+  const api = new AmbiguousCreateApi();
+  const payload: Extract<JobPayload, { type: 'report.request' }> = { type: 'report.request', orgId, profileId, reportType: 'spAdvertisedProduct', startDate: '2026-09-01', endDate: '2026-09-01', familyConfiguration: configuration };
+  const job: ClaimedJob = { id: jobId, orgId, profileId, jobType: payload.type, payload, attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unit-worker' };
+  let claims = 0;
+  let quarantined = false;
+  const store: WorkerStore = { ...stubStore(), claim: async () => claims++ < 2 ? [job] : [],
+    ensureReportRequest: async () => {
+      if (quarantined) throw new Error('unresolved create intent');
+      return { id: reportRequestId, orgId, profileId, reportType: 'spAdvertisedProduct', startDate: payload.startDate, endDate: payload.endDate, source: 'amazon_api', amazonReportId: null, requestedAt: new Date('2026-09-02T00:00:00Z'), pollAttempts: 0, familyConfiguration: configuration };
+    },
+    quarantineReportCreate: async () => { quarantined = true; },
+    coreReportCapability: async () => ({ orgId, profileId, family: 'spAdvertisedProduct', enabled: true, approvedConfigurations: [configuration], status: 'eligible', marketplace: 'synthetic', recoveryGateEvidence: 'synthetic', sbMultiAdGroupsEnabled: null, multiTouchEvidence: null, observedAt: '2026-09-02T00:00:00.000Z' }),
+  };
+  const worker = new SyncWorker({ workerId: 'unit-worker', store, coreReportingEnabled: true, adsApi: api, now: () => new Date('2026-09-02T00:00:00Z'), buckets: new RegionTokenBuckets(2), logger: { info: () => {}, error: () => {} } });
+  expect(await worker.drainOnce()).toBe(1);
+  expect(quarantined).toBe(true);
+  expect(await worker.drainOnce()).toBe(1);
+  expect(api.createCalls).toBe(1);
+});
