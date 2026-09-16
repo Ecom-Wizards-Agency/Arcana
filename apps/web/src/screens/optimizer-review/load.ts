@@ -6,7 +6,17 @@ import type { ScreenParams } from '../types';
 import { listProfiles } from '../../../app/_lib/profiles';
 import { requireOrgRole } from '../../server/org-role';
 import { can } from '../../auth/roles';
+import { load as loadOperation } from '../optimizer-run/load';
 
+export async function loadWithObservation(access: ScreenActor, input: ScreenParams) {
+  if (input.searchParams['execution'] || input.searchParams['plan']) {
+    const operation = await loadOperation(access, input);
+    if (operation.view !== 'ready') return operation;
+    return { view: 'observation' as const, props: operation.props };
+  }
+  return load(access, input);
+}
+/** Recommendation-only read remains reusable by the calculation detail loader. */
 export async function load(access: ScreenActor, input: ScreenParams) {
   if (access.entry.state !== 'ok') return { view: 'gated' as const, props: { entry: access.entry } };
   const orgId = access.actor().orgId;

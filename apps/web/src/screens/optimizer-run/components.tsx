@@ -29,9 +29,11 @@ export function ResultsContent({ detail, plan, rows, executionGate, profileId, b
   const inFlight = ['queued', 'running'].includes(detail.snapshot.status);
   const waitingForObservation = detail.snapshot.accounting.pendingObservation > 0;
   const retryEligible = rows.filter((row) => row.retryEligible === true);
+  const restore = plan.source.kind === 'apply_batch' ? plan.source.restoreProposal : undefined;
   const suffix = `?profile=${encodeURIComponent(profileId)}`;
   const ladder = [['Requested', counts.requested], ['Admitted', counts.admitted], ['Attempted', counts.attempted], ['Succeeded', counts.succeeded], ['Failed or refused', counts.failed + counts.refused], ['Observed in sync', counts.observed]] as const;
   return <section style={optimizerStyles.stack} aria-label={retry ? 'Retry results' : inFlight ? 'Applying changes' : 'Run results'}>
+    {restore ? <p data-testid="restore-source">Restore of batch {restore.sourceBatchId} · {plan.counts.logicalChanges} rows</p> : null}
     <div style={optimizerStyles.card}><h2>{operationHeadline(detail, executionGate?.enabled)}</h2>
       {counts.pending === counts.requested && executionGate?.enabled === false ? <p>The worker execution gate <code>{executionGate.name}</code> is off. The saved approval is waiting for the worker.</p> : null}
       {inFlight ? <p>You can leave this page. Follow this run from its saved history.</p> : null}
@@ -54,6 +56,6 @@ export function ResultsContent({ detail, plan, rows, executionGate, profileId, b
       <p><strong>Outcome note:</strong> {objectiveVerdict === 'complete_no_lift' ? 'The completed outcome evidence did not show improvement.' : objectiveVerdict === 'supported_lift' && counts.observed > 0 ? 'Recorded outcome evidence supports improvement for the observed change.' : 'Objective improvement remains unmeasured until sufficient outcome evidence is recorded. A successful API response does not establish improvement.'}</p>
     </section>
     {details ? <details><summary>Run details</summary><div style={optimizerStyles.card}>{details}</div></details> : <p>Immutable plan: {plan.id} · Generated {plan.generatedAt} · {plan.providerScope.currencyCode} · {plan.providerScope.marketplaceId}</p>}
-    <div style={optimizerStyles.actions}>{onRetry && retryEligible.length > 0 ? <button type="button" style={{ ...optimizerStyles.action, ...optimizerStyles.primary }} onClick={onRetry}>Review failed change{retryEligible.length === 1 ? '' : 's'}</button> : null}<a href={optimizerBatchHref('review', batchId, profileId, { tab: 'details' })}>Run details</a><a href={`/optimizer${suffix}`}>Return to Optimize Now</a></div>
+    <div style={optimizerStyles.actions}>{onRetry && retryEligible.length > 0 ? <button type="button" style={{ ...optimizerStyles.action, ...optimizerStyles.primary }} onClick={onRetry}>Review failed change{retryEligible.length === 1 ? '' : 's'}</button> : null}<a href={optimizerBatchHref('review', batchId, profileId, restore ? { execution: detail.operation.executionId, plan: plan.id } : { tab: 'details' })}>{restore ? 'Review observation' : 'Run details'}</a><a href={restore ? `/change-queue${suffix}` : `/optimizer${suffix}`}>{restore ? 'Return to Change queue' : 'Return to Optimize Now'}</a></div>
   </section>;
 }

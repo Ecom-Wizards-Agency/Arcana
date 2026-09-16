@@ -1,3 +1,6 @@
+import { readEffectiveBidObservations, readListingEvidence } from '@wizard-ads/db';
+import { dailyEffectiveBids } from '@wizard-ads/core';
+import type { ListingEvidence, EffectiveBidProjection } from '@wizard-ads/shared';
 /**
  * The bid corridor's reads, for the per-target history modal (WP-28/WP-48).
  *
@@ -53,7 +56,7 @@ export async function loadCorridor(
   `;
   const nullableNumber = (value: string | number | null): number | null =>
     value === null ? null : Number(value);
-  return rows.map((row) => {
+  const points: BidCorridorPoint[] = rows.map((row) => {
     const observed = ObservedPlacementModifiers.safeParse(row.modifier_components);
     return {
       date: row.date,
@@ -71,6 +74,19 @@ export async function loadCorridor(
       })) : [],
     };
   });
+  const own = await readEffectiveBidObservations(handle, { orgId, profileId, targetId, ...window });
+  const days = new Map(points.map((p) => [p.date,p]));
+  const projected = dailyEffectiveBids(own.observations,own.timezone);
+  for (const p of projected) {
+    // An ambiguous numeric id must not merge keyword and product-target identities.
+    if (projected.some((other) => other.date === p.date && other.observation.targetKind !== p.observation.targetKind)) continue;
+    const previous = days.get(p.date);
+    days.set(p.date,{ date:p.date,low:previous?.low ?? null,median:previous?.median ?? null,high:previous?.high ?? null,
+      cpc:previous?.cpc ?? null,bid:p.observedBid,storedMaxCpc:p.configuredExposure,maxCpc:p.configuredExposure,
+      placementEvidence:p.composition !== 'placement_only' ? 'missing' : p.scenarios.every((s)=>s.percentage===0) ? 'known-zero':'components',
+      components:p.scenarios.map((s)=>({ name:s.placement.replace(/([A-Z])/g,' $1'),pct:s.percentage })) });
+  }
+  return [...days.values()].sort((a,b)=>a.date.localeCompare(b.date));
 }
 
 export interface BidHistoryTarget {
@@ -89,6 +105,8 @@ export interface BidHistoryPayload {
   window: { from: string; to: string };
   totals: BaseTotals;
   points: BidCorridorPoint[];
+  listingEvidence?: ListingEvidence[];
+  ownBidEvidence?: EffectiveBidProjection[];
 }
 
 /** One actor-scoped payload for the asynchronous per-target modal. */
@@ -206,6 +224,12 @@ export async function loadBidHistory(
 
   const target = targets[0];
   if (target === undefined) return null;
+  const products = await handle.sql<{ asin: string }[]>`select distinct p.asin from public.product_ads p where p.org_id=${args.orgId} and p.profile_id=${args.profileId}
+    and p.campaign_id=${target.campaign_id} and p.deleted_at is null and p.asin is not null
+    and p.ad_group_id in (select ad_group_id from public.keywords where org_id=${args.orgId} and profile_id=${args.profileId} and amazon_id=${args.targetId} and ${target.target_kind}='keyword'
+      union select ad_group_id from public.targets where org_id=${args.orgId} and profile_id=${args.profileId} and amazon_id=${args.targetId} and ${target.target_kind}<>'keyword')`;
+  const own = await readEffectiveBidObservations(handle,args);
+  const listingEvidence = await readListingEvidence(handle,{ orgId:args.orgId,profileId:args.profileId,asins:products.map((r)=>r.asin),asOf:new Date().toISOString(),maxAgeMs:86400000 });
   const row = totalsRows[0];
   const number = (value: string | number | undefined): number => Number(value ?? 0);
   return {
@@ -228,7 +252,7 @@ export async function loadBidHistory(
       orders: number(row?.orders),
       units: number(row?.units),
     },
-    points,
+    points, listingEvidence, ownBidEvidence:dailyEffectiveBids(own.observations,own.timezone),
   };
 }
 

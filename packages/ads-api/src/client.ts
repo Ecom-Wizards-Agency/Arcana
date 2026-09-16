@@ -16,6 +16,8 @@
  * are marked at each method.
  */
 import { BidRecommendationReadCounts, type BidRecommendationTarget } from '@wizard-ads/shared';
+import type { ProviderCollectionConfig, ProviderEvidencePage } from '@wizard-ads/shared';
+import { buildProviderEvidenceRequest, parseProviderEvidenceResponse, ProviderEvidenceProtocolError } from './provider-evidence.js';
 import type {
   AdGroupRow,
   AdProduct,
@@ -244,6 +246,21 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
    */
   get throttleState(): ThrottleState {
     return this.ctx.throttle.snapshot();
+  }
+
+  /** Read-only fixed operation catalog; provider apply/status endpoints are absent. */
+  async readProviderEvidence(config: ProviderCollectionConfig, nextToken: string | null): Promise<ProviderEvidencePage> {
+    const request = buildProviderEvidenceRequest(config, nextToken);
+    const result = await httpRequest(this.ctx, {
+      method: request.contract.method, path: request.contract.path,
+      url: `${hostFor(this.region)}${request.path}`, idempotent: true,
+      headers: this.headers({ profileId: config.scope.amazonProfileId, contentType: request.contract.contentType, accept: request.contract.accept }),
+      ...(request.contract.method === 'POST' ? { body: JSON.stringify(request.body) } : {}),
+      expectedStatuses: [400, 403, 404, 422], maxResponseBytes: 8 * 1024 * 1024,
+    });
+    if ([403, 404, 422].includes(result.status)) return { rows: [], source: 0, refused: 0, nextToken: null, status: 'unsupported' };
+    if (result.status >= 400) throw new ProviderEvidenceProtocolError();
+    return parseProviderEvidenceResponse(config, this.json(result, 'provider evidence'), new Date(this.ctx.now()).toISOString());
   }
 
   private readonly getAccessToken = (force: boolean): Promise<string> =>
@@ -1423,6 +1440,9 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
     adProduct: AdProduct,
     campaignIds: readonly string[],
   ): Promise<BudgetUsageResult> {
+    if (new Set(campaignIds).size !== campaignIds.length || campaignIds.some((id) => id.trim() === '')) {
+      throw new AdsApiParseError('budget usage request identities must be distinct and nonempty');
+    }
     const usage: BudgetUsage[] = [];
     const failures: BudgetUsageFailure[] = [];
     const endpoint = BUDGET_USAGE_ENDPOINTS[adProduct];

@@ -1,3 +1,7 @@
+import { scopedKeepaListing } from './own-collectors/keepa.js';
+import { persistListingSnapshots } from '@wizard-ads/db/worker';
+import { listingFieldChange } from '@wizard-ads/core';
+import type { ListingSnapshot } from '@wizard-ads/shared';
 import {
   KeepaClient,
   KeepaRetryableError,
@@ -45,6 +49,8 @@ export interface KeepaSyncDeps {
   markSynced(connectionId: string, at: Date): Promise<void>;
   createClient(apiKey: string): KeepaProductClient;
   now(): Date;
+  ownListingsEnabled?: boolean;
+  loadOwnListings?(rows: ListingSnapshot[]): Promise<unknown>;
 }
 
 export function createKeepaSyncHandler(
@@ -62,6 +68,7 @@ export function createKeepaSyncHandler(
     markSynced: (connectionId, at) => markKeepaConnectionSynced(handle, connectionId, at),
     createClient: (apiKey) => new KeepaClient({ apiKey }),
     now: () => new Date(),
+    loadOwnListings: async (rows) => rows.length ? persistListingSnapshots(handle, rows[0]!.scope, rows, listingFieldChange) : undefined,
     ...overrides,
   };
 
@@ -110,6 +117,15 @@ export async function runKeepaSync(
     throw new Error(
       `Keepa returned/accounted ${fetched.returned + fetched.missing.length} of ${fetched.requested} requested ASINs`,
     );
+  }
+
+  if (deps.ownListingsEnabled) {
+  const ownAsins = new Set(scope.ownAsins);
+  const listingRows = fetched.products.filter((p) => ownAsins.has(p.asin)).flatMap((p) => {
+    const row = scopedKeepaListing({ orgId: payload.orgId, profileId: payload.profileId, marketplace: scope.marketplace }, p, syncedAt.toISOString());
+    return row ? [row] : [];
+  });
+  await deps.loadOwnListings?.(listingRows);
   }
 
   const observationRows = fetched.products.map((product) => observationRow(payload.orgId, product, syncedAt));

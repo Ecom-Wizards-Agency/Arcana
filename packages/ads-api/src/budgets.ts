@@ -10,7 +10,8 @@
  * mismatched row throws instead of silently turning an unknown campaign into
  * "not budget capped".
  */
-import type { AdProduct } from '@wizard-ads/shared';
+import { BudgetUsage as BudgetUsageSchema, type AdProduct, type BudgetUsage, type BudgetUsageFailure } from '@wizard-ads/shared';
+export type { BudgetUsage, BudgetUsageFailure, BudgetUsageResult } from '@wizard-ads/shared';
 import { AdsApiParseError } from './errors.js';
 import { isRecord, readId, readNumber, readString } from './read.js';
 
@@ -45,30 +46,6 @@ export const BUDGET_USAGE_ENDPOINTS: Readonly<Record<AdProduct, BudgetUsageEndpo
  * limit until a live capability probe or newer primary specification proves it.
  */
 export const BUDGET_USAGE_BATCH_SIZE = 100;
-
-export interface BudgetUsage {
-  campaignId: string;
-  /** The campaign's configured budget, as Amazon reports it back. */
-  budget: number;
-  /** Percentage of the budget consumed, 0-100 as Amazon sends it. */
-  budgetUsagePercent: number;
-  /** When Amazon last recomputed usage. Can lag the current hour. */
-  usageUpdatedTimestamp: string;
-}
-
-export interface BudgetUsageFailure {
-  /** The requested id at Amazon's response index, even when Amazon omits it. */
-  campaignId: string;
-  code: string | null;
-  details: string | null;
-}
-
-export interface BudgetUsageResult {
-  usage: BudgetUsage[];
-  failures: BudgetUsageFailure[];
-  /** Campaign ids sent. `usage.length + failures.length` always equals it. */
-  requested: number;
-}
 
 export function buildBudgetUsageBody(campaignIds: readonly string[]): Record<string, unknown> {
   return { campaignIds: [...campaignIds] };
@@ -136,6 +113,9 @@ export function parseBudgetUsageResponse(
   body: unknown,
   requestedCampaignIds: readonly string[],
 ): { usage: BudgetUsage[]; failures: BudgetUsageFailure[] } {
+  if (new Set(requestedCampaignIds).size !== requestedCampaignIds.length || requestedCampaignIds.some((id) => id.trim() === '')) {
+    throw new AdsApiParseError('budget usage request identities must be distinct and nonempty');
+  }
   if (!isRecord(body)) {
     throw new AdsApiParseError('budget usage response is not an object');
   }
@@ -165,12 +145,14 @@ export function parseBudgetUsageResponse(
     if (campaignId === null || expectedId === undefined || campaignId !== expectedId) {
       throw new AdsApiParseError(`budget usage success row ${index} does not match its requested campaign`);
     }
-    usage.push({
+    const parsed = BudgetUsageSchema.safeParse({
       campaignId,
       budget: requiredNumber(value, 'budget', index),
       budgetUsagePercent: requiredNumber(value, 'budgetUsagePercent', index),
       usageUpdatedTimestamp: requiredString(value, 'usageUpdatedTimestamp', index),
     });
+    if (!parsed.success) throw new AdsApiParseError(`budget usage success row ${index} has invalid budget evidence`);
+    usage.push(parsed.data);
   }
 
   for (const value of errors) {
