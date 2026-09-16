@@ -37,6 +37,8 @@ export interface WorkerConfig {
   spApiConsentRegion: 'NA' | 'EU' | 'FE' | undefined;
   spApiConnectionRedirects: readonly string[];
   sbKeywordSyncEnabled: boolean;
+  /** Master gate for all four WP-311 read sources. Defaults off. */
+  catalogueSourcesEnabled: boolean;
   /** Default-off WP-181 cohort. Account bindings remain database-owned. */
   unifiedReporting: UnifiedReportingDualRunPolicy;
   /**
@@ -45,12 +47,17 @@ export interface WorkerConfig {
    * profile-night directory under it.
    */
   crosscheckInboxDir: string | undefined;
+  ownCollectorDropRoot?: string;
+  ownCollectorsEnabled?: boolean;
   /** Hours between `/v2/profiles` auth probes. See `AuthHealthMonitor`. */
   authHealthcheckIntervalMs: number;
   /** How long a `running` job may hold its claim before another worker may take it. */
   staleClaimAfter: string;
   /** Enables the independent long-poll consumer when present. Never logged. */
   marketingStreamQueueUrl: string | undefined;
+  /** Read collectors remain off until deployment and profile configuration both enable them. */
+  budgetUsageApiEnabled: boolean;
+  budgetUsageStreamEnabled: boolean;
   /** Deployment-owned LWA application credentials. Tenant refresh values stay in Vault. */
   spApiClientId: string | undefined;
   spApiClientSecret: string | undefined;
@@ -158,12 +165,17 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     spApiConsentRegion,
     spApiConnectionRedirects,
     sbKeywordSyncEnabled: sbKeywordSyncEnabledFromEnv(env),
+    catalogueSourcesEnabled: env['OPENSPELL_ADS_CATALOGUE_SOURCES_ENABLED'] === '1',
     unifiedReporting,
+    ownCollectorDropRoot: env['OPENSPELL_OWN_COLLECTOR_DROP_ROOT'],
+    ownCollectorsEnabled: env['OPENSPELL_OWN_COLLECTORS_ENABLED'] === '1',
     crosscheckInboxDir: env['CROSSCHECK_INBOX_DIR'] || undefined,
     authHealthcheckIntervalMs:
       positiveInteger(env['WORKER_AUTH_HEALTHCHECK_MINUTES'], 60, 'WORKER_AUTH_HEALTHCHECK_MINUTES') * 60_000,
     staleClaimAfter: env['WORKER_STALE_CLAIM_AFTER'] ?? '30 minutes',
     marketingStreamQueueUrl: env['MARKETING_STREAM_SQS_QUEUE_URL']?.trim() || undefined,
+    budgetUsageApiEnabled: env['OPENSPELL_BUDGET_USAGE_API_ENABLED'] === '1',
+    budgetUsageStreamEnabled: env['OPENSPELL_BUDGET_USAGE_STREAM_ENABLED'] === '1',
     spApiClientId,
     spApiClientSecret,
     spApiReportMinIntervalMs: positiveInteger(
@@ -172,4 +184,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
       'SP_API_REPORT_MIN_INTERVAL_MS',
     ),
   };
+}
+/** Explicit source gate; credentials and existing connections never enable it. */
+export function providerEvidenceEnabledFromEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env['OPENSPELL_PROVIDER_EVIDENCE_ENABLED'] === '1';
 }

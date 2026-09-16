@@ -14,6 +14,14 @@ import {
   type ReportMetadata,
   type CreateReportInput as ProviderCreateReportInput,
   type SbAdProbePage,
+  type ProductMetadataRequest as ProviderProductMetadataRequest,
+  type ProductMetadataPage,
+  type ProductEligibilityRequest as ProviderProductEligibilityRequest,
+  type ProductEligibilityResult,
+  type ValidationRequest,
+  type ValidationResult,
+  type ChangeHistoryRequest,
+  type ChangeHistoryPage,
 } from '@wizard-ads/ads-api';
 import {
   getAdsRefreshTokenForGeneration,
@@ -159,6 +167,13 @@ export interface SbVideoContractProbeClient {
   probeCreativeAssetsPage(profile: AdsProfileContext): Promise<CreativeAssetProbePage>;
 }
 
+export interface CatalogueAdsClient {
+  getProductMetadataPage(profile: AdsProfileContext, request: ProviderProductMetadataRequest): Promise<ProductMetadataPage>;
+  getProductEligibility(profile: AdsProfileContext, request: ProviderProductEligibilityRequest): Promise<ProductEligibilityResult>;
+  getValidationConfigurations(profile: AdsProfileContext, resource: 'campaigns'|'targeting_clauses', request: ValidationRequest): Promise<ValidationResult>;
+  getChangeHistoryPage(profile: AdsProfileContext, request: ChangeHistoryRequest): Promise<ChangeHistoryPage>;
+}
+
 export class AdsApiRetryableError extends Error {
   readonly provider = 'amazon_ads';
   readonly kind = 'retryable_job';
@@ -229,7 +244,7 @@ export type UnderlyingClient = Pick<
   | 'getSpBidRecommendations'
 > & Partial<Pick<
   UnderlyingAdsApiClient,
-  'probeSbAdsPage' | 'probeCreativeAssetsPage' | 'listSbKeywords' | 'listSpCampaignNegativeTargets' | 'listSdProductAds' | 'listSdTargets' | 'listSdNegativeTargets'
+  'probeSbAdsPage' | 'probeCreativeAssetsPage' | 'listSbKeywords' | 'listSpCampaignNegativeTargets' | 'listSdProductAds' | 'listSdTargets' | 'listSdNegativeTargets' | 'getProductMetadataPage' | 'getProductEligibility' | 'getValidationConfigurations' | 'getChangeHistoryPage'
 >>;
 
 /** The subset of `fetch` the report download needs. */
@@ -275,7 +290,7 @@ const KNOWN_REPORT_STATUSES = new Set<AdsReportStatus['status']>([
  * so the fetch re-polls, and everything else is left as-is for the generic
  * attempt counter to age out into the dead-letter.
  */
-export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, SuggestedBidClient, SbVideoContractProbeClient {
+export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, SuggestedBidClient, SbVideoContractProbeClient, CatalogueAdsClient {
   private readonly clients = new Map<string, {
     orgId: string; generation: string; client: UnderlyingClient;
   }>();
@@ -468,6 +483,31 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
     const body = response.body;
     if (!body) return emptyStream();
     return toByteStream(body, signal);
+  }
+
+  async getProductMetadataPage(profile: AdsProfileContext, request: ProviderProductMetadataRequest): Promise<ProductMetadataPage> {
+    const client = await this.clientForProfile(profile);
+    const read = client.getProductMetadataPage;
+    if (!read) throw new Error('product metadata capability is missing');
+    return this.guard(profile.region, () => read.call(client, profile.amazonProfileId, request));
+  }
+  async getProductEligibility(profile: AdsProfileContext, request: ProviderProductEligibilityRequest): Promise<ProductEligibilityResult> {
+    const client = await this.clientForProfile(profile);
+    const read = client.getProductEligibility;
+    if (!read) throw new Error('product eligibility capability is missing');
+    return this.guard(profile.region, () => read.call(client, profile.amazonProfileId, request));
+  }
+  async getValidationConfigurations(profile: AdsProfileContext, resource: 'campaigns'|'targeting_clauses', request: ValidationRequest): Promise<ValidationResult> {
+    const client = await this.clientForProfile(profile);
+    const read = client.getValidationConfigurations;
+    if (!read) throw new Error('validation configuration capability is missing');
+    return this.guard(profile.region, () => read.call(client, profile.amazonProfileId, resource, request));
+  }
+  async getChangeHistoryPage(profile: AdsProfileContext, request: ChangeHistoryRequest): Promise<ChangeHistoryPage> {
+    const client = await this.clientForProfile(profile);
+    const read = client.getChangeHistoryPage;
+    if (!read) throw new Error('change history capability is missing');
+    return this.guard(profile.region, () => read.call(client, profile.amazonProfileId, request));
   }
 
   /** Carry complete scope and expression identity through the theme-based read. */

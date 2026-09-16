@@ -6,6 +6,10 @@ export function optimizerBatchHref(page: 'review' | 'confirm' | 'run', batchId: 
   return `${path}?${params}`;
 }
 
+export function changeQueueHref(profileId: string, query: Record<string, string> = {}): string {
+  return `/change-queue?${new URLSearchParams({ ...query, profile: profileId })}`;
+}
+
 export function optimizerCalculationHref(batchId: string, rowId: string, profileId: string): string {
   const path = ['', 'optimizer', 'review', encodeURIComponent(batchId), 'calculation', encodeURIComponent(rowId)].join('/');
   return `${path}?${new URLSearchParams({ profile: profileId })}`;

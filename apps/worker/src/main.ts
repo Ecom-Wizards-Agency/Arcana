@@ -1,9 +1,15 @@
 import { registerAssetLibrarySource } from './asset-library.js';
 import { registerSpApiReportSources, postgresSpReportDependencies } from './spapi-report-sources.js';
+import { registerProviderEvidence, postgresProviderEvidenceDependencies } from "./provider-evidence.js";
+import { registerOwnCollectors, postgresOwnCollectors } from './own-collectors/index.js';
 import { registerTargetTranslation } from './translation/register.js';
+import { registerBudgetUsageSources } from './budget-usage/register.js';
+import { createBudgetUsageStore } from './budget-usage/composition.js';
+import { createBudgetUsageProvider } from './budget-usage/provider.js';
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
 import { exchangeSpApiAuthorizationCode, runSpApiConnectionPass } from './spapi-connections.js';
 import { registerIntegrationSources } from './integration-sources.js';
+import { CatalogueSourceRunner, registerCatalogueSources } from './catalogue-sources.js';
 import { createKeywordMirrorCapability, createSpWriteWorker } from './sp-write-outbox/composition.js';
 import { startSpWritePolling } from './sp-write-outbox/polling.js';
 import { spWritePolicyFromEnv } from './sp-write-outbox/policy.js';
@@ -59,6 +65,10 @@ const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
   'report.fetch',
   'report.unified.advance',
   'creative.sync',
+  'ads.product_metadata.sync',
+  'ads.product_eligibility.sync',
+  'ads.validation_configurations.sync',
+  'ads.change_history.sync',
 ]);
 
 const config = configFromEnv();
@@ -69,6 +79,10 @@ if (!Number.isFinite(reportStaleHours) || reportStaleHours <= 0) {
 const handle = createDb({ connectionString: config.databaseUrl, max: config.maxConcurrentJobs + 2 });
 const store = new PostgresWorkerStore(handle, undefined, {
   claimProtocol: config.claimProtocol,
+  ownCollectorsEnabled: config.ownCollectorsEnabled,
+  ...((config.jobTypes === undefined || config.jobTypes.includes('budget_usage.collect'))
+    ? { budgetUsageApiEnabled: config.budgetUsageApiEnabled } : {}),
+  catalogueDeploymentEnabled: () => config.catalogueSourcesEnabled,
   ...((config.spWrites.dispatchEnabled || config.spWrites.reconcileEnabled)
     ? { keywordMirror: createKeywordMirrorCapability(handle) } : {}),
 });
@@ -140,12 +154,20 @@ const sqpRequest = runsSqpJobs && config.spApiClientId && config.spApiClientSecr
 const sqpSchedules = sqpRequest
   ? new PostgresWeeklySqpScheduler(handle, store)
   : undefined;
+const budgetUsageStore = createBudgetUsageStore(handle);
 const integrations = {
     economicsSync: createMrpEconomicsSync(handle),
     rankSync: createDataDiveRankSyncHandler({ handle }),
-    keepaSync: createKeepaSyncHandler(handle),
+    keepaSync: createKeepaSyncHandler(handle, { ownListingsEnabled: config.ownCollectorsEnabled }),
     ...(sqpRequest === undefined ? {} : { sqpRequest }),
-    marketingStreamNormalize: createMarketingStreamNormalizeHandler({ handle, queue: store }),
+    marketingStreamNormalize: createMarketingStreamNormalizeHandler({ handle, queue: store,
+      ...(config.budgetUsageStreamEnabled ? { onBudgetNormalized: async (scope: { orgId: string; profileId: string }, observedAt: Date) => {
+        const settings = await budgetUsageStore.config(scope);
+        if (!settings.streamEnabled) return;
+        await store.enqueue({ ...scope, type: 'budget_usage.stream' }, observedAt,
+          ['budget-usage', 'stream', scope.profileId, observedAt.toISOString()].join(':'));
+      } } : {}),
+    }),
   };
 const worker = new SyncWorker({
   coreReportingEnabled: process.env['OPENSPELL_CORE_REPORTING_ENABLED'] === '1',
@@ -163,7 +185,13 @@ const worker = new SyncWorker({
     registerIntegrationSources(registry, integrations);
     const { spApiClientId, spApiClientSecret: lwaKey } = config;
     if (spApiClientId && lwaKey) registerSpApiReportSources(registry, postgresSpReportDependencies({ handle, clientId: spApiClientId, clientSecret: lwaKey }));
+    registerOwnCollectors(registry, postgresOwnCollectors(handle, config.ownCollectorDropRoot, config.ownCollectorsEnabled));
     registerTargetTranslation(registry, handle);
+    registerProviderEvidence(registry, postgresProviderEvidenceDependencies(handle));
+    registerBudgetUsageSources(registry, { store: budgetUsageStore, provider: createBudgetUsageProvider(handle),
+      apiEnabled: config.budgetUsageApiEnabled, streamEnabled: config.budgetUsageStreamEnabled });
+    registerCatalogueSources(registry, new CatalogueSourceRunner({ handle, client: adsApi,
+      deploymentEnabled: () => config.catalogueSourcesEnabled }));
   },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,

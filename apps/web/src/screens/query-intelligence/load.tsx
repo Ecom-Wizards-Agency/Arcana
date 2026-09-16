@@ -1,4 +1,5 @@
 import type { SpEvidence } from '@wizard-ads/shared';
+import { readProviderEvidence } from '@wizard-ads/db';
 import type { ScreenActor } from '../../server/page-read';
 import { readCoreReportEvidence } from '@wizard-ads/db';
 
@@ -66,6 +67,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
         return { view: 'empty' as const, props: {} };
       }
 
+      const providerEvidence = await readProviderEvidence(snapshot, { orgId: actor.orgId, profileId: profile.id, consumer: 'query-intelligence' });
       const scopes = await listQueryIntelligenceScopes(snapshot, {
         orgId: actor.orgId,
         profileId: profile.id,
@@ -103,7 +105,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       const model = buildQueryIntelligenceModel(source);
       const aba = await readSpReportEvidence(snapshot, { orgId: actor.orgId, profileId: profile.id, family: 'aba', start: scope.weekStart, end: scope.weekEnd });
 
-      return { view: 'ready' as const, props: { ...({ aba } as { aba?: SpEvidence }), profile, scope, scopes, category, search, model, contextualReview, contextualExports, role, ...(coreEvidence.length ? { coreEvidence } : {}) } };
+      return { view: 'ready' as const, props: { ...(providerEvidence ? { providerEvidence } : {}), ...({ aba } as { aba?: SpEvidence }), profile, scope, scopes, category, search, model, contextualReview, contextualExports, role, ...(coreEvidence.length ? { coreEvidence } : {}) } };
     });
   } catch (error) {
     const authDestination = authenticationDestination(error);

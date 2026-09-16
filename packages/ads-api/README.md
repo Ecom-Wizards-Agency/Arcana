@@ -122,9 +122,15 @@ Do not assign an ad group's totals to a guessed asset or present generic `ACTIVE
 status as proof of program/marketplace eligibility, moderation approval or delivery.
 Missing, partial, rejected and pending states remain visible and fail closed.
 
-Product eligibility, brands/Stores, Asset Library registration/moderation and ad
-delivery need their own proven provider contracts before being offered in a creation
-workflow. SP-API retail/Brand Analytics data cannot be reconstructed from advertising
+Product Metadata v1, Product Eligibility v1, Validation Configurations v1 and
+Change History v1 are page or bounded-batch reads. Their worker sources remain
+disabled by default. Metadata and eligibility do not return provider observation
+timestamps, validation does not return a provider configuration version, and Change
+History does not return a provider event id. Arcana preserves those absences; a
+derived event fingerprint is never presented as an Amazon-issued id.
+
+Brands/Stores, Asset Library registration/moderation and ad delivery need their own
+proven provider contracts before being offered in a creation workflow. SP-API retail/Brand Analytics data cannot be reconstructed from advertising
 reports. Marketing Stream needs separate delivery infrastructure, subscription
 binding and counted provider-to-ledger translation; an HTTP client alone does not
 provide it.
@@ -300,3 +306,206 @@ configuration can be approved. Exports was not needed: no named bulk identity jo
 required it; unresolved provider identities remain explicit. Audience reports stay
 deferred for the documented conflict, and prompt/video-extension lifecycle belongs
 to WP-313.
+
+## Provider recommendation evidence (WP-312)
+
+### Identity and authority
+
+`AdsApiClient.readProviderEvidence` reads a fixed catalog of 55 HTTP operations.
+Each descriptor pins its method, media types, request/response schema and public
+contract SHA-256 in `src/provider-contracts.ts` (retrieved 2026-09-15). Tests use
+synthetic recorded transport responses. No fixture proves live eligibility.
+
+Provider evidence is separate from Arcana proposals. There is no provider accept,
+status-update, rule-write or association-write operation in this catalog.
+
+### Contracts and collection grain
+
+`@wizard-ads/shared` owns scope, immutable observation, estimate, run, checkpoint,
+comparison and availability contracts. Unknown amounts, units, objectives,
+horizons and attribution remain null. Estimates always carry `Amazon estimate`.
+Top-level list items are observations; aggregate research and forecast trees are
+one observation each. Nested SB forecast successes/errors are indexed campaign
+results. Counts describe those envelopes, not observed impressions or sales.
+
+Global routes and country-bearing requests/responses require `scope.countryCode` and restrict country maps to that one
+profile country. No name-based entity matching is performed. Unresolved, missing
+and ambiguous entities retain explicit mapping status. Target readers also show
+ad-group evidence for an exactly mirrored target's parent.
+
+### HTTP families and named consumers
+
+All rows below share source `amazon_provider_evidence`, typed job
+`provider.evidence.collect`, and lane `integrations`. They do not join
+`evo-recommendation`. Each run binds one family, operation and source config.
+
+| Family | Consumers | Opt-in cadence | Pinned operations |
+| --- | --- | --- | --- |
+| tactical | Recommendations, Home | Daily or manual | `tactical.ListRecommendations` |
+| sp-budget | Recommendations, Home | Daily or manual | `sp.GetSPBudgetRulesForAdvertiser`, `sp.GetBudgetRuleByRuleIdForSPCampaigns`, `sp.GetCampaignsAssociatedWithSPBudgetRule`, `sp.getCampaignRecommendations`, `sp.fetchCampaignRecommendations`, `sp.getBudgetRecommendations`, `sp.SPGetBudgetRulesRecommendation`, `sp.getBudgetRecommendation`, `sp.ListAssociatedBudgetRulesForSPCampaigns` |
+| sp-bid | Target 360, Recommendations | Daily or manual | `sp.GetMultiCountryThemeBased` + `BidRecommendationForAdGroup_v1`, `sp.GetThemeBasedBidRecommendationForAdGroup_v1` |
+| sp-research | Query Intelligence, Target 360 | Daily or manual | `sp.getGlobalRankedKeywordRecommendation`, `sp.getNegativeBrands`, `sp.searchBrands`, `sp.ListTargetPromotionGroups`, `sp.GetTargetPromotionGroupsRecommendations`, `sp.ListTargetPromotionGroupTargets`, `sp.getKeywordGroupRecommendations`, `sp.getTargetableCategories`, `sp.getCategoryRecommendationsForASINs`, `sp.getRefinementsForCategory`, `sp.getRankedKeywordRecommendation`, `sp.getTargetableASINCounts`, `sp.getProductRecommendations` |
+| rule-evidence | Recommendations | Daily or manual | `sp.GetOptimizationRuleEligibility`, `sp.GetRuleNotification`, `sp.GetCampaignOptimizationRule`, `sp.SearchOptimizationRules`, `sb.ListSponsoredBrandsOptimizationRules`, `sd.listOptimizationRules`, `sd.get--sd-optimizationRules-optimizationRuleId`, `sd.get--sd-adGroups-adGroupId-optimizationRules` |
+| sb-research | Query Intelligence | Daily or manual | `sb.SBTargetingGetNegativeBrands`, `sb.SBTargetingGetTargetableCategories`, `sb.SBTargetingGetTargetableASINCounts`, `sb.SBTargetingGetRefinementsForCategory` |
+| sb-recommendations | Recommendations, Creatives, Query Intelligence | Daily or manual | `sb.SBOptimizationRecommendation`, `sb.getHeadlineRecommendations`, `sb.GetBudgetRecommendations`, `sb.SBInsightsCampaignInsights`, `sb.GetSBBudgetRulesForAdvertiser`, `sb.GetBudgetRuleByRuleIdForSBCampaigns`, `sb.ListAssociatedBudgetRulesForSBCampaigns`, `sb.GetCampaignsAssociatedWithSBBudgetRule` |
+| sb-forecast | Recommendations | Weekly or bounded manual refresh | `sb.SBCampaignPerformanceForecasts` |
+| sd-recommendations | Recommendations, Target 360, Creatives | Daily or manual | `sd.getTargetRecommendations`, `sd.getSDBudgetRecommendations`, `sd.getTargetBidRecommendations`, `sd.getHeadlineRecommendationsForSD`, `sd.GetBudgetRuleByRuleIdForSDCampaigns`, `sd.GetSDBudgetRulesForAdvertiser`, `sd.GetCampaignsAssociatedWithSDBudgetRule`, `sd.ListAssociatedBudgetRulesForSDCampaigns` |
+| sd-forecast | Recommendations | Weekly or bounded manual refresh | `sd.createSDForecast` |
+
+Tactical detail reads use the pinned list endpoint with an exact
+`RECOMMENDATION_ID` filter. The pinned document has no detail GET; its per-ID PUT
+is a mutation and is excluded. Existing SP bid-corridor collection remains its
+own source; this catalog uses the same HTTP dialect for separate evidence.
+
+### Default-off admission
+
+The worker requires `OPENSPELL_PROVIDER_EVIDENCE_ENABLED=1`, an enabled scoped
+`provider_evidence_configs` row and `config.enabled=true`. Configs default off;
+there are no seed configs or implicit profile enrollments. A valid credential
+never enables collection. Only the dedicated schedule owner sets
+`OPENSPELL_PROVIDER_EVIDENCE_SCHEDULE_OWNER=1`; unrelated web/worker runtimes do
+not reconcile its schedules. Forecast schedules accept weekly cadence only.
+Every provider page rechecks source authorization. Manual refreshes use the same
+bounded config and typed job.
+
+### Persistence and restart
+
+Migration `20260915350000_provider_recommendation_evidence.sql` adds configs,
+runs, immutable observations and immutable run membership. Runs contain capability
+outcomes and pagination checkpoints. Identity includes agency, profile, family,
+operation namespace, provider ID and version; absent IDs use a deterministic
+SHA-256 of the pinned operation, request, scope and sanitized observation.
+Versions with a stable provider ID ignore retrieval options, so changing page
+size cannot renew an unchanged observation. ID-less aggregates retain request
+context to distinguish their subjects.
+Conflicting versions are retained. Identity locks serialize concurrent versions.
+Readback compares immutable normalized contents, not only the supplied digest.
+
+A page and its checkpoint commit together. Failed retrieval records a safe failed
+state while retaining the checkpoint; retries resume it and retain partial
+history. Replaying evidence retains its original generation, observation and
+expiry timestamps. Indexed omissions, refused rows, changed pagination totals
+and partial pages cannot publish complete coverage.
+
+### Counts and freshness
+
+Every family reconciles `source = parsed + refused`,
+`parsed = canonical + duplicates`, and
+`canonical = written + existing = independent readback`.
+Only independently verified persistence reaches the shared report-coverage
+producer. Empty complete retrieval is measured with zero rows; absence remains
+not measured. Expired/stale observations remain visible. No forecast enters an
+observed-performance table.
+
+### Readers and comparisons
+
+Authenticated readers scope agency/profile/entity in SQL and retain tenant RLS.
+Recommendations, Home, Query Intelligence, Target 360, Creatives, Market position
+and Sync status receive source-labeled evidence and counts. The read-only MCP
+`get_provider_evidence` tool exposes the same estimates and availability.
+
+Arcana values are read separately. Comparison requires matching entity, action,
+units/currency, objective, horizon, attribution and observed baseline. Missing
+comparison dimensions produce `not-comparable`; provider values never overwrite
+Arcana facts. Using advice still requires a new immutable Arcana preview and the
+ordinary application approval/delegation gates.
+
+### Conditional D/E dispositions
+
+These extensions remain incomplete and cannot be collected through a fabricated
+operation. Their shared descriptors explain the missing contract/measure in the
+existing readers; no measured coverage is claimed.
+
+| Audit rows | Disposition / missing prerequisite |
+| --- | --- |
+| catalog-05, catalog-07, catalog-61 | Conditional identity dependencies deferred: current HTTP scope resolves through the existing profile binding; no required brand/manager/account join is established. |
+| catalog-12, catalog-45 | Audience discovery/insights deferred: pinned payload and Query Intelligence measure missing. |
+| catalog-15, catalog-16, catalog-21, report-08 | Brand Metrics, Store and benchmark evidence deferred: comparable market-position grain/payload missing; report variants require WP-310 and reporting recovery. |
+| catalog-43 | Partner Opportunities deferred: stable identity, eligibility and Home/Recommendations payload missing. |
+| catalog-60 | Target KPI deferred: pinned action, units and observed baseline missing. |
+| catalog-67 | Cross-program reach/performance forecasts deferred: objective, horizon and account binding missing. |
+| catalog-44 | Tactical list and exact-ID detail filtering implemented. |
+| sp-family-10, sp-family-12 | Budget and campaign recommendation reads implemented; usage remains outside this evidence source. |
+| sp-family-11, sp-family-16 | Budget-rule and optimization eligibility/state/search reads implemented; writes excluded. |
+| sp-family-13 | Global/local bid and impression-analysis evidence adapters; existing bid corridor preserved. |
+| sp-family-14, sp-family-15 | Keyword/global-keyword, products/counts, categories/refinements, keyword groups, negative brands and promotion-group reads implemented. |
+| sb-family-05, sb-family-06 | Target discovery, optimization, headline, budget, insights and forecasts implemented. |
+| sb-family-08 | Optimization/budget-rule reads implemented; association and rule writes excluded. |
+| sd-family-09, sd-family-11 | Target/bid/budget/headline/forecast and rule evidence reads implemented; writes excluded. |
+| catalog-46, catalog-47, catalog-51, catalog-53 | WP-311 owns Product Metadata, Eligibility, Validation Configurations and Change History; no E delivery claim. |
+
+### Reporting boundary
+
+This implementation collects HTTP evidence only. A future report-backed extension
+must use the existing request → create/adopt → poll → fetch → parse → stage →
+promote → facts lifecycle and pass reporting recovery before activation. This
+catalog supplies no alternate report creation or loading path.
+
+### Verification
+
+Provider tests cover fixed HTTP media/method/account binding, pagination, indexed
+errors, nulls, timestamps, duplicates, conflicts, restart, immutable/RLS storage,
+read-only collection, comparison incompatibilities and named-reader states.
+Full gate results and exact counts belong to the round report under `$WP_SCRATCH`.
+Built, tested, merged, deployed, enabled and verified in use are separate states.
+
+### Hosted steps for Victor
+
+Verify reporting recovery and current public contracts/eligibility; apply the
+reviewed migration and release readers/workers with sources off. Authorize a
+bounded family/profile config, reconcile returned/refused/persisted/displayed
+rows, verify two-agency isolation and zero writes/approvals/execution cadences,
+then separately authorize collection schedules. Resolve conditional extension
+contracts before probing them. Provider-derived application remains a separate
+guarded action.
+## Catalogue and Amazon Change History
+
+The four clients in `src/catalogue.ts` use the public OpenAPI documents inspected
+on 2026-09-15. Fixtures in `src/catalogue.test.ts` are synthetic protocol examples;
+they do not verify live permissions or provider availability.
+
+| Delivery row | Pinned document under `https://d1y2lf8k3vrkfu.cloudfront.net/openapi/en-us/dest/` | SHA-256 |
+| --- | --- | --- |
+| catalog-46 | ProductSelector_prod_3p.json | f57ee28943b52097697ab74959ce827dd07a224f81c3b61ba241154a720343ff |
+| catalog-47 | Eligibility_prod_3p.json | f9e23e41e87582c50482e460bc210f59a8a77c740c7f58b479a10bbbede2ea83 |
+| catalog-51 | ValidationConfigurationsAPI_prod_3p.json | fec38640f4a6e8ff2558f4dc2da703b51679bec8d3c9afa083b4fd1e1870902a |
+| catalog-53 | Changehistory_prod_3p.json | a4944c16e893322b3e560452c33c3033db2c2f872c68a64b405404683a2bbc57 |
+
+All four use POST reads. Metadata accepts up to 300 ASINs and returns a cursor;
+eligibility accepts 50 ASINs and may return multiple SKU rows per ASIN. Validation
+uses separate campaign and targeting-clause endpoints, with explicit country,
+entity-type and ad-product contexts. Its schema response keys take precedence over
+the inconsistent descriptive prose. The provider has no configuration version
+field, so persistence caches content digests.
+
+Change History v1 uses 200-event pages and a bounded window within the documented
+90-day retention. It excludes SD and the v1.1 THEME event type. The pinned schema
+has no provider event ID or actor: the ledger labels its identity as derived from
+tenant scope, entity, change type and occurrence time. Different payloads under
+that key remain visible as conflicts. Timestamp units need bounded hosted
+verification; the worker accepts contemporary millisecond timestamps only.
+
+Metadata has no observation timestamp or inventory quantity in this contract.
+Retrieval and acquisition times remain separate from a null provider observation
+time. Missing members create unavailable evidence, and signed image URLs are
+excluded. Product eligibility never establishes asset moderation approval.
+All four source gates and provisioned schedules remain disabled by default;
+reporting recovery evidence and explicit source authorization are prerequisites.
+
+### Product-evidence consumer handoff
+
+The DB reader `readCampaignProductEvidence(handle, request)` accepts an exact
+organization/profile/marketplace, advertised ASINs, ad product, optional SKU and
+staleness cutoff. It returns one product and one check per requested ASIN. Missing,
+refused, unknown, stale or ambiguous SKU evidence produces an unavailable check;
+fresh explicit eligible/ineligible evidence retains its provider reasons. The
+response explicitly carries `campaignCreationAuthority: false` and
+`assetModeration: 'unknown'`. Its DB contract tests cover eight evidence states
+and conflicting SKU candidates. Campaign-builder screen wiring remains deferred
+to that screen's owner.
+
+Change History keys include the pinned metadata discriminators (including
+`placementGroupPosition` and full targeting expressions before display
+truncation). They remain derived identities with `provider_id_unavailable`
+ambiguity. Identical simultaneous provider events cannot be proven distinct by
+this contract; conflicting payloads under a derived identity remain inspectable.

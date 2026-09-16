@@ -1,3 +1,5 @@
+import { collectorProfile, readListingChanges } from './own-collectors.js';
+import type { CreativeChangeCertainty } from '@wizard-ads/shared';
 import { TimelineDaily, TimelineEvent, TimelineEventInput, TimelineSnapshot, TimelineEvidenceSettings } from '@wizard-ads/shared';
 import type { TimelineRank } from '@wizard-ads/shared';
 import type { QueryHandle } from '../client.js';
@@ -85,7 +87,7 @@ async function readScopeDays(handle: QueryHandle, orgId: string, profileId: stri
 export async function readTimeline(handle: QueryHandle, orgId: string, profileId: string): Promise<TimelineSnapshot> {
     if (!(await profileBelongsToOrg(handle, { orgId, profileId })))
         throw new TimelineInputError('Profile not found');
-    const [profile, experiments, manual, batches, organic, bsr, settings] = await Promise.all([
+    const [profile, experiments, manual, batches, amazonChanges, organic, bsr, settings] = await Promise.all([
         readProfileDays(handle, orgId, profileId), listExperiments(handle, { orgId, profileId, limit: 2147483647 }), readManualTimelineEvents(handle, orgId, profileId),
         handle.sql `select b.id,b.tag as name,b.status,coalesce(b.applied_on,(b.applied_at at time zone 'UTC')::date)::text as start,b.note,b.created_by::text as "actorId",b.created_at::text as "createdAt",
       coalesce(jsonb_agg(distinct r.entity_id) filter(where r.entity_type='campaign'),'[]') as campaigns,
@@ -94,6 +96,12 @@ export async function readTimeline(handle: QueryHandle, orgId: string, profileId
       from public.apply_batches b left join public.apply_rows r on r.batch_id=b.id and r.org_id=b.org_id and r.profile_id=b.profile_id
       where b.org_id=${orgId} and b.profile_id=${profileId} and b.status in ('applied','reverted') and (b.applied_on is not null or b.applied_at is not null)
       group by b.id order by start,b.id`,
+        handle.sql `select e.id,e.entity_type,e.entity_id,e.change_type,e.occurred_at,e.retrieved_at,e.identity_quality,e.marketplace_id,
+          exists(select 1 from public.amazon_change_events c where c.org_id=e.org_id and c.profile_id=e.profile_id and c.marketplace_id=e.marketplace_id and c.source_namespace=e.source_namespace and c.source_event_key=e.source_event_key and c.payload_digest<>e.payload_digest) as identity_conflict,
+          e.sanitized_payload,case when r.event_id is null then false else true end as resolved
+          from public.amazon_change_events e left join lateral(select event_id from public.amazon_change_event_resolutions
+            where event_id=e.id order by resolved_at desc,id desc limit 1)r on true
+          where e.org_id=${orgId} and e.profile_id=${profileId} order by e.occurred_at,e.id`,
         handle.sql<{
             asin: string;
             keyword: string;
@@ -112,10 +120,27 @@ export async function readTimeline(handle: QueryHandle, orgId: string, profileId
       order by asin,category,(observed_at at time zone 'UTC')::date,observed_at desc,id desc`,
         readTimelineSettings(handle, orgId, profileId),
     ]);
-    const events: TimelineEvent[] = [...manual, ...experiments.map((e) => ({ id: e.id, name: e.name, kind: 'experiment' as const, start: e.startAt.toISOString().slice(0, 10), end: e.endAt?.toISOString().slice(0, 10) ?? null,
+    const { timezone } = await collectorProfile(handle, { orgId, profileId });
+    const observedDay = (at: string) => new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(at));
+    const listingChanges = await readListingChanges(handle,{ orgId,profileId,from:'1970-01-01',to:'9999-12-31' });
+    const bidChanges = await handle.sql<{ id:string; observed_at:Date|string; amazon_id:string; field:string; certainty:CreativeChangeCertainty }[]>`select id::text,observed_at,amazon_id,field,certainty from public.entity_changes ec
+      where ec.org_id=${orgId} and ec.profile_id=${profileId} and ec.field in ('bid','defaultBid','placementBidding') and ec.source='sync'
+      and not exists(select 1 from public.apply_batches b where b.org_id=ec.org_id and b.profile_id=ec.profile_id and b.id=ec.apply_batch_id and b.status in ('applied','reverted') and (b.applied_on is not null or b.applied_at is not null))
+      order by observed_at,id`;
+    const observed = [...listingChanges.map((c) => TimelineEvent.parse({ id:`listing:${c.id}`,name:`${c.asin}: ${c.current.field}`,kind:['coupon','lightningDeal'].includes(c.current.field) ? 'promotion':'listing',
+      start:observedDay(c.current.provenance.observedAt),end:observedDay(c.current.provenance.observedAt),status:'observed',scope:{ asins:[c.asin] },scopeText:c.asin,focus:'sales',
+      note:`${c.certainty.kind} observation from ${c.current.provenance.source}; no causal effect inferred.`,actorId:null,createdAt:c.current.provenance.collectedAt,supersedesId:null,certainty:c.certainty,source:c.current.provenance.source })),
+      ...bidChanges.map((c) => { const at=new Date(c.observed_at).toISOString(); return TimelineEvent.parse({ id:`bid:${c.id}`,name:`Observed ${c.field}`,kind:'market',start:observedDay(at),end:observedDay(at),status:'observed',scope:{},scopeText:c.amazon_id,focus:'acos',
+        note:`${c.certainty.kind} synchronized observation; no causal effect inferred.`,actorId:null,createdAt:at,supersedesId:null,certainty:c.certainty,source:'amazon_ads_mirror' }); })];
+    const events: TimelineEvent[] = [...observed, ...manual, ...experiments.map((e) => ({ id: e.id, name: e.name, kind: 'experiment' as const, start: e.startAt.toISOString().slice(0, 10), end: e.endAt?.toISOString().slice(0, 10) ?? null,
             status: e.status, scope: e.scope, scopeText: [e.scope.campaignIds?.length ? `${e.scope.campaignIds.length} campaigns` : '', e.scope.adGroupIds?.length ? `${e.scope.adGroupIds.length} ad groups` : '', e.scope.targetIds?.length ? `${e.scope.targetIds.length} targets` : '', e.scope.asins?.length ? `${e.scope.asins.length} products (recorded only)` : ''].filter(Boolean).join(' · ') || 'No measured scope',
             focus: e.metricFocus, note: e.hypothesis, actorId: e.createdBy, createdAt: e.createdAt.toISOString(), supersedesId: null })),
-        ...batches.map((b) => TimelineEvent.parse({ ...b, kind: 'apply_batch', end: b['start'], status: b['status'], scope: { campaignIds: b['campaigns'], adGroupIds: b['groups'], targetIds: b['targets'] }, scopeText: 'Applied advertising entities', focus: 'acos', supersedesId: null }))];
+        ...batches.map((b) => TimelineEvent.parse({ ...b, kind: 'apply_batch', end: b['start'], status: b['status'], scope: { campaignIds: b['campaigns'], adGroupIds: b['groups'], targetIds: b['targets'] }, scopeText: 'Applied advertising entities', focus: 'acos', supersedesId: null })),
+        ...amazonChanges.map((e) => TimelineEvent.parse({ id:`amazon:${e['id']}`,name:`Amazon observed ${String(e['change_type']).toLowerCase()}`,
+          kind:'amazon_change',start:new Date(e['occurred_at'] as string|Date).toISOString().slice(0,10),end:new Date(e['occurred_at'] as string|Date).toISOString().slice(0,10),
+          status:e['identity_conflict']?'identity conflict':e['resolved']?'resolved entity':'unresolved entity',scope:{},scopeText:`${e['entity_type']} ${e['entity_id']} · ${e['marketplace_id']} · provider scope`,focus:'acos',
+          note:`Amazon Ads Change History v1 · ${e['identity_quality']} identity (provider ID unavailable) · retrieved ${new Date(e['retrieved_at'] as string|Date).toISOString()} · no local actor or restore authority`,
+          actorId:null,createdAt:new Date(e['retrieved_at'] as string|Date).toISOString(),supersedesId:null }))];
     const scoped = Object.fromEntries(await Promise.all(events.map(async (event) => [event.id, await readScopeDays(handle, orgId, profileId, event)])));
     const ranks = new Map<string, TimelineRank>();
     for (const row of organic) {
@@ -132,7 +157,7 @@ export async function readTimeline(handle: QueryHandle, orgId: string, profileId
     }
     if ([...ranks.values()].reduce((n, r) => n + r.points.length, 0) !== organic.length + bsr.length)
         throw new Error('Rank observation count mismatch');
-    if (events.length !== manual.length + experiments.length + batches.length)
+    if (new Set(events.map((e) => e.id)).size !== events.length || events.length !== manual.length + experiments.length + batches.length + listingChanges.length + bidChanges.length + amazonChanges.length)
         throw new Error('Timeline source count mismatch');
     const [failure] = await handle.sql<{
         since: string | null;

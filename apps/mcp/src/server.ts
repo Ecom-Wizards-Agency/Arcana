@@ -1,3 +1,5 @@
+import { readProviderEvidence } from '@wizard-ads/db';
+import { providerEvidenceSnapshot } from '@wizard-ads/core';
 /**
  * The MCP server: tools, resources, and the audit wrapper around both.
  *
@@ -22,6 +24,8 @@ import type { EntityLevel } from './catalog.js';
 import { toCsv } from './csv.js';
 import {
   getLatestRecommendations,
+  getAmazonChangeHistory,
+  getProductEvidence,
   getProfileContext,
   getSyncStatus,
   listProfiles,
@@ -437,6 +441,22 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
     }),
   );
 
+  server.registerTool('get_product_evidence',{
+    title:'Product evidence',description:'Current Product Metadata and Product Eligibility for exact profile, marketplace, ASIN and ad-product scope. Missing and stale evidence remain explicit.',
+    inputSchema:{profile_id:profileIdSchema,marketplace_id:z.string().min(1),asins:z.array(z.string().min(1)).min(1).max(config.maxRows),ad_product:z.enum(['SP','SB','SD']),stale_after:z.iso.datetime()},annotations:{readOnlyHint:true},
+  },audited(context,'get_product_evidence',async(args:{profile_id:string;marketplace_id:string;asins:string[];ad_product:'SP'|'SB'|'SD';stale_after:string},operation)=>{
+    const profile=await resolveProfile(operation.handle,operation.scope,args.profile_id);const rows=await getProductEvidence(operation.handle,operation.scope,profile,{marketplaceId:args.marketplace_id,asins:args.asins,adProduct:args.ad_product,staleAfter:args.stale_after});
+    return {payload:{profileId:profile.id,marketplaceId:args.marketplace_id,rows},summary:{rows:rows.length},profileId:profile.id};
+  }));
+
+  server.registerTool('get_amazon_change_history',{
+    title:'Amazon observed change history',description:'Append-only Amazon Ads Change History observations with provider provenance, derived identity quality, resolution state and no local actor or restore authority.',
+    inputSchema:{profile_id:profileIdSchema,marketplace_id:z.string().min(1),from:z.iso.datetime().optional(),to:z.iso.datetime().optional(),limit:limitSchema},annotations:{readOnlyHint:true},
+  },audited(context,'get_amazon_change_history',async(args:{profile_id:string;marketplace_id:string;from?:string;to?:string;limit:number},operation)=>{
+    const profile=await resolveProfile(operation.handle,operation.scope,args.profile_id);const rows=await getAmazonChangeHistory(operation.handle,operation.scope,profile,{marketplaceId:args.marketplace_id,from:args.from,to:args.to,limit:args.limit});
+    return {payload:{profileId:profile.id,marketplaceId:args.marketplace_id,rows},summary:{rows:rows.length},profileId:profile.id};
+  }));
+
   server.registerTool(
     'get_entity_data',
     {
@@ -771,6 +791,20 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
     ),
   );
 
+  server.registerTool(
+    'get_provider_evidence',
+    {
+      title: 'Amazon provider evidence', description: 'Read source-labeled Amazon recommendations and estimates. This tool confers no approval or execution authority.',
+      inputSchema: { profile_id: profileIdSchema, limit: limitSchema }, annotations: { readOnlyHint: true },
+    },
+    audited(context, 'get_provider_evidence', async (args: { profile_id: string; limit: number }, operation) => {
+      const { handle, scope } = operation;
+      const profile = await resolveProfile(handle, scope, args.profile_id);
+      const evidence = await readProviderEvidence(handle, { orgId: scope.orgId, profileId: profile.id, consumer: 'sync-status', limit: args.limit });
+      const snapshot = providerEvidenceSnapshot(evidence, 'sync-status', new Date().toISOString());
+      return { payload: snapshot, summary: { rows: snapshot.returnedCount, total: snapshot.totalCount }, profileId: profile.id };
+    }),
+  );
   server.registerTool(
     'get_recommendations',
     {

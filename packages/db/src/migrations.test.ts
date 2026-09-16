@@ -930,13 +930,20 @@ describe.skipIf(!available)('migrations', () => {
               and not attribute.attisdropped
          )
       ),
+      column_scoped_actual as (
+        select * from actual
+        union all
+        select name::name, 'SELECT'::text from (values ('provider_evidence_configs','config'),('provider_recommendation_runs','run')) v(name,private_column)
+        where has_column_privilege('authenticated','public.'||name,'org_id','SELECT')
+          and not has_column_privilege('authenticated','public.'||name,private_column,'SELECT')
+      ),
       missing as (
         select table_name, privilege from expected
         except
-        select table_name, privilege from actual
+        select table_name, privilege from column_scoped_actual
       ),
       unexpected as (
-        select table_name, privilege from actual
+        select table_name, privilege from column_scoped_actual
         except
         select table_name, privilege from expected
       )
