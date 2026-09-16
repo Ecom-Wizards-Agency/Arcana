@@ -92,10 +92,13 @@ export const entityChangeSource = pgEnum('entity_change_source', ['sync', 'apply
 export const targetKind = pgEnum('target_kind', ['keyword', 'target']);
 
 // PostgreSQL appends these labels in migration order, independently of UI ordering.
-const spReportJobs = ['retail.report.request', 'aba.report.request', 'catalogue.report.request'] as const satisfies readonly JobType[];
-const spReportJobSet = new Set<string>(spReportJobs);
+const appendedJobs = [
+  'retail.report.request', 'aba.report.request', 'catalogue.report.request',
+  'provider.evidence.collect',
+] as const satisfies readonly JobType[];
+const appendedJobSet = new Set<string>(appendedJobs);
 export const syncJobType = pgEnum('sync_job_type', tuple([
-  ...JobType.options.filter(value => !spReportJobSet.has(value)), ...spReportJobs,
+  ...JobType.options.filter(value => !appendedJobSet.has(value)), ...appendedJobs,
 ]));
 export const syncJobStatus = pgEnum('sync_job_status', [
   'queued',
