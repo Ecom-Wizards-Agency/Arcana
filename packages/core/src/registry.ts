@@ -5,6 +5,7 @@ export const PACKAGE_REGISTRY = [
   { "module": "./creative/certainty.js", "clause": "*" },
   { "module": "./creative/prompt-loop.js", "clause": "*" },
   { "module": "./spapi-evidence.js", "clause": "*" },
+  { module: './provider-evidence.js', clause: '*' },
   {
     "module": "./types.js",
     "clause": "*"
@@ -132,6 +133,10 @@ export const PACKAGE_REGISTRY = [
   {
     "module": "./campaign-builder/eligibility.js",
     "clause": "{ campaignBuilderEligibility }"
+  },
+  {
+    "module": "./budget-usage.js",
+    "clause": "*"
   }
 ] as const;
 

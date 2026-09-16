@@ -11,6 +11,8 @@
 import { createHash } from 'node:crypto';
 import type { Sql } from '../client.js';
 import {
+  BudgetUsageConfig,
+  BudgetUsageObservation,
   DaypartingScheduleProposal,
   MarketingStreamHourlyFact,
   MarketingStreamLedgerEvent,
@@ -855,6 +857,51 @@ export async function readMarketingStreamHourlyFacts(
      order by utc_hour, ad_product, campaign_id
   `;
   return rows.map(rowToFact);
+}
+
+/** Budget snapshots reuse verified Stream projections and current binding authority.
+ * Saved identities bypass campaign recency selection, never revision or projection checks. */
+export async function readMarketingStreamBudgetUsage(
+  handle: QueryHandle,
+  input: { orgId: string; profileId: string; fromProviderTime: string; sourceIdentities?: readonly string[] },
+): Promise<BudgetUsageObservation[]> {
+  const settings = await handle.sql<{ config: unknown }[]>`select config from public.budget_usage_settings where org_id=${input.orgId} and profile_id=${input.profileId}`;
+  const config = BudgetUsageConfig.parse(settings[0]?.config ?? {});
+  if (!config.streamEnabled) return [];
+  const rows = await handle.sql<{ observation: unknown }[]>`
+    with latest as (
+      select distinct on (e.dataset,e.message_id) e.* from public.marketing_stream_events e
+      where e.org_id=${input.orgId} and e.profile_id=${input.profileId}
+      order by e.dataset,e.message_id,e.revision desc,e.received_at desc,e.id desc
+    ), candidates as (
+      select e.*,m.metric,case when ${input.sourceIdentities !== undefined} then e.id::text else '' end as identity_key,
+        coalesce((m.metric->>'budgetObservedAt')::timestamptz,e.event_time) as provider_time,
+        f.currency_code,f.budget_usage_percent,f.settling_state
+      from latest e
+      join public.marketing_stream_subscription_bindings b on b.org_id=e.org_id and b.profile_id=e.profile_id and b.id=e.binding_id
+        and b.active and b.provider_dataset_id='budget-usage' and b.subscription_id=e.provider_subscription_id
+        and b.advertiser_id=e.provider_advertiser_id and b.marketplace_id=e.provider_marketplace_id
+      cross join lateral jsonb_array_elements(e.raw_payload->'metrics') m(metric)
+      join public.marketing_stream_hourly_facts f on f.org_id=e.org_id and f.profile_id=e.profile_id and f.ad_product=e.ad_product
+        and f.campaign_id=m.metric->>'campaignId' and f.utc_hour=date_trunc('hour',e.event_time)
+      where e.dataset='budget_usage' and e.provider_dataset_id='budget-usage' and f.budget_usage_percent is not null
+        and f.loaded_at >= (select max(l.received_at) from latest l where l.ad_product=e.ad_product and date_trunc('hour',l.event_time)=f.utc_hour)
+        and not exists (select 1 from public.marketing_stream_projection_blocks block where block.org_id=e.org_id and block.profile_id=e.profile_id)
+    ), selected as (
+      select distinct on (ad_product,metric->>'campaignId',identity_key) * from candidates
+      where provider_time >= ${input.fromProviderTime}::timestamptz
+        and (${input.sourceIdentities ? [...input.sourceIdentities] : null}::text[] is null
+          or id::text||':'||(metric->>'campaignId')=any(${input.sourceIdentities ? [...input.sourceIdentities] : null}::text[]))
+      order by ad_product,metric->>'campaignId',identity_key,provider_time desc,event_time desc,revision desc,id desc
+    )
+    select jsonb_build_object('orgId',org_id,'profileId',profile_id,'adProduct',ad_product,'campaignId',metric->>'campaignId',
+      'source','amazon_marketing_stream','sourceIdentity',id::text||':'||(metric->>'campaignId'),
+      'currency',currency_code,'budgetAmount',null,'budgetType',null,'period',null,
+      'usagePercent',(metric->>'budgetUsagePercent')::numeric,'providerUpdatedAt',provider_time,
+      'receivedAt',received_at,'completeness','complete') as observation
+    from selected where (metric->>'budgetUsagePercent')::numeric=budget_usage_percent
+    order by ad_product,metric->>'campaignId' limit ${input.sourceIdentities?.length ?? config.maxCampaigns}`;
+  return rows.map((row) => BudgetUsageObservation.parse(row.observation));
 }
 
 /** Persist a deterministic proposal ID without mutating Amazon. */

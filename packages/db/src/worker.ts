@@ -2,3 +2,6 @@
 export { getIntegrationSecret } from './queries/integrations.js';
 export * from './queries/amazon-connection-worker.js';
 export { lockPrivilegedOrgEditor } from './queries/privileged-actor.js';
+export { OwnCollectorReferenceError, OwnCollectorConflictError, collectorProfile, readOwnBidMirrors, readOwnListingAsins, readListingCollectorCoverage, readCollectorExports, persistEffectiveBidObservations, persistListingSnapshots } from './queries/own-collectors.js';
+export { importScheduledPrompts } from './queries/sponsored-prompts.js';
+export { prepareProviderEvidenceRun, authorizeProviderEvidencePage, persistProviderEvidencePage, failProviderEvidenceRun } from './queries/provider-evidence.js';

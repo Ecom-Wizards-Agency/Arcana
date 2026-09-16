@@ -51,6 +51,7 @@ export const SponsoredPromptSnapshot = z.object({
   profileId: Uuid, lastVisitedAt: instant.nullable(), viewedThrough: instant,
   /** Thirty complete calendar days in the profile's timezone. */
   windowStart: instant, windowEnd: instant,
+  scheduledImports: z.array(z.object({ referenceId: Uuid, observedAt: instant, collectedAt: instant })).optional(),
   latestObservationAt: instant.nullable(), prompts: z.array(SponsoredPrompt),
 });
 export type SponsoredPromptSnapshot = z.infer<typeof SponsoredPromptSnapshot>;

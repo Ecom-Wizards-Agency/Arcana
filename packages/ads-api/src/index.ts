@@ -16,6 +16,8 @@
  * budget usage — are closed here.
  */
 export const PACKAGE_NAME = '@wizard-ads/ads-api' as const;
+export { PROVIDER_READ_CONTRACTS } from './provider-contracts.js';
+export { providerReadContract, buildProviderEvidenceRequest, parseProviderEvidenceResponse, providerFingerprint, ProviderEvidenceProtocolError } from './provider-evidence.js';
 
 // Client
 export { AdsApiClient, amazonAdProduct } from './client.js';

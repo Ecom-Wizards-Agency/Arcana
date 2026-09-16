@@ -1,4 +1,5 @@
 'use client';
+import { ProviderEvidencePanel } from '../recommendations/provider-evidence';
 
 import { useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -10,7 +11,7 @@ import type { MarketPositionData } from './load';
 export default function ScreenView({ data }: { data: MarketPositionData }) {
   if (data.view === 'gated') return <main><p>Market position requires an available database and organisation membership.</p></main>;
   if (data.view === 'empty') return <main><EmptyState title="No profiles yet" body="Connect a profile to compare advertised products." action={<a href="/settings/integrations">Manage integrations</a>} /></main>;
-  return <MarketPosition key={`${data.profileId}:${data.selectedAsin}:${data.settings.updatedAt}`} data={data} />;
+  return <><ProviderEvidencePanel evidence={data.providerEvidence} consumer="market-position" /><MarketPosition key={`${data.profileId}:${data.selectedAsin}:${data.settings.updatedAt}`} data={data} /></>;
 }
 function MarketPosition({ data }: { data: Extract<MarketPositionData, { view: 'ready' }> }) {
   const router = useRouter();
