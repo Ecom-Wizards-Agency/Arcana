@@ -184,3 +184,30 @@ twice. `list`, `adopt` and `abandon` are unchanged.
 `/sync-status` names the blocking stage (request, poll, fetch or load) with the bounded
 class of its last error, shows per-profile retrying and dead counts, and labels the
 organisation-wide dead count separately.
+
+## Campaign creation batches
+
+The existing Sponsored Products outbox poller also drives approved campaign-creation
+batches after pending update work. Its existing enable switch remains off by default.
+Creation uses the same environment gate, profile allowlist and dispatch/reconcile
+switches. No new timer, cadence or automatic approval is installed.
+
+Queued creation authority expires with its five-minute review checks or the frozen
+plan, whichever expires first. Reservation rechecks selected products and observed
+parents against the mirror. Each creation node has one durable reservation before
+its only create POST. Readback
+uses a returned Amazon ID when available, otherwise the exact profile-scoped name or
+parent-scoped product/keyword identity. A complete read with one match adopts that
+resource; multiple matches refuse creation. Two complete empty reads at least 60
+seconds apart stop the batch as needing attention. Every read is recorded.
+
+Retry requires a separate operator approval. It reads each remaining identity before
+reserving a new POST, reuses observed parents, and refuses ambiguous matches. The
+approval warns that a delayed original resource could appear after an empty read.
+Creation has no delete rollback. Terminal attention releases dispatch capacity but
+retains the unresolved evidence.
+
+The builder reports stock, buy-box, suppression and moderation as unmeasured and
+lists their missing evidence at confirmation. These checks do not block approval.
+Every check must be present exactly once; measured blocking checks and stale evidence
+still refuse admission. Opening the gates never creates a campaign automatically.

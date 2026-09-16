@@ -1,7 +1,10 @@
 import type { ChangeQueueEntry } from '@wizard-ads/shared';
 import { buildGridModel, ZERO_TOTALS, type GridColumn } from '@wizard-ads/ui';
-export const SOURCE_LABEL = { apply: 'we sent it', sync: 'changed at Amazon', amazon: 'Amazon observed', queued: 'queued', restore: 'Restore' } as const;
+export const SOURCE_LABEL = { apply: 'we sent it', sync: 'changed at Amazon', amazon: 'Amazon observed', queued: 'queued', restore: 'Restore',
+  campaign_creation: 'Campaign creation', campaign_creation_retry: 'Campaign creation retry' } as const;
 export function attribution(row: ChangeQueueEntry): string {
+  if (row.source === 'campaign_creation') return `Approved creation · ${row.batchCount ?? 0} resources`;
+  if (row.source === 'campaign_creation_retry') return row.batchLabel ?? 'Approved resource retry';
   const batch = row.batchLabel === null ? null : (/^Batch\s/i.test(row.batchLabel) ? row.batchLabel : `Batch ${row.batchLabel}`);
   if (row.candidateCount > 1) return `${batch === null ? '' : `${batch} · `}${row.candidateCount === 2 ? 'two' : row.candidateCount} rows could explain it`;
   if (row.source === 'queued' || (row.source === 'restore' && ['awaiting review', 'approved'].includes(row.state))) return 'Review proposal';

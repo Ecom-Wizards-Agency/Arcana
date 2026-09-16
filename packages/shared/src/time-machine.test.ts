@@ -7,8 +7,8 @@ it('preserves unknown values and exact source timestamps',()=>{
   const parsed=ChangeQueueEntry.parse(entry);
   expect(parsed.oldValue).toBeNull(); expect(parsed.batchCount).toBeNull(); expect(parsed.when).toBe(entry.when);
 });
-it('declares all five sources and every restore preview state without conflating ambiguity with readiness',()=>{
-  expect(ChangeQueueSource.options).toEqual(['apply','sync','amazon','queued','restore']);
+it('declares all seven sources and every restore preview state without conflating ambiguity with readiness',()=>{
+  expect(ChangeQueueSource.options).toEqual(['apply','sync','amazon','queued','restore','campaign_creation','campaign_creation_retry']);
   expect(RestorePreviewState.options).toEqual(['ready','conflict','already restored','unsupported','awaiting sync','ambiguous']);
 });
 it('refuses invalid sources and negative candidate counts',()=>{

@@ -5,6 +5,8 @@ import { readCampaignDraft, saveCampaignDraft, recordCampaignDraftValidation, Ca
 import { CampaignBuilderRecipe, type CampaignBuilderContext, type CampaignDraft, type CampaignBuilderCheck } from '@wizard-ads/shared';
 import { loadCampaignBuilderContext } from './data';
 import { builderBidEvidence, builderBounds } from './model';
+import { readCampaignCreationProviderScope } from '@wizard-ads/db';
+import { bindSponsoredProductsCreationPlan } from '@wizard-ads/shared';
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 export function validateBuilderDraft(draft: CampaignDraft, context: CampaignBuilderContext, names: string[], now: string) {
@@ -48,9 +50,11 @@ export async function saveBuilderDraft(context: AuthenticatedEditorTransaction, 
   const now = new Date().toISOString();
   const bulk = buildCampaignRecipe(recipe, source);
   recipe.names = Object.fromEntries(bulk.campaigns.map((campaign, index) => [String(index), campaign.name]));
-  const plan = campaignRecipeCreationPlan(bulk, { orgId: context.actor.orgId, profileId: input.profileId,
+  const generated = campaignRecipeCreationPlan(bulk, { orgId: context.actor.orgId, profileId: input.profileId,
     marketplaceId: source.profile.marketplace.marketplaceId, currencyCode: source.profile.currencyCode, now,
     expiresAt: new Date(Date.parse(now) + 86_400_000).toISOString(), uuid: randomUUID, hasher: { algorithm: 'sha256', digest } });
+  const scope = await readCampaignCreationProviderScope(context, input.profileId);
+  const plan = scope ? bindSponsoredProductsCreationPlan(generated, scope, { algorithm: 'sha256', digest }) : generated;
   const draft = await saveCampaignDraft(context, { id: input.id, expectedRevision: input.expectedRevision, plan, recipe,
     rationale: recipe.keywords.map((keyword) => ({ keyword: keyword.text, frozenAt: now,
       sentence: campaignBidRationale({ keyword: keyword.text, bid: keyword.bid, basis: keyword.basis,

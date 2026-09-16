@@ -317,3 +317,5 @@ export { StreamSubscriptionsClient, validateStreamConfirmation, STREAM_SUBSCRIPT
 export * from './provider-graph.js';
 export * from './asset-library.js';
 export * from './moderation.js';
+export type { SpCreationAdapter } from './sp-creation-adapter.js';
+export { createSpCreationBatchAdapter, type SpCreationBatchAdapter } from './sp-creation-batch-adapter.js';

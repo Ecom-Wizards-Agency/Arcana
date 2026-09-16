@@ -23,6 +23,8 @@ interface Dependencies {
   prepareProviders(plans: readonly SpWritePlan[], signal: AbortSignal): Promise<ReadonlyMap<string, SpWriteAdapter>>;
   /** True only after durable mirror reconciliation (or an exact replay) for this observation. */
   reconcileObservation(observation: SpWriteObservation): Promise<boolean>;
+  /** Additional batch source; existing SP write dispatch and observation retain priority. */
+  creation?: { tick(options: { signal: AbortSignal }): Promise<SpWriteTickResult>; stop(): void };
 }
 
 export type SpWriteTickResult = Readonly<{
@@ -193,7 +195,7 @@ export function createSpWriteOutboxLoop(dependencies: Dependencies) {
   }
 
   return {
-    stop(): void { shutdown.abort(); },
+    stop(): void { shutdown.abort(); dependencies.creation?.stop(); },
     async tick(options: { signal?: AbortSignal } = {}): Promise<SpWriteTickResult> {
       if (running) return { kind: 'busy', attemptedCalls: 0 };
       if (shutdown.signal.aborted) return { kind: 'disabled', attemptedCalls: 0 };
@@ -224,7 +226,8 @@ export function createSpWriteOutboxLoop(dependencies: Dependencies) {
           claim = batch.claims[0];
           if (claim !== undefined) break;
         }
-        if (claim === undefined) return { kind: 'idle', attemptedCalls: 0 };
+        if (claim === undefined) return dependencies.creation
+          ? await dependencies.creation.tick({ signal }) : { kind: 'idle', attemptedCalls: 0 };
         if (!allowed(claim, currentPolicy())) {
           await outbox.deferClaim(claim, 'shutdown');
           return { kind: 'deferred', attemptedCalls: 0 };

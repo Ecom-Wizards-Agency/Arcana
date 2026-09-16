@@ -1,6 +1,6 @@
 import { amazonEntryFixtures } from '../grid/catalogue-fixtures';
 // @vitest-environment jsdom
-import { COORDINATED_RESTORE_UNAVAILABLE } from '@wizard-ads/shared';
+import { COORDINATED_RESTORE_UNAVAILABLE, type ChangeQueueEntry } from '@wizard-ads/shared';
 import { expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import Loading from '../../../app/time-machine/loading';
@@ -80,4 +80,19 @@ it('renders three imported events with resolution and collision evidence and zer
   expect(provider[0]!.textContent).toContain('unresolved');expect(provider[1]!.textContent).toContain('resolved campaign campaign-1');expect(provider[2]!.textContent).toContain('identity conflict');
   for(const row of provider){expect(row.textContent).toContain('SYNTHETIC-MARKET-');expect(row.textContent).toContain('derived identity (provider ID unavailable)');expect(row.querySelectorAll('a,button,summary')).toHaveLength(0);}
   expect(rows[0]!.querySelectorAll('a')).toHaveLength(1);
+});
+
+it.each(['admitted','attempted','succeeded','awaiting_observation','partial_failed','observed','needs_attention','refused','blocked'] as const)('renders both creation sources with the %s state', (state) => {
+  const entries: ChangeQueueEntry[] = ['campaign_creation','campaign_creation_retry'].map((source,index) => ({
+    ...ready.props.entries[0]!, source: source as ChangeQueueEntry['source'], state,
+    id:`creation:10000000-0000-4000-8000-00000000000${index+1}`, batchCount:index===0?4:1,
+    batchLabel:index===0?'Campaign creation':'Retry of original batch',
+    reviewHref:'/campaigns/draft?' + new URLSearchParams({profile:ready.props.profileId,draft:'synthetic',batch:String(index),step:'result'}),
+  }));
+  render(<Screen data={{...ready,props:{...ready.props,entries}}}/>);
+  const rows=screen.getAllByTestId('timeline-entry'); expect(rows).toHaveLength(2);
+  expect(rows[0]?.textContent).toContain('Campaign creation'); expect(rows[0]?.textContent).toContain('Approved creation · 4 resources');
+  expect(rows[1]?.textContent).toContain('Campaign creation retry'); expect(rows[1]?.textContent).toContain('Retry of original batch');
+  expect(rows.every(row=>row.textContent?.includes(state.replaceAll('_',' ')))).toBe(true);
+  expect(rows.map(row=>row.querySelector('a')?.getAttribute('href'))).toEqual(entries.map(row=>row.reviewHref));
 });

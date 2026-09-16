@@ -8,6 +8,8 @@ export const SP_WRITE_APPLICATION_CONSUMERS = [
   "apps/web/src/writes/http.ts"
 ] as const;
 export const SP_WRITE_ACTIVATION_FILES = [
+  "apps/worker/src/campaign-creation/loop.ts",
+  "apps/worker/src/campaign-creation/providers.ts",
   // Reads outbox counts to prove Target 360 approval never enqueues execution.
   "apps/web/e2e/targets-queue.spec.ts",
   "apps/web/e2e/change-queue.spec.ts",
@@ -29,6 +31,7 @@ export const SP_WRITE_ACTIVATION_FILES = [
   "apps/worker/src/store.ts"
 ] as const;
 export const SP_WRITE_MIGRATIONS = [
+  "20260915370000_campaign_creation_batches.sql",
   "20260901020000_sp_write_persistence_ledger.sql",
   "20260901030000_sp_write_outbox_delivery.sql",
   "20260915000000_sp_write_preview_evidence.sql",
