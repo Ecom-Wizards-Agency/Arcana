@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GUARDED_ROUTES } from './e2e-guard-routes';
+import { GUARDED_ROUTES, GUARDED_ROUTE_HALVES, partitionGuardedRoutes } from './e2e-guard-routes';
 import { SCREEN_REGISTRY } from './screens/registry';
 import { screenEnabled } from './screens/types';
 
@@ -21,5 +21,27 @@ describe('authenticated guard route contract', () => {
     expect(GUARDED_ROUTES.filter((route) => route.signedIn.heading)).toHaveLength(
       guarded.filter((screen) => screen.guard?.heading).length,
     );
+  });
+});
+
+describe('guard route process partitions', () => {
+  it('visits every current route exactly once across the two ordered halves', () => {
+    const { a, b } = GUARDED_ROUTE_HALVES;
+    expect([...a, ...b]).toEqual(GUARDED_ROUTES);
+    expect(a.every((route) => !b.includes(route))).toBe(true);
+    expect(Math.abs(a.length - b.length)).toBeLessThanOrEqual(1);
+  });
+
+  it.each([0, 1, 2, 3, 4, 5, 10, 11])('conserves an input list of %i routes without mutation', (length) => {
+    const routes = Object.freeze(Array.from({ length }, (_, index) => Object.freeze({
+      path: `/synthetic-${index}`,
+      signedIn: { kind: 'requested' as const },
+    })));
+    const { a, b } = partitionGuardedRoutes(routes);
+    expect([...a, ...b]).toEqual(routes);
+    expect(new Set([...a, ...b]).size).toBe(length);
+    expect(a.length).toBe(Math.ceil(length / 2));
+    expect(b.length).toBe(Math.floor(length / 2));
+    expect(partitionGuardedRoutes(routes)).toEqual({ a, b });
   });
 });
