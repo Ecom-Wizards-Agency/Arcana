@@ -1,6 +1,6 @@
 import { spWritePolicyFromEnv, type SpWriteWorkerPolicy } from './sp-write-outbox/policy.js';
 import { connectionStringFromEnv } from '@wizard-ads/db';
-import { JobType, type JobType as JobTypeValue } from '@wizard-ads/shared';
+import { JobType, SpApiDeployment, type JobType as JobTypeValue } from '@wizard-ads/shared';
 import { isIP } from 'node:net';
 import {
   resolveWorkerDeploymentPolicy,
@@ -33,6 +33,8 @@ export interface WorkerConfig {
   /** Default off until the connection schema and this worker are installed. */
   amazonConnectionsEnabled: boolean;
   spApiConnectionsEnabled: boolean;
+  spApiApplicationId: string | undefined;
+  spApiConsentRegion: 'NA' | 'EU' | 'FE' | undefined;
   spApiConnectionRedirects: readonly string[];
   sbKeywordSyncEnabled: boolean;
   /** Default-off WP-181 cohort. Account bindings remain database-owned. */
@@ -121,10 +123,17 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
   }
   const amazonConnectionsEnabled = env['OPENSPELL_AMAZON_CONNECTIONS_ENABLED'] === '1';
   const spApiConnectionsEnabled = env['OPENSPELL_SPAPI_CONNECTIONS_ENABLED'] === '1';
+  const spApiApplicationId = env['SP_API_APPLICATION_ID']?.trim() || undefined;
+  const rawSpRegion = env['SP_API_OAUTH_REGION'];
+  const spApiConsentRegion = rawSpRegion === 'NA' || rawSpRegion === 'EU' || rawSpRegion === 'FE' ? rawSpRegion : undefined;
   const spApiConnectionRedirects = (env['SP_API_OAUTH_ALLOWED_REDIRECT_URIS'] ?? '').split(',').map((value) => value.trim()).filter(Boolean);
-  if (spApiConnectionsEnabled && (deployment.role !== 'general' || !spApiClientId || !spApiClientSecret || spApiConnectionRedirects.length === 0)) {
+  if (spApiConnectionsEnabled && (deployment.role !== 'general' || !spApiClientId || !spApiClientSecret
+    || !spApiApplicationId || !spApiConsentRegion || spApiConnectionRedirects.length === 0)) {
     throw new Error('SP-API connections require a general worker, application credentials and allowed callbacks');
   }
+  if (spApiConnectionsEnabled && spApiConnectionRedirects.some((redirectUri) => !SpApiDeployment.safeParse({
+    clientId: spApiClientId,applicationId: spApiApplicationId,region: spApiConsentRegion,redirectUri,
+  }).success)) throw new Error('SP-API connection callback policy is invalid');
   if (amazonConnectionsEnabled && (deployment.role !== 'general'
     || (deployment.jobTypes !== undefined && !deployment.jobTypes.includes('entity.sync')))) {
     throw new Error('Amazon connections require a general worker with entity synchronization');
@@ -145,6 +154,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): WorkerConfi
     startsBackgroundPasses: deployment.startsBackgroundPasses,
     amazonConnectionsEnabled,
     spApiConnectionsEnabled,
+    spApiApplicationId,
+    spApiConsentRegion,
     spApiConnectionRedirects,
     sbKeywordSyncEnabled: sbKeywordSyncEnabledFromEnv(env),
     unifiedReporting,

@@ -387,7 +387,8 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
   ): { rows: Record<string, unknown>[]; nextToken: string | null } {
     // Sponsored Display answers with a bare array and no pagination envelope.
     if (Array.isArray(parsed)) {
-      return { rows: parsed.filter(isRecord), nextToken: null };
+      if (parsed.some((row) => !isRecord(row))) throw new AdsApiParseError('entity page contains a malformed row');
+      return { rows: parsed as Record<string, unknown>[], nextToken: null };
     }
     if (!isRecord(parsed)) {
       throw new AdsApiParseError(`${path} returned neither an array nor an object`);
@@ -403,7 +404,8 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
     if (!Array.isArray(raw)) {
       throw new AdsApiParseError(`${path} response field '${responseKey}' is not an array`);
     }
-    return { rows: raw.filter(isRecord), nextToken: readString(parsed, 'nextToken') };
+    if (raw.some((row) => !isRecord(row))) throw new AdsApiParseError('entity page contains a malformed row');
+    return { rows: raw as Record<string, unknown>[], nextToken: readString(parsed, 'nextToken') };
   }
 
   private async listMapped<T>(
@@ -469,6 +471,22 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
 
   listSpProductAds(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<ProductAdRow>>> {
     return this.listMapped(profileId, 'sp.productAds', options, mapProductAds);
+  }
+
+  listSpCampaignNegativeTargets(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<NegativeRow>>> {
+    return this.listMapped(profileId, 'sp.campaignNegativeTargets', options, (raw) => mapNegativeTargets(raw, 'campaign'));
+  }
+
+  listSdProductAds(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<ProductAdRow>>> {
+    return this.listMapped(profileId, 'sd.productAds', options, (raw) => mapProductAds(raw, 'SD'));
+  }
+
+  listSdTargets(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<TargetRow>>> {
+    return this.listMapped(profileId, 'sd.targets', options, (raw) => mapTargets(raw, 'SD'));
+  }
+
+  listSdNegativeTargets(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<NegativeRow>>> {
+    return this.listMapped(profileId, 'sd.negativeTargets', options, (raw) => mapNegativeTargets(raw, 'ad_group', 'SD'));
   }
 
   /** Sponsored Brands campaign management is v4 only; v3 was shut off in 2024. */

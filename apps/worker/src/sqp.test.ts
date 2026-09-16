@@ -363,6 +363,10 @@ class FakeDataStore implements SqpWorkflowDataStore {
     return this.vocabularyEntries;
   }
 
+  async verifyFacts(): Promise<number> {
+    return this.promotions.at(-1)?.rows.length ?? 0;
+  }
+
   async promoteFacts(input: SqpWeeklyPromotionInput): Promise<SqpWeeklyPromotionResult> {
     this.promotions.push(input);
     return {

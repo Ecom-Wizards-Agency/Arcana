@@ -22,11 +22,12 @@
  *
  * Read-only. Every write in this product happens in the worker.
  */
-import { classifyCampaignCategory, classifyPerformanceVerdict, grossBreakEvenBid, rankChange, acosVsTarget, conversionPoints, marketPositionGap } from '@wizard-ads/core';
-import { readLatestBidSeriesByTargetIds, listMarketPositionLinks, readMarketRankSeries } from '@wizard-ads/db';
+import { classifyCampaignCategory, classifyPerformanceVerdict, grossBreakEvenBid, rankChange, acosVsTarget, conversionPoints, marketPositionGap, retailEvidence, abaEvidence } from '@wizard-ads/core';
+import { readLatestBidSeriesByTargetIds, listMarketPositionLinks, readMarketRankSeries, readSpReportEvidence } from '@wizard-ads/db';
 import { TenantStrategy, type GridMeasurement, type GridPerformanceEvidence } from '@wizard-ads/shared';
 import { parseCampaignName } from '@wizard-ads/campaigns';
 import { targetReadTimer } from '../../src/screens/grid/target-read-timing';
+import { loadCoreGridEvidence, coreEvidenceGridRows } from '../../src/screens/grid/core-report-rows';
 import { readGridPerformance } from '../../src/screens/grid/data-evidence';
 import type { QueryHandle } from '@wizard-ads/db';
 import type { EntityLevel, GridRow } from '@wizard-ads/ui';
@@ -131,7 +132,7 @@ export async function loadGridRows(
   // server/client boundary.
   const queryLimit = limit + 1;
   const rankDays: GridPerformanceEvidence['rankDays'] = {};
-  const performanceRead = readGridPerformance(handle, options.orgId, options.profileId, options.period.start, options.period.end);
+  const performanceRead = readGridPerformance(handle, options.orgId, options.profileId, options.period.start, options.period.end, level);
   const loaders: Record<EntityLevel, () => Promise<GridRow[]>> = {
     campaigns: () => loadCampaigns(handle, options, queryLimit),
     ad_groups: () => loadAdGroups(handle, options, queryLimit),
@@ -141,13 +142,19 @@ export async function loadGridRows(
     placements: () => loadPlacements(handle, options, queryLimit),
   };
   const read = async () => {
-      const [loadedRows, performance] = await Promise.all([loaders[level](), performanceRead]);
+      const [baseRows, performance, evidence, priorEvidence] = await Promise.all([loaders[level](), performanceRead,
+        loadCoreGridEvidence(handle, level, { orgId: options.orgId, profileId: options.profileId, startDate: options.period.start, endDate: options.period.end, limit: queryLimit }),
+        loadCoreGridEvidence(handle, level, { orgId: options.orgId, profileId: options.profileId, startDate: options.comparison.start, endDate: options.comparison.end, limit: queryLimit }),
+      ]);
+      const prior = new Map(coreEvidenceGridRows(priorEvidence, options.currencyCode).map((row) => [row.id, row]));
+      const added = coreEvidenceGridRows(evidence, options.currencyCode).map((row) => ({ ...row, comparison: prior.get(row.id)?.totals ?? null, measurement: { missing: row.measurement?.missing ?? [], comparisonMissing: prior.get(row.id)?.measurement?.missing ?? [] } }));
+      const loadedRows = [...baseRows, ...added];
       const rows = loadedRows.slice(0, limit);
       return {
         performance: { ...performance, rankDays: Object.fromEntries(rows.flatMap((row) => rankDays[row.id] ? [[row.id, rankDays[row.id]!]] : [])) },
         rows,
         rowCount: rows.length,
-        truncated: loadedRows.length > limit,
+        truncated: loadedRows.length > limit || evidence.some((item) => item.truncated) || priorEvidence.some((item) => item.truncated),
       };
   };
   return level === 'products' ? read() : withServerTiming(`grid.${level}`, read, (payload) => payload.rows.length);
@@ -398,9 +405,21 @@ async function loadTargets(
       sum(asin_purchases)::numeric/nullif(sum(total_purchases),0) as purchase_share,
       sum(total_purchases)::numeric/nullif(sum(total_clicks),0) as market_cvr,
       sum(asin_purchases)::numeric/nullif(sum(asin_clicks),0) as asin_cvr
-    from public.fact_sqp_weekly where org_id=${orgId} and profile_id=${profileId} and asin=any(${asins}::text[])
+    from public.fact_sqp_weekly q where org_id=${orgId} and profile_id=${profileId} and asin=any(${asins}::text[])
+      and exists (select 1 from public.spapi_profile_bindings b join public.spapi_connections c on c.org_id=b.org_id and c.id=b.connection_id
+        join public.ad_profiles profile on profile.org_id=b.org_id and profile.id=b.profile_id
+        where b.org_id=q.org_id and b.profile_id=q.profile_id and b.marketplace_id=q.marketplace_id and b.enabled and c.status='active'
+          and c.vault_secret_id is not null and nullif(btrim(c.selling_partner_id),'') is not null and b.marketplace_id=any(c.marketplace_ids)
+          and profile.sync_enabled and profile.region=app.spapi_region_for_marketplace(b.marketplace_id))
+      and exists (select 1 from public.sqp_promotion_runs run where run.org_id=q.org_id and run.profile_id=q.profile_id
+        and run.marketplace_id=q.marketplace_id and run.week_start=q.week_start and q.asin=any(run.requested_asins)
+        and run.refused_rows=0 and run.source_rows=run.parsed_rows+run.refused_rows
+        and run.parsed_rows>=run.deduplicated_rows and run.deduplicated_rows=run.promoted_rows and run.promoted_rows=run.canonical_rows
+        and run.canonical_rows=(select count(*) from public.fact_sqp_weekly loaded where loaded.org_id=run.org_id and loaded.profile_id=run.profile_id
+          and loaded.marketplace_id=run.marketplace_id and loaded.week_start=run.week_start and loaded.asin=any(run.requested_asins)))
     and week_start>=${period.start} and week_end<=${period.end} group by asin,lower(search_query)`;
   stage('sqp');
+  const aba = await readSpReportEvidence(handle, { orgId, profileId, family: 'aba', start: period.start, end: period.end });
   const rankIndex = new Map(rankAxis.map((date, index) => [date, index]));
   const ranks = new Map<string, { current: number | null; previous: number | null; days?: GridPerformanceEvidence['rankDays'][string] }>();
   for (const observation of observations) {
@@ -445,6 +464,7 @@ async function loadTargets(
     const current = history?.current ?? null;
     const previous = history?.previous ?? null;
     const query = literal ? sqpByQuery.get(key) : undefined;
+    const observedAba = literal && row.asin && row.targeting ? abaEvidence(aba, { query: row.targeting, asin: row.asin, start: period.start, end: period.end }) : null;
     if (history?.days) rankDays[`target:${row.target_id}`] = history.days;
     const targetAcos = measured(row.target_acos);
     const spend = measured(row.spend);
@@ -466,6 +486,8 @@ async function loadTargets(
         top_of_search_share: measured(row.tos_share),
         top_of_search_range: row.tos_low == null || row.tos_high == null ? null : `${(Number(row.tos_low) * 100).toFixed(1)}–${(Number(row.tos_high) * 100).toFixed(1)}%`,
         break_even_bid: grossBreakEvenBid(cpc, acos), acos_vs_target: acosVsTarget(acos, targetAcos),
+        aba_state: observedAba?.state ?? 'not-measured', aba_frequency_rank: observedAba?.frequencyRank ?? null,
+        aba_click_share: observedAba?.clickShare ?? null, aba_conversion_share: observedAba?.conversionShare ?? null, aba_slot: observedAba?.slot ?? null,
         sqp_impression_share: measured(query?.impression_share), sqp_purchase_share: measured(query?.purchase_share),
         market_cvr: measured(query?.market_cvr), asin_cvr: measured(query?.asin_cvr),
         conversion_points: conversionPoints(measured(query?.asin_cvr), measured(query?.market_cvr)),
@@ -514,24 +536,33 @@ async function loadProducts(handle: GridDataHandle, options: LoadGridOptions, li
     with products as (
       select asin,max(name) as product_name from public.product_ads
       where org_id=${orgId} and profile_id=${profileId} and asin is not null and deleted_at is null group by asin
-    ), mapped as (
-      select campaign_id,ad_group_id,min(asin) as asin from public.product_ads
-      where org_id=${orgId} and profile_id=${profileId} and asin is not null and deleted_at is null
-      group by campaign_id,ad_group_id having count(distinct asin)=1
+    ), measured as (
+      select date, dimensions->>'advertisedAsin' as asin,
+        (row_data->'metrics'->>'impressions')::numeric as impressions,
+        (row_data->'metrics'->>'clicks')::numeric as clicks,
+        (row_data->'metrics'->>'cost')::numeric as cost,
+        (row_data->'metrics'->>'sales7d')::numeric as sales_7d,
+        (row_data->'metrics'->>'purchases7d')::numeric as purchases_7d,
+        (row_data->'metrics'->>'unitsSoldClicks7d')::numeric as units_sold_7d
+      from public.fact_advertised_product_daily
+      where org_id=${orgId} and profile_id=${profileId} and family='spAdvertisedProduct' and variant='DAILY:legacy:v1'
     ), facts as (
-      select m.asin, ${windowSums(handle, period, comparison)} from public.fact_sp_target_daily f
-      join mapped m on m.campaign_id=f.campaign_id and m.ad_group_id=f.ad_group_id
-      where f.org_id=${orgId} and f.profile_id=${profileId} and (date between ${period.start} and ${period.end} or date between ${comparison.start} and ${comparison.end}) group by m.asin
-    ) select p.asin,p.product_name,f.impressions,f.clicks,f.spend,f.sales,f.orders,f.units,f.c_days,f.c_impressions,f.c_clicks,f.c_spend,f.c_sales,f.c_orders,f.c_units from products p left join facts f on f.asin=p.asin order by p.asin limit ${limit}`;
+      select asin, ${windowSums(handle, period, comparison)} from measured
+      where (date between ${period.start} and ${period.end} or date between ${comparison.start} and ${comparison.end}) group by asin
+    ) select coalesce(p.asin,f.asin) as asin,p.product_name,f.impressions,f.clicks,f.spend,f.sales,f.orders,f.units,f.c_days,f.c_impressions,f.c_clicks,f.c_spend,f.c_sales,f.c_orders,f.c_units from products p full join facts f on f.asin=p.asin order by coalesce(p.asin,f.asin) limit ${limit}`;
+  const retail = await readSpReportEvidence(handle, { orgId, profileId, family: 'retail', start: period.start, end: period.end });
   const links = await listMarketPositionLinks(handle, orgId, profileId);
   const asins = [...new Set([...rows.map((row) => row.asin), ...links.flatMap((link) => [link.ownAsin, link.competitorAsin])])];
   const series = await readMarketRankSeries(handle, orgId, asins, period.end, period.end);
   return rows.map((row) => {
+    const observedRetail = retailEvidence(retail, { start: period.start, end: period.end, asin: row.asin });
     const tracked = links.filter((link) => link.ownAsin === row.asin);
     const categories = [...new Set(tracked.flatMap((link) => link.category ? [link.category] : []))];
     const own = categories.length === 1 ? series.find((item) => item.asin === row.asin && item.category === categories[0]) : undefined;
     const competitors = series.filter((item) => tracked.some((link) => link.competitorAsin === item.asin && link.category === item.category));
-    return { id: `product:${row.asin}`, dimensions: { asin: row.asin, product_name: row.product_name,
+    return { id: `product:${row.asin}`, dimensions: { ad_product: 'SP', asin: row.asin, product_name: row.product_name,
+      retail_sales: observedRetail.sales, retail_currency: observedRetail.currency, retail_units: observedRetail.units, retail_sessions: observedRetail.sessions,
+      retail_conversion: observedRetail.conversion, retail_state: observedRetail.state, retail_observed_at: observedRetail.observedAt, tacos: null,
       gap: own ? marketPositionGap(own, competitors, period.end) : null, ppc_measured: row.spend !== null },
       ...measurementOf(row), totals: totalsOf(row), comparison: comparisonOf(row), currencyCode: options.currencyCode };
   });
@@ -703,18 +734,18 @@ async function loadPlacements(
 function windowSums(handle: GridDataHandle, period: Period, comparison: Period) {
   const { sql } = handle;
   return sql`
-    sum(impressions) filter (where date between ${period.start} and ${period.end}) as impressions,
-    sum(clicks)      filter (where date between ${period.start} and ${period.end}) as clicks,
-    sum(cost)        filter (where date between ${period.start} and ${period.end}) as spend,
-    sum(sales_7d)    filter (where date between ${period.start} and ${period.end}) as sales,
-    sum(purchases_7d) filter (where date between ${period.start} and ${period.end}) as orders,
-    sum(units_sold_7d) filter (where date between ${period.start} and ${period.end}) as units,
+    case when bool_or(impressions is null) filter (where date between ${period.start} and ${period.end}) then null else sum(impressions) filter (where date between ${period.start} and ${period.end}) end as impressions,
+    case when bool_or(clicks is null) filter (where date between ${period.start} and ${period.end}) then null else sum(clicks)      filter (where date between ${period.start} and ${period.end}) end as clicks,
+    case when bool_or(cost is null) filter (where date between ${period.start} and ${period.end}) then null else sum(cost)        filter (where date between ${period.start} and ${period.end}) end as spend,
+    case when bool_or(sales_7d is null) filter (where date between ${period.start} and ${period.end}) then null else sum(sales_7d)    filter (where date between ${period.start} and ${period.end}) end as sales,
+    case when bool_or(purchases_7d is null) filter (where date between ${period.start} and ${period.end}) then null else sum(purchases_7d) filter (where date between ${period.start} and ${period.end}) end as orders,
+    case when bool_or(units_sold_7d is null) filter (where date between ${period.start} and ${period.end}) then null else sum(units_sold_7d) filter (where date between ${period.start} and ${period.end}) end as units,
     count(*)         filter (where date between ${comparison.start} and ${comparison.end}) as c_days,
-    sum(impressions) filter (where date between ${comparison.start} and ${comparison.end}) as c_impressions,
-    sum(clicks)      filter (where date between ${comparison.start} and ${comparison.end}) as c_clicks,
-    sum(cost)        filter (where date between ${comparison.start} and ${comparison.end}) as c_spend,
-    sum(sales_7d)    filter (where date between ${comparison.start} and ${comparison.end}) as c_sales,
-    sum(purchases_7d) filter (where date between ${comparison.start} and ${comparison.end}) as c_orders,
-    sum(units_sold_7d) filter (where date between ${comparison.start} and ${comparison.end}) as c_units
+    case when bool_or(impressions is null) filter (where date between ${comparison.start} and ${comparison.end}) then null else sum(impressions) filter (where date between ${comparison.start} and ${comparison.end}) end as c_impressions,
+    case when bool_or(clicks is null) filter (where date between ${comparison.start} and ${comparison.end}) then null else sum(clicks)      filter (where date between ${comparison.start} and ${comparison.end}) end as c_clicks,
+    case when bool_or(cost is null) filter (where date between ${comparison.start} and ${comparison.end}) then null else sum(cost)        filter (where date between ${comparison.start} and ${comparison.end}) end as c_spend,
+    case when bool_or(sales_7d is null) filter (where date between ${comparison.start} and ${comparison.end}) then null else sum(sales_7d)    filter (where date between ${comparison.start} and ${comparison.end}) end as c_sales,
+    case when bool_or(purchases_7d is null) filter (where date between ${comparison.start} and ${comparison.end}) then null else sum(purchases_7d) filter (where date between ${comparison.start} and ${comparison.end}) end as c_orders,
+    case when bool_or(units_sold_7d is null) filter (where date between ${comparison.start} and ${comparison.end}) then null else sum(units_sold_7d) filter (where date between ${comparison.start} and ${comparison.end}) end as c_units
   `;
 }

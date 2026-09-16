@@ -17,7 +17,7 @@ import { decodeGridRowColumns, decodeGridPerformance } from '@wizard-ads/shared'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
-import { ensureFactPartitions, withAuthenticatedActor } from '@wizard-ads/db';
+import { ensureFactPartitions, withAuthenticatedActor, storeSpApiRefreshToken, promoteSqpWeeklyFacts } from '@wizard-ads/db';
 import { buildGridModel, groupRows, resolveField } from '@wizard-ads/ui';
 import type { GridRow } from '@wizard-ads/ui';
 import { serializeGridPayloadWithinBudget } from '../app/api/grid/rows/serialize';
@@ -557,7 +557,16 @@ suite('grid and roster reads against SQL aggregates', () => {
   it('joins rank and whole SQP weeks, computes TOS ranges and counts unattributed spend from product mirrors', async () => {
     const asin = 'B000SYN001';
     const options = { orgId, profileId, currencyCode: 'USD', period: PERIOD, comparison: COMPARISON };
+    const [binding] = await database.sql<{ connection_id: string; marketplace_id: string; enabled: boolean; status: string; vault_secret_id: string | null; sync_enabled: boolean }[]>`
+      select b.connection_id,b.marketplace_id,b.enabled,c.status::text,c.vault_secret_id,p.sync_enabled
+      from public.spapi_profile_bindings b join public.spapi_connections c on c.org_id=b.org_id and c.id=b.connection_id
+      join public.ad_profiles p on p.org_id=b.org_id and p.id=b.profile_id where b.org_id=${orgId} and b.profile_id=${profileId}`;
+    expect(binding).toBeDefined();
+    let fixtureSecretId: string | null = null;
     try {
+      fixtureSecretId = await storeSpApiRefreshToken(database, { orgId, connectionId: binding!.connection_id, refreshToken: 'fake-grid-sqp-refresh-token' });
+      await database.sql`update public.spapi_profile_bindings set enabled=true where org_id=${orgId} and profile_id=${profileId}`;
+      await database.sql`update public.ad_profiles set sync_enabled=true where org_id=${orgId} and id=${profileId}`;
       await database.sql`insert into public.product_ads(org_id,profile_id,amazon_id,ad_product,name,state,campaign_id,ad_group_id,asin)
         values(${orgId},${profileId},'synthetic-product-one','SP','Synthetic product','enabled','c-skew-a','c-skew-a-ag',${asin})`;
       await database.sql`insert into public.rank_observations(org_id,profile_id,asin,keyword,observed_on,organic_rank)
@@ -565,16 +574,40 @@ suite('grid and roster reads against SQL aggregates', () => {
         (${orgId},${profileId},${asin},'widget',${PERIOD.start},8),(${orgId},${profileId},${asin},'widget',${PERIOD.end},4)`;
       await database.sql`update public.fact_sp_target_daily set top_of_search_impression_share=case when date=${PERIOD.start} then 0.2 else 0.4 end
         where org_id=${orgId} and profile_id=${profileId} and target_id='c-skew-a-kw0' and date in (${PERIOD.start},${PERIOD.end})`;
-      await database.sql`insert into public.fact_sqp_weekly(org_id,profile_id,week_start,asin,search_query,total_impressions,asin_impressions,total_clicks,asin_clicks,total_purchases,asin_purchases)
-        values(${orgId},${profileId},'2026-07-05',${asin},'widget',1000,100,200,20,20,4),
-        (${orgId},${profileId},'2026-07-12',${asin},'widget',10000,9000,200,100,20,20)`;
+      for (const fixture of [
+        { weekStart: '2026-07-05', totalImpressions: 1000, asinImpressions: 100, asinClicks: 20, asinPurchases: 4 },
+        { weekStart: '2026-07-12', totalImpressions: 10000, asinImpressions: 9000, asinClicks: 100, asinPurchases: 20 },
+      ]) {
+        const weekEnd = addDays(fixture.weekStart, 6), requestIdentity = `synthetic-grid-sqp-${fixture.weekStart}`;
+        const requestedAt = new Date(`${addDays(weekEnd, 1)}T00:00:00Z`), completedAt = new Date(requestedAt.getTime() + 60_000);
+        const promoted = await promoteSqpWeeklyFacts(database, {
+          orgId, profileId, marketplaceId: binding!.marketplace_id, weekStart: fixture.weekStart, weekEnd,
+          requestedAsins: [asin], requestIdentity, requestedAt, completedAt,
+          sourceReports: [{ requestKey: requestIdentity, reportId: `report-${requestIdentity}`, reportDocumentId: `document-${requestIdentity}`,
+            requestedAt, completedAt, providerCreatedAt: requestedAt, requestedAsins: [asin] }],
+          rows: [{ profileId, marketplaceId: binding!.marketplace_id, asin, weekStart: fixture.weekStart, weekEnd,
+            searchQuery: 'widget', normalizedQuery: 'widget', category: 'unreviewed', searchQueryScore: null, searchQueryVolume: 100,
+            totalImpressions: fixture.totalImpressions, asinImpressions: fixture.asinImpressions, asinImpressionShare: fixture.asinImpressions / fixture.totalImpressions,
+            totalClicks: 200, asinClicks: fixture.asinClicks, asinClickShare: fixture.asinClicks / 200,
+            totalCartAdds: 0, asinCartAdds: 0, asinCartAddShare: 0, totalPurchases: 20, asinPurchases: fixture.asinPurchases, asinPurchaseShare: fixture.asinPurchases / 20 }],
+          counts: { sourceAsins: 1, sourceRows: 1, parsedRows: 1, deduplicatedRows: 1, refusedRows: 0, upserts: 1 },
+        });
+        expect(promoted).toMatchObject({ sourceRows: 1, parsedRows: 1, deduplicatedRows: 1, promotedRows: 1, canonicalRows: 1 });
+      }
+      const [stored] = await database.sql<{ rows: number }[]>`select count(*)::int as rows from public.fact_sqp_weekly where org_id=${orgId} and profile_id=${profileId} and marketplace_id=${binding!.marketplace_id} and asin=${asin}`;
+      expect(stored?.rows).toBe(2);
+      await database.sql`update public.spapi_profile_bindings set enabled=false where org_id=${orgId} and profile_id=${profileId}`;
+      const disabled = await loadGridRows(database, 'targets', options);
+      expect(disabled.rows.find(row => row.id === 'target:c-skew-a-kw0')?.dimensions['sqp_impression_share']).toBeNull();
+      await database.sql`update public.spapi_profile_bindings set enabled=true where org_id=${orgId} and profile_id=${profileId}`;
       const targets = await loadGridRows(database, 'targets', options);
       const target = targets.rows.find((row) => row.dimensions['target_id'] === 'c-skew-a-kw0')!;
       expect(target.dimensions).toMatchObject({ asin, organic_rank: 4, rank_change: 8, top_of_search_range: '20.0–40.0%', break_even_bid: 10, sqp_impression_share: 0.1, sqp_purchase_share: 0.2, market_cvr: 0.1, asin_cvr: 0.2, conversion_points: 10 });
       expect(targets.performance?.rankDays[target.id]).toHaveLength(14);
       expect(targets.performance?.rankDays[target.id]?.filter((day) => day.observed)).toHaveLength(2);
       const products = await loadGridRows(database, 'products', options);
-      expect(products.rows.find((row) => row.dimensions['asin'] === asin)?.totals.spend).toBe(1680);
+      // A mirrored ASIN and target spend do not establish measured product spend.
+      expect(products.rows.find((row) => row.dimensions['asin'] === asin)?.measurement?.missing).toContain('spend');
       expect(products.rows.find((row) => row.dimensions['asin'] === asin)?.dimensions['gap']).toBeNull();
       await database.sql`insert into public.product_ads(org_id,profile_id,amazon_id,ad_product,name,state,campaign_id,ad_group_id,asin)
         values(${orgId},${profileId},'synthetic-product-two','SP','Synthetic second product','enabled','c-skew-a','c-skew-a-ag','B000SYN002')`;
@@ -585,6 +618,11 @@ suite('grid and roster reads against SQL aggregates', () => {
       await database.sql`delete from public.product_ads where org_id=${orgId} and amazon_id in ('synthetic-product-one','synthetic-product-two')`;
       await database.sql`delete from public.rank_observations where org_id=${orgId} and asin=${asin}`;
       await database.sql`delete from public.fact_sqp_weekly where org_id=${orgId} and asin=${asin}`;
+      await database.sql`delete from public.sqp_promotion_runs where org_id=${orgId} and profile_id=${profileId} and request_identity in ('synthetic-grid-sqp-2026-07-05','synthetic-grid-sqp-2026-07-12')`;
+      await database.sql`update public.spapi_profile_bindings set enabled=${binding!.enabled} where org_id=${orgId} and profile_id=${profileId}`;
+      await database.sql`update public.ad_profiles set sync_enabled=${binding!.sync_enabled} where org_id=${orgId} and id=${profileId}`;
+      await database.sql`update public.spapi_connections set status=${binding!.status}::public.connection_status,vault_secret_id=${binding!.vault_secret_id} where org_id=${orgId} and id=${binding!.connection_id}`;
+      if (fixtureSecretId !== null && fixtureSecretId !== binding!.vault_secret_id) await database.sql`delete from vault.secrets where id=${fixtureSecretId}`;
       await database.sql`update public.fact_sp_target_daily set top_of_search_impression_share=null where org_id=${orgId} and target_id='c-skew-a-kw0'`;
     }
   });

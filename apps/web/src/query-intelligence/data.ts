@@ -1,3 +1,4 @@
+import { listSpReportPeriods } from '@wizard-ads/db';
 import type { QueryHandle, WeeklyPpcQueryRecord } from '@wizard-ads/db';
 import {
   QueryVocabularyEntry,
@@ -72,7 +73,7 @@ export async function listQueryIntelligenceScopes(
      limit 104
   `;
 
-  return rows.map((row) => ({
+  const sqpScopes = rows.map((row) => ({
     marketplaceId: row.marketplace_id,
     weekStart: isoDate(row.week_start),
     weekEnd: isoDate(row.week_end),
@@ -81,6 +82,10 @@ export async function listQueryIntelligenceScopes(
     queryCount: Number(row.query_count),
     loadedAt: isoTimestamp(row.loaded_at),
   }));
+  const aba = await listSpReportPeriods(handle, { ...input, family: 'aba' });
+  const scopes = [...sqpScopes];
+  for (const period of aba) if (!scopes.some(scope => scope.marketplaceId === period.marketplaceId && scope.weekStart === period.start)) scopes.push({ marketplaceId: period.marketplaceId, weekStart: period.start, weekEnd: period.end, factRows: 0, asinCount: 0, queryCount: 0, loadedAt: period.observedAt });
+  return scopes.sort((a, b) => b.weekStart.localeCompare(a.weekStart) || a.marketplaceId.localeCompare(b.marketplaceId));
 }
 
 async function readFacts(

@@ -25,12 +25,16 @@ export type EntityKind =
   | 'sp.negativeKeywords'
   | 'sp.campaignNegativeKeywords'
   | 'sp.negativeTargets'
+  | 'sp.campaignNegativeTargets'
   | 'sp.productAds'
   | 'sb.campaigns'
   | 'sb.adGroups'
   | 'sb.keywords'
   | 'sd.campaigns'
-  | 'sd.adGroups';
+  | 'sd.adGroups'
+  | 'sd.productAds'
+  | 'sd.targets'
+  | 'sd.negativeTargets';
 
 export type SpWriteKind =
   | 'campaigns'
@@ -95,6 +99,10 @@ const spFilters = {
 export const SB_LIST_MAX_PAGE_SIZE = 100;
 
 export const LIST_ENDPOINTS: Readonly<Record<EntityKind, ListEndpoint>> = {
+  'sp.campaignNegativeTargets': { method: 'POST', path: '/sp/campaignNegativeTargets/list', mediaType: 'application/vnd.spCampaignNegativeTargetingClause.v3+json', responseKey: 'campaignNegativeTargetingClauses', paging: 'token', filters: { state: spFilters.state, campaignId: spFilters.campaignId } },
+  'sd.productAds': { verificationStatus: 'unverified', method: 'GET', path: '/sd/productAds/extended', mediaType: 'application/json', responseKey: '', paging: 'offset', filters: { state: 'stateFilter', campaignId: 'campaignIdFilter', adGroupId: 'adGroupIdFilter' } },
+  'sd.targets': { verificationStatus: 'unverified', method: 'GET', path: '/sd/targets/extended', mediaType: 'application/json', responseKey: '', paging: 'offset', filters: { state: 'stateFilter', campaignId: 'campaignIdFilter', adGroupId: 'adGroupIdFilter' } },
+  'sd.negativeTargets': { verificationStatus: 'unverified', method: 'GET', path: '/sd/negativeTargets/extended', mediaType: 'application/json', responseKey: '', paging: 'offset', filters: { state: 'stateFilter', campaignId: 'campaignIdFilter', adGroupId: 'adGroupIdFilter' } },
   'sp.campaigns': {
     method: 'POST',
     path: '/sp/campaigns/list',

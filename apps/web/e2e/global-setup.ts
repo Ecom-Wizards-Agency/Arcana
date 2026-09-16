@@ -22,6 +22,9 @@ import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
+import { appendFileSync, rmSync, writeFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createDb } from '@wizard-ads/db';
 import { adminConnectionString, applySqlFile, migrationFiles } from '@wizard-ads/db/testing';
@@ -121,13 +124,35 @@ export default async function globalSetup(): Promise<void> {
     },
     acquireServer: async (connectionString, mock) => {
       const worker = await spawnConnectionTestWorker(connectionString, mock.url);
+      let spWorker: ChildProcess | null = null;
       try {
+        spWorker = await spawnConnectionTestWorker(connectionString, mock.url, true);
         const { fixtureProfileId } = await readState();
         const server = spawnWebServer(connectionString, mock, fixtureProfileId);
         return { resource: server, cleanup: async () => {
-          try { await stopProcess(server.child); } finally { await stopProcess(worker); }
+          try { await stopProcess(server.child); } finally { await stopProcess(worker); if (spWorker) await stopProcess(spWorker); }
+          if (process.env['WIZARD_ADS_E2E_SUITE'] === 'auth-oauth') {
+            // Next buffers up to 100 spans. Shutdown flushes them; checking the
+            // file during a request can incorrectly pass before its span lands.
+            const trace = await readFile(resolve(WEB_ROOT, '.next/dev/trace'), 'utf8');
+            const records = trace.trim().split('\n').flatMap((line) => JSON.parse(line) as { name: string; tags?: { url?: string } }[]);
+            const callbackPaths = new Set<string>();
+            for (const record of records) {
+              const url = record.tags?.url;
+              if (record.name === 'handle-request' && url?.includes('oauth/callback')) {
+                if (url.includes('?')) throw new Error('OAuth callback query reached Next request traces');
+                callbackPaths.add(url);
+              }
+            }
+            if (!callbackPaths.has('/api/amazon/oauth/callback') || !callbackPaths.has('/api/amazon/spapi/oauth/callback')) {
+              throw new Error('Missing OAuth callback request traces');
+            }
+            if (trace.includes('synthetic-log-state-') || trace.includes('synthetic-log-code-')) {
+              throw new Error('OAuth consent marker reached Next traces');
+            }
+          }
         } };
-      } catch (error) { await stopProcess(worker); throw error; }
+      } catch (error) { await stopProcess(worker); if (spWorker) await stopProcess(spWorker); throw error; }
     },
     waitUntilReady: async (server) => {
       await waitForE2EServerOrFailure(
@@ -324,10 +349,10 @@ interface SpawnedWebServer {
   failedBeforeReady: Promise<never>;
 }
 
-async function spawnConnectionTestWorker(connectionString: string, mockOrigin: string): Promise<ChildProcess> {
-  const worker = spawn(process.execPath, ['--import', 'tsx', resolve(REPO_ROOT, 'apps/worker/src/amazon-connections-e2e.ts')], {
+async function spawnConnectionTestWorker(connectionString: string, mockOrigin: string, spapi = false): Promise<ChildProcess> {
+  const worker = spawn(process.execPath, ['--import', 'tsx', resolve(REPO_ROOT, spapi ? 'apps/worker/src/spapi-connections.e2e.ts' : 'apps/worker/src/amazon-connections-e2e.ts')], {
     cwd: REPO_ROOT, stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-    env: { PATH: process.env['PATH'], NODE_ENV: 'test', WIZARD_ADS_TEST_DATABASE_URL: connectionString,
+    env: { PATH: process.env['PATH'], TMPDIR: process.env['TMPDIR'], NODE_ENV: 'test', WIZARD_ADS_TEST_DATABASE_URL: connectionString,
       OPENSPELL_TEST_AMAZON_ORIGIN: mockOrigin, OPENSPELL_TEST_APP_ORIGIN: BASE_URL },
   });
   try {
@@ -346,6 +371,9 @@ async function spawnConnectionTestWorker(connectionString: string, mockOrigin: s
 }
 
 function spawnWebServer(connectionString: string, amazon: AmazonMock, fixtureProfileId: string): SpawnedWebServer {
+  const requestLog = resolve(tmpdir(), `oauth-next-${APP_PORT}.log`);
+  writeFileSync(requestLog, '');
+  if (process.env['WIZARD_ADS_E2E_SUITE'] === 'auth-oauth') rmSync(resolve(WEB_ROOT, '.next/dev/trace'), { force: true });
   const child = spawn(
     resolve(WEB_ROOT, 'node_modules/.bin/next'),
     // `--webpack` for the reason next.config.ts documents: Turbopack cannot
@@ -353,7 +381,7 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock, fixturePro
     ['dev', '--webpack', '--port', String(APP_PORT), '--hostname', '127.0.0.1'],
     {
       cwd: WEB_ROOT,
-      stdio: ['ignore', 'inherit', 'inherit'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
         // Guard sweeps release their route graphs between halves (see above).
@@ -374,6 +402,9 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock, fixturePro
         AMAZON_OAUTH_STATE_KEY: STATE_KEY,
         AMAZON_LWA_AUTHORIZE_URL: amazon.authorizeUrl,
         OPENSPELL_AMAZON_CONNECTIONS_ENABLED: '1',
+        OPENSPELL_SPAPI_CONNECTIONS_ENABLED: '1',SP_API_APPLICATION_ID: 'synthetic-sp-app',SP_API_LWA_CLIENT_ID: 'synthetic-sp-client',
+        SP_API_OAUTH_REGION: 'NA',SP_API_OAUTH_REDIRECT_URI: `${BASE_URL}/api/amazon/spapi/oauth/callback`,
+        SP_API_TEST_CONSENT_URL: `${amazon.url}/spapi/consent`,
         // This process owns only the synthetic suite database. The creative
         // producer allowlist is confined to its seeded profile; no cron runs.
         ...(process.env['WIZARD_ADS_E2E_SUITE'] === 'route-acceptance' ? {
@@ -385,6 +416,9 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock, fixturePro
       },
     },
   );
+  for (const [stream, output] of [[child.stdout, process.stdout], [child.stderr, process.stderr]] as const) {
+    stream?.on('data', (chunk: Buffer) => { appendFileSync(requestLog, chunk); output.write(chunk); });
+  }
   // Attach before returning: a missing executable or an immediate exit emits
   // asynchronously and must reject setup rather than become an uncaught event
   // while the readiness poll waits for its full timeout.

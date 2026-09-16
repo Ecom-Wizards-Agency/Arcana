@@ -8,10 +8,12 @@ import { PermanentJobError } from './permanent-job-error.js';
  * promotion remains transactional and independently idempotent in packages/db.
  */
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   listQueryVocabulary,
   persistContextualNegativeProposals,
   promoteSqpWeeklyFacts,
+  verifySqpWeeklyPromotion,
   readWeeklyPpcQueryFacts,
   type ContextualProposalPersistenceCounts,
   type DbHandle,
@@ -120,6 +122,7 @@ export interface SqpRoutingDecision {
 export interface SqpWorkflowDataStore {
   listVocabulary(input: { orgId: string; marketplaceId: string }): Promise<QueryVocabularyEntry[]>;
   promoteFacts(input: SqpWeeklyPromotionInput): Promise<SqpWeeklyPromotionResult>;
+  verifyFacts(input: Omit<SqpWeeklyPromotionInput, 'rows'> & { promotionRunId: string }): Promise<number>;
   listPpcFacts(input: {
     orgId: string;
     profileId: string;
@@ -222,6 +225,21 @@ export async function runSqpRequestWorkflow(
   if (checkpoint === null) checkpoint = freshCheckpoint(runKey, payload, plans);
   validateCheckpoint(checkpoint, payload, plans);
   if (checkpoint.completed !== null) {
+    const sourceReports = promotionSourceReports(checkpoint);
+    const ingestion = checkpoint.completed.ingestion;
+    const verified = await dependencies.data.verifyFacts({
+      orgId: payload.orgId, profileId: payload.profileId, marketplaceId: payload.marketplaceId,
+      weekStart: payload.weekStart, weekEnd: payload.weekEnd,
+      requestedAsins: plans.flatMap((plan) => plan.asins),
+      requestIdentity: promotionRequestIdentity(payload, sourceReports),
+      requestedAt: new Date(Math.min(...sourceReports.map((report) => report.requestedAt.valueOf()))),
+      completedAt: new Date(Math.max(...sourceReports.map((report) => report.completedAt.valueOf()))),
+      sourceReports, promotionRunId: ingestion.promotionRunId,
+      counts: { ...ingestion, upserts: ingestion.deduplicatedRows },
+    });
+    if (verified !== ingestion.canonicalRows) {
+      throw new SqpWorkflowPermanentError('SQP replay destination count differs from completed promotion');
+    }
     return { ...checkpoint.completed, reused: true };
   }
 
@@ -586,6 +604,10 @@ export class PostgresSqpWorkflowDataStore implements SqpWorkflowDataStore {
     return promoteSqpWeeklyFacts(this.handle, input);
   }
 
+  verifyFacts(input: Omit<SqpWeeklyPromotionInput, 'rows'> & { promotionRunId: string }): Promise<number> {
+    return verifySqpWeeklyPromotion(this.handle, input);
+  }
+
   listPpcFacts(input: {
     orgId: string;
     profileId: string;
@@ -793,7 +815,7 @@ function validateCheckpoint(
     checkpoint.batches.length !== plans.length ||
     checkpoint.batches.some((batch, index) =>
       batch.requestKey !== plans[index]?.requestKey ||
-      JSON.stringify(batch.plan) !== JSON.stringify(plans[index]),
+      !isDeepStrictEqual(batch.plan, plans[index]),
     )
   ) {
     throw new SqpWorkflowPermanentError('SQP checkpoint does not match its request');
