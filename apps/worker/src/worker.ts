@@ -1,4 +1,7 @@
+import { isDeepStrictEqual } from 'node:util';
 import { IngestionRegistry, ReportCoverageCompletion } from './ingestion-registry.js';
+import { CoreFeatureReportType, CoreReportConfiguration, ReportType as DefaultReportType } from '@wizard-ads/shared';
+import { defaultCoreReportConfiguration, parseCoreReport, assertCoreReportAdmission, validateCoreReportWindow } from '@wizard-ads/ads-api';
 import { ingestionSource } from './ingestion-sources.js';
 import { ControlMirrorMergeCounts, KeywordMirrorMergeCounts } from '@wizard-ads/shared/sp-write-mirror';
 import { Buffer } from 'node:buffer';
@@ -164,6 +167,7 @@ const consoleLogger: WorkerLogger = {
 };
 
 export interface SyncWorkerOptions {
+  coreReportingEnabled?: boolean;
   workerId: string;
   store: WorkerStore;
   /** Optional so an integration-only runtime needs no Amazon credentials. */
@@ -193,6 +197,7 @@ export interface SyncWorkerOptions {
 }
 
 export class SyncWorker {
+  private readonly coreReportingEnabled: boolean;
   readonly workerId: string;
   private readonly registry: IngestionRegistry;
   private readonly store: WorkerStore;
@@ -219,6 +224,7 @@ export class SyncWorker {
   private stopping = false;
 
   constructor(options: SyncWorkerOptions) {
+    this.coreReportingEnabled = options.coreReportingEnabled === true;
     this.workerId = options.workerId;
     this.store = options.store;
     this.adsApi = options.adsApi;
@@ -710,6 +716,7 @@ export class SyncWorker {
         ...(listing.excludedEntityTypes?.[product] === undefined ? {} : {
           excludedEntityTypes: listing.excludedEntityTypes[product],
         }),
+        ...(product === 'SP' ? { preserveCampaignNegativeTargets: listing.preserveCampaignNegativeTargets ?? true } : {}),
       });
       // Program rule 4: the artifact, not the exit code. A listing that
       // upserted fewer rows than it listed lost some — unless the shortfall is
@@ -817,7 +824,18 @@ export class SyncWorker {
     if (payload.reportType !== 'sbAds' && payload.creativeSyncSnapshotId != null) {
       throw new PermanentJobError('base report request must not carry creative snapshot provenance');
     }
+    const coreFamily = CoreFeatureReportType.safeParse(payload.reportType);
+    if (coreFamily.success) {
+      if (!this.coreReportingEnabled) throw new PermanentJobError('core reporting is disabled');
+      const configuration = CoreReportConfiguration.parse(payload.familyConfiguration ?? defaultCoreReportConfiguration(coreFamily.data));
+      if (configuration.family !== coreFamily.data) throw new PermanentJobError('report configuration family mismatch');
+      const capability = await this.store.coreReportCapability?.(payload.orgId, payload.profileId, coreFamily.data) ?? null;
+      assertCoreReportAdmission(configuration, capability, payload);
+      validateCoreReportWindow(configuration, payload.startDate, payload.endDate, new Intl.DateTimeFormat('en-CA', { timeZone: profile.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(this.now()));
+      payload = { ...payload, familyConfiguration: configuration };
+    } else if (payload.familyConfiguration !== undefined) throw new PermanentJobError('base report cannot carry family configuration');
     const ledger = await this.store.ensureReportRequest(job.id, payload);
+    if (coreFamily.success && !isDeepStrictEqual(CoreReportConfiguration.parse(ledger.familyConfiguration), payload.familyConfiguration)) throw new PermanentJobError('immutable report configuration changed');
     let amazonReportId = ledger.amazonReportId;
     if (!amazonReportId) {
       try {
@@ -826,6 +844,7 @@ export class SyncWorker {
           reportType: payload.reportType,
           startDate: payload.startDate,
           endDate: payload.endDate,
+          ...(payload.familyConfiguration ? { familyConfiguration: payload.familyConfiguration } : {}),
         }));
         amazonReportId = created.reportId;
         const persistence = {
@@ -870,7 +889,7 @@ export class SyncWorker {
     };
     const enqueued = await this.store.enqueue(pollPayload, addMinutes(this.now(), 5), `report.poll:${ledger.id}:0`);
     let unified: Awaited<ReturnType<UnifiedDualRun['admit']>> = { kind: 'disabled' };
-    if (this.unifiedReporting) {
+    if (this.unifiedReporting && !coreFamily.success) {
       try {
         unified = await this.unifiedReporting.admit({
           v3ReportRequestId: ledger.id,
@@ -900,6 +919,11 @@ export class SyncWorker {
       payload.profileId,
     );
     assertAmazonReportId(ledger, payload.amazonReportId);
+    const coreFamily = CoreFeatureReportType.safeParse(ledger.reportType);
+    if (coreFamily.success) {
+      if (!this.coreReportingEnabled) throw new PermanentJobError('core reporting is disabled');
+      assertCoreReportAdmission(CoreReportConfiguration.parse(ledger.familyConfiguration), await this.store.coreReportCapability?.(payload.orgId, payload.profileId, coreFamily.data) ?? null, payload);
+    }
     const status = await this.buckets.run(profile.region, () => adsApi.getReport(profile, payload.amazonReportId));
     if (status.status === 'PENDING' || status.status === 'PROCESSING') {
       if (this.now().getTime() - ledger.requestedAt.getTime() >= FOUR_HOURS_MS) {
@@ -951,6 +975,12 @@ export class SyncWorker {
     );
     assertAmazonReportId(ledger, payload.amazonReportId);
     let parsedBatch: ParsedFactBatch | undefined;
+    const coreFamily = CoreFeatureReportType.safeParse(ledger.reportType);
+    if (coreFamily.success) {
+      if (!this.coreReportingEnabled) throw new PermanentJobError('core reporting is disabled');
+      assertCoreReportAdmission(CoreReportConfiguration.parse(ledger.familyConfiguration), await this.store.coreReportCapability?.(payload.orgId, payload.profileId, coreFamily.data) ?? null, payload);
+    }
+    const coreRows: unknown[] = [];
     let sbReport: SbAdsReportProbeParseResult | undefined;
     let parentParsedBytes = 0;
     const sourceDateCounts = new Map<string, ReportDateSourceCounts>();
@@ -971,6 +1001,11 @@ export class SyncWorker {
           signal: downloadController.signal,
           abortSource: (reason) => downloadController.abort(reason),
           consumeRows: (rows, offset) => {
+            if (coreFamily.success) {
+              parentParsedBytes = accountParentParsedBytes(parentParsedBytes, rows);
+              coreRows.push(...rows);
+              return;
+            }
             if (ledger.reportType === 'sbAds') {
               const chunk = parseSbAdsReportProbe(rows);
               parentParsedBytes = accountParentParsedBytes(parentParsedBytes, chunk);
@@ -981,7 +1016,7 @@ export class SyncWorker {
               );
               return;
             }
-            const chunk = parseReportRows(ledger.reportType, rows, profile, ledger.id);
+            const chunk = parseReportRows(DefaultReportType.parse(ledger.reportType), rows, profile, ledger.id);
             parentParsedBytes = accountParentParsedBytes(parentParsedBytes, chunk);
             if (SP_REPORT_TYPES.has(ledger.reportType)) {
               accountSponsoredProductsSourceChunk(rows, chunk.skipped, sourceDateCounts);
@@ -990,13 +1025,29 @@ export class SyncWorker {
           },
         },
       );
+      if (coreFamily.success) {
+        if (coreRows.length !== downloaded.rowsParsed) throw new PermanentJobError('core report download count mismatch');
+        const configuration = CoreReportConfiguration.parse(ledger.familyConfiguration);
+        const parsed = parseCoreReport(configuration, coreRows, ledger.startDate, ledger.endDate);
+        const accepted = parsed.refusals.length === 0 ? parsed.rows.length : 0;
+        const accounting = { sourceRows: parsed.sourceRows, parsedRows: parsed.parsedRows, refusedRows: parsed.refusals.length, promotedRows: accepted, unpromotedRows: parsed.parsedRows - accepted, canonicalRows: accepted };
+        const observedAt = this.now().toISOString();
+        await coverage.attributed(ledger.id, accounting, {
+          status: parsed.refusals.length ? 'failed' : 'completed', bytesDownloaded: downloaded.bytesDownloaded,
+          ...(parsed.refusals.length ? { error: 'core report parser refused rows' } : {}),
+          coverage: { sourceRows: parsed.sourceRows, parsedRows: parsed.parsedRows, refusedRows: parsed.refusals.length, observedAt, settledThrough: null },
+          promotion: { orgId: ledger.orgId, profileId: ledger.profileId, reportRequestId: ledger.id, requestedAt: ledger.requestedAt.toISOString(), observedAt, startDate: ledger.startDate, endDate: ledger.endDate, parsed },
+        });
+        if (parsed.refusals.length) throw new PermanentJobError('core report parser refused rows');
+        return { ...accounting, duplicates: parsed.duplicateRows, bytesDownloaded: downloaded.bytesDownloaded };
+      }
       if (ledger.reportType === 'sbAds') {
         sbReport ??= parseSbAdsReportProbe([]);
         if (sbReport.sourceRows !== downloaded.rowsParsed) {
           throw new PermanentJobError('sbAds parser chunk accounting did not match the downloaded rows');
         }
       } else {
-        parsedBatch ??= parseReportRows(ledger.reportType, [], profile, ledger.id);
+        parsedBatch ??= parseReportRows(DefaultReportType.parse(ledger.reportType), [], profile, ledger.id);
         if (parsedBatch.sourceRows !== downloaded.rowsParsed) {
           throw new PermanentJobError('report parser chunk accounting did not match the downloaded rows');
         }
@@ -1099,7 +1150,7 @@ export class SyncWorker {
       });
       return { ...result, bytesDownloaded };
     }
-    const baseLedger: BaseReportRequestState = { ...ledger, reportType: ledger.reportType };
+    const baseLedger: BaseReportRequestState = { ...ledger, reportType: DefaultReportType.parse(ledger.reportType) };
     const batch = parsedBatch ?? parseReportRows(baseLedger.reportType, [], profile, ledger.id);
     if (SP_REPORT_TYPES.has(baseLedger.reportType)) {
       return this.promoteSponsoredProductsReport(

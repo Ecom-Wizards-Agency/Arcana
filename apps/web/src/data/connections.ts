@@ -6,6 +6,7 @@
  * there a credential" and stops there.
  */
 import type { QueryHandle } from '@wizard-ads/db';
+import type { Region } from '@wizard-ads/shared';
 import { operatorFailureLabel } from '../security/operator-failure';
 
 export type ConnectionStatus = 'pending' | 'active' | 'error' | 'revoked';
@@ -65,4 +66,41 @@ export async function listConnections(
     lastError: operatorFailureLabel(row.last_error),
     profileCount: Number(row.profile_count),
   }));
+}
+
+export interface SpApiConnectionSummary {
+  id: string; label: string; status: ConnectionStatus; hasCredential: boolean;
+  bindingCount: number; enabledBindings: number;
+}
+export interface SpApiSelectableProfile {
+  id: string; name: string; marketplaceId: string; countryCode: string;
+  connectionLabel: string | null;
+}
+
+/** Metadata only, scoped by the page's authenticated transaction and exact org. */
+export async function loadSpApiConnections(handle: QueryHandle, orgId: string, consentRegion: Region | null = null) {
+  const connections = await handle.sql<Array<{ id: string; label: string; status: ConnectionStatus;
+    has_credential: boolean; binding_count: number; enabled_bindings: number }>>`
+    select c.id,c.label,c.status::text,(c.status = 'active' and c.vault_secret_id is not null) as has_credential,
+      count(b.id)::int as binding_count,count(b.id) filter (where b.enabled)::int as enabled_bindings
+    from public.spapi_connections c left join public.spapi_profile_bindings b on b.connection_id=c.id and b.org_id=c.org_id
+    where c.org_id=${orgId} group by c.id order by c.created_at,c.id
+  `;
+  const profiles = await handle.sql<Array<{ id: string; name: string; country_code: string;
+    marketplace_id: string; connection_label: string | null }>>`
+    select p.id,coalesce(p.account_name,p.amazon_profile_id) as name,p.country_code,
+      app.spapi_marketplace_for_country(p.country_code) as marketplace_id,c.label as connection_label
+    from public.ad_profiles p left join public.spapi_profile_bindings b on b.profile_id=p.id and b.org_id=p.org_id
+    left join public.spapi_connections c on c.id=b.connection_id and c.org_id=p.org_id
+    where p.org_id=${orgId} and p.region::text=${consentRegion}
+      and p.account_type='seller' and nullif(btrim(p.amazon_account_id),'') is not null
+      and app.spapi_region_for_marketplace(app.spapi_marketplace_for_country(p.country_code))=p.region
+    order by p.id
+  `;
+  return {
+    connections: connections.map((row): SpApiConnectionSummary => ({ id: row.id,label: row.label,status: row.status,
+      hasCredential: row.has_credential,bindingCount: row.binding_count,enabledBindings: row.enabled_bindings })),
+    profiles: profiles.map((row): SpApiSelectableProfile => ({ id: row.id,name: row.name,countryCode: row.country_code,
+      marketplaceId: row.marketplace_id,connectionLabel: row.connection_label })),
+  };
 }

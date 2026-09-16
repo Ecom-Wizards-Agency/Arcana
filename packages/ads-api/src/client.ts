@@ -16,6 +16,8 @@
  * are marked at each method.
  */
 import { BidRecommendationReadCounts, type BidRecommendationTarget } from '@wizard-ads/shared';
+import type { ProviderCollectionConfig, ProviderEvidencePage } from '@wizard-ads/shared';
+import { buildProviderEvidenceRequest, parseProviderEvidenceResponse, ProviderEvidenceProtocolError } from './provider-evidence.js';
 import type {
   AdGroupRow,
   AdProduct,
@@ -246,6 +248,21 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
     return this.ctx.throttle.snapshot();
   }
 
+  /** Read-only fixed operation catalog; provider apply/status endpoints are absent. */
+  async readProviderEvidence(config: ProviderCollectionConfig, nextToken: string | null): Promise<ProviderEvidencePage> {
+    const request = buildProviderEvidenceRequest(config, nextToken);
+    const result = await httpRequest(this.ctx, {
+      method: request.contract.method, path: request.contract.path,
+      url: `${hostFor(this.region)}${request.path}`, idempotent: true,
+      headers: this.headers({ profileId: config.scope.amazonProfileId, contentType: request.contract.contentType, accept: request.contract.accept }),
+      ...(request.contract.method === 'POST' ? { body: JSON.stringify(request.body) } : {}),
+      expectedStatuses: [400, 403, 404, 422], maxResponseBytes: 8 * 1024 * 1024,
+    });
+    if ([403, 404, 422].includes(result.status)) return { rows: [], source: 0, refused: 0, nextToken: null, status: 'unsupported' };
+    if (result.status >= 400) throw new ProviderEvidenceProtocolError();
+    return parseProviderEvidenceResponse(config, this.json(result, 'provider evidence'), new Date(this.ctx.now()).toISOString());
+  }
+
   private readonly getAccessToken = (force: boolean): Promise<string> =>
     force ? this.tokens.forceRefresh() : this.tokens.getAccessToken();
 
@@ -387,7 +404,8 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
   ): { rows: Record<string, unknown>[]; nextToken: string | null } {
     // Sponsored Display answers with a bare array and no pagination envelope.
     if (Array.isArray(parsed)) {
-      return { rows: parsed.filter(isRecord), nextToken: null };
+      if (parsed.some((row) => !isRecord(row))) throw new AdsApiParseError('entity page contains a malformed row');
+      return { rows: parsed as Record<string, unknown>[], nextToken: null };
     }
     if (!isRecord(parsed)) {
       throw new AdsApiParseError(`${path} returned neither an array nor an object`);
@@ -403,7 +421,8 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
     if (!Array.isArray(raw)) {
       throw new AdsApiParseError(`${path} response field '${responseKey}' is not an array`);
     }
-    return { rows: raw.filter(isRecord), nextToken: readString(parsed, 'nextToken') };
+    if (raw.some((row) => !isRecord(row))) throw new AdsApiParseError('entity page contains a malformed row');
+    return { rows: raw as Record<string, unknown>[], nextToken: readString(parsed, 'nextToken') };
   }
 
   private async listMapped<T>(
@@ -469,6 +488,22 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
 
   listSpProductAds(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<ProductAdRow>>> {
     return this.listMapped(profileId, 'sp.productAds', options, mapProductAds);
+  }
+
+  listSpCampaignNegativeTargets(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<NegativeRow>>> {
+    return this.listMapped(profileId, 'sp.campaignNegativeTargets', options, (raw) => mapNegativeTargets(raw, 'campaign'));
+  }
+
+  listSdProductAds(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<ProductAdRow>>> {
+    return this.listMapped(profileId, 'sd.productAds', options, (raw) => mapProductAds(raw, 'SD'));
+  }
+
+  listSdTargets(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<TargetRow>>> {
+    return this.listMapped(profileId, 'sd.targets', options, (raw) => mapTargets(raw, 'SD'));
+  }
+
+  listSdNegativeTargets(profileId: string, options: ListOptions = {}): Promise<MappedListResult<MirrorRow<NegativeRow>>> {
+    return this.listMapped(profileId, 'sd.negativeTargets', options, (raw) => mapNegativeTargets(raw, 'ad_group', 'SD'));
   }
 
   /** Sponsored Brands campaign management is v4 only; v3 was shut off in 2024. */

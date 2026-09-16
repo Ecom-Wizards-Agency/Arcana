@@ -11,6 +11,13 @@ interface RegistryEntry {
   exports: readonly { barrel: string; order: number; clause: string; after: string }[];
 }
 export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
+  {domain: 'schema/report-families', contract: null, schema: 'schema/report-families.ts', queries: null, migrationPrefix: '20260915330000', exports: [{barrel: 'schema/index.ts', order: 120, clause: '*', after: ''}]},
+  {domain: 'queries/report-families', contract: null, schema: null, queries: 'queries/report-families.ts', migrationPrefix: '20260915330000', exports: [{barrel: 'index.ts', order: 120, clause: '*', after: ''}]},
+  {"domain":"queries/grid-performance-evidence","contract":null,"schema":null,"queries":"queries/grid-performance-evidence.ts","migrationPrefix":null,"exports":[{"barrel":"index.ts","order":121,"clause":"*","after":""}]},
+  {"domain": "schema/spapi-reports", "contract": null, "schema": "schema/spapi-reports.ts", "queries": null, "migrationPrefix": "20260915320000", "exports": [{"barrel": "schema/index.ts", "order": 120, "clause": "*", "after": ""}]},
+  {"domain": "queries/spapi-reports", "contract": null, "schema": null, "queries": "queries/spapi-reports.ts", "migrationPrefix": "20260915320000", "exports": [{"barrel": "index.ts", "order": 120, "clause": "*", "after": ""}]},
+  { domain: 'schema/provider-evidence', contract: null, schema: 'schema/provider-evidence.ts', queries: null, migrationPrefix: '20260915350000', exports: [{ barrel: 'schema/index.ts', order: 110, clause: '*', after: '' }] },
+  { domain: 'queries/provider-evidence', contract: null, schema: null, queries: 'queries/provider-evidence.ts', migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 110, clause: '{ readProviderEvidence }', after: '' }, { barrel: 'worker.ts', order: 110, clause: '{ prepareProviderEvidenceRun, authorizeProviderEvidencePage, persistProviderEvidencePage, failProviderEvidenceRun }', after: '' }] },
   {domain: "queries/sp-write-application-optimizer", contract: null, schema: null, queries: "queries/sp-write-application-optimizer.ts", migrationPrefix: null, exports: [{barrel: "index.ts", order: 106, clause: "{ prepareOptimizerRetry, readOptimizerRetryExclusions }", after: ""}]},
   {domain: "queries/optimizer-export", contract: null, schema: null, queries: "queries/optimizer-export.ts", migrationPrefix: "20260915190000", exports: [{barrel: "index.ts", order: 105, clause: "*", after: ""}]},
   {"domain": "queries/optimizer-run", "contract": null, "schema": null, "queries": "queries/optimizer-run.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 104, "clause": "*", "after": ""}]},
@@ -106,7 +113,7 @@ export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
   {"domain": "queries/sp-write-preview-evidence", "contract": null, "schema": null, "queries": "queries/sp-write-preview-evidence.ts", "migrationPrefix": null, "exports": []},
   {"domain": "queries/sp-write-recorded-preview", "contract": null, "schema": null, "queries": "queries/sp-write-recorded-preview.ts", "migrationPrefix": null, "exports": []},
   {"domain": "queries/sp-write-worker", "contract": null, "schema": null, "queries": "queries/sp-write-worker.ts", "migrationPrefix": null, "exports": [{"barrel": "sp-write-worker.ts", "order": 0, "clause": "{ isSpWriteDispatchCurrent, listSpWriteProviderPlans, readSpWriteDatabaseTime, readSpWriteRecoveryResult }", "after": ""}]},
-  {"domain": "queries/spapi", "contract": null, "schema": null, "queries": "queries/spapi.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 32, "clause": "*", "after": ""}]},
+  {"domain": "queries/spapi", "contract": null, "schema": null, "queries": "queries/spapi.ts", "migrationPrefix": "20260915310000", "exports": [{"barrel": "index.ts", "order": 32, "clause": "*", "after": ""}]},
   {"domain": "queries/sqp", "contract": null, "schema": null, "queries": "queries/sqp.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 31, "clause": "*", "after": ""}]},
   {"domain": "queries/tags", "contract": null, "schema": null, "queries": "queries/tags.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 33, "clause": "*", "after": ""}]},
   {"domain": "queries/team-invitation-acceptance", "contract": null, "schema": null, "queries": "queries/team-invitation-acceptance.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 4, "clause": "*", "after": ""}]},

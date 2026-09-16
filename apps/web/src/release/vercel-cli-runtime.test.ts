@@ -5,6 +5,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -28,6 +29,19 @@ describe('locked Vercel CLI runtime', () => {
     chmodSync(injected, 0o755);
     vi.stubEnv('PATH', `${fixture}:${process.env['PATH'] ?? ''}`);
     try {
+      const curl = realpathSync('/usr/bin/curl');
+      const curlStat = statSync(curl);
+      const curlDirectoryStat = statSync(dirname(curl));
+      const hostHasTrustedCurl = curlStat.uid === 0
+        && (curlStat.mode & 0o022) === 0
+        && curlDirectoryStat.uid === 0
+        && (curlDirectoryStat.mode & 0o022) === 0;
+      if (!hostHasTrustedCurl) {
+        expect(() => lockedVercelCliLaunch()).toThrowError('untrusted_system_curl');
+        expect(existsSync(trace)).toBe(false);
+        return;
+      }
+
       const launch = lockedVercelCliLaunch();
       expect(launch.command).toBe(realpathSync(process.execPath));
       expect(launch.argumentsPrefix).toEqual([

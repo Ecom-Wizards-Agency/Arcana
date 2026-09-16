@@ -17,8 +17,8 @@ describe('production registered integrations', () => {
     [{ ...base,type: 'keepa.sync',includeCompetitors: false }, { keepaSync: async () => ({ requested: 2,returned: 1,missing: ['synthetic'],observationsWritten: 1,observationsExisting: 0,earliestObservedAt: '2026-08-24T00:00:00.000Z',observedAt: '2026-08-24T00:00:00.000Z' }) }, '2026-08-24'],
     [{ ...base,type: 'rank.sync' }, { rankSync: async () => ({ observations: 2,uniqueObservations: 1,loaded: 1,observedOn: '2026-08-23' }) }, '2026-08-23'],
     [{ ...base,type: 'economics.sync' }, { economicsSync: async () => ({ asinsSelected: 3,rowsLoaded: 1,productCallsSucceeded: 2,productsSkippedIncomplete: 1,capturedOn: '2026-08-22' }) }, '2026-08-22'],
-    [{ ...base,type: 'sqp.request',marketplaceId: 'synthetic',asins: ['B000000001'],weekStart: '2026-08-16',weekEnd: '2026-08-22' }, { sqpRequest: async () => ({ observedAt: '2026-08-23T00:00:00.000Z',ingestion: { sourceRows: 3,parsedRows: 3,refusedRows: 0,status: 'promoted',deduplicatedRows: 1,promotedRows: 1,upserts: 1,canonicalRows: 1 } }) }, '2026-08-22'],
-    [{ ...base,type: 'sqp.request',marketplaceId: 'synthetic',asins: ['B000000001'],weekStart: '2026-08-16',weekEnd: '2026-08-22' }, { sqpRequest: async () => ({ observedAt: '2026-08-23T00:00:00.000Z',ingestion: { sourceRows: 3,parsedRows: 3,refusedRows: 0,status: 'already_promoted',deduplicatedRows: 1,promotedRows: 0,upserts: 0,canonicalRows: 1 } }) }, '2026-08-22'],
+    [{ ...base,type: 'sqp.request',marketplaceId: 'synthetic',asins: ['B000000001'],weekStart: '2026-08-16',weekEnd: '2026-08-22' }, { sqpRequest: async () => ({ status: 'completed', observedAt: '2026-08-23T00:00:00.000Z',ingestion: { sourceRows: 3,parsedRows: 3,refusedRows: 0,status: 'promoted',deduplicatedRows: 1,promotedRows: 1,upserts: 1,canonicalRows: 1 } }) }, '2026-08-22'],
+    [{ ...base,type: 'sqp.request',marketplaceId: 'synthetic',asins: ['B000000001'],weekStart: '2026-08-16',weekEnd: '2026-08-22' }, { sqpRequest: async () => ({ status: 'completed', observedAt: '2026-08-23T00:00:00.000Z',ingestion: { sourceRows: 3,parsedRows: 3,refusedRows: 0,status: 'already_promoted',deduplicatedRows: 1,promotedRows: 0,upserts: 0,canonicalRows: 1 } }) }, '2026-08-22'],
     [{ ...base,type: 'keepa.sync',includeCompetitors: false }, { keepaSync: async () => ({ requested: 1,returned: 1,missing: [],observationsWritten: 0,observationsExisting: 1,earliestObservedAt: '2026-08-20T00:00:00.000Z',observedAt: '2026-08-20T00:00:00.000Z' }) }, '2026-08-20'],
   ];
   it.each(cases)('publishes source/load accounting and coverage for %s', async (payload, handlers, date) => {
@@ -29,6 +29,23 @@ describe('production registered integrations', () => {
       attempts: 1,maxAttempts: 2,claim: null,claimedBy: 'synthetic',dedupeKey: null };
     await registry.dispatch({ job,payload,profile: { id: profileId,orgId,amazonProfileId: 'synthetic',region: 'EU',timezone: 'UTC',currencyCode: 'USD' } });
     expect(producer).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ orgId,profileId,coveredThrough: date,loadedRows: 1,countsMatch: true }),1);
+  });
+  it.each(['pending', 'failed'])('refuses SQP %s even when a caller supplies promotion-shaped counts', async (status) => {
+    const producer = vi.fn(async () => ({ offered: 1, written: 1, unchanged: 0 }));
+    const registry = new IngestionRegistry(producer);
+    registerIntegrationSources(registry, { sqpRequest: async () => ({ status,
+      ingestion: { sourceRows: 1, parsedRows: 1, refusedRows: 0, status: 'promoted',
+        deduplicatedRows: 1, promotedRows: 1, upserts: 1, canonicalRows: 1 },
+    }) });
+    const payload = { ...base, type: 'sqp.request' as const, marketplaceId: 'synthetic',
+      asins: ['B000000001'], weekStart: '2026-08-16', weekEnd: '2026-08-22' };
+    const job: ClaimedJob = { ...base, id: '33333333-3333-4333-8333-333333333333',
+      jobType: payload.type, payload, attempts: 1, maxAttempts: 2,
+      claim: null, claimedBy: 'synthetic', dedupeKey: null };
+    await expect(registry.dispatch({ job, payload, profile: { id: profileId, orgId,
+      amazonProfileId: 'synthetic', region: 'EU', timezone: 'UTC', currencyCode: 'USD' } }))
+      .rejects.toThrow('requires a completed workflow');
+    expect(producer).not.toHaveBeenCalled();
   });
   it('keeps the provider timestamp when all Keepa observations already exist', async () => {
     const observedAt = keepaMinutesToDate(8_200_000);

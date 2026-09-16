@@ -16,6 +16,7 @@ import type { Page } from '@playwright/test';
 import { signIn } from './support/auth';
 import { applyRequestedCpuThrottle } from './support/cpu-throttle';
 import { readState } from './support/fixture';
+import { exerciseSpApiReadOnlyRole } from './support/spapi-onboarding';
 
 test.describe.configure({ mode: 'serial' });
 test.beforeEach(async ({ page }) => applyRequestedCpuThrottle(page));
@@ -91,6 +92,7 @@ test('a viewer sees the roster and can change nothing', async ({ page }) => {
   await page.goto('/settings/connections');
   await expect(page.getByTestId('connect-forbidden')).toBeVisible();
   await expect(page.getByTestId('connect-amazon')).toHaveCount(0);
+  await exerciseSpApiReadOnlyRole(page,'viewer');
 
   await page.goto('/settings/integrations');
   await expect(page.getByTestId('integrations-read-only')).toBeVisible();
@@ -137,6 +139,7 @@ test('an analyst edits targets but cannot toggle sync or connect', async ({ page
   await expect(saved.getByTestId('field-targetTotalAcos')).toHaveValue('18');
   await expect(saved.getByTestId('field-goalLens')).toHaveValue('scale');
   await expect(saved.getByTestId('field-monthlyBudget')).toHaveValue('4200');
+  await exerciseSpApiReadOnlyRole(page,'analyst');
 
   const response = await page.request.get('/api/amazon/oauth/start', { maxRedirects: 0 });
   expect(response.status()).toBe(403);

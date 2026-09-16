@@ -52,7 +52,7 @@ describe('Creative detail tabs', () => {
     expect(screen.getByRole('heading', { name: 'Placement facts are not measured' })).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Campaign placement facts' })).toBeNull();
   });
-  it('renders stored exact, window and first certainty while listing has no source', () => {
+  it('renders stored exact, window and first certainty with unavailable listing evidence', () => {
     render(<Screen data={visualFixture('history')} />);
     const table = screen.getByRole('region', { name: 'Creative change history' });
     expect(within(table).getAllByRole('row')).toHaveLength(4);
@@ -60,7 +60,9 @@ describe('Creative detail tabs', () => {
     for (const text of ['exact', 'window · 4 days', 'first']) expect(within(table).getByText(text)).toBeTruthy();
     expect(within(table).queryByText('Listing')).toBeNull();
     expect(within(table).queryByText('Promotion')).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Needs ingestion: listing snapshots' })).toBeTruthy();
+    const listing = screen.getByRole('region', { name: 'Listing observations' });
+    expect(within(listing).getByTestId('sp-source-status').getAttribute('data-state')).toBe('unavailable');
+    expect(within(listing).getByText(/No listing fields observed in this period/)).toBeTruthy();
     expect(screen.getByText('The judgement is made once when the change is recorded and stored, never recomputed on read.')).toBeTruthy();
   });
   it('renders recorded change values as prose in the profile currency, preserving unknowns and zero', () => {

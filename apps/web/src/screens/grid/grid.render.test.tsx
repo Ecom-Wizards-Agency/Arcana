@@ -29,6 +29,13 @@ describe('shared performance presets', () => {
       expect(columns.map((column) => column.id)).toEqual(expect.arrayContaining(defaultVisibleColumns(entity)));
       expect(columns.filter((column) => column.pinned)).toHaveLength(1);
       if (entity === 'products') expect(columns.map((column) => column.id)).toContain('gap');
+      if (entity === 'products' || entity === 'search_terms' || entity === 'targets') {
+        const workspace = host.querySelector('[data-testid="grid-data-loading"]')!;
+        const evidence = host.querySelector(entity === 'products' ? '[aria-label="Retail sales and traffic"]' : '[aria-label="ABA search-term evidence"]')!;
+        expect(workspace).not.toBeNull();
+        expect(evidence).not.toBeNull();
+        expect(workspace.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      }
     });
   }
 });

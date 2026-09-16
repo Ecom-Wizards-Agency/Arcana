@@ -37,3 +37,30 @@ describe('report-type-agnostic transport', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('bounded streamed report documents', () => {
+  it.each([
+    { name: 'plain oversize', gzip: false, bytes: new TextEncoder().encode('x'.repeat(64)), inputLimit: 16, outputLimit: 128 },
+    { name: 'compressed oversize', gzip: true, bytes: new Uint8Array(gzipSync('synthetic document')), inputLimit: 8, outputLimit: 128 },
+    { name: 'excessive gzip expansion', gzip: true, bytes: new Uint8Array(gzipSync('x'.repeat(4096))), inputLimit: 128, outputLimit: 64 },
+  ])('cancels $name before returning document text', async ({gzip,bytes,inputLimit,outputLimit}) => {
+    let signal: AbortSignal | null | undefined;
+    const cancel=vi.fn();
+    let offset=0;
+    const body=new ReadableStream<Uint8Array>({
+      pull(controller){
+        if(offset<bytes.length){controller.enqueue(bytes.slice(offset,offset+4));offset+=4;}
+        else if(gzip && inputLimit===128)controller.close();
+        else controller.enqueue(new Uint8Array(4));
+      }, cancel,
+    });
+    const client=new SpApiClient({endpoint:'https://example.test',userAgent:'synthetic',
+      accessTokenProvider:{getAccessToken:async()=>{throw new Error('No credentials for downloads');}},
+      maxDocumentBytes:inputLimit,maxDecompressedDocumentBytes:outputLimit,
+      fetch:async(_url,init)=>{signal=init?.signal;return new Response(body);}});
+    await expect(client.downloadReportDocumentText({reportDocumentId:'bounded',url:'https://example.test/document',compressionAlgorithm:gzip?'GZIP':null}))
+      .rejects.toThrow('byte limit');
+    expect(signal?.aborted).toBe(true);
+    if(inputLimit!==128)await vi.waitFor(()=>expect(cancel).toHaveBeenCalledOnce());
+  });
+});

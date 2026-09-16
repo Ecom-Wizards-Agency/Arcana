@@ -2,12 +2,12 @@ import { expect, it, vi } from 'vitest';
 import type { ScreenActor } from '../../server/page-read';
 import { withoutBudget } from './fixtures';
 const mocks = vi.hoisted(() => ({
-  performance: vi.fn(), role: vi.fn(), proposals: vi.fn(), events: vi.fn(), market: vi.fn(),
-  campaigns: vi.fn(), ranks: vi.fn(), month: vi.fn(),
+  provider: vi.fn(async () => ({ rows: [], runs: [], totalCount: 0 })), performance: vi.fn(), role: vi.fn(), proposals: vi.fn(), events: vi.fn(), market: vi.fn(),
+  spend: vi.fn().mockResolvedValue(null), retail: vi.fn().mockResolvedValue({ state: 'unavailable', reason: 'Disabled', report: null }), campaigns: vi.fn(), ranks: vi.fn(), month: vi.fn(),
 }));
 vi.mock('../cockpit/load', () => ({ load: mocks.performance }));
 vi.mock('../../server/org-role', () => ({ requireOrgRole: mocks.role }));
-vi.mock('@wizard-ads/db', () => ({ listRecommendations: mocks.proposals, listHomeInsights: mocks.events, listHomeMarketGaps: mocks.market }));
+vi.mock('@wizard-ads/db', () => ({ readProviderEvidence: mocks.provider, readSpReportEvidence: mocks.retail, readSpRetailSpendEvidence: mocks.spend, listRecommendations: mocks.proposals, listHomeInsights: mocks.events, listHomeMarketGaps: mocks.market }));
 vi.mock('../../../app/_lib/dashboard-data', () => ({ loadCampaignDailyRows: mocks.campaigns, loadHomeRankWatch: mocks.ranks, loadProfileDailyRows: mocks.month }));
 import { load } from './load';
 
@@ -24,6 +24,7 @@ it('loads the whole pacing month and derives viewer authority from the authentic
   const data = await load({ read } as unknown as ScreenActor, { searchParams: {}, params: {} });
   expect(read).toHaveBeenCalledTimes(1);
   expect(mocks.role).toHaveBeenCalledWith(handle, actor);
+  expect(mocks.provider).toHaveBeenCalledWith(handle, { orgId: actor.orgId, profileId: base.profile.id, consumer: 'home' });
   expect(mocks.month).toHaveBeenCalledWith(handle, actor.orgId, base.profile.id, base.profile.label, { start: '2026-06-01', end: '2026-06-28' });
   expect(mocks.events).toHaveBeenCalledWith(handle, { orgId: actor.orgId, profileId: base.profile.id, start: '2026-06-23', end: '2026-06-29' });
   expect(mocks.ranks).toHaveBeenCalledWith(handle, actor.orgId, base.profile.id, '2026-06-28');
@@ -57,4 +58,19 @@ it('uses selected profile facts, including recent days, and the topbar custom co
   expect(data.props.home.tiles.find((tile) => tile.metric === 'spend')).toMatchObject({ value: 40, prev: 20, deltaPct: 1 });
   expect(data.props.home.tiles.find((tile) => tile.metric === 'acos')).toMatchObject({ value: 0.4, prev: 0.1 });
   expect(data.props.home.breakEvenAcos).toBeNull();
+});
+
+it('passes independently verified seller spend and both retail periods through the authenticated read', async () => {
+  const source = { state: 'partial' as const, reason: 'Synthetic evidence', report: null };
+  const spend = { orgId: 'synthetic-org', sellingPartnerId: 'synthetic-seller', marketplaceId: 'synthetic-market', currency: 'EUR',
+    start: '2026-06-25', end: '2026-06-28', scope: 'seller' as const, complete: true, rows: [{ date: '2026-06-25', spend: 10 }] };
+  mocks.retail.mockResolvedValue(source); mocks.spend.mockResolvedValue(spend);
+  mocks.performance.mockResolvedValue({ view: 'ready', props: { ...withoutBudget, period: { start: spend.start, end: spend.end }, today: '2026-06-29', accountRows: [] } });
+  const handle = {}, actor = { orgId: spend.orgId, userId: 'synthetic-user' };
+  const read = vi.fn(async query => query(handle, actor));
+  const data = await load({ read } as unknown as ScreenActor, { searchParams: {}, params: {} });
+  if (data.view !== 'ready') throw new Error('Expected ready Home');
+  expect(data.props.home.retail).toEqual(source); expect(data.props.home.previousRetail).toEqual(source);
+  expect(data.props.home.retailSpend).toEqual(spend);
+  expect(mocks.spend).toHaveBeenCalledWith(handle, { orgId: actor.orgId, profileId: withoutBudget.profile.id, start: spend.start, end: spend.end });
 });

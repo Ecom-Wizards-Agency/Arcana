@@ -21,13 +21,13 @@ export async function upsertReportCoverage(
          earliest_requested_date, earliest_returned_date, latest_loaded_date, latest_settled_date,
          source_rows, parsed_rows, loaded_rows, refused_rows, counts_match, observed_at)
       values (${input.orgId}, ${input.profileId}, ${input.reportType}, ${input.grain}, ${input.source},
-              ${input.status}, ${input.earliestDate}, null,
+              ${input.status}, ${input.earliestDate}, ${input.verifiedStartDate ?? null},
               ${input.coveredThrough}, ${input.settledThrough}, ${input.sourceRows}, ${input.parsedRows},
               ${input.loadedRows}, ${input.refusedRows}, ${input.countsMatch}, ${input.observedAt})
       on conflict (profile_id, report_type, grain, source) do update set
         status = excluded.status,
         earliest_requested_date = least(report_coverage.earliest_requested_date, excluded.earliest_requested_date),
-        earliest_returned_date = least(report_coverage.earliest_returned_date, excluded.earliest_returned_date),
+        earliest_returned_date = coalesce(excluded.earliest_returned_date, report_coverage.earliest_returned_date),
         latest_loaded_date = excluded.latest_loaded_date,
         latest_settled_date = greatest(report_coverage.latest_settled_date, excluded.latest_settled_date),
         source_rows = excluded.source_rows, parsed_rows = excluded.parsed_rows,
@@ -43,10 +43,10 @@ export async function upsertReportCoverage(
     const rows = await sql<{
       org_id: string; source_rows: string | null; parsed_rows: string | null;
       loaded_rows: string | null; refused_rows: string | null;
-      observed_at: Date | string | null; latest_loaded_date: string | null;
+      observed_at: Date | string | null; latest_loaded_date: string | null; earliest_returned_date: string | null;
     }[]>`
       select org_id, source_rows, parsed_rows, loaded_rows, refused_rows, observed_at,
-             latest_loaded_date::text
+             latest_loaded_date::text, earliest_returned_date::text
         from public.report_coverage
        where profile_id = ${input.profileId} and report_type = ${input.reportType}
          and grain = ${input.grain} and source = ${input.source}
@@ -59,6 +59,7 @@ export async function upsertReportCoverage(
       .every((value, index) => (value === null ? null : Number(value)) ===
         [input.sourceRows, input.parsedRows, input.loadedRows, input.refusedRows][index]);
     if (written.length === 1 && (!sameCounts || row.latest_loaded_date !== input.coveredThrough ||
+        (input.verifiedStartDate !== undefined && row.earliest_returned_date !== input.verifiedStartDate) ||
         (row.observed_at === null ? null : new Date(row.observed_at).toISOString()) !== new Date(input.observedAt).toISOString())) {
       throw new Error('coverage readback differs from verified promotion counts');
     }

@@ -67,6 +67,7 @@ export interface EntityListFailure {
  * winners and records the losers rather than throwing everything away.
  */
 export interface EntityListing {
+  preserveCampaignNegativeTargets?: boolean;
   /** Unlisted kinds must be excluded from both mirror refresh and tombstoning. */
   excludedEntityTypes?: Partial<Record<AdProductCode, readonly EntityRow['entityType'][]>>;
   rows: readonly EntityRow[];
@@ -228,13 +229,15 @@ export type UnderlyingClient = Pick<
   | 'getSpBidRecommendations'
 > & Partial<Pick<
   UnderlyingAdsApiClient,
-  'probeSbAdsPage' | 'probeCreativeAssetsPage' | 'listSbKeywords'
+  'probeSbAdsPage' | 'probeCreativeAssetsPage' | 'listSbKeywords' | 'listSpCampaignNegativeTargets' | 'listSdProductAds' | 'listSdTargets' | 'listSdNegativeTargets'
 >>;
 
 /** The subset of `fetch` the report download needs. */
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface AdsApiAdapterDeps {
+  coreEntitySyncEnabled?: boolean;
+  coreEntityProfileIds?: readonly string[];
   sbKeywordSyncEnabled?: boolean;
   /** Match organization, profile, provider identity and region before credential access. */
   resolveProfileBinding(profile: AdsProfileContext): Promise<AdsConnectionCredentialBinding | null>;
@@ -285,6 +288,14 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
   async listEntities(profile: AdsProfileContext, _full: boolean): Promise<EntityListing> {
     const client = await this.clientForProfile(profile);
     const p = profile.amazonProfileId;
+    const coreEntities = this.deps.coreEntitySyncEnabled === true && this.deps.coreEntityProfileIds?.includes(profile.id) === true;
+    const bounded = async (method: 'listSpCampaignNegativeTargets' | 'listSdProductAds' | 'listSdTargets' | 'listSdNegativeTargets') => {
+      const list = client[method];
+      if (!list) throw new Error('core entity capability missing');
+      const result = await client[method]!(p, { maxPages: 100, maxResults: 100 });
+      if (result.truncated || result.skipped.length || result.raw.length !== result.items.length) throw new Error('core entity inventory is incomplete');
+      return result;
+    };
     // Grouped by ad product so one product's failure is contained to that
     // product. Within a group the steps stay sequential: a single profile
     // firing a dozen simultaneous requests would defeat the region concurrency
@@ -302,6 +313,7 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
           () => client.listSpNegativeKeywords(p),
           () => client.listSpCampaignNegativeKeywords(p),
           () => client.listSpNegativeTargets(p),
+          ...(coreEntities ? [() => bounded('listSpCampaignNegativeTargets')] : []),
         ],
       },
       { product: 'SB', steps: [
@@ -316,7 +328,7 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
           return listed;
         }] : []),
       ] },
-      { product: 'SD', steps: [() => client.listSdCampaigns(p), () => client.listSdAdGroups(p)] },
+      { product: 'SD', steps: [() => client.listSdCampaigns(p), () => client.listSdAdGroups(p), ...(coreEntities ? [() => bounded('listSdProductAds'), () => bounded('listSdTargets'), () => bounded('listSdNegativeTargets')] : [])] },
     ];
 
     const rows: EntityRow[] = [];
@@ -347,9 +359,8 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
     }
     return {
       rows, succeeded, failures,
-      ...(this.deps.sbKeywordSyncEnabled === true ? {} : {
-        excludedEntityTypes: { SB: ['keyword'] as const },
-      }),
+      preserveCampaignNegativeTargets: !coreEntities,
+      excludedEntityTypes: { ...(this.deps.sbKeywordSyncEnabled === true ? {} : { SB: ['keyword'] as const }), ...(coreEntities ? {} : { SD: ['product_ad', 'target', 'negative'] as const }) },
     };
   }
 
@@ -364,6 +375,7 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
         ...(input.filters === undefined ? {} : { filters: input.filters }),
         ...(input.name === undefined ? {} : { name: input.name }),
         ...(input.timeUnit === undefined ? {} : { timeUnit: input.timeUnit }),
+        ...(input.familyConfiguration === undefined ? {} : { familyConfiguration: input.familyConfiguration }),
       });
       return { reportId: meta.reportId };
     } catch (error) {
@@ -735,6 +747,8 @@ export function createAdsApiClientFromEnv(
 
   return new DbAdsApiClient({
     sbKeywordSyncEnabled: sbKeywordSyncEnabledFromEnv(env),
+    coreEntitySyncEnabled: env['OPENSPELL_CORE_ENTITY_SYNC_ENABLED'] === '1',
+    coreEntityProfileIds: (env['OPENSPELL_CORE_ENTITY_PROFILE_IDS'] ?? '').split(',').map((id) => id.trim()).filter(Boolean),
     resolveProfileBinding: (profile) => getProfileCredentialBinding(
       handle, profile.orgId, profile.id, profile.amazonProfileId, profile.region,
     ),
