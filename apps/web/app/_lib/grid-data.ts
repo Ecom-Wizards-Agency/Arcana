@@ -364,8 +364,14 @@ async function loadTargets(
       join public.ad_profiles p on p.org_id=${orgId} and p.id=${profileId}
       left join public.campaign_optimization_assignments ca on ca.org_id=${orgId} and ca.profile_id=${profileId} and ca.campaign_id=f.campaign_id
       left join public.optimization_groups og on og.org_id=${orgId} and og.profile_id=${profileId} and og.id=ca.group_id
-      left join lateral (select case when count(distinct asin)=1 then min(asin) end as asin from public.product_ads
-        where org_id=${orgId} and profile_id=${profileId} and campaign_id=f.campaign_id and ad_group_id=f.ad_group_id and deleted_at is null) products on true
+      -- The effective assignment, whatever its source (derived, derived parent,
+      -- proposed or manual). Only an ad group the worker has not derived yet
+      -- falls back to its single advertised product.
+      left join public.ad_group_product_assignments assignment
+        on assignment.org_id=${orgId} and assignment.profile_id=${profileId} and assignment.ad_group_id=f.ad_group_id
+      left join lateral (select case when assignment.ad_group_id is not null then assignment.asin
+          else (select case when count(distinct asin)=1 then min(asin) end from public.product_ads
+            where org_id=${orgId} and profile_id=${profileId} and campaign_id=f.campaign_id and ad_group_id=f.ad_group_id and deleted_at is null) end as asin) products on true
      limit ${limit}
   `;
 
@@ -536,8 +542,16 @@ async function loadProducts(handle: GridDataHandle, options: LoadGridOptions, li
     catalogue_observed_at: string | null; catalogue_title: string | null; catalogue_availability: string | null;
     catalogue_price: number | null; catalogue_bsr: number | null })[]>`
     with products as (
-      select asin,max(name) as product_name from public.product_ads
-      where org_id=${orgId} and profile_id=${profileId} and asin is not null and deleted_at is null group by asin
+      select asin,max(product_name) as product_name from (
+        select asin,name as product_name from public.product_ads
+        where org_id=${orgId} and profile_id=${profileId} and asin is not null and deleted_at is null
+        union all
+        -- Every live ad group's effective assignment lists its product, whatever the
+        -- source, so a derived parent gets a row and a Market position gap of its own.
+        select a.asin,null from public.ad_group_product_assignments a
+        join public.ad_groups g on g.org_id=a.org_id and g.profile_id=a.profile_id and g.amazon_id=a.ad_group_id and g.deleted_at is null
+        where a.org_id=${orgId} and a.profile_id=${profileId} and a.asin is not null
+      ) listed group by asin
     ), measured as (
       select date, dimensions->>'advertisedAsin' as asin,
         (row_data->'metrics'->>'impressions')::numeric as impressions,

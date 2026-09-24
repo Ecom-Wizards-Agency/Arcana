@@ -2,12 +2,12 @@
 import { formatDateWindow } from '../../ui/date-format';
 
 import { useSearchParams } from 'next/navigation';
-import { AdGroupProductAssignmentList } from '@wizard-ads/shared';
+import { ProductAssignmentList, awaitingProductDerivation, unresolvedProductAssignment, type ProductAssignmentSource } from '@wizard-ads/shared';
 import { EmptyState } from '@wizard-ads/ui';
-import { Button } from '../../ui/primitives';
+import { Badge, Button } from '../../ui/primitives';
 import { periodFromParams, todayIso } from '../../../app/_lib/periods';
 import { countPerformanceRows, verdictFilter } from './performance-model';
-import { useMemo, useState, type ReactNode, useEffect, useRef } from 'react';
+import { useMemo, useState, type ReactNode, type Ref, useEffect, useRef } from 'react';
 import { deltaColor, grandTotal, resolveField, describeFilter, formatValue, metricSpec, NumericValue, GridToolbar, ColumnManager, GroupBar, isGroupedRow, type ColumnLayout, readEntitySearch, writeEntitySearch, entitySearchColumn, tokens, type GridToolbarProps, type GridRow, type SavedView } from '@wizard-ads/ui';
 import { TRANSLATION_LANGUAGES, TranslationLanguage, PerformanceVerdict, type GridPerformanceEvidence } from '@wizard-ads/shared';
 
@@ -19,7 +19,7 @@ export function PerformanceSummary({ rows, performance, view, onChange, currency
   const series: NonNullable<SavedView['chart']>['series'] = view.chart?.series ?? ['spend', 'sales'];
   const aggregate = useMemo(() => grandTotal(rows), [rows]);
   return <>
-    <ProductAssignmentBanner profileId={profileId} currencyCode={currencyCode} enabled={performance?.unattributed != null} />
+    <ProductAssignmentBanner profileId={profileId} currencyCode={currencyCode} enabled={performance !== undefined} />
     <section data-testid="grid-provenance" aria-label="Data completeness" style={{ height: 120, boxSizing: 'border-box', padding: '10px 24px', display: 'flex', alignItems: 'flex-start', gap: 18, background: tokens.color.surfaceAlt, borderBottom: `1px solid ${tokens.color.border}` }}>
       {(performance?.feeds ?? (['PPC', 'RANK', 'SQP'] as const).map((feed) => ({ feed, reason: `${feed} completeness not measured.`, status: 'not-measured' }))).map((feed) => <div key={feed.feed} style={{ display: 'flex', flex: 1, gap: 8, fontSize: 11, color: tokens.color.textMuted }}>
         <b style={{ fontSize: 10, borderRadius: 4, padding: '2px 7px', color: feed.status === 'complete' ? tokens.color.good : feed.status === 'partial' ? tokens.color.warn : tokens.color.bad, background: feed.status === 'complete' ? tokens.color.goodSoft : feed.status === 'partial' ? tokens.color.warnSoft : tokens.color.badSoft }}>{feed.feed}</b>
@@ -111,6 +111,73 @@ const VERDICT_DEFINITIONS: Record<string, string> = {
   'Insufficient evidence': 'Required measurements or strategy thresholds are missing.',
 };
 
+type ProductAssignmentItem = ProductAssignmentList['items'][number];
+/** Only these sources offer the chooser; every other row is settled until the mirror changes. */
+const needsChoice = (source: ProductAssignmentSource): boolean => source === 'proposed' || source === 'unassigned';
+const AWAITING_CHIP = { label: 'Awaiting derivation', tone: 'info' } as const;
+const SOURCE_CHIP: Record<ProductAssignmentSource, { label: string; tone: 'good' | 'info' | 'warn' | 'bad' }> = {
+  derived: { label: 'Derived', tone: 'good' },
+  derived_parent: { label: 'Derived parent', tone: 'good' },
+  proposed: { label: 'Proposed', tone: 'warn' },
+  manual: { label: 'Manual', tone: 'info' },
+  unassigned: { label: 'Unassigned', tone: 'bad' },
+};
+const moneyIn = (currencyCode: string) => (value: number | null) => value === null ? 'Not measured' : new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(value);
+
+/** The grid notice: present only while at least one ad group is proposed or unassigned. */
+export function ProductAssignmentNotice({ data, currencyCode, onOpen, trigger }: {
+  data: ProductAssignmentList; currencyCode: string; onOpen: () => void; trigger?: Ref<HTMLButtonElement>;
+}): ReactNode {
+  if (data.unassignedCount === 0) return null;
+  const unresolved = data.items.filter(unresolvedProductAssignment);
+  const measured = unresolved.filter((item) => item.spend !== null).length;
+  const days = `${data.days} ${data.days === 1 ? 'day' : 'days'}`;
+  // A group without target facts has unmeasured spend, never zero spend.
+  const spend = measured === 0 ? `spend not measured over ${days}` : `${moneyIn(currencyCode)(data.unassignedSpend)} of spend over ${days}${measured < unresolved.length ? ', some not measured' : ''}`;
+  return <section data-testid="grid-unattributed" style={{ height: 120, boxSizing: 'border-box', padding: '16px 24px', display: 'flex', alignItems: 'center', gap: 16, background: tokens.color.warnSoft, borderBlock: `1px solid ${tokens.color.warnBorder}`, color: tokens.color.warn, fontSize: 13 }}>
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <strong>{data.unassignedCount} {data.unassignedCount === 1 ? 'ad group needs' : 'ad groups need'} a product check · {spend}</strong>
+      <p style={{ margin: '4px 0 0' }}>Arcana reads each target’s organic rank, search query share and rank verdict against its ad group’s product, so proposed groups rest on a guess and unassigned groups show none.</p>
+    </div>
+    <Button className="wa-product-assignment-action" ref={trigger} onClick={onOpen}>Link them</Button>
+  </section>;
+}
+
+/** Every ad group with its effective product, source and spend; choosers only where Arcana could not decide. */
+export function ProductAssignmentTable({ data, currencyCode, selected, busy, onSelect, onSave, onRevert }: {
+  data: ProductAssignmentList; currencyCode: string; selected: Readonly<Record<string, string>>; busy: boolean;
+  onSelect: (adGroupId: string, asin: string) => void; onSave: (adGroupId: string, asin: string) => void; onRevert: (adGroupId: string) => void;
+}): ReactNode {
+  const money = moneyIn(currencyCode);
+  const baseline = (item: ProductAssignmentItem) => item.derived === null ? 'Not derived yet'
+    : `Derived: ${item.derived.asin ?? 'no product'} (${SOURCE_CHIP[item.derived.source].label.toLowerCase()})`;
+  return <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th>Ad group</th><th>Spend</th><th>Product</th><th>Source</th></tr></thead><tbody>
+    {data.items.map((item) => {
+      const choose = needsChoice(item.source);
+      const choice = selected[item.adGroupId] ?? item.assignedAsin ?? '';
+      const awaiting = awaitingProductDerivation(item);
+      const chip = awaiting ? AWAITING_CHIP : SOURCE_CHIP[item.source];
+      return <tr key={item.adGroupId} data-testid="product-assignment-row">
+        <td>{item.name ?? item.adGroupId}</td><td>{money(item.spend)}</td>
+        <td>
+          {item.assignedAsin ? <span className="wa-assignment-saved" style={item.source === 'proposed' ? { color: tokens.color.warn } : undefined}>{item.source === 'proposed' ? 'Proposed' : 'Assigned'}: {item.assignedAsin}</span>
+            : <span className="wa-assignment-none">{awaiting ? 'Awaiting first derivation' : 'No assigned product'}</span>}
+          {item.source === 'manual' ? <span className="wa-assignment-baseline">{baseline(item)}</span> : null}
+          {choose ? <select aria-label={`Product for ${item.name ?? item.adGroupId}`} value={choice} disabled={!data.canAssign || busy} onChange={(event) => onSelect(item.adGroupId, event.target.value)}>
+            <option value="">Choose product</option>{item.asins.map((asin) => <option key={asin} value={asin}>{asin}</option>)}
+          </select> : null}
+          {item.reason ? <p>{item.reason}</p> : null}
+          {item.source === 'proposed' ? <ul aria-label="Assignment candidates">{item.candidates.map((candidate) => <li key={candidate.asin}>{candidate.asin} · {money(candidate.spend)} over 30 settled days</li>)}</ul> : null}
+        </td>
+        <td><Badge tone={chip.tone} data-assignment-source={awaiting ? 'awaiting' : item.source}>{chip.label}</Badge>
+          {choose ? <Button variant="primary" disabled={!data.canAssign || busy || !choice} onClick={() => onSave(item.adGroupId, choice)}>Save assignment</Button> : null}
+          {item.source === 'manual' ? <Button disabled={!data.canAssign || busy} onClick={() => onRevert(item.adGroupId)}>Revert to derived</Button> : null}
+        </td>
+      </tr>;
+    })}
+  </tbody></table></div>;
+}
+
 /** The saved assignment list owns both the pickers and unresolved banner counts. */
 export function ProductAssignmentBanner({ profileId, currencyCode, enabled }: { profileId: string; currencyCode: string; enabled: boolean }) {
   return enabled ? <RoutedProductAssignmentBanner profileId={profileId} currencyCode={currencyCode} /> : null;
@@ -122,7 +189,7 @@ function RoutedProductAssignmentBanner({ profileId, currencyCode }: { profileId:
   return <ProductAssignmentContent key={key} profileId={profileId} start={period.start} end={period.end} currencyCode={currencyCode} />;
 }
 function ProductAssignmentContent({ profileId, start, end, currencyCode }: { profileId: string; start: string; end: string; currencyCode: string }) {
-  const [data, setData] = useState<AdGroupProductAssignmentList | null>(null);
+  const [data, setData] = useState<ProductAssignmentList | null>(null);
   const [error, setError] = useState('');
   const [revision, refresh] = useState(0);
   const [pending, setPending] = useState(false);
@@ -134,19 +201,25 @@ function ProductAssignmentContent({ profileId, start, end, currencyCode }: { pro
     const controller = new AbortController();
     setLoading(true);
     void fetch(`/targets/product-assignments?${new URLSearchParams({ profileId, start, end })}`, { signal: controller.signal })
-      .then(async (response) => { if (!response.ok) throw Error(); return AdGroupProductAssignmentList.parse(await response.json()); })
+      .then(async (response) => { if (!response.ok) throw Error(); return ProductAssignmentList.parse(await response.json()); })
       .then((value) => { if (!controller.signal.aborted) { setData(value); setError(''); } })
       .catch(() => { if (!controller.signal.aborted) setError('Product assignments could not be loaded. Try again.'); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [profileId, start, end, revision]);
-  const money = (value: number | null) => value === null ? 'Not measured' : new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(value);
+  const open = () => dialog.current?.showModal();
   const close = () => { dialog.current?.close(); trigger.current?.focus(); };
-  const assign = async (adGroupId: string, asin: string) => {
+  const mutate = async (body: { action: 'assign'; adGroupId: string; asin: string } | { action: 'revert'; adGroupId: string }) => {
     setPending(true); setError('');
     try {
-      const response = await fetch('/targets/product-assignments', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ profileId, adGroupId, asin }) });
-      if (!response.ok || (await response.json()).assigned !== 1) throw Error();
+      const response = await fetch('/targets/product-assignments', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, profileId }) });
+      const result: unknown = await response.json().catch(() => null);
+      if (response.status === 409 && result !== null && typeof result === 'object' && 'code' in result && result.code === 'assignment_derived') {
+        // Keep the explanation visible; the error state offers the reload.
+        setError('Arcana has derived this ad group’s product since the list loaded, so there is nothing to confirm. Reload the list.');
+        return;
+      }
+      if (!response.ok || result === null || typeof result !== 'object' || !('assigned' in result) || result.assigned !== 1) throw Error();
       refresh((value) => value+1);
     } catch { setError('Assignment could not be confirmed. Reload the list before trying again.'); }
     finally { setPending(false); }
@@ -157,37 +230,32 @@ function ProductAssignmentContent({ profileId, start, end, currencyCode }: { pro
       .wa-product-assignments { font: 400 13px/20px var(--wa-font); }
       .wa-product-assignments h2 { margin: 0 0 12px; font: 600 24px/32px var(--wa-font); }
       .wa-product-assignments p { color: var(--wa-text-muted); }
-      .wa-product-assignments th, .wa-product-assignments td { padding: 12px; border-bottom: 1px solid var(--wa-border); text-align: left; }
+      .wa-product-assignments th, .wa-product-assignments td { padding: 12px; border-bottom: 1px solid var(--wa-border); text-align: left; vertical-align: top; }
       .wa-product-assignments th { font-weight: 600; background: var(--wa-surface-2); }
-      .wa-product-assignments select { min-width: 160px; border: 1px solid var(--wa-border); border-radius: 8px; padding: 12px; background: var(--wa-surface-2); color: var(--wa-text); font: inherit; }
+      .wa-product-assignments select { display: block; margin-top: 8px; min-width: 160px; border: 1px solid var(--wa-border); border-radius: 8px; padding: 12px; background: var(--wa-surface-2); color: var(--wa-text); font: inherit; }
       .wa-product-assignments .wa-btn--primary { background: var(--wa-accent); border-color: var(--wa-accent); color: var(--wa-on-accent); }
       .wa-product-assignments .wa-btn--primary:hover:not(:disabled) { background: var(--wa-accent); }
       .wa-product-assignments :disabled { cursor: not-allowed; opacity: .55; }
-      .wa-product-assignments .wa-assignment-saved { display: block; margin-top: 8px; color: var(--wa-good-text); }
+      .wa-product-assignments .wa-badge { margin: 0 8px 8px 0; }
+      .wa-product-assignments .wa-assignment-saved { display: block; color: var(--wa-good-text); }
+      .wa-product-assignments .wa-assignment-none, .wa-product-assignments .wa-assignment-baseline { display: block; color: var(--wa-text-muted); }
     `}</style>
-    {loading && data === null ? <div style={{ height: 120, overflow: 'hidden' }}><EmptyState variant="loading" title="Checking product assignments" body="Reading unresolved ad groups for this date range." /></div> : null}
+    {loading && data === null ? <div style={{ height: 120, overflow: 'hidden' }}><EmptyState variant="loading" title="Checking product assignments" body="Reading every ad group's product for this date range." /></div> : null}
     {error ? <EmptyState variant="error" title="Product assignment unavailable" body={error} action={<Button onClick={() => refresh((value) => value+1)}>Reload assignments</Button>} /> : null}
-    {data && data.unassignedCount > 0 ? <section data-testid="grid-unattributed" style={{ height: 120, boxSizing: 'border-box', padding: '16px 24px', display: 'flex', alignItems: 'center', gap: 16, background: tokens.color.warnSoft, borderBlock: `1px solid ${tokens.color.warnBorder}`, color: tokens.color.warn, fontSize: 13 }}>
-      <strong>{data.unassignedCount} {data.unassignedCount === 1 ? 'ad group advertises' : 'ad groups advertise'} more than one ASIN, so {money(data.unassignedSpend)} of spend over {data.days} {data.days === 1 ? 'day' : 'days'} needs a product assignment.</strong>
-      <Button className="wa-product-assignment-action" ref={trigger} onClick={() => dialog.current?.showModal()}>Link them</Button>
-    </section> : null}
+    {data ? <ProductAssignmentNotice data={data} currencyCode={currencyCode} onOpen={open} trigger={trigger} /> : null}
+    {data && data.unassignedCount === 0 ? <div style={{ position: 'relative', height: 0, zIndex: 1 }}><Button ref={trigger} style={{ position: 'absolute', right: 24, top: 72, fontSize: 11 }} onClick={open}>Product assignments</Button></div> : null}
     <dialog className="wa-product-assignments" ref={dialog} aria-label="Assign products to ad groups" onClose={() => trigger.current?.focus()} style={{ width: 'min(900px, calc(100vw - 48px))', maxHeight: '80vh', background: tokens.color.surface, color: tokens.color.text, border: `1px solid ${tokens.color.border}`, borderRadius: 8, padding: 24 }}>
       <h2>Assign products to ad groups</h2>
-      <p>Choose the advertised product to associate with each ad group in Arcana. Assignments do not change Amazon ads or recompute product performance totals.</p>
+      <p>Arcana derives each ad group’s product from its enabled and paused product ads. Confirm or choose a product for proposed and unassigned groups; a manual choice stays until you revert it. Assignments do not change Amazon ads or recompute product performance totals.</p>
       {error ? <EmptyState variant="error" title="Assignment unavailable" body={error} action={<Button onClick={() => refresh((value) => value+1)}>Reload list</Button>} /> : null}
       {loading ? <EmptyState variant="loading" title="Refreshing assignments" body="Waiting for the saved list and counts." /> : null}
       {data?.canAssign === false ? <EmptyState variant="gated" title="Read-only access" body="An analyst, admin or owner can assign products." /> : null}
-      {data?.count === 0 ? <EmptyState title="No multi-product ad groups" body="No current ad groups advertise multiple products." /> : null}
+      {data?.count === 0 ? <EmptyState title="No ad groups" body="No current Sponsored Products ad groups were found." /> : null}
       <p>{data?.count ?? '—'} {data?.count === 1 ? 'ad group' : 'ad groups'} · {formatDateWindow(start, end)}</p>
-      <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr><th>Ad group</th><th>Spend</th><th>Product</th><th>Assignment</th></tr></thead><tbody>
-        {data?.items.map((item) => <tr key={item.adGroupId} data-testid="product-assignment-row">
-          <td>{item.name ?? item.adGroupId}</td><td>{money(item.spend)}</td>
-          <td><select aria-label={`Product for ${item.name ?? item.adGroupId}`} value={selected[item.adGroupId] ?? item.assignedAsin ?? ''} disabled={!data.canAssign || pending || loading} onChange={(event) => setSelected({ ...selected, [item.adGroupId]: event.target.value })}>
-            <option value="">Choose product</option>{item.asins.map((asin) => <option key={asin} value={asin}>{asin}</option>)}
-          </select></td>
-          <td><Button variant="primary" disabled={!data.canAssign || pending || loading || !(selected[item.adGroupId] ?? item.assignedAsin)} onClick={() => void assign(item.adGroupId, selected[item.adGroupId] ?? item.assignedAsin!)}>Save assignment</Button>{item.assignedAsin ? <span className="wa-assignment-saved"> Assigned: {item.assignedAsin}</span> : null}</td>
-        </tr>)}
-      </tbody></table></div>
+      {data ? <ProductAssignmentTable data={data} currencyCode={currencyCode} selected={selected} busy={pending || loading}
+        onSelect={(adGroupId, asin) => setSelected({ ...selected, [adGroupId]: asin })}
+        onSave={(adGroupId, asin) => void mutate({ action: 'assign', adGroupId, asin })}
+        onRevert={(adGroupId) => void mutate({ action: 'revert', adGroupId })} /> : null}
       <Button style={{ marginTop: 24 }} onClick={close}>Close</Button>
     </dialog>
   </>;

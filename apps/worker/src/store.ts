@@ -1,4 +1,5 @@
 import { ensureCreativeSyncSchedules } from '@wizard-ads/db';
+import { refreshProductAssignments, type ProductAssignmentRefreshOutcome } from './product-assignment.js';
 import { provisionSpApiReportJobs } from './spapi-report-scheduler.js';
 import { ProviderCollectionConfig } from '@wizard-ads/shared';
 import { providerEvidenceSchedule } from './schedules.js';
@@ -176,6 +177,8 @@ export interface EntitySyncOptions {
 }
 
 export interface EntitySyncCounts {
+  /** Present when the pass synchronized SP product ads. */
+  productAssignments?: ProductAssignmentRefreshOutcome;
   keywordMirror?: KeywordMirrorMergeCounts;
   controlMirrors?: Partial<Record<'campaign' | 'target', ControlMirrorMergeCounts>>;
   listed: number;
@@ -679,8 +682,22 @@ export class PostgresWorkerStore implements WorkerStore {
         `entity sync listed ${entities.length} rows but upserted ${upserted} (${duplicates} duplicates)`,
       );
     }
+    // Derived after the mirror and its ledger are committed. A failed refresh
+    // (for example a serialization conflict with a manual save) must not cost
+    // the recorded changes; it is logged and the next sync derives again.
+    let productAssignments: ProductAssignmentRefreshOutcome | undefined;
+    if ((adProduct === undefined || adProduct === 'SP') && !excluded.has('product_ad')) {
+      try {
+        productAssignments = { status: 'refreshed', ...await refreshProductAssignments(this.handle, profile, now.toISOString()) };
+        this.logger.info('product assignment refresh', { profileId: profile.id, ...productAssignments });
+      } catch (error) {
+        productAssignments = { status: 'failed', reason: error instanceof Error ? error.message : String(error) };
+        this.logger.info('product assignment refresh failed; the next sync retries it', { profileId: profile.id, ...productAssignments });
+      }
+    }
     return { listed: entities.length, upserted, duplicates, changes: writtenChanges + (keywordMirror?.changes ?? 0)
         + Object.values(controlMirrors).reduce((sum, counts) => sum + counts.changes, 0), tombstoned,
+      ...(productAssignments === undefined ? {} : { productAssignments }),
       ...(keywordMirror === undefined ? {} : { keywordMirror }),
       ...(Object.keys(controlMirrors).length === 0 ? {} : { controlMirrors }) };
   }

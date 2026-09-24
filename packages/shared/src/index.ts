@@ -60,3 +60,4 @@ export * from './asset-library.js';
 export * from './spapi-reports.js';
 export * from './provider-evidence.js';
 export * from './spapi-fulfillment.js';
+export * from './product-assignment.js';

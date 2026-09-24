@@ -62,3 +62,4 @@ export * from './dayparting/schedule.js';
 export * from './brand-lens/model.js';
 export * from './own-collectors.js';
 export * from './budget-usage.js';
+export * from './product-assignment.js';

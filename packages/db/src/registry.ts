@@ -11,6 +11,7 @@ interface RegistryEntry {
   exports: readonly { barrel: string; order: number; clause: string; after: string }[];
 }
 export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
+  { domain: 'queries/product-assignment', contract: null, schema: null, queries: 'queries/product-assignment.ts', migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 120, clause: '*', after: '' }] },
   {domain: 'schema/report-families', contract: null, schema: 'schema/report-families.ts', queries: null, migrationPrefix: '20260915330000', exports: [{barrel: 'schema/index.ts', order: 120, clause: '*', after: ''}]},
   {domain: 'queries/report-families', contract: null, schema: null, queries: 'queries/report-families.ts', migrationPrefix: '20260915330000', exports: [{barrel: 'index.ts', order: 120, clause: '*', after: ''}]},
   {"domain":"queries/grid-performance-evidence","contract":null,"schema":null,"queries":"queries/grid-performance-evidence.ts","migrationPrefix":null,"exports":[{"barrel":"index.ts","order":121,"clause":"*","after":""}]},
@@ -40,7 +41,6 @@ export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
   {"domain": "queries/sponsored-prompts", "contract": null, "schema": null, "queries": "queries/sponsored-prompts.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 105, "clause": "{ SponsoredPromptInputError, importSponsoredPrompts, readSponsoredPrompts, recordSponsoredPromptVisit }", "after": ""}, {"barrel":"worker.ts","order":11,"clause":"{ importScheduledPrompts }","after":""}]},
   {"domain": "schema/sponsored-prompts", "contract": null, "schema": "schema/sponsored-prompts.ts", "queries": null, "migrationPrefix": "20260915220000", "exports": [{"barrel": "schema/index.ts", "order": 103, "clause": "*", "after": ""}]},
   {"domain": "schema/creative-observations", "contract": null, "schema": "schema/creative-observations.ts", "queries": null, "migrationPrefix": "20260915230000", "exports": [{"barrel": "schema/index.ts", "order": 104, "clause": "*", "after": ""}]},
-  { domain: 'queries/ad-group-products', contract: null, schema: null, queries: 'queries/ad-group-products.ts', migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 103, clause: '*', after: '' }] },
   { domain: 'schema/ad-group-products', contract: null, schema: 'schema/ad-group-products.ts', queries: null, migrationPrefix: '20260915260000', exports: [{ barrel: 'schema/index.ts', order: 103, clause: '*', after: '' }] },
   {"domain":"asset-library","contract":null,"schema":null,"queries":"queries/asset-library.ts","migrationPrefix":null,"exports":[{"barrel":"index.ts","order":203,"clause":"*","after":""}]},
   {"domain":"schema/asset-library","contract":null,"schema":"schema/asset-library.ts","queries":null,"migrationPrefix":"20260915250000","exports":[{"barrel":"schema/index.ts","order":201,"clause":"*","after":""}]},

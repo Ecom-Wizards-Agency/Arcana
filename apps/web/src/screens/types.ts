@@ -1,7 +1,9 @@
 import type { ReactElement } from 'react';
 import type { ScreenActor } from '../server/page-read';
 
-export type ScreenState = 'loading' | 'empty' | 'error' | 'not-measured' | 'gated' | 'stale' | 'refused' | 'blocked' | 'draft' | 'reviewed' | 'enabled' | 'paused';
+export type ScreenState = 'loading' | 'empty' | 'error' | 'not-measured' | 'gated' | 'stale' | 'refused' | 'blocked' | 'draft' | 'reviewed' | 'enabled' | 'paused'
+  // Product assignment sources shown on the grid's assignment screen.
+  | 'derived' | 'derived-parent' | 'proposed' | 'manual' | 'unassigned';
 export type ScreenSearchParams = Record<string, string | string[] | undefined>;
 export interface ScreenParams {
   searchParams: ScreenSearchParams;

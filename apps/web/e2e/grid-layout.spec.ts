@@ -27,8 +27,8 @@ test('performance frame preserves measured strips across density, theme and attr
   // The assignment read owns the reconciled banner after WP-272.
   await page.route('**/targets/product-assignments?*', async (route) => {
     const query = new URL(route.request().url()).searchParams;
-    const items = [50,60,64.25].map((spend,index) => ({ adGroupId:`synthetic-layout-${index}`, campaignId:'synthetic-campaign', name:`Synthetic group ${index}`, asins:['B000SYN001','B000SYN002'], spend, assignedAsin:null }));
-    await route.fulfill({ json: { profileId:fixtureProfileId,start:query.get('start'),end:query.get('end'),days:14,canAssign:true,items,count:3,unassignedCount:3,unassignedSpend:174.25 } });
+    const items = [50,60,64.25].map((spend,index) => ({ adGroupId:`synthetic-layout-${index}`, campaignId:'synthetic-campaign', name:`Synthetic group ${index}`, asins:['B000SYN001','B000SYN002'], spend, assignedAsin:banner ? null : 'B000SYN001', source:banner ? 'unassigned' : 'derived', derivedAt:'2026-09-16T00:00:00Z', derived:banner ? { asin:null, source:'unassigned' } : { asin:'B000SYN001', source:'derived' }, ambiguous:false, reason:null, candidates:[] }));
+    await route.fulfill({ json: { profileId:fixtureProfileId,start:query.get('start'),end:query.get('end'),days:14,canAssign:true,items,count:3,unassignedCount:banner ? 3 : 0,unassignedSpend:banner ? 174.25 : 0 } });
   });
   for (const theme of ['light', 'dark']) for (const density of ['normal', 'compact']) for (const present of [true, false]) {
     banner = present;
@@ -220,3 +220,46 @@ test('ASIN scope follows removal, same-value reselection and browser back and fo
   await page.goForward();
   await assertScope(true);
 });
+
+// One browser state per assignment source, each with its screenshot under the test output directory.
+for (const source of ['derived', 'derived_parent', 'proposed', 'manual', 'unassigned'] as const) {
+  test(`product assignment ${source} state`, async ({ page }, testInfo) => {
+    await signIn(page, 'admin');
+    const { fixtureProfileId } = await readState();
+    const unresolved = source === 'proposed' || source === 'unassigned';
+    const assignedAsin = source === 'unassigned' ? null : source === 'derived_parent' ? 'B000000099' : 'B000000001';
+    await page.route('**/targets/product-assignments?**', async (route) => {
+      const params = new URL(route.request().url()).searchParams;
+      const start = params.get('start')!, end = params.get('end')!;
+      const candidates = ['B000000001', 'B000000002'].map((asin, index) => ({ asin, skus: [], parentAsin: null, spend: index ? 5 : 20 }));
+      await route.fulfill({ json: { profileId: fixtureProfileId, start, end, days: Math.round((Date.parse(end)-Date.parse(start))/86400000)+1,
+        canAssign: true, count: 1, unassignedCount: unresolved ? 1 : 0, unassignedSpend: unresolved ? 25 : 0,
+        items: [{ adGroupId: 'synthetic-state', campaignId: 'synthetic-campaign', name: 'Synthetic assignment',
+          asins: candidates.map((candidate) => candidate.asin), assignedAsin, source, derivedAt: '2026-09-16T00:00:00Z',
+          derived: source === 'manual' ? { asin: 'B000000099', source: 'derived_parent' } : { asin: assignedAsin, source },
+          ambiguous: source === 'proposed', reason: source === 'unassigned' ? 'No enabled or paused product ads.' : source === 'proposed' ? 'Products do not share a known parent; review the highest-spend candidate.' : null,
+          candidates: source === 'proposed' ? candidates : [], spend: 25 }],
+      } });
+    });
+    await page.goto(`/grid?entity=targets&profile=${fixtureProfileId}`);
+    const banner = page.getByTestId('grid-unattributed');
+    await expect(page.getByRole('button', { name: unresolved ? 'Link them' : 'Product assignments', exact: true })).toBeVisible();
+    await expect(banner).toHaveCount(unresolved ? 1 : 0);
+    if (unresolved) {
+      await expect(banner).toContainText('1 ad group needs a product check · $25.00 of spend over');
+      await expect(banner).toContainText('so proposed groups rest on a guess and unassigned groups show none');
+    }
+    await page.getByRole('button', { name: unresolved ? 'Link them' : 'Product assignments', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Assign products to ad groups' });
+    await expect(dialog.getByTestId('product-assignment-row')).toHaveCount(1);
+    await expect(dialog.locator(`[data-assignment-source="${source}"]`)).toBeVisible();
+    await expect(dialog.getByRole('combobox')).toHaveCount(unresolved ? 1 : 0);
+    await expect(dialog.getByRole('button', { name: 'Save assignment' })).toHaveCount(unresolved ? 1 : 0);
+    await expect(dialog.getByRole('button', { name: 'Revert to derived' })).toHaveCount(source === 'manual' ? 1 : 0);
+    if (source === 'manual') await expect(dialog).toContainText('Derived: B000000099 (derived parent)');
+    if (source === 'proposed') await expect(dialog.getByRole('list', { name: 'Assignment candidates' }).getByRole('listitem')).toHaveCount(2);
+    const path = testInfo.outputPath(`product-assignment-${source}.png`);
+    await page.screenshot({ path, fullPage: true });
+    await testInfo.attach(`product-assignment-${source}`, { path, contentType: 'image/png' });
+  });
+}
