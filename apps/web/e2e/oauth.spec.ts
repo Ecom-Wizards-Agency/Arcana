@@ -188,3 +188,37 @@ test('OAuth callbacks keep consent code and state out of actual Next request log
   expect(output.includes('oauth/callback?')).toBe(false);
 
 });
+
+test('a refused Seller Central start returns to Connections with its reason and one sanitized server log line', async ({ page }) => {
+  await signIn(page, 'admin');
+  const state = await readState();
+  const log = resolve(tmpdir(), `oauth-next-${new URL(BASE_URL).port}.log`);
+  const refusals = async (): Promise<string[]> => (await readFile(log, 'utf8')).split('\n').filter((line) => line.includes('"arcana.spapi_start_refused"'));
+  const before = (await refusals()).length;
+  const handle = createDb({ connectionString: state.connectionString, max: 1 });
+  try {
+    const operations = async (): Promise<number> => (await handle.sql`select id from app.spapi_connection_operations where org_id=${state.orgId}`).length;
+    const saved = await operations();
+    await page.goto('/settings/connections');
+    const section = page.getByTestId('spapi-connections');
+    const label = 'Synthetic refused selection ' + randomUUID();
+    await section.getByRole('textbox', { name: 'Seller connection label' }).fill(label);
+    await expect(section.getByRole('checkbox', { checked: true })).toHaveCount(0);
+    // The plain form POST lands back on Connections, not on a raw JSON refusal.
+    await section.getByTestId('connect-spapi').click();
+    await expect(section.getByTestId('spapi-start-refusal')).toHaveText('Select between 1 and 50 seller profiles, each profile once, then start again.');
+    const url = new URL(page.url());
+    expect(url.pathname).toBe('/settings/connections');
+    expect([...url.searchParams]).toEqual([['org', state.orgId], ['spapi_error', 'selection'], ['spapi_detail', 'bindings']]);
+    await expect(section.getByTestId('connect-spapi')).toBeVisible();
+    expect(await operations()).toBe(saved);
+    await expect.poll(async () => (await refusals()).length).toBe(before + 1);
+    const entry = (await refusals()).at(-1) ?? '';
+    const logged: unknown = JSON.parse(entry.slice(entry.indexOf('{')));
+    expect(logged).toEqual({ event: 'arcana.spapi_start_refused', refusal: 'selection', detail: 'bindings', cause: 'invalid_selection',
+      stage: 'selection', error: 'ZodError', paths: ['bindings'] });
+    for (const hidden of [label, state.orgId]) expect(entry.includes(hidden)).toBe(false);
+  } finally {
+    await handle.close();
+  }
+});

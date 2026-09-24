@@ -1,13 +1,17 @@
 // Exception: provider lifecycle commands own authenticated transactions and manager locks.
 import { randomUUID } from 'node:crypto';
-import { createSpApiConnectionLifecycle, SpApiConnectionCommandError } from '@wizard-ads/db';
-import { SpApiConnectionBegin, SpApiConnectionSubmit, Uuid, type SpApiConsentRefusal, type SpApiConnectionOperation } from '@wizard-ads/shared';
+import { AgencyAccessDenied, createSpApiConnectionLifecycle, SpApiConnectionCommandError } from '@wizard-ads/db';
+import {
+  SpApiConnectionBegin, SpApiConnectionSubmit, SpApiStartDatabaseRefusal, SpApiStartSetting, Uuid,
+  type SpApiConsentRefusal, type SpApiConnectionOperation, type SpApiDeployment, type SpApiStartRefusal,
+} from '@wizard-ads/shared';
 import { currentOperatorIdentity, authorizeOperatorRole } from '../auth/security-authorization';
 import { authOrigin } from '../auth/origin';
 import { can } from '../auth/roles';
 import { database } from '../data/db';
 import { membershipFor, resolveOrgContext } from '../data/orgs';
 import { secureCookies, spApiConnectionsEnabled, spApiOAuthConfig, stateSigningKey } from '../env';
+import { SP_API_START_DATABASE_REFUSALS, spApiStartRefusalMessage } from '../screens/settings-connections/spapi-start-refusal';
 import { createNonce, nonceDigest } from './state';
 import { createSpApiState, verifySpApiState, spApiNonceCookie, spApiNonceName } from './spapi-state';
 
@@ -18,53 +22,212 @@ const one = (params: URLSearchParams, name: string): string | null => {
   const values = params.getAll(name); return values.length === 1 ? values[0]! : null;
 };
 
+/** The step that failed decides the class; an error's own text is never shown or logged. */
+type Stage = 'origin' | 'request' | 'identity' | 'membership' | 'deployment' | 'selection' | 'signing' | 'database' | 'redirect' | 'callback';
+
+/** Loggable facts only: error and setting names, schema paths and SQLSTATE. No values or identifiers. */
+interface ErrorFacts {
+  readonly error: string;
+  readonly setting?: { readonly name: SpApiStartSetting; readonly problem: 'missing' | 'invalid' };
+  readonly paths?: readonly string[];
+  readonly sqlstate?: string;
+  readonly routine?: string;
+  readonly listed?: SpApiStartDatabaseRefusal;
+}
+
+interface Diagnosis {
+  readonly refusal: SpApiStartRefusal;
+  /** A fixed sub-reason for the server log. */
+  readonly cause: string;
+  readonly stage: Stage;
+  readonly facts?: ErrorFacts;
+}
+
+const classified = (refusal: SpApiStartRefusal, cause: string, stage: Stage, facts?: ErrorFacts): Diagnosis =>
+  ({ refusal, cause, stage, facts });
+const session = (cause: string): Diagnosis => classified({ refusal: 'session', detail: null }, cause, 'identity');
+const role = (cause: string): Diagnosis => classified({ refusal: 'role', detail: null }, cause, 'membership');
+
 class CallbackRefusal extends Error {
-  constructor(readonly reason: SpApiConsentRefusal) { super('Seller consent refused'); }
+  constructor(readonly reason: SpApiConsentRefusal, readonly diagnosis?: Diagnosis) { super('Seller consent refused'); }
+}
+
+/** An unexpected admission error, tagged with the step that raised it. */
+class StageFailure extends Error {
+  constructor(readonly stage: Stage, readonly failure: unknown) { super('Seller connection step failed'); }
+}
+
+async function step<T>(stage: Stage, run: () => Promise<T>): Promise<T> {
+  try { return await run(); } catch (error) { throw new StageFailure(stage, error); }
+}
+
+// `required()` and the auth flag readers name the variable first; nothing after it is read.
+const SETTING_ERROR = /^([A-Z][A-Z0-9_]*) (is not set|is required|must)\b/;
+const deploymentSettings = {
+  clientId: 'SP_API_LWA_CLIENT_ID', applicationId: 'SP_API_APPLICATION_ID',
+  redirectUri: 'SP_API_OAUTH_REDIRECT_URI', region: 'SP_API_OAUTH_REGION',
+} as const satisfies Record<keyof SpApiDeployment, SpApiStartSetting>;
+const isDeploymentKey = (key: string): key is keyof typeof deploymentSettings => Object.hasOwn(deploymentSettings, key);
+
+function schemaPaths(error: Error): string[] | undefined {
+  if (error.name !== 'ZodError' || !('issues' in error) || !Array.isArray(error.issues)) return undefined;
+  const paths = error.issues.map((issue: unknown) => {
+    const path: unknown = typeof issue === 'object' && issue !== null && 'path' in issue ? issue.path : [];
+    return (Array.isArray(path) ? path : []).map((part: unknown) => typeof part === 'number' ? String(part)
+      : typeof part === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(part) ? part : '?').join('.') || '(root)';
+  });
+  return [...new Set(paths)].slice(0, 10);
+}
+
+function errorFacts(error: unknown): ErrorFacts {
+  if (!(error instanceof Error)) return { error: typeof error };
+  const name = /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.name) ? error.name : 'Error';
+  const match = SETTING_ERROR.exec(error.message);
+  const setting = SpApiStartSetting.safeParse(match?.[1]);
+  const facts: { -readonly [K in keyof ErrorFacts]: ErrorFacts[K] } = { error: name, paths: schemaPaths(error) };
+  if (setting.success) facts.setting = { name: setting.data, problem: match?.[2] === 'must' ? 'invalid' : 'missing' };
+  // postgres.js errors carry SQLSTATE in `code` and the raising C routine; bound values are never read.
+  if ('severity' in error && 'code' in error && typeof error.code === 'string' && /^[0-9A-Z]{5}$/.test(error.code)) {
+    const sqlstate = error.code;
+    facts.sqlstate = sqlstate;
+    if ('routine' in error && typeof error.routine === 'string' && /^[a-z_][a-z0-9_]{0,63}$/i.test(error.routine)) facts.routine = error.routine;
+    facts.listed = SpApiStartDatabaseRefusal.options.find((key) =>
+      SP_API_START_DATABASE_REFUSALS[key].sqlstate === sqlstate && SP_API_START_DATABASE_REFUSALS[key].text === error.message);
+  }
+  return facts;
+}
+
+function diagnose(stage: Stage, error: unknown): Diagnosis {
+  if (error instanceof StageFailure) return diagnose(error.stage, error.failure);
+  if (error instanceof CallbackRefusal) return error.diagnosis ?? classified({ refusal: 'unexpected', detail: null }, error.reason, stage);
+  const facts = errorFacts(error);
+  const unexpected = (cause: string): Diagnosis => classified({ refusal: 'unexpected', detail: null }, cause, stage, facts);
+  const setting = facts.setting;
+  const configuration = (name: SpApiStartSetting, problem: 'missing' | 'invalid'): Diagnosis =>
+    classified({ refusal: 'configuration', detail: name }, `${problem}_setting`, stage, facts);
+  if (setting?.name === 'AMAZON_OAUTH_STATE_KEY') {
+    return classified({ refusal: 'signing_key', detail: null }, setting.problem === 'missing' ? 'missing' : 'too_short', stage, facts);
+  }
+  if (setting) return configuration(setting.name, setting.problem);
+  const field = facts.paths?.[0]?.split('.')[0] ?? '';
+  switch (stage) {
+    case 'identity': return classified({ refusal: 'session', detail: null }, 'identity_error', stage, facts);
+    case 'membership': return classified({ refusal: 'database', detail: null }, 'membership_read', stage, facts);
+    case 'deployment': return isDeploymentKey(field) ? configuration(deploymentSettings[field], 'invalid') : unexpected('deployment_error');
+    case 'selection':
+      if (isDeploymentKey(field)) return configuration(deploymentSettings[field], 'invalid');
+      if (field === 'label' || field === 'bindings') return classified({ refusal: 'selection', detail: field }, 'invalid_selection', stage, facts);
+      return unexpected('invalid_request');
+    case 'signing': return classified({ refusal: 'signing_key', detail: null }, 'unusable', stage, facts);
+    case 'database':
+    case 'callback':
+      if (error instanceof AgencyAccessDenied) return classified({ refusal: 'role', detail: null }, 'membership_denied', stage, facts);
+      if (facts.listed) return classified({ refusal: 'database', detail: facts.listed }, 'listed_refusal', stage, facts);
+      if (facts.sqlstate) return classified({ refusal: 'database', detail: null }, 'unlisted_error', stage, facts);
+      if (stage === 'callback') return unexpected('callback_error');
+      return classified({ refusal: 'database', detail: null }, facts.paths ? 'unexpected_response'
+        : error instanceof SpApiConnectionCommandError ? 'command_error' : 'begin_error', stage, facts);
+    case 'origin': return configuration('WIZARD_ADS_APP_URL', 'invalid');
+    case 'request': return unexpected('request_error');
+    case 'redirect': return unexpected('after_begin');
+    default: {
+      const exhaustive: never = stage;
+      return exhaustive;
+    }
+  }
+}
+
+function logged(value: Diagnosis) {
+  const { refusal, cause, stage, facts } = value;
+  return { refusal: refusal.refusal, detail: refusal.detail, cause, stage, error: facts?.error, setting: facts?.setting?.name,
+    paths: facts?.paths, sqlstate: facts?.sqlstate, routine: facts?.routine };
+}
+
+/** A plain form POST is a document navigation; programmatic callers keep a JSON refusal. */
+const navigation = (request: Request): boolean => request.headers.get('sec-fetch-mode') === 'navigate'
+  || (request.headers.get('accept') ?? '').includes('text/html');
+
+function refuseStart(request: Request, org: string | null, value: Diagnosis): Response {
+  console.warn(JSON.stringify({ event: 'arcana.spapi_start_refused', ...logged(value) }));
+  const { refusal } = value;
+  if (navigation(request)) {
+    try {
+      const query = new URLSearchParams({ ...(org ? { org } : {}), spapi_error: refusal.refusal, ...(refusal.detail ? { spapi_detail: refusal.detail } : {}) });
+      return new Response(null, { status: 303, headers: { ...headers, Location: new URL(`${settings}?${query}`, authOrigin()).href } });
+    } catch { /* Without a configured origin the refusal is answered in place. */ }
+  }
+  const status = refusal.refusal === 'unavailable' ? 503 : refusal.refusal === 'selection' && refusal.detail === 'form' ? 400 : 403;
+  return json(status, { error: spApiStartRefusalMessage(refusal), refusal: refusal.refusal, detail: refusal.detail });
 }
 
 async function admit(orgId: string, manager: boolean, expectedUser?: string) {
-  if (!Uuid.safeParse(orgId).success) throw new CallbackRefusal('mismatch');
-  const identity = await currentOperatorIdentity();
-  if (!identity.user || (expectedUser !== undefined && identity.user.id !== expectedUser)) throw new CallbackRefusal('wrong_actor');
-  if (identity.security?.state === 'unavailable') throw new CallbackRefusal('authority_changed');
+  if (!Uuid.safeParse(orgId).success) {
+    throw new CallbackRefusal('mismatch', classified({ refusal: 'selection', detail: 'org' }, 'invalid_org', 'request'));
+  }
+  const identity = await step('identity', () => currentOperatorIdentity());
+  // Checked before the user: enforced assurance reports an unverifiable session with no user.
+  if (identity.security?.state === 'unavailable') {
+    throw new CallbackRefusal('authority_changed', session(identity.security.reason === 'unknown-assurance' ? 'security_unknown_assurance' : 'security_provider_error'));
+  }
+  const user = identity.user;
+  if (!user) throw new CallbackRefusal('wrong_actor', session('signed_out'));
+  if (expectedUser !== undefined && user.id !== expectedUser) throw new CallbackRefusal('wrong_actor', session('different_user'));
   const handle = database();
-  if (!handle) throw new CallbackRefusal('submission_uncertain');
-  const context = await resolveOrgContext(handle, identity.user, orgId);
+  if (!handle) {
+    throw new CallbackRefusal('submission_uncertain', classified({ refusal: 'configuration', detail: 'DATABASE_URL' }, 'database_unconfigured', 'membership'));
+  }
+  const context = await step('membership', () => resolveOrgContext(handle, user, orgId));
   const org = membershipFor(context, orgId);
-  if (!org || (manager && !can(org.role, 'manageConnection'))
-    || authorizeOperatorRole(identity, org.role, settings).status !== 'ok') throw new CallbackRefusal('authority_changed');
-  return { actor: { orgId, userId: identity.user.id },
+  if (!org) throw new CallbackRefusal('authority_changed', role('not_member'));
+  if (manager && !can(org.role, 'manageConnection')) throw new CallbackRefusal('authority_changed', role('role_cannot_manage'));
+  const authorization = authorizeOperatorRole(identity, org.role, settings);
+  if (authorization.status !== 'ok') {
+    throw new CallbackRefusal('authority_changed', session(authorization.status === 'challenge' ? 'assurance_challenge' : 'assurance_error'));
+  }
+  return { actor: { orgId, userId: user.id },
     lifecycle: createSpApiConnectionLifecycle(handle, spApiConnectionsEnabled) };
 }
 
 /** Explicit profile selection starts consent; web submits no provider HTTP request. */
 export async function startSpApiConsent(request: Request): Promise<Response> {
+  let stage: Stage = 'origin';
+  let org: string | null = null;
   try {
-    if (request.headers.get('origin') !== new URL(authOrigin()).origin) return json(403, { error: 'Request origin refused' });
-    if (!spApiConnectionsEnabled()) return json(503, { error: 'Seller connections are unavailable' });
+    const expected = new URL(authOrigin()).origin;
+    stage = 'request';
+    if (request.headers.get('origin') !== expected) {
+      return refuseStart(request, null, classified({ refusal: 'origin', detail: null }, 'origin_mismatch', stage));
+    }
+    if (!spApiConnectionsEnabled()) return refuseStart(request, null, classified({ refusal: 'unavailable', detail: null }, 'gate_off', stage));
     const body = await request.text();
-    if (body.length > 16_384) return json(400, { error: 'Invalid connection selection' });
+    if (body.length > 16_384) return refuseStart(request, null, classified({ refusal: 'selection', detail: 'form' }, 'body_size', stage));
     const form = new URLSearchParams(body);
     const orgId = one(form, 'org') ?? '';
+    if (Uuid.safeParse(orgId).success) org = orgId;
     const { actor, lifecycle } = await admit(orgId, true);
+    stage = 'deployment';
     const { authorizeUrl, beta, ...deployment } = spApiOAuthConfig();
+    stage = 'selection';
     const nonce = createNonce();
     const input = SpApiConnectionBegin.parse({ ...deployment, requestId: randomUUID(), nonceHash: nonceDigest(nonce),
       label: one(form, 'label'), bindings: form.getAll('binding').map((value) => {
         const parts = value.split(':');
         return parts.length === 2 ? { profileId: parts[0], marketplaceId: parts[1] } : {};
       }) });
+    stage = 'signing';
     const key = stateSigningKey();
     // Validate signing configuration before saving an operation.
     createSpApiState(key, { org: actor.orgId, sub: actor.userId, nonce, operationId: input.requestId });
+    stage = 'database';
     const operation = await lifecycle.begin(actor, input);
+    stage = 'redirect';
     const state = createSpApiState(key, { org: actor.orgId, sub: actor.userId, nonce, operationId: operation.operationId });
     const destination = new URL(authorizeUrl);
     destination.search = new URLSearchParams({ application_id: deployment.applicationId, state,
       redirect_uri: deployment.redirectUri, ...(beta ? { version: 'beta' } : {}) }).toString();
     return new Response(null, { status: 303, headers: { ...headers, Location: destination.href,
       'Set-Cookie': spApiNonceCookie(nonce, secureCookies()) } });
-  } catch { return json(403, { error: 'The connection could not be started. Check account security, role and selected seller profiles.' }); }
+  } catch (error) { return refuseStart(request, org, diagnose(stage, error)); }
 }
 
 function operationRefusal(operation: SpApiConnectionOperation): SpApiConsentRefusal | null {
@@ -124,7 +287,10 @@ export async function receiveSpApiConsent(request: Request, params = new URL(req
       throw new CallbackRefusal('submission_uncertain');
     }
   } catch (error) {
-    result.set('spapi_error', error instanceof CallbackRefusal ? error.reason : 'submission_uncertain');
+    const reason = error instanceof CallbackRefusal ? error.reason : 'submission_uncertain';
+    const known = error instanceof CallbackRefusal ? error.diagnosis : diagnose('callback', error);
+    console.warn(JSON.stringify({ event: 'arcana.spapi_callback_refused', reason, ...(known ? logged(known) : { error: 'CallbackRefusal' }) }));
+    result.set('spapi_error', reason);
   }
   const clearing = { ...headers, 'Set-Cookie': spApiNonceCookie(null, secure) };
   try { return new Response(null, { status: 303, headers: { ...clearing, Location: new URL(`${settings}?${result}`, authOrigin()).href } }); }

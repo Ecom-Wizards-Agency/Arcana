@@ -55,6 +55,27 @@ describe('seller connection controls', () => {
     view.rerender(<SpApiConnections {...base} callbackError="synthetic-untrusted-provider-text" />);
     expect(screen.getByRole('alert').textContent).not.toContain('synthetic-untrusted-provider-text');
   });
+  it.each([
+    ['configuration', 'SP_API_OAUTH_REGION', 'Seller connections are not fully configured: SP_API_OAUTH_REGION is missing or invalid.'],
+    ['database', 'association_refused', 'The database refused this connection: SP-API profile association refused.'],
+    ['selection', 'bindings', 'Select between 1 and 50 seller profiles'],
+    ['session', null, 'Sign in again to continue.'],
+  ] as const)('shows the %s start refusal next to the form', (refusal, detail, text) => {
+    render(<SpApiConnections {...base} callbackError={refusal} startDetail={detail} />);
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    const alert = screen.getByTestId('spapi-start-refusal');
+    expect(alert.textContent).toContain(text);
+    expect(alert.nextElementSibling?.tagName).toBe('FORM');
+  });
+  it('refuses start details outside the fixed codes', () => {
+    const view = render(<SpApiConnections {...base} callbackError="configuration" startDetail="synthetic-untrusted-setting" />);
+    expect(screen.queryByTestId('spapi-start-refusal')).toBeNull();
+    expect(screen.getByRole('alert').textContent).not.toContain('synthetic-untrusted-setting');
+    view.rerender(<SpApiConnections {...base} callbackError="role" startDetail="synthetic-untrusted-detail" />);
+    expect(screen.queryByTestId('spapi-start-refusal')).toBeNull();
+    view.rerender(<SpApiConnections {...base} mayManage={false} callbackError="role" />);
+    expect(screen.getByTestId('spapi-start-refusal').textContent).toContain('cannot manage seller connections');
+  });
   it('requires explicit revocation confirmation and shows the saved revoked state', async () => {
     const fetch = vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({ health: { connectionId: id,state: 'revoked',hasCredential: false } }));
     render(<SpApiConnections {...base} initial={{ ...operation, state: 'completed', connectionId: id, attachedBindings: 2 }} enabled={false} connections={[{ id,label: 'Synthetic seller',status: 'active',hasCredential: true,bindingCount: 2,enabledBindings: 0 }]} />);
