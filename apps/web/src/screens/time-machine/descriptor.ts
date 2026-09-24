@@ -10,7 +10,7 @@ export const descriptor = {
   guard: { "kind": "requested" },
   prefetch: "expensive",
   rollout: { "enabled": true },
-  states: ["loading", "error", "empty", "not-measured"],
+  states: ["loading", "error", "empty", "not-measured", "stale", "refused"],
   entry: "request-message",
   specs: [{ "file": "time-machine.spec.ts", "suite": "tags-goto" }, { "file": "change-queue.spec.ts", "suite": "auth" }],
   load: (actor, params) => import('./load').then((module) => module.load(actor, params)),

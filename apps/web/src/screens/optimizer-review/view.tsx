@@ -7,10 +7,12 @@ import { optimizerBatchHref } from '../optimizer/navigation';
 import { ReviewContent } from './components';
 import { RunDetails } from './details';
 import { acceptSelection, stageSelection } from './selection';
-import type { load } from './load';
+import type { loadWithObservation } from './load';
+import RunScreen from '../optimizer-run/view';
 
-export type ScreenData = Awaited<ReturnType<typeof load>>;
+export type ScreenData = Awaited<ReturnType<typeof loadWithObservation>>;
 export default function ScreenView({ data }: { data: ScreenData }) {
+  if (data.view === 'observation') return <RunScreen data={{ view: 'ready', props: data.props }} />;
   if (data.view === 'gated') return <OptimizerUnavailable title="Review suggestions" message={gateMessage(data.props.entry.state)} />;
   if (data.view === 'empty') return <OptimizerUnavailable title="Review suggestions" message="No profiles yet." />;
   if (data.view === 'error') return <OptimizerUnavailable title="Review suggestions" message={data.props.message} />;
