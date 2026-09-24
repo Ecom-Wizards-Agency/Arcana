@@ -32,6 +32,7 @@ describe('web E2E runner arguments', () => {
         'auth-oauth',
         'auth-roles',
         'route-acceptance',
+        'undesigned-routes',
       ],
       playwrightArgs: ['--grep', 'readiness'],
     });
@@ -53,6 +54,7 @@ describe('web E2E runner arguments', () => {
         'auth-oauth',
         'auth-roles',
         'route-acceptance',
+        'undesigned-routes',
       ],
       playwrightArgs: ['grid.spec.ts'],
     });
@@ -60,7 +62,7 @@ describe('web E2E runner arguments', () => {
 
   it('rejects an unknown suite instead of silently running everything', () => {
     expect(() => parseE2EArgs(['unknown'])).toThrow(
-      "Unknown suite 'unknown'. Expected one of: tags-goto, grid-performance, optimization-groups, profile-context, auth-guards-anonymous-a, auth-guards-anonymous-b, auth-guards-signed-in-a, auth-guards-signed-in-b, auth, auth-members, auth-oauth, auth-roles, route-acceptance, all.",
+      "Unknown suite 'unknown'. Expected one of: tags-goto, grid-performance, optimization-groups, profile-context, auth-guards-anonymous-a, auth-guards-anonymous-b, auth-guards-signed-in-a, auth-guards-signed-in-b, auth, auth-members, auth-oauth, auth-roles, route-acceptance, undesigned-routes, all.",
     );
   });
 });
