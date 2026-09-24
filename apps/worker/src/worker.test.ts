@@ -14,6 +14,7 @@ import type { CrosscheckIngestResult } from '@wizard-ads/crosscheck-cli';
 import { SpApiAuthError } from '@wizard-ads/sp-api';
 import {
   AdsApiRetryableError,
+  DbAdsApiClient,
   DownloadUrlExpiredError,
   ReportCreateOutcomeUnknownError,
   type AdsApiClient,
@@ -603,7 +604,7 @@ describe('Sponsored Products report promotion', () => {
     });
   });
 
-  it('re-polls an expired download URL only while the report request is recoverable', async () => {
+  it('re-requests an expired download URL through the request path instead of downloading or re-polling', async () => {
     const now = new Date('2026-08-17T04:00:00Z');
     const report: ReportRequestState = {
       id: reportRequestId, orgId, profileId, reportType: 'spTargeting',
@@ -612,6 +613,7 @@ describe('Sponsored Products report promotion', () => {
       pollAttempts: 3,
     };
     const enqueued: { payload: JobPayload; dedupeKey: string }[] = [];
+    const reRequests: Parameters<NonNullable<WorkerStore['reRequestReport']>>[0][] = [];
     const outcomes: { outcome: JobOutcome; result: unknown }[] = [];
     let claimed = false;
     const store = {
@@ -628,6 +630,10 @@ describe('Sponsored Products report promotion', () => {
         enqueued.push({ payload: nextPayload, dedupeKey });
         return true;
       },
+      reRequestReport: async (input: Parameters<NonNullable<WorkerStore['reRequestReport']>>[0]) => {
+        reRequests.push(input);
+        return { kind: 're-requested' as const, requestJobId: 'synthetic-request-job', generation: 1, enqueued: true };
+      },
     } satisfies WorkerStore;
     const worker = new SyncWorker({
       workerId: 'unit-worker', store, adsApi: new ExpiredDownloadApi(), now: () => now,
@@ -635,18 +641,26 @@ describe('Sponsored Products report promotion', () => {
     });
 
     expect(await worker.drainOnce()).toBe(1);
-    expect(enqueued).toHaveLength(1);
-    expect(enqueued[0]).toMatchObject({
-      payload: { type: 'report.poll', reportRequestId, amazonReportId: 'amazon-report', attempt: 3 },
-      dedupeKey: `report.repoll:${reportRequestId}:3`,
+    expect(enqueued).toEqual([]);
+    expect(reRequests).toHaveLength(1);
+    expect(reRequests[0]).toMatchObject({
+      reportRequestId, orgId, profileId, maxGenerations: 3,
+      error: 'report download URL expired; report re-requested',
+      payload: {
+        type: 'report.request', orgId, profileId, reportType: 'spTargeting',
+        startDate: '2026-08-14', endDate: '2026-08-14',
+      },
     });
     expect(outcomes).toEqual([{
       outcome: 'succeeded',
-      result: { downloadExpired: true, repollEnqueued: true },
+      result: {
+        downloadExpired: true, reason: 'expired', reRequested: true,
+        reRequestJobId: 'synthetic-request-job', reRequestEnqueued: true, generation: 1,
+      },
     }]);
   });
 
-  it('fails the ledger and dead-letters an expired URL beyond the request horizon', async () => {
+  it('fails the ledger and dead-letters an expired URL once its window used every re-request', async () => {
     const now = new Date('2026-08-17T05:00:00Z');
     const report: ReportRequestState = {
       id: reportRequestId, orgId, profileId, reportType: 'spTargeting',
@@ -666,6 +680,7 @@ describe('Sponsored Products report promotion', () => {
       getReportRequest: async () => report,
       failReport: async (_id: string, error: string) => { failed.push(error); },
       deadLetter: async (_id: string, error: string) => { dead.push(error); },
+      reRequestReport: async () => ({ kind: 'exhausted' as const, generation: 3 }),
     } satisfies WorkerStore;
     const worker = new SyncWorker({
       workerId: 'unit-worker', store, adsApi: new ExpiredDownloadApi(), now: () => now,
@@ -673,8 +688,8 @@ describe('Sponsored Products report promotion', () => {
     });
 
     expect(await worker.drainOnce()).toBe(1);
-    expect(failed).toEqual(['report download URL remained expired beyond the 4-hour request horizon']);
-    expect(dead).toEqual(['report download URL remained expired beyond the 4-hour request horizon']);
+    expect(failed).toEqual(['report download URL expired after 3 re-requests of this window']);
+    expect(dead).toEqual(['report download URL expired after 3 re-requests of this window']);
   });
 });
 
@@ -2028,4 +2043,247 @@ it('quarantines a feature-family unknown create and refuses its unresolved repla
   expect(quarantined).toBe(true);
   expect(await worker.drainOnce()).toBe(1);
   expect(api.createCalls).toBe(1);
+});
+
+
+describe('WP-323 report fetch reliability in the fetch handler', () => {
+  const now = new Date('2026-09-24T10:10:00Z');
+  const signed = (signedAt: string) => `https://reports.invalid/report.json.gz?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=${signedAt}&X-Amz-Expires=3600&X-Amz-Signature=synthetic`;
+  const ledger = (reportType: ReportRequestState['reportType'] = 'sbCampaigns'): ReportRequestState => ({
+    id: reportRequestId, orgId, profileId, reportType, startDate: '2026-09-20', endDate: '2026-09-22',
+    source: 'amazon_api', amazonReportId: 'amazon-report', requestedAt: new Date('2026-09-24T07:34:00Z'),
+    pollAttempts: 2,
+  });
+  const fetchJob = (downloadUrl: string): ClaimedJob => ({
+    id: jobId, orgId, profileId, jobType: 'report.fetch',
+    payload: { type: 'report.fetch', orgId, profileId, reportRequestId, amazonReportId: 'amazon-report', downloadUrl },
+    attempts: 1, maxAttempts: 5, dedupeKey: null, claim: null, claimedBy: 'unit-worker',
+  });
+
+  class CountingApi extends OneRowApi {
+    downloads = 0;
+    override async downloadReport(url?: string, signal?: AbortSignal): Promise<AsyncIterable<Uint8Array>> {
+      this.downloads += 1;
+      return super.downloadReport(url, signal);
+    }
+  }
+
+  function harness(job: ClaimedJob, adsApi: AdsApiClient, report = ledger()) {
+    const reRequests: Parameters<NonNullable<WorkerStore['reRequestReport']>>[0][] = [];
+    const outcomes: { outcome: JobOutcome; result: unknown; retryIn?: string | undefined }[] = [];
+    const failed: string[] = [];
+    const dead: string[] = [];
+    const completed: { parsed: number; loaded: number; bytesDownloaded: number }[] = [];
+    const enqueued: { payload: JobPayload; dedupeKey: string }[] = [];
+    let claimed = false;
+    const store: WorkerStore = {
+      ...stubStore(),
+      claim: async () => claimed ? [] : (claimed = true, [job]),
+      enqueue: async (payload, _runAt, dedupeKey) => { enqueued.push({ payload, dedupeKey }); return true; },
+      finish: async (_id, outcome, options) => { outcomes.push({ outcome, result: options?.result, retryIn: options?.retryIn }); },
+      getReportRequest: async () => report,
+      failReport: async (_id, error) => { failed.push(error); },
+      deadLetter: async (_id, error) => { dead.push(error); },
+      loadFacts: async (batch: ParsedFactBatch) => batch.rows.length,
+      completeReport: async (_id, counts) => {
+        completed.push(counts);
+        if (counts.parsed !== counts.loaded) throw new ParsedLoadedMismatch(counts.parsed, counts.loaded);
+      },
+      reRequestReport: async (input) => {
+        reRequests.push(input);
+        return { kind: 're-requested', requestJobId: 'synthetic-request-job', generation: 1, enqueued: true };
+      },
+    };
+    const worker = new SyncWorker({
+      workerId: 'unit-worker', store, adsApi, now: () => now,
+      buckets: new RegionTokenBuckets(2), logger: { info: () => {}, error: () => {} },
+    });
+    return { worker, reRequests, outcomes, failed, dead, completed, enqueued };
+  }
+
+  it('re-requests a URL that expires within two minutes without downloading it', async () => {
+    const api = new CountingApi();
+    // Signed 09:11:30; valid until 10:11:30, 90 seconds after "now".
+    const { worker, reRequests, outcomes, enqueued } = harness(fetchJob(signed('20260924T091130Z')), api);
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(api.downloads).toBe(0);
+    expect(enqueued).toEqual([]);
+    expect(reRequests).toHaveLength(1);
+    expect(reRequests[0]?.payload).toEqual({
+      type: 'report.request', orgId, profileId, reportType: 'sbCampaigns', startDate: '2026-09-20', endDate: '2026-09-22',
+    });
+    expect(outcomes).toEqual([{ outcome: 'succeeded', retryIn: undefined, result: expect.objectContaining({
+      downloadExpired: true, reason: 'expiring_before_download', reRequested: true,
+    }) }]);
+  });
+
+  it('re-requests an already expired URL recorded on the ledger without downloading it', async () => {
+    const api = new CountingApi();
+    const url = 'https://reports.invalid/unsigned-report';
+    const { worker, reRequests, outcomes } = harness(fetchJob(url), api, {
+      ...ledger(), downloadUrl: url, downloadExpiresAt: new Date('2026-09-24T08:34:00Z'),
+    });
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(api.downloads).toBe(0);
+    expect(reRequests).toHaveLength(1);
+    expect(outcomes[0]?.result).toMatchObject({ reason: 'expired_before_download' });
+  });
+
+  it('downloads a URL with enough time left and asserts parsed against loaded', async () => {
+    const api = new CountingApi();
+    const { worker, reRequests, completed, outcomes } = harness(fetchJob(signed('20260924T094000Z')), api);
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(api.downloads).toBe(1);
+    expect(reRequests).toEqual([]);
+    expect(completed).toEqual([expect.objectContaining({ parsed: 1, loaded: 1 })]);
+    expect(outcomes[0]?.outcome).toBe('succeeded');
+  });
+
+  it('turns the storage 403 "Request has expired" XML into a re-request, never a size error', async () => {
+    const storage = new DbAdsApiClient({
+      resolveProfileBinding: async () => null,
+      resolveConnectionBinding: async () => null,
+      listConnectionIds: async () => [],
+      getRefreshToken: async () => null,
+      createClient: () => { throw new Error('unused'); },
+      fetch: async () => new Response(
+        '<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>Request has expired</Message></Error>',
+        { status: 403, headers: { 'content-type': 'application/xml' } },
+      ),
+    });
+    class StorageApi extends OneRowApi {
+      override downloadReport(url: string, signal?: AbortSignal) { return storage.downloadReport(url, signal); }
+    }
+    // The URL still claims 30 minutes; storage says otherwise.
+    const { worker, reRequests, outcomes, dead, failed } = harness(fetchJob(signed('20260924T094000Z')), new StorageApi());
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(reRequests).toHaveLength(1);
+    expect(dead).toEqual([]);
+    expect(failed).toEqual([]);
+    expect(outcomes[0]).toMatchObject({ outcome: 'succeeded', result: { reason: 'expired', reRequested: true } });
+  });
+
+  it('re-polls a Creative-snapshot report for a fresh URL instead of expiring the ledger its snapshot depends on', async () => {
+    const api = new CountingApi();
+    const report = { ...ledger('sbAds'), creativeSyncSnapshotId: '66666666-6666-4666-8666-666666666666' };
+    const { worker, reRequests, outcomes, enqueued } = harness(fetchJob(signed('20260924T080000Z')), api, report);
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(api.downloads).toBe(0);
+    expect(reRequests).toEqual([]);
+    expect(enqueued).toEqual([{
+      payload: { type: 'report.poll', orgId, profileId, reportRequestId, amazonReportId: 'amazon-report', attempt: 2 },
+      dedupeKey: `report.repoll:${reportRequestId}:2`,
+    }]);
+    expect(outcomes[0]).toMatchObject({ outcome: 'succeeded', result: { downloadExpired: true, reason: 'expired_before_download', repollEnqueued: true } });
+  });
+
+  it.each([
+    ['a non-report body', Buffer.from('<html>synthetic</html>'), 'report payload is neither gzip nor JSON'],
+    ['an empty body', Buffer.alloc(0), 'report payload is empty'],
+  ])('fails the ledger for %s with its own class and dead-letters it', async (_label, body, message) => {
+    class BodyApi extends OneRowApi {
+      override async downloadReport() { return (async function* stream() { yield body; })(); }
+    }
+    const { worker, failed, dead } = harness(fetchJob(signed('20260924T094000Z')), new BodyApi());
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(failed).toEqual([message]);
+    expect(dead).toEqual([message]);
+  });
+
+  it('keeps the retry budget for a truncated gzip stream', async () => {
+    class TruncatedApi extends OneRowApi {
+      override async downloadReport() {
+        const bytes = gzipSync(JSON.stringify(Array.from({ length: 50 }, () => ({ date: '2026-09-20' })))).subarray(0, 30);
+        return (async function* stream() { yield bytes; })();
+      }
+    }
+    const { worker, outcomes, dead } = harness(fetchJob(signed('20260924T094000Z')), new TruncatedApi());
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(dead).toEqual([]);
+    expect(outcomes).toEqual([expect.objectContaining({ outcome: 'failed', retryIn: '60 seconds' })]);
+  });
+
+  it('loads a realistic multi-megabyte report with parsed equal to loaded', async () => {
+    const rows = Array.from({ length: 18_000 }, (_, index) => ({
+      date: `2026-09-${String(20 + (index % 3)).padStart(2, '0')}`,
+      campaignId: `synthetic-campaign-${index}`, adGroupId: `synthetic-group-${index}`,
+      impressions: 1_000 + index, clicks: index % 9, cost: (index % 9) * 0.37,
+      purchases7d: index % 2, sales7d: (index % 2) * 19.99, unitsSoldClicks7d: index % 2,
+      campaignName: `synthetic campaign name ${index} `.repeat(4),
+    }));
+    const compressed = gzipSync(JSON.stringify(rows));
+    expect(Buffer.byteLength(JSON.stringify(rows))).toBeGreaterThan(3 * 1024 * 1024);
+    const { worker, completed, outcomes } = harness(fetchJob(signed('20260924T094000Z')), new PayloadApi(rows));
+
+    expect(await worker.drainOnce()).toBe(1);
+    expect(completed).toEqual([{
+      parsed: rows.length, loaded: rows.length, bytesDownloaded: compressed.byteLength,
+      coverage: expect.objectContaining({ sourceRows: rows.length, parsedRows: rows.length, refusedRows: 0 }),
+    }]);
+    expect(outcomes[0]).toMatchObject({ outcome: 'succeeded', result: { reportRows: rows.length, parsed: rows.length, loaded: rows.length } });
+  });
+});
+
+describe('WP-323 backlog recovery hook', () => {
+  const counts = { scanned: 3, reRequested: 2, joined: 0, unrecoverable: 1, exhausted: 0, windows: 1, requestsEnqueued: 1 };
+
+  function recoveringStore(order: string[], fail = false): WorkerStore {
+    return {
+      ...stubStore(),
+      claim: async () => { order.push('claim'); return []; },
+      recoverDeadReportFetches: async (input) => {
+        order.push(`recover:${input.maxGenerations}:${input.limit}`);
+        if (fail) throw new Error('synthetic recovery failure');
+        return counts;
+      },
+    };
+  }
+
+  it('recovers once per interval before claiming, only when composed on', async () => {
+    let clock = new Date('2026-09-24T10:10:00Z');
+    const order: string[] = [];
+    const logged: unknown[] = [];
+    const worker = new SyncWorker({
+      workerId: 'unit-worker', store: recoveringStore(order), reportBacklogRecovery: true,
+      now: () => clock, logger: { info: (message, details) => { logged.push({ message, details }); }, error: () => {} },
+    });
+
+    await worker.drainOnce();
+    await worker.drainOnce();
+    clock = new Date(clock.getTime() + 5 * 60_000);
+    await worker.drainOnce();
+    expect(order).toEqual(['recover:3:2000', 'claim', 'claim', 'recover:3:2000', 'claim']);
+    expect(logged).toContainEqual({ message: 'dead report fetches recovered', details: counts });
+
+    const off: string[] = [];
+    await new SyncWorker({ workerId: 'unit-worker', store: recoveringStore(off), logger: { info: () => {}, error: () => {} } }).drainOnce();
+    expect(off).toEqual(['claim']);
+  });
+
+  it('never recovers in a runtime that does not own report requests', async () => {
+    const order: string[] = [];
+    await new SyncWorker({
+      workerId: 'unit-worker', store: recoveringStore(order), reportBacklogRecovery: true,
+      jobTypes: ['entity.sync', 'report.poll', 'report.fetch'], logger: { info: () => {}, error: () => {} },
+    }).drainOnce();
+    expect(order).toEqual(['claim']);
+  });
+
+  it('keeps claiming when a recovery pass fails', async () => {
+    const order: string[] = [];
+    const errors: unknown[] = [];
+    await new SyncWorker({
+      workerId: 'unit-worker', store: recoveringStore(order, true), reportBacklogRecovery: true,
+      logger: { info: () => {}, error: (message, details) => { errors.push({ message, details }); } },
+    }).drainOnce();
+    expect(order).toEqual(['recover:3:2000', 'claim']);
+    expect(errors).toEqual([{ message: 'dead report fetch recovery failed', details: { error: 'synthetic recovery failure' } }]);
+  });
 });

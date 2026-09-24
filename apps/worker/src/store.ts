@@ -50,7 +50,9 @@ import { MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
 import { readCoreReportCapability, promoteCoreReportWindow, coreReportGrain } from '@wizard-ads/db';
 import type { CoreReportConfiguration, CoreFeatureReportType, CoreReportCapability, CoreReportPromotion } from '@wizard-ads/shared';
 import {
+  ReportRequestJob,
   WorkerReportAccounting,
+  classifyReportLaneFailure,
   type ReportCoverageAccounting,
   type WorkerReportAccounting as WorkerReportAccountingShape,
   type EntityRow,
@@ -72,7 +74,63 @@ export type ReportRequestState = Omit<
   requestedAt: Date;
   /** Absent on base-report test adapters; production always returns null or a UUID. */
   creativeSyncSnapshotId?: string | null;
+  /** The URL the latest poll recorded, and when Amazon said it stops working. */
+  downloadUrl?: string | null;
+  downloadExpiresAt?: Date | null;
+  /** Dedupe key of the request job that minted this ledger; carries re-request lineage. */
+  requestDedupeKey?: string | null;
 };
+
+/**
+ * WP-323 claim priority, higher first (`claim_sync_jobs` orders by
+ * `priority desc, run_after, created_at`). A fetch holds a pre-signed URL that
+ * expires an hour after its poll, and a poll turns Amazon's finished work into
+ * that URL; new requests only add work. Every due fetch is therefore claimed
+ * before any due poll, and every due poll before any new request, entity or
+ * integration job (the column default, 100). Recommendation runs stay lower (50).
+ */
+export const REPORT_LANE_CLAIM_PRIORITY: Readonly<Partial<Record<JobType, number>>> = Object.freeze({
+  'report.fetch': 300,
+  'report.poll': 200,
+});
+
+/**
+ * How many times one report window may be re-requested because its download
+ * failed in a way a fresh report repairs. Bounds the loop when the cause is not
+ * the URL after all; the weekly restatement still re-pulls the dates.
+ */
+export const MAX_REPORT_RE_REQUESTS = 3;
+
+const RE_REQUEST_KEY = /^report\.(?:rerequest|recover):(\d+):/;
+
+/** The re-request generation a request job's dedupe key records; 0 for a scheduled request. */
+export function reRequestGeneration(dedupeKey: string | null | undefined): number {
+  const match = RE_REQUEST_KEY.exec(dedupeKey ?? '');
+  const generation = match ? Number(match[1]) : 0;
+  return Number.isSafeInteger(generation) && generation >= 0 ? generation : 0;
+}
+
+export type ReportReRequestOutcome =
+  | { kind: 're-requested'; requestJobId: string; generation: number; enqueued: boolean }
+  | { kind: 'exhausted'; generation: number };
+
+/** Counted outcome of one dead-fetch recovery pass. `scanned` is always the sum of the four verdicts. */
+export interface DeadFetchRecoveryCounts {
+  /** Dead fetches of a profile's restatement-scheduled report type whose window overlaps its horizon. */
+  scanned: number;
+  /** Attached to a new re-request of the restatement window. */
+  reRequested: number;
+  /** Attached to a request for the same window that was already queued or running. */
+  joined: number;
+  /** The recorded failure is not one a fresh report repairs (load and parser refusals). */
+  unrecoverable: number;
+  /** The window already used every re-request generation. */
+  exhausted: number;
+  /** (profile, report type) windows re-requested or joined. */
+  windows: number;
+  /** New `report.request` jobs inserted by this pass. */
+  requestsEnqueued: number;
+}
 
 export interface ReportPartitionCounts {
   expectedMonths: number;
@@ -216,6 +274,26 @@ export interface WorkerStore {
     },
   ): Promise<void>;
   enqueue(payload: JobPayload, runAt: Date, dedupeKey: string): Promise<boolean>;
+  /**
+   * WP-323: replace a report whose download URL can no longer be used with a
+   * fresh request for the same window, through the normal request path, and
+   * mark the old ledger `expired`, atomically. Idempotent per ledger; returns
+   * `exhausted` once the window used `maxGenerations` re-requests.
+   */
+  reRequestReport?(input: {
+    reportRequestId: string;
+    orgId: string;
+    profileId: string;
+    payload: Extract<JobPayload, { type: 'report.request' }>;
+    error: string;
+    maxGenerations: number;
+  }): Promise<ReportReRequestOutcome>;
+  /**
+   * WP-323: re-request, once, the restatement window of every report type
+   * with a dead fetch a fresh report repairs. Each dead fetch receives exactly
+   * one recorded verdict; the pass is safe to repeat and to run concurrently.
+   */
+  recoverDeadReportFetches?(input: { maxGenerations: number; limit: number }): Promise<DeadFetchRecoveryCounts>;
   /** Install the default cadences for a profile. Idempotent on the scope key. */
   provisionSchedules(
     orgId: string,
@@ -719,14 +797,20 @@ export class PostgresWorkerStore implements WorkerStore {
       poll_attempts: number;
       creative_sync_snapshot_id: string | null;
       family_configuration: CoreReportConfiguration | null;
+      download_url: string | null;
+      download_expires_at: Date | string | null;
+      request_dedupe_key: string | null;
     }[]>`
-      select id, org_id, profile_id, report_type, start_date::text, end_date::text,
-             source, amazon_report_id, requested_at, poll_attempts,
-             creative_sync_snapshot_id, family_configuration
-        from public.report_requests
-       where id = ${reportRequestId}
-         and org_id = ${orgId}
-         and profile_id = ${profileId}
+      select r.id, r.org_id, r.profile_id, r.report_type, r.start_date::text as start_date,
+             r.end_date::text as end_date, r.source, r.amazon_report_id, r.requested_at,
+             r.poll_attempts, r.creative_sync_snapshot_id, r.family_configuration,
+             r.download_url, r.download_expires_at, j.dedupe_key as request_dedupe_key
+        from public.report_requests r
+        left join public.sync_jobs j
+          on j.id = r.id and j.org_id = r.org_id and j.profile_id = r.profile_id
+       where r.id = ${reportRequestId}
+         and r.org_id = ${orgId}
+         and r.profile_id = ${profileId}
     `;
     const row = rows[0];
     if (!row) throw new Error(`report request ${reportRequestId} does not exist`);
@@ -743,6 +827,9 @@ export class PostgresWorkerStore implements WorkerStore {
       pollAttempts: Number(row.poll_attempts),
       creativeSyncSnapshotId: row.creative_sync_snapshot_id,
       familyConfiguration: row.family_configuration,
+      downloadUrl: row.download_url,
+      downloadExpiresAt: row.download_expires_at === null ? null : asDate(row.download_expires_at),
+      requestDedupeKey: row.request_dedupe_key,
     };
   }
 
@@ -770,16 +857,226 @@ export class PostgresWorkerStore implements WorkerStore {
   }
 
   async enqueue(payload: JobPayload, runAt: Date, dedupeKey: string): Promise<boolean> {
-    const rows = await this.handle.sql<{ id: string }[]>`
-      insert into public.sync_jobs
-        (org_id, profile_id, job_type, payload, run_after, dedupe_key)
-      values
-        (${payload.orgId}, ${payload.profileId}, ${payload.type}::public.sync_job_type,
-         ${JSON.stringify(payload)}::jsonb, ${runAt.toISOString()}::timestamptz, ${dedupeKey})
-      on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
-      returning id
-    `;
+    const priority = REPORT_LANE_CLAIM_PRIORITY[payload.type];
+    const rows = priority === undefined
+      ? await this.handle.sql<{ id: string }[]>`
+          insert into public.sync_jobs
+            (org_id, profile_id, job_type, payload, run_after, dedupe_key)
+          values
+            (${payload.orgId}, ${payload.profileId}, ${payload.type}::public.sync_job_type,
+             ${JSON.stringify(payload)}::jsonb, ${runAt.toISOString()}::timestamptz, ${dedupeKey})
+          on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
+          returning id
+        `
+      : await this.handle.sql<{ id: string }[]>`
+          insert into public.sync_jobs
+            (org_id, profile_id, job_type, payload, run_after, dedupe_key, priority)
+          values
+            (${payload.orgId}, ${payload.profileId}, ${payload.type}::public.sync_job_type,
+             ${JSON.stringify(payload)}::jsonb, ${runAt.toISOString()}::timestamptz, ${dedupeKey},
+             ${priority})
+          on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
+          returning id
+        `;
     return rows.length === 1;
+  }
+
+  async reRequestReport(input: {
+    reportRequestId: string;
+    orgId: string;
+    profileId: string;
+    payload: Extract<JobPayload, { type: 'report.request' }>;
+    error: string;
+    maxGenerations: number;
+  }): Promise<ReportReRequestOutcome> {
+    const payload = ReportRequestJob.parse(input.payload);
+    if (payload.orgId !== input.orgId || payload.profileId !== input.profileId) {
+      throw new Error('re-request payload scope does not match its report request');
+    }
+    return this.handle.sql.begin(async (sql) => {
+      const [ledger] = await sql<{ request_dedupe_key: string | null }[]>`
+        select j.dedupe_key as request_dedupe_key
+          from public.report_requests r
+          left join public.sync_jobs j
+            on j.id = r.id and j.org_id = r.org_id and j.profile_id = r.profile_id
+         where r.id = ${input.reportRequestId}
+           and r.org_id = ${input.orgId}
+           and r.profile_id = ${input.profileId}
+         for update of r
+      `;
+      if (!ledger) throw new Error(`report request ${input.reportRequestId} does not exist`);
+      const generation = reRequestGeneration(ledger.request_dedupe_key) + 1;
+      if (generation > input.maxGenerations) return { kind: 'exhausted' as const, generation: generation - 1 };
+      const dedupeKey = `report.rerequest:${generation}:${input.reportRequestId}`;
+      const inserted = await sql<{ id: string }[]>`
+        insert into public.sync_jobs (org_id, profile_id, job_type, payload, run_after, dedupe_key)
+        values (${input.orgId}, ${input.profileId}, 'report.request'::public.sync_job_type,
+                ${JSON.stringify(payload)}::jsonb, now(), ${dedupeKey})
+        on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
+        returning id
+      `;
+      const existing = inserted.length === 1 ? inserted : await sql<{ id: string }[]>`
+        select id from public.sync_jobs where org_id = ${input.orgId} and dedupe_key = ${dedupeKey}
+      `;
+      const requestJobId = existing[0]?.id;
+      if (existing.length !== 1 || requestJobId === undefined) {
+        throw new Error('re-request job could not be read back exactly once');
+      }
+      await sql`
+        update public.report_requests
+           set status = 'expired'::public.report_status,
+               completed_at = coalesce(completed_at, now()),
+               next_poll_at = null,
+               error = ${input.error}
+         where id = ${input.reportRequestId}
+           and org_id = ${input.orgId}
+           and profile_id = ${input.profileId}
+           and status <> 'completed'::public.report_status
+      `;
+      return { kind: 're-requested' as const, requestJobId, generation, enqueued: inserted.length === 1 };
+    });
+  }
+
+  /**
+   * One pass of WP-323 backlog recovery. A dead fetch qualifies when its
+   * profile syncs, its report type has an enabled restatement schedule, and
+   * its window overlaps that schedule's current window (the "restatement
+   * horizon", derived exactly as `enqueue_due_schedules` derives it). Instead
+   * of re-requesting every overlapping 3-day window, the pass requests the
+   * restatement window itself once per (profile, report type): one report that
+   * covers every dead window inside the horizon and every gap between them.
+   */
+  async recoverDeadReportFetches(input: { maxGenerations: number; limit: number }): Promise<DeadFetchRecoveryCounts> {
+    if (!Number.isSafeInteger(input.limit) || input.limit <= 0) throw new RangeError('recovery limit must be a positive integer');
+    return this.handle.sql.begin(async (sql) => {
+      const candidates = await sql<{
+        jobId: string; orgId: string; profileId: string; lastError: string | null;
+        reportType: string; requestDedupeKey: string | null; schedulePayload: Record<string, unknown> | null;
+        horizonStart: string; horizonEnd: string;
+      }[]>`
+        select j.id as "jobId", j.org_id as "orgId", j.profile_id as "profileId", j.last_error as "lastError",
+               r.report_type::text as "reportType", rj.dedupe_key as "requestDedupeKey",
+               s.payload as "schedulePayload",
+               pg_catalog.to_char(h.horizon_start, 'YYYY-MM-DD') as "horizonStart",
+               pg_catalog.to_char(h.horizon_end, 'YYYY-MM-DD') as "horizonEnd"
+          from public.sync_jobs j
+          join public.report_requests r
+            on r.org_id = j.org_id and r.profile_id = j.profile_id
+           and r.id::text = j.payload ->> 'reportRequestId'
+          left join public.sync_jobs rj
+            on rj.id = r.id and rj.org_id = r.org_id and rj.profile_id = r.profile_id
+          join public.ad_profiles p
+            on p.id = r.profile_id and p.org_id = r.org_id and p.sync_enabled
+          join public.sync_schedules s
+            on s.org_id = r.org_id and s.profile_id = r.profile_id
+           and s.job_type = 'report.request' and s.report_type = r.report_type
+           and s.variant = 'restatement' and s.enabled
+          cross join lateral (
+            select ((now() at time zone p.timezone)::date - 1 - s.window_offset_days) as horizon_end,
+                   ((now() at time zone p.timezone)::date - 1 - s.window_offset_days
+                     - (coalesce(s.lookback_days, 1) - 1)) as horizon_start
+          ) h
+         where j.job_type = 'report.fetch'
+           and j.status = 'dead'
+           and not (coalesce(j.result, '{}'::jsonb) ? 'recovery')
+           and r.source = 'amazon_api'
+           and r.status <> 'completed'
+           and r.end_date >= h.horizon_start
+         order by j.finished_at nulls first, j.id
+         limit ${input.limit}
+         for update of j skip locked
+      `;
+      const counts: DeadFetchRecoveryCounts = {
+        scanned: candidates.length, reRequested: 0, joined: 0, unrecoverable: 0, exhausted: 0,
+        windows: 0, requestsEnqueued: 0,
+      };
+      const verdict = async (ids: readonly string[], recovery: Record<string, unknown>): Promise<void> => {
+        if (ids.length === 0) return;
+        const marked = await sql<{ id: string }[]>`
+          update public.sync_jobs
+             set result = coalesce(result, '{}'::jsonb)
+               || jsonb_build_object('recovery', ${JSON.stringify(recovery)}::jsonb || jsonb_build_object('at', now()))
+           where id = any(${sql.array([...ids])}::uuid[]) and status = 'dead'
+          returning id
+        `;
+        if (marked.length !== ids.length) throw new Error('dead fetch recovery verdicts do not reconcile');
+      };
+      type Candidate = (typeof candidates)[number];
+      const groups = new Map<string, { rows: Candidate[]; generation: number }>();
+      const unrecoverable = new Map<string, string[]>();
+      const exhausted: string[] = [];
+      for (const row of candidates) {
+        const failure = classifyReportLaneFailure('report.fetch', row.lastError);
+        if (!failure.recoverableByReRequest) {
+          unrecoverable.set(failure.errorClass, [...(unrecoverable.get(failure.errorClass) ?? []), row.jobId]);
+          continue;
+        }
+        const generation = reRequestGeneration(row.requestDedupeKey);
+        if (generation >= input.maxGenerations) { exhausted.push(row.jobId); continue; }
+        const key = JSON.stringify([row.orgId, row.profileId, row.reportType, row.horizonStart, row.horizonEnd]);
+        const group = groups.get(key) ?? { rows: [], generation: 0 };
+        group.rows.push(row);
+        group.generation = Math.max(group.generation, generation + 1);
+        groups.set(key, group);
+      }
+      for (const [errorClass, ids] of unrecoverable) {
+        await verdict(ids, { state: 'unrecoverable', errorClass });
+        counts.unrecoverable += ids.length;
+      }
+      await verdict(exhausted, { state: 'exhausted', maxGenerations: input.maxGenerations });
+      counts.exhausted += exhausted.length;
+      for (const { rows, generation } of groups.values()) {
+        const first = rows[0]!;
+        const window = { startDate: first.horizonStart, endDate: first.horizonEnd };
+        const [live] = await sql<{ id: string }[]>`
+          select id from public.sync_jobs
+           where org_id = ${first.orgId} and profile_id = ${first.profileId}
+             and job_type = 'report.request' and status in ('queued', 'running')
+             and payload ->> 'reportType' = ${first.reportType}
+             and payload ->> 'startDate' = ${window.startDate}
+             and payload ->> 'endDate' = ${window.endDate}
+           order by created_at, id
+           limit 1
+        `;
+        const ids = rows.map((row) => row.jobId);
+        counts.windows += 1;
+        if (live) {
+          await verdict(ids, { state: 'joined', requestJobId: live.id, generation, window });
+          counts.joined += ids.length;
+          continue;
+        }
+        const payload = ReportRequestJob.parse({
+          type: 'report.request', orgId: first.orgId, profileId: first.profileId,
+          ...(first.schedulePayload ?? {}),
+          reportType: first.reportType, startDate: window.startDate, endDate: window.endDate,
+        });
+        if (payload.orgId !== first.orgId || payload.profileId !== first.profileId) {
+          throw new Error('restatement schedule payload changed the request scope');
+        }
+        const dedupeKey = `report.recover:${generation}:${first.profileId}:${first.reportType}:${window.startDate}:${window.endDate}`;
+        const inserted = await sql<{ id: string }[]>`
+          insert into public.sync_jobs (org_id, profile_id, job_type, payload, run_after, dedupe_key)
+          values (${first.orgId}, ${first.profileId}, 'report.request'::public.sync_job_type,
+                  ${JSON.stringify(payload)}::jsonb, now(), ${dedupeKey})
+          on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
+          returning id
+        `;
+        const request = inserted.length === 1 ? inserted : await sql<{ id: string }[]>`
+          select id from public.sync_jobs where org_id = ${first.orgId} and dedupe_key = ${dedupeKey}
+        `;
+        const requestJobId = request[0]?.id;
+        if (request.length !== 1 || requestJobId === undefined) {
+          throw new Error('recovery request could not be read back exactly once');
+        }
+        counts.requestsEnqueued += inserted.length;
+        await verdict(ids, { state: 're-requested', requestJobId, generation, window });
+        counts.reRequested += ids.length;
+      }
+      if (counts.scanned !== counts.reRequested + counts.joined + counts.unrecoverable + counts.exhausted) {
+        throw new Error('dead fetch recovery counts do not reconcile');
+      }
+      return counts;
+    });
   }
 
   async provisionSchedules(

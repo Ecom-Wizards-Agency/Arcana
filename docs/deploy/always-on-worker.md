@@ -121,3 +121,66 @@ must match that deployment allowlist. It uses the same serial connection loop as
 Ads and participates in shutdown. Leave the gate off while the exchange is
 unconfigured. Operator revocation closes credential reads immediately; service
 custody then clears the exact revoked SP-API Vault pointer.
+
+## Report fetch reliability (WP-323)
+
+Until WP-323 every report fetch on the Vercel cron lane died with `report download
+exceeded decompressed_bytes limit`, whatever its size. The parser ran in a worker
+thread started from `new URL('./report-json-parser-worker.mjs', import.meta.url)`.
+Inside the Next.js server bundle, webpack emits that thread as a chunk and addresses it
+through the server `publicPath`, so Node tried to start `file:///_next/<chunk>.js`, got
+`MODULE_NOT_FOUND`, and the parser mapped any thread error to the inflate limit. Reports
+are now parsed in-process as a stream: the first two bytes decide gzip or an already
+inflated body, each array element is parsed when its closing byte arrives, and the
+document is never held whole. The inflate limit stays at 64 MiB; parser bounds
+(`parsed_row_bytes`, `parsed_rows`, `parsed_bytes`) and payload failures (`empty`,
+`not_gzip_or_json`, `corrupt_gzip`, `invalid_json`) have their own names.
+
+**Claim priority is the tick budget rule.** `claim_sync_jobs` orders by priority first.
+`report.fetch` jobs are enqueued at 300 and `report.poll` at 200; requests, entity and
+integration jobs keep the default 100 and recommendation runs 50. When a backlog exists,
+every due fetch and poll is claimed before any new request, so the budget finishes
+reports already in flight. With nothing to fetch or poll, requests use the whole budget.
+
+**Expiry-aware fetch.** A fetch reads its URL's expiry from the signature (`X-Amz-Date`
+plus `X-Amz-Expires`) or from the ledger's recorded `download_expires_at`. If less than
+two minutes remain, or storage answers 403/410 (S3's `Request has expired` XML is
+classified `download_url_expired`), the fetch does not download. It enqueues a
+`report.request` for the same window (dedupe `report.rerequest:<generation>:<ledger>`),
+marks the old ledger `expired` and succeeds. One window may be re-requested three times;
+after that the ledger fails and the weekly restatement re-pulls the dates. An sbAds report
+bound to a Creative snapshot is the exception: an expired ledger would block its snapshot,
+so it keeps its ledger and re-polls the same Amazon report for a fresh URL, as before,
+within the 4-hour request horizon.
+
+**Dead-fetch recovery.** Before its first claim, each cron tick examines up to 2,000 dead
+`report.fetch` jobs of profiles that sync, whose report type has an enabled restatement
+schedule and whose window overlaps that schedule's current window. A fetch whose recorded
+error a fresh report repairs (expired or rejected URL, transport, timeout, corrupt gzip,
+and the pre-WP-323 inflate-limit message) joins one re-request of the restatement window
+per profile and report type (dedupe `report.recover:<generation>:...`), or joins a request
+for that window already queued. Every examined job receives exactly one verdict in
+`result.recovery` (`re-requested`, `joined`, `unrecoverable` or `exhausted`), so the pass
+never repeats work. The recovery runs only in the runtime that claims `report.request`;
+the Evo report lane does not compose it.
+
+After this release the 762 dead fetches recover without operator action: the first tick
+re-requests one restatement window per affected profile and report type, and each
+examined dead fetch records that request in `result.recovery`. The replacement requests
+queue like any request; their polls and fetches are then claimed ahead of new requests. Dead
+fetches whose window ends before the restatement window, and load-stage failures such
+as `Failed query: insert into fact_…`, are not re-requested.
+
+**Attended bookkeeping.** `pnpm --filter @wizard-ads/worker reconcile-reports abandon-dead
+--org-id <uuid> --before <YYYY-MM-DD> --actor <name> --reason <text> --worker-stopped`
+abandons every unresolved legacy ambiguous-create candidate whose request job is dead,
+was requested before the cut-off, and whose whole window lies inside the profile's
+current restatement window. It refuses and counts candidates outside that window,
+without an enabled restatement schedule, or with poll/fetch jobs, and never touches
+running claims. It prints `candidates`, `abandoned`, each refusal count and `running`.
+An abandoned candidate is no longer listed, so repeating the command resolves nothing
+twice. `list`, `adopt` and `abandon` are unchanged.
+
+`/sync-status` names the blocking stage (request, poll, fetch or load) with the bounded
+class of its last error, shows per-profile retrying and dead counts, and labels the
+organisation-wide dead count separately.

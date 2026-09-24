@@ -18,6 +18,27 @@
  * The handle is dedicated to this request and closed at the end — draining wants
  * several connections at once, and it must never close the shared web pool
  * (`src/data/db.ts`) that the rest of the app renders through.
+ *
+ * ## Tick budget under a backlog (WP-323)
+ *
+ * This lane is the only one production runs, and one tick has DRAIN_BUDGET_MS.
+ * The budget goes to finishing reports already in flight before starting new
+ * ones, by claim priority rather than by a per-type quota:
+ *
+ *  - every due `report.fetch` (priority 300) is claimed before any due
+ *    `report.poll` (200), and every due poll before any new `report.request`,
+ *    entity or integration job (100); recommendation runs stay at 50. A fetch
+ *    holds a pre-signed URL that expires an hour after its poll, so a backlog
+ *    of requests can no longer strand fetches until their URLs die;
+ *  - a fetch whose URL has expired, or has under two minutes left, does not
+ *    download: it re-requests its window through the normal request path;
+ *  - with no fetch or poll due, requests use whatever budget is left, so an
+ *    idle lane is not slowed down.
+ *
+ * Before its first claim each tick also re-requests, once per profile and
+ * report type, the restatement window of any dead fetch a fresh report can
+ * repair (`reportBacklogRecovery`). It only runs while this lane owns
+ * `report.request`.
  */
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
@@ -104,6 +125,7 @@ export async function GET(request: Request): Promise<Response> {
     store,
     adsApi,
     jobTypes,
+    reportBacklogRecovery: true,
     ...(claimsRecommendations
       ? { recommendationsRun: createRecommendationsRunner(recommendationRuns) }
       : {}),
