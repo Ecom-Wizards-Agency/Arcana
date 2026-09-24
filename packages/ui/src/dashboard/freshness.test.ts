@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { assessFreshness } from './freshness.js';
 import type { ReportLedgerEntry } from './freshness.js';
+import type { FreshnessCoverage } from '@wizard-ads/shared';
 
 const NOW = new Date('2026-08-14T09:00:00Z');
 
@@ -154,4 +155,45 @@ it('keeps unknown coverage counts unknown and respects aggregation assertions', 
   expect(assessFreshness([coverage], { now: NOW }).details[0]).not.toContain('0 rows');
   expect(assessFreshness([{ ...coverage, sourceRows: 5, parsedRows: 5,
     loadedRows: 1, refusedRows: 0, countsMatch: true }], { now: NOW }).tone).toBe('good');
+});
+
+describe('verified coverage spans (WP-324)', () => {
+  const coverage = (overrides: Partial<FreshnessCoverage> = {}): FreshnessCoverage => ({
+    source: 'amazon_reporting_v3', reportType: 'spTargeting', status: 'complete',
+    coveredThrough: '2026-08-13', observedAt: '2026-08-14T08:00:00.000Z',
+    sourceRows: 4, parsedRows: 4, loadedRows: 4, refusedRows: 0, countsMatch: true, ...overrides,
+  });
+
+  it('measures a source through its newest held day, with the days held and the gaps', () => {
+    const assessment = assessFreshness([coverage({
+      verified: { from: '2026-08-01', through: '2026-08-12', daysHeld: 10, gapDays: 2 },
+    })], { now: NOW });
+    expect(assessment.tone).toBe('good');
+    expect(assessment.coversThrough).toBe('2026-08-12');
+    expect(assessment.details).toEqual([
+      'amazon_reporting_v3/spTargeting: loaded 1 h ago, covers through 2026-08-12, 10 days held since 2026-08-01 (2 not loaded), 4 rows',
+    ]);
+  });
+
+  it('says not measured, never fresh, when completed loads held no day', () => {
+    const assessment = assessFreshness([coverage({ verified: null })], { now: NOW });
+    expect(assessment.tone).toBe('muted');
+    expect(assessment.coversThrough).toBeNull();
+    expect(assessment.headline).toBe('Not measured: completed loads for amazon_reporting_v3/spTargeting have returned no day to hold.');
+    expect(assessment.details[0]).toContain('not measured: no returned day held yet');
+  });
+
+  it('takes coverage from the measured source when another holds no day', () => {
+    const assessment = assessFreshness([
+      coverage({ verified: { from: '2026-08-10', through: '2026-08-13', daysHeld: 4, gapDays: 0 } }),
+      coverage({ reportType: 'sbCampaigns', coveredThrough: '2026-08-14', verified: null }),
+    ], { now: NOW });
+    expect(assessment.tone).toBe('good');
+    expect(assessment.coversThrough).toBe('2026-08-13');
+    expect(assessment.details).toHaveLength(2);
+  });
+
+  it('keeps range-only freshness for sources that record no verified span', () => {
+    expect(assessFreshness([coverage()], { now: NOW }).coversThrough).toBe('2026-08-13');
+  });
 });

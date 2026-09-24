@@ -1429,7 +1429,9 @@ export class PostgresWorkerStore implements WorkerStore {
          returning id
       `;
       if (rows.length !== 1) throw new Error(`complete report update matched ${rows.length} rows`);
-      if (counts.parsed === counts.loaded && counts.coverage !== null) {
+      // Null coverage marks dates a newer report superseded: the request still
+      // claims the days it owns without refreshing that report's observation.
+      if (counts.parsed === counts.loaded) {
         await recordReportCoverage({ sql }, reportRequestId, counts.coverage);
       }
     });
@@ -1486,7 +1488,7 @@ export class PostgresWorkerStore implements WorkerStore {
             earliestDate: p.startDate, coveredThrough: p.endDate, settledThrough: null,
             observedAt: promoted.observedAt, sourceRows: counts.sourceRows, parsedRows: counts.parsedRows,
             loadedRows: promoted.loadedRows, refusedRows: counts.refusedRows, countsMatch: true,
-          }, promoted.loadedRows);
+          }, promoted.loadedRows, { loadedBy: p.reportRequestId });
         } else await recordReportCoverage({ sql }, reportRequestId, options.coverage);
       }
     };

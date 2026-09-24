@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '../testing/harness.js';
-import { readProfileFreshness } from './freshness.js';
+import { readProfileFreshness, verifiedCoverageSpan } from './freshness.js';
 import { withAuthenticatedActor } from './authenticated-actor.js';
 
 const userId = '00000000-0000-4000-8000-000000000256';
@@ -54,4 +54,32 @@ it('falls back to every ledger type, then replaces only the covered source/type'
   expect(await withAuthenticatedActor(database, actor,
     (sql) => readProfileFreshness({ sql }, { ...actor, orgId: userId }, profileId)))
     .toEqual({ entries: [], answeredBy: 'none' });
+});
+
+it('reports the verified span Ads families record and marks one with no held day not measured', async () => {
+  const actor = { orgId, userId };
+  await database.sql`delete from public.report_coverage where profile_id = ${profileId}`;
+  await database.sql`
+    insert into public.report_coverage
+      (org_id, profile_id, report_type, grain, source, status, earliest_returned_date, latest_loaded_date, missing_dates)
+    values (${orgId}, ${profileId}, 'spTargeting', 'sp_target', 'amazon_reporting_v3', 'complete',
+            '2026-09-01', '2026-09-08', '{2026-09-04,2026-09-05,2026-09-08}'),
+           (${orgId}, ${profileId}, 'sbCampaigns', 'sb', 'amazon_reporting_v3', 'complete', null, '2026-09-08', '{}'),
+           (${orgId}, ${profileId}, 'sales_and_traffic', 'asin', 'secondary_import', 'complete', null, '2026-09-08', '{}')
+  `;
+  const { entries } = await withAuthenticatedActor(database, actor,
+    (sql) => readProfileFreshness({ sql }, actor, profileId));
+  expect(entries.find((row) => row.reportType === 'spTargeting')).toMatchObject({
+    coveredThrough: '2026-09-08', verified: { from: '2026-09-01', through: '2026-09-07', daysHeld: 5, gapDays: 2 },
+  });
+  expect(entries.find((row) => row.reportType === 'sbCampaigns')).toMatchObject({ verified: null });
+  expect(entries.find((row) => row.reportType === 'sales_and_traffic')).not.toHaveProperty('verified');
+});
+
+it('derives held days from the span, its missing dates and its trailing unreturned days', () => {
+  expect(verifiedCoverageSpan(null, '2026-09-02', [])).toBeNull();
+  expect(verifiedCoverageSpan('2026-09-01', '2026-09-01', [])).toEqual(
+    { from: '2026-09-01', through: '2026-09-01', daysHeld: 1, gapDays: 0 });
+  expect(verifiedCoverageSpan('2026-09-01', '2026-09-06', ['2026-09-02', '2026-09-05', '2026-09-06'])).toEqual(
+    { from: '2026-09-01', through: '2026-09-04', daysHeld: 3, gapDays: 1 });
 });

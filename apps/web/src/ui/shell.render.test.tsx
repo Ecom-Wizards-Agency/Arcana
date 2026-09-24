@@ -156,3 +156,17 @@ describe('Figma shell', () => {
     await waitFor(() => expect(screen.getByTestId('profile-evidence').textContent).toBe('second'));
   });
 });
+
+describe('freshness chip from verified coverage (WP-324)', () => {
+  const now = new Date('2026-08-25T06:00:00Z');
+  const entry = { source: 'amazon_reporting_v3', reportType: 'sbCampaigns', status: 'complete', coveredThrough: '2026-08-24',
+    observedAt: '2026-08-25T03:00:00.000Z', sourceRows: 2, parsedRows: 2, loadedRows: 2, refusedRows: 0, countsMatch: true };
+  it('dates the chip by the newest day a load returned, and says unavailable when none is held', () => {
+    navigation.query = 'profile=synthetic-profile';
+    const view = render(<ShellStatusChips crosscheck={null} freshness={assessFreshness([{ ...entry,
+      verified: { from: '2026-08-01', through: '2026-08-22', daysHeld: 12, gapDays: 10 } }], { now })} />);
+    expect(screen.getByRole('link', { name: 'Data freshness: Facts to 22 Aug 2026' }).getAttribute('data-tone')).toBe('good');
+    view.rerender(<ShellStatusChips crosscheck={null} freshness={assessFreshness([{ ...entry, verified: null }], { now })} />);
+    expect(screen.getByRole('link', { name: 'Data freshness: Freshness unavailable' }).getAttribute('data-tone')).toBe('muted');
+  });
+});

@@ -5,6 +5,19 @@ import { AdProduct, IsoDate, Uuid } from './primitives.js';
 const count = z.number().int().nonnegative();
 const metric = z.number().nonnegative();
 
+/**
+ * WP-324: the days completed loads actually returned, read from a coverage row's
+ * verified span (its earliest returned day through its newest held day, minus
+ * the days no load returned). `gapDays` counts those unreturned days inside it.
+ */
+export const VerifiedCoverageSpan = z.object({
+  from: IsoDate,
+  through: IsoDate,
+  daysHeld: count.positive(),
+  gapDays: count,
+}).refine((span) => span.from <= span.through, 'verified span dates do not reconcile');
+export type VerifiedCoverageSpan = z.infer<typeof VerifiedCoverageSpan>;
+
 /** Source-neutral freshness evidence; null counts mean accounting is unavailable. */
 export const FreshnessCoverage = z.object({
   source: z.string().min(1),
@@ -18,6 +31,11 @@ export const FreshnessCoverage = z.object({
   refusedRows: count.nullable(),
   /** Producer assertion; aggregation can make parsed and loaded counts differ. */
   countsMatch: z.boolean().nullable(),
+  /**
+   * Absent when the producer records no verified span; null when it records one
+   * and no completed load has returned a day yet (not measured).
+   */
+  verified: VerifiedCoverageSpan.nullable().optional(),
 });
 export type FreshnessCoverage = z.infer<typeof FreshnessCoverage>;
 
@@ -159,7 +177,7 @@ export function bidRecommendationTargetKey(target: BidRecommendationTarget): str
   return JSON.stringify([target.campaignId, target.adGroupId, target.isKeyword, target.targetId]);
 }
 /** One successful range observation; legacy ledger accounting can be unknown. */
-export const ReportCoverageObservation = FreshnessCoverage.extend({
+export const ReportCoverageObservation = FreshnessCoverage.omit({ verified: true }).extend({
   /** Immutable source run for collectors whose accounting can change at the same provider time. */
   sourceRunId: Uuid.optional(),
   orgId: Uuid,
