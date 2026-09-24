@@ -118,9 +118,9 @@ begin
   if d.plan->>'fingerprint' is distinct from p_request->>'planFingerprint' then return jsonb_build_object('reason','stale_fingerprint'); end if;
   if d.revision is distinct from (p_request->>'expectedRevision')::integer then return jsonb_build_object('reason','stale_revision'); end if;
   if d.status='blocked' then return jsonb_build_object('reason','blocking_check'); end if;
-  if d.plan->>'adProduct'<>'SP' or d.plan->>'apiDialect'<>'sp_legacy_v3' then return jsonb_build_object('reason','plan_not_sponsored_products'); end if;
-  if d.plan->>'schemaVersion'<>'openspell.campaign-creation-plan.v2' then return jsonb_build_object('reason','executor_unavailable'); end if;
-  if p_request->>'action' not in ('create','retry') then return jsonb_build_object('reason','invalid_request'); end if;
+  if d.plan->>'adProduct' is distinct from 'SP' or d.plan->>'apiDialect' is distinct from 'sp_legacy_v3' then return jsonb_build_object('reason','plan_not_sponsored_products'); end if;
+  if d.plan->>'schemaVersion' is distinct from 'openspell.campaign-creation-plan.v2' then return jsonb_build_object('reason','executor_unavailable'); end if;
+  if not coalesce(p_request->>'action' in ('create','retry'),false) then return jsonb_build_object('reason','invalid_request'); end if;
   -- Revalidation may advance the draft revision without changing its plan.
   -- That cannot authorize a second creation of the same frozen resources.
   v_key:=concat_ws(':',p_org,d.profile_id,d.id,d.plan->>'fingerprint',p_request->>'action',p_request->>'parentBatchId');
@@ -134,18 +134,21 @@ begin
   if (p_request->>'action'='create' and d.status<>'validated') or (p_request->>'action'='retry' and d.status<>'approved') then
     return jsonb_build_object('reason','draft_not_validated'); end if;
   if d.validation is null or p_validation is null or p_validation->>'planFingerprint' is distinct from d.plan->>'fingerprint'
-    or p_validation->>'recipeFingerprint' is distinct from d.validation->>'recipeFingerprint' then
+    or p_validation->>'recipeFingerprint' is distinct from d.validation->>'recipeFingerprint'
+    or not coalesce(jsonb_typeof(p_validation->'checks')='array',false) then
     return jsonb_build_object('reason','draft_not_validated'); end if;
-  if exists(select 1 from jsonb_array_elements(p_validation->'checks') c where (c->>'blocking')::boolean or c->>'status'='blocked') then
+  if exists(select 1 from jsonb_array_elements(p_validation->'checks') c where coalesce((c->>'blocking')::boolean,true) or c->>'status'='blocked') then
     return jsonb_build_object('reason','blocking_check'); end if;
   -- Admission binds the persisted evidence displayed for this exact revision. It never
   -- substitutes newer evidence, so an expired confirmation cannot be refreshed here.
   if p_validation is distinct from d.validation then return jsonb_build_object('reason','freshness_not_current'); end if;
-  if (d.plan->>'expiresAt')::timestamptz<=v_now or (d.validation->>'checkedAt')::timestamptz>v_now
-    or (p_validation->>'checkedAt')::timestamptz>v_now or (p_validation->>'checkedAt')::timestamptz<v_now-interval '5 minutes'
-    or jsonb_array_length(p_validation->'checks')<>(select count(distinct c->>'id') from jsonb_array_elements(p_validation->'checks') c)
-    or exists(select 1 from jsonb_array_elements(p_validation->'checks') c where c->>'status' not in ('passed','not_measured')
-      or (c->>'status'='not_measured' and c->>'id' not in ('stock','buy-box','suppression','moderation')))
+  -- Each window is a positive NULL-safe predicate: a missing or absent time refuses.
+  if not coalesce((d.plan->>'expiresAt')::timestamptz>v_now,false)
+    or not coalesce((d.validation->>'checkedAt')::timestamptz<=v_now,false)
+    or not coalesce((p_validation->>'checkedAt')::timestamptz between v_now-interval '5 minutes' and v_now,false)
+    or not coalesce(jsonb_array_length(p_validation->'checks')=(select count(distinct c->>'id') from jsonb_array_elements(p_validation->'checks') c),false)
+    or exists(select 1 from jsonb_array_elements(p_validation->'checks') c where not coalesce(c->>'status' in ('passed','not_measured'),false)
+      or (c->>'status'='not_measured' and not coalesce(c->>'id' in ('stock','buy-box','suppression','moderation'),false)))
     or (select array_agg(c->>'id' order by c->>'id') from jsonb_array_elements(p_validation->'checks') c) is distinct from
       array['budget','buy-box','capability','count','exposure','moderation','naming','permission','product','stock','suppression','unique-name']::text[] then
     return jsonb_build_object('reason','freshness_not_current'); end if;
@@ -236,18 +239,19 @@ begin
   if not found then return jsonb_build_object('reason','not_found'); end if;
   if d.plan->>'fingerprint' is distinct from p_request->>'planFingerprint' then return jsonb_build_object('reason','stale_fingerprint'); end if;
   if d.revision is distinct from (p_request->>'expectedRevision')::integer then return jsonb_build_object('reason','stale_revision'); end if;
-  if d.status<>'approved' or d.validation is null then return jsonb_build_object('reason','draft_not_validated'); end if;
+  if d.status is distinct from 'approved' or d.validation is null then return jsonb_build_object('reason','draft_not_validated'); end if;
   if not exists(select 1 from public.campaign_creation_batches b where b.org_id=d.org_id and b.profile_id=d.profile_id
     and b.id=(p_request->>'parentBatchId')::uuid and b.draft_id=d.id and b.artifact->'plan'->>'fingerprint'=d.plan->>'fingerprint') then
     return jsonb_build_object('reason','retry_not_allowed');
   end if;
-  if p_validation is null or jsonb_typeof(p_validation)<>'object' or jsonb_typeof(p_validation->'checks')<>'array'
+  if not coalesce(jsonb_typeof(p_validation)='object',false) or not coalesce(jsonb_typeof(p_validation->'checks')='array',false)
     or p_validation->>'planFingerprint' is distinct from d.plan->>'fingerprint'
     or p_validation->>'recipeFingerprint' is distinct from d.validation->>'recipeFingerprint' then
     return jsonb_build_object('reason','draft_not_validated');
   end if;
-  -- Only evidence checked in this request may be displayed as current (a few seconds of web/database clock skew allowed).
-  if (p_validation->>'checkedAt')::timestamptz>v_now+interval '5 seconds' or (p_validation->>'checkedAt')::timestamptz<v_now-interval '1 minute' then
+  -- Only evidence checked in this request may be displayed as current (a few seconds of
+  -- web/database clock skew allowed). A missing checkedAt refuses.
+  if not coalesce((p_validation->>'checkedAt')::timestamptz between v_now-interval '1 minute' and v_now+interval '5 seconds',false) then
     return jsonb_build_object('reason','freshness_not_current');
   end if;
   update public.campaign_drafts set validation=p_validation,revision=revision+1 where id=d.id and org_id=d.org_id;

@@ -238,6 +238,35 @@ describe('creation batch SQL authority and accounting', () => {
     expect(count?.children).toBe(0);
   });
 
+  it('fails closed in both SQL functions when review evidence has no checkedAt', async () => {
+    // Direct SQL calls: the web parse and admitCampaignCreation would refuse first, so this proves the database gate alone.
+    const { saved, measured } = await draft(); const parent = await approve(saved, measured);
+    const [approved] = await db.sql<{ revision: number; validation: unknown }[]>`select revision,validation from public.campaign_drafts where id=${saved.id}`;
+    const undated = { ...measured } as Record<string, unknown>; delete undated['checkedAt'];
+    const retryReview = { profileId, draftId: saved.id, expectedRevision: approved!.revision, planFingerprint: saved.plan.fingerprint, parentBatchId: parent.id };
+    const [reviewed] = await withAuthenticatedOrgEditor(db, actor, (tx) => tx.sql<{ result: unknown }[]>`select app.record_campaign_creation_review(
+      ${actor.orgId}::uuid,${JSON.stringify(retryReview)}::jsonb,${JSON.stringify(undated)}::jsonb) as result`);
+    expect(reviewed!.result).toEqual({ reason: 'freshness_not_current' });
+    const [unchanged] = await db.sql<{ revision: number; validation: unknown }[]>`select revision,validation from public.campaign_drafts where id=${saved.id}`;
+    expect(unchanged).toEqual(approved);
+
+    // A fresh validated draft whose persisted evidence (the only evidence admission accepts) lost its checkedAt.
+    const fresh = await draft();
+    const [stored] = await db.sql<{ validation: Record<string, unknown> }[]>`update public.campaign_drafts set validation=validation-'checkedAt'
+      where id=${fresh.saved.id} returning validation`;
+    expect(stored!.validation).not.toHaveProperty('checkedAt');
+    const create = { action: 'create', profileId, draftId: fresh.saved.id, expectedRevision: fresh.saved.revision, planFingerprint: fresh.saved.plan.fingerprint };
+    const [admitted] = await withAuthenticatedOrgEditor(db, actor, (tx) => tx.sql<{ result: unknown }[]>`select app.admit_campaign_creation(
+      ${actor.orgId}::uuid,${JSON.stringify(create)}::jsonb,${JSON.stringify(stored!.validation)}::jsonb) as result`);
+    expect(admitted!.result).toEqual({ reason: 'freshness_not_current' });
+    const [count] = await db.sql`select (select count(*)::int from public.campaign_creation_batches where draft_id=${fresh.saved.id}) as batches,
+      (select count(*)::int from public.campaign_creation_outbox o join public.campaign_creation_batches b on b.id=o.batch_id where b.draft_id=${fresh.saved.id}) as wakes,
+      (select status from public.campaign_drafts where id=${fresh.saved.id}) as status,
+      (select revision from public.campaign_drafts where id=${fresh.saved.id}) as revision,
+      (select count(*)::int from public.campaign_creation_batches where parent_batch_id=${parent.id}) as children`;
+    expect(count).toEqual({ batches: 0, wakes: 0, status: 'validated', revision: fresh.saved.revision, children: 0 });
+  });
+
   it('retains the four unmeasured checks in an admitted batch', async () => {
     const { saved } = await draft();
     const batch = await approve(saved, saved.validation!);

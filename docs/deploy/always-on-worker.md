@@ -190,7 +190,10 @@ organisation-wide dead count separately.
 The existing Sponsored Products outbox poller also drives approved campaign-creation
 batches after pending update work. Its existing enable switch remains off by default.
 Creation uses the same environment gate, profile allowlist and dispatch/reconcile
-switches. No new timer, cadence or automatic approval is installed.
+switches. No new timer, cadence or automatic approval is installed. Open the
+environment write gate only on a deployment where the worker dispatch switch
+(`OPENSPELL_SP_WRITE_DISPATCH_ENABLED`) is on; otherwise admitted batches wait
+unclaimed until their authority expires.
 
 Queued creation authority expires with its five-minute review checks or the frozen
 plan, whichever expires first. Reservation rechecks selected products and observed
@@ -213,10 +216,14 @@ resource recovery. Recovery is its own approval with its own control, "Yes, reco
 resource(s) in Amazon", and is never described as a keyword retry.
 
 Admission binds the review evidence the operator saw: the persisted validation of the
-approved draft revision. Evidence older than five minutes is refused with
-`freshness_not_current`; admission never replaces it with newer evidence. Fresh evidence
-is recorded at a new draft revision before a creation, retry or recovery confirmation is
-shown, and the confirmation disables itself when its evidence window closes.
+approved draft revision. Evidence older than five minutes, or without a check time, is
+refused with `freshness_not_current`; admission never replaces it with newer evidence.
+Fresh evidence is recorded at a new draft revision only when the operator acts.
+Continue to confirmation revalidates the draft. For a retry or recovery, the result
+screen's Review keyword retry or Review resource recovery action records the evidence,
+as does Refresh review evidence. Opening or reloading the retry screen does not refresh
+it; the screen shows the recorded evidence and disables its Amazon control when that
+evidence is stale. Every confirmation disables itself when its evidence window closes.
 
 The builder reports stock, buy-box, suppression and moderation as unmeasured and
 lists their missing evidence at confirmation. These checks do not block approval.
