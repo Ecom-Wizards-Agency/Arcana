@@ -264,8 +264,11 @@ export function ProductAssignmentBanner({ profileId, currencyCode, enabled }: { 
   return enabled ? <RoutedProductAssignmentBanner profileId={profileId} currencyCode={currencyCode} /> : null;
 }
 function RoutedProductAssignmentBanner({ profileId, currencyCode }: { profileId: string; currencyCode: string }) {
-  const search = useSearchParams();
-  const period = periodFromParams(Object.fromEntries(search.entries()), todayIso());
+  // Next types this as always present, but outside the app router (a render
+  // test, a pages route) it is null, and `.entries()` on it took the whole
+  // summary down. Without a route the banner reads the default period.
+  const search: ReturnType<typeof useSearchParams> | null = useSearchParams();
+  const period = periodFromParams(search === null ? {} : Object.fromEntries(search.entries()), todayIso());
   const key = `${profileId}:${period.start}:${period.end}`;
   return <ProductAssignmentContent key={key} profileId={profileId} start={period.start} end={period.end} currencyCode={currencyCode} />;
 }

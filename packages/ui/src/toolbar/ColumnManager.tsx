@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { defaultVisibleColumns, ENTITY_LABELS, minimumColumnWidth, type GridColumn } from '../columns.js';
 import type { SavedView } from '../views.js';
-import { managerColumnGroups, searchColumns } from './column-groups.js';
+import { managerColumnGroups, nestColumnVariants, searchColumns, variantLabel } from './column-groups.js';
 import { tokens } from '../theme.js';
 
 export type ColumnLayout = Pick<SavedView, 'columns' | 'pinned' | 'widths' | 'alignments'>;
@@ -54,6 +54,7 @@ export function ColumnManager({ available, view, onApply, onClose, onSave, views
   };
   const remove = (id: string) => setLayout((current) => ({ ...current, columns: current.columns.filter((item) => item !== id), pinned: current.pinned.filter((item) => item !== id) }));
   const choose = (ids: readonly string[]) => setLayout((current) => ({ ...current, columns: [...new Set(ids)], pinned: current.pinned.filter((id) => ids.includes(id)) }));
+  const toggle = (id: string) => layout.columns.includes(id) ? remove(id) : choose([...layout.columns, id]);
   const dropProps = (before: string | null, pinned: boolean) => ({
     onDragOver: (event: React.DragEvent) => { if (dragging) { event.preventDefault(); setLanding(before ?? (pinned ? 'pinned-end' : 'end')); } },
     onDrop: (event: React.DragEvent) => { event.preventDefault(); if (dragging) setLayout(moveChosenColumn(layout, dragging, before, pinned)); setDragging(null); setLanding(null); },
@@ -62,7 +63,7 @@ export function ColumnManager({ available, view, onApply, onClose, onSave, views
     if (event.key === 'Escape') onClose();
     if (event.key === 'Tab') { const nodes = root.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input,select'); const first = nodes?.[0]; const last = nodes?.[nodes.length - 1]; if (event.shiftKey && (document.activeElement === first || document.activeElement === root.current)) { event.preventDefault(); last?.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); } }
   }} style={{ position: 'fixed', inset: 0, zIndex: 90, display: 'flex', flexDirection: 'column', background: tokens.color.surface, color: tokens.color.text, padding: tokens.space(5), gap: tokens.space(3), fontSize: tokens.font.size.sm }}>
-    <header><h2>Adjust columns</h2><p>{ENTITY_LABELS[view.entity]} · {available.length} columns available, {layout.columns.length} chosen · grouped by what they describe</p></header>
+    <header><h2>Adjust columns</h2><p>{ENTITY_LABELS[view.entity]} · {available.length} columns available, {layout.columns.length} chosen · grouped by subject, with each metric's previous-period and change columns under it</p></header>
     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(150px, 1fr) minmax(280px, 2.4fr) minmax(320px, 2.6fr)', gap: tokens.space(3), minHeight: 0, flex: 1 }}>
       <nav aria-label="Column groups" style={{ ...pane, background: tokens.color.surfaceAlt }}><button style={button} onClick={() => setSubject('all')}>All ({available.length})</button>{groups.map((group) => <button key={group.id} aria-pressed={subject === group.id} style={{ ...button, display: 'block', width: '100%', marginTop: tokens.space(2) }} onClick={() => setSubject(group.id)}>{group.label} ({group.columns.length})</button>)}</nav>
       <section style={pane} aria-label="Available columns"><strong>Available · {available.length} · {layout.columns.length} chosen</strong><input style={{ ...button, display: 'block', marginBlock: tokens.space(3), boxSizing: 'border-box', width: '100%' }} aria-label="Search columns" placeholder="Search columns" value={query} onChange={(event) => setQuery(event.target.value)} />
@@ -70,7 +71,15 @@ export function ColumnManager({ available, view, onApply, onClose, onSave, views
         <button style={button} onClick={() => choose(available.filter((column) => column.id !== 'translation' || layout.columns.includes('translation')).map((column) => column.id))}>Show all columns</button>
         {view.entity === 'targets' ? <button style={button} onClick={() => choose(available.filter((column) => column.referenceOrder !== undefined).sort((a, b) => a.referenceOrder! - b.referenceOrder!).map((column) => column.id))}>Performance columns</button> : null}
         {typeof children === 'function' ? children(layout, setLayout) : children}
-        {filtered.map((group) => <fieldset key={group.id} style={{ border: 0, borderTop: `1px solid ${tokens.color.border}`, marginTop: tokens.space(4) }}><legend>{group.label} ({group.columns.length})</legend>{group.columns.map((column) => <label key={column.id} title={column.description} style={{ display: 'inline-flex', gap: tokens.space(1), margin: tokens.space(1), padding: tokens.space(1), background: layout.columns.includes(column.id) ? tokens.color.indigoSoft : tokens.color.surfaceAlt, borderRadius: tokens.radius.sm }}><input type="checkbox" checked={layout.columns.includes(column.id)} onChange={() => layout.columns.includes(column.id) ? remove(column.id) : choose([...layout.columns, column.id])} />{column.header}{column.measurementStatus === 'needs-ingestion' ? <small>needs ingestion</small> : null}</label>)}</fieldset>)}
+        {filtered.map((group) => <fieldset key={group.id} data-column-subject={group.id} style={{ border: 0, borderTop: `1px solid ${tokens.color.border}`, marginTop: tokens.space(4), padding: `${tokens.space(2)} 0 0` }}><legend style={{ fontWeight: 600 }}>{group.label} ({group.columns.length})</legend>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: tokens.space(1) }}>
+            {nestColumnVariants(group.columns).map(({ column, variants }) => <div key={column.id} data-column-entry={column.id} style={{ display: 'flex', flexDirection: 'column', gap: tokens.space(0.5), padding: tokens.space(1), background: layout.columns.includes(column.id) ? tokens.color.indigoSoft : tokens.color.surfaceAlt, borderRadius: tokens.radius.sm }}>
+              <label title={column.description} style={{ display: 'inline-flex', alignItems: 'center', gap: tokens.space(1) }}><input type="checkbox" checked={layout.columns.includes(column.id)} onChange={() => toggle(column.id)} />{column.header}{column.measurementStatus === 'needs-ingestion' ? <small>needs ingestion</small> : null}</label>
+              {variants.length === 0 ? null : <div role="group" aria-label={`${column.header} comparison columns`} data-column-variants={column.id} style={{ display: 'flex', flexWrap: 'wrap', gap: tokens.space(2), paddingLeft: tokens.space(5), color: tokens.color.textMuted, fontSize: tokens.font.size.xs }}>
+                {variants.map((variant) => <label key={variant.id} title={variant.description ?? variant.header} style={{ display: 'inline-flex', alignItems: 'center', gap: tokens.space(0.5) }}><input type="checkbox" aria-label={variant.header} checked={layout.columns.includes(variant.id)} onChange={() => toggle(variant.id)} />{variantLabel(variant)}</label>)}
+              </div>}
+            </div>)}
+          </div></fieldset>)}
         {filtered.length === 0 ? <p>No columns match this search.</p> : null}
       </section>
       <section style={{ ...pane, background: tokens.color.surfaceAlt }} aria-label="Chosen columns"><strong>Chosen · {layout.columns.length}</strong><button style={button} onClick={() => setLayout(reset())}>Reset to default</button><button style={button} onClick={() => choose([])}>Remove all</button>
@@ -81,7 +90,7 @@ export function ColumnManager({ available, view, onApply, onClose, onSave, views
             return <div key={id} data-chosen-column={id} draggable onDragStart={(event) => { event.dataTransfer.setData('text/plain', id); setDragging(id); }} onDragEnd={() => { setDragging(null); setLanding(null); }} {...dropProps(id, pinned)}
               style={{ ...button, marginBlock: tokens.space(1), display: 'flex', gap: tokens.space(1), alignItems: 'center', opacity: dragging === id ? .5 : 1, borderTop: landing === id ? `3px solid ${tokens.color.indigo}` : button.border }}>
               {landing === id ? <small data-insertion-line>drop here</small> : null}<span style={{ flex: 1 }}>⋮ {column.header}</span>
-              <input type="number" aria-label={`Width ${column.header}`} min={minimumColumnWidth(column)} style={{ width: 56 }} value={layout.widths[id] ?? column.width} onChange={(event) => setLayout({ ...layout, widths: { ...layout.widths, [id]: Math.max(minimumColumnWidth(column), Number(event.target.value)) } })} />
+              <input type="number" aria-label={`Width ${column.header}`} min={minimumColumnWidth(column)} style={{ width: 56 }} value={layout.widths[id] ?? Math.max(column.width, minimumColumnWidth(column))} onChange={(event) => setLayout({ ...layout, widths: { ...layout.widths, [id]: Math.max(minimumColumnWidth(column), Number(event.target.value)) } })} />
               <select aria-label={`Alignment ${column.header}`} value={layout.alignments?.[id] ?? column.align} onChange={(event) => setLayout({ ...layout, alignments: { ...layout.alignments, [id]: event.target.value as 'left' | 'right' } })}><option value="left">left</option><option value="right">right</option></select>
               <button aria-label={`${pinned ? 'Unpin' : 'Pin'} ${column.header}`} onClick={() => setLayout(moveChosenColumn(layout, id, null, !pinned))}>⌷</button>
               <button aria-label={`Move ${column.header} up`} disabled={index === 0} onClick={() => setLayout(moveChosenColumn(layout, id, section[index - 1]!, pinned))}>↑</button>

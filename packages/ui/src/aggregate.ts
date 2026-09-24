@@ -13,18 +13,78 @@
  * figure quietly added to a USD one is the kind of wrong number that survives
  * three client calls before anybody catches it.
  */
-import type { BaseTotals } from './metrics.js';
+import type { BaseMetric } from './metrics.js';
 import { addTotals, emptyTotals, BASE_METRICS } from './metrics.js';
 import type { DimensionValue, GridRow } from './rows.js';
 import { resolveField } from './rows.js';
 
-/** An aggregate never presents an incomplete base as a complete total. */
-function mergeMeasurement(into: Pick<GridRow, 'measurement'>, row: GridRow): void {
-  if (row.measurement === undefined && row.comparison !== null) return;
-  into.measurement = {
-    missing: [...new Set([...(into.measurement?.missing ?? []), ...(row.measurement?.missing ?? [])])],
-    comparisonMissing: [...new Set([...(into.measurement?.comparisonMissing ?? []), ...(row.comparison === null ? BASE_METRICS : row.measurement?.comparisonMissing ?? [])])],
-  };
+export type AggregateWindow = 'current' | 'comparison';
+
+/**
+ * Whether a row has facts in a window: the comparison window when it carries
+ * comparison sums, the selected window unless the row is marked `unreported`
+ * (listed only for its comparison or catalogue entry, WP-321).
+ *
+ * This is the reporting-rows rule the summary strip uses, and every aggregate in
+ * this module follows it: a group subtotal and the grand total sum the rows
+ * that reported in a window, and only those rows can make a base unknown. A
+ * member that did not report is not a member with an unknown figure; under the
+ * old union rule one campaign without comparison facts blanked the comparison
+ * of its whole group.
+ */
+export function reportedIn(row: GridRow, window: AggregateWindow): boolean {
+  if (window === 'comparison') return row.comparison !== null;
+  const measurement: object | undefined = row.measurement;
+  return !(measurement !== undefined && 'unreported' in measurement && measurement.unreported === true);
+}
+
+/** Per-window bookkeeping for one aggregate while its rows are folded in. */
+interface WindowTally {
+  reported: number;
+  missing: Set<BaseMetric>;
+}
+interface MeasurementTally {
+  current: WindowTally;
+  comparison: WindowTally;
+}
+
+function emptyTally(): MeasurementTally {
+  return { current: { reported: 0, missing: new Set() }, comparison: { reported: 0, missing: new Set() } };
+}
+
+/**
+ * Fold one row into an aggregate under the reporting-rows rule: its sums count
+ * in a window only when it reported there, and so do its missing bases.
+ */
+function foldRow(into: Pick<GridRow, 'totals' | 'comparison'>, tally: MeasurementTally, row: GridRow): void {
+  if (reportedIn(row, 'current')) {
+    tally.current.reported += 1;
+    for (const key of row.measurement?.missing ?? []) tally.current.missing.add(key);
+    addTotals(into.totals, row.totals);
+  }
+  if (row.comparison !== null) {
+    tally.comparison.reported += 1;
+    for (const key of row.measurement?.comparisonMissing ?? []) tally.comparison.missing.add(key);
+    if (into.comparison === null) into.comparison = emptyTotals();
+    addTotals(into.comparison, row.comparison);
+  }
+}
+
+/**
+ * The aggregate's measurement. A window no member reported in has no figure at
+ * all: every current base is missing (the comparison is already null). An
+ * aggregate never presents an incomplete base as a complete total.
+ */
+function measurementOf(tally: MeasurementTally): Pick<GridRow, 'measurement'> {
+  const missing = tally.current.reported === 0 ? [...BASE_METRICS] : BASE_METRICS.filter((key) => tally.current.missing.has(key));
+  const comparisonMissing = BASE_METRICS.filter((key) => tally.comparison.missing.has(key));
+  return missing.length === 0 && comparisonMissing.length === 0 ? {} : { measurement: { missing, comparisonMissing } };
+}
+
+function applyMeasurement(row: GridRow, tally: MeasurementTally): void {
+  const { measurement } = measurementOf(tally);
+  if (measurement === undefined) delete row.measurement;
+  else row.measurement = measurement;
 }
 
 export class MixedCurrencyError extends Error {
@@ -126,6 +186,7 @@ export function groupRows(rows: readonly GridRow[], columnIds: readonly string[]
   const buckets = new Map<string, GroupedRow>();
   const children = new Map<string, GroupedRow[]>();
   const tagSets = new Map<string, Set<string>>();
+  const tallies = new Map<GroupedRow, MeasurementTally>();
   let currency: string | null = null;
 
   for (const row of rows) {
@@ -170,13 +231,13 @@ export function groupRows(rows: readonly GridRow[], columnIds: readonly string[]
         else siblings.push(bucket);
       }
 
-      mergeMeasurement(bucket, row);
-      addTotals(bucket.totals, row.totals);
-      bucket.groupSize += 1;
-      if (row.comparison !== null) {
-        if (bucket.comparison === null) bucket.comparison = emptyTotals();
-        addTotals(bucket.comparison, row.comparison);
+      let tally = tallies.get(bucket);
+      if (tally === undefined) {
+        tally = emptyTally();
+        tallies.set(bucket, tally);
       }
+      foldRow(bucket, tally, row);
+      bucket.groupSize += 1;
       const tags = tagSets.get(pathKey);
       if (tags !== undefined) for (const tagId of row.tagIds ?? []) tags.add(tagId);
       parentGroupId = bucket.id;
@@ -186,6 +247,7 @@ export function groupRows(rows: readonly GridRow[], columnIds: readonly string[]
   for (const [key, bucket] of buckets) {
     const tags = tagSets.get(key);
     if (tags !== undefined && tags.size > 0) bucket.tagIds = [...tags].sort();
+    applyMeasurement(bucket, tallies.get(bucket) ?? emptyTally());
   }
 
   const out: GroupedRow[] = [];
@@ -206,6 +268,7 @@ function groupRowsSingleLevel(
 ): GroupedRow[] {
   const buckets = new Map<string, GroupedRow>();
   const tagSets = new Map<string, Set<string>>();
+  const tallies = new Map<GroupedRow, MeasurementTally>();
   let currency: string | null = null;
 
   for (const row of rows) {
@@ -235,13 +298,13 @@ function groupRowsSingleLevel(
       buckets.set(key, bucket);
     }
 
-    mergeMeasurement(bucket, row);
-    addTotals(bucket.totals, row.totals);
-    bucket.groupSize += 1;
-    if (row.comparison !== null) {
-      if (bucket.comparison === null) bucket.comparison = emptyTotals();
-      addTotals(bucket.comparison, row.comparison);
+    let tally = tallies.get(bucket);
+    if (tally === undefined) {
+      tally = emptyTally();
+      tallies.set(bucket, tally);
     }
+    foldRow(bucket, tally, row);
+    bucket.groupSize += 1;
     if ((row.tagIds?.length ?? 0) > 0) {
       let tags = tagSets.get(key);
       if (tags === undefined) {
@@ -257,6 +320,7 @@ function groupRowsSingleLevel(
     const key = dimensionKey(columnId, bucket.groupPath[0]?.value ?? null);
     const tags = tagSets.get(key);
     if (tags !== undefined) bucket.tagIds = [...tags].sort();
+    applyMeasurement(bucket, tallies.get(bucket) ?? emptyTally());
   }
   return result;
 }
@@ -264,13 +328,13 @@ function groupRowsSingleLevel(
 /**
  * One row summing everything shown. The grid pins it above the body, so the
  * number an operator quotes is the number the filter produced -- not a total of
- * a page they happen to be scrolled to.
+ * a page they happen to be scrolled to. It follows the same reporting-rows rule
+ * as the group subtotals, so a total always equals the sum of its groups.
  */
 export function grandTotal(rows: readonly GridRow[], label = 'Total'): GroupedRow | null {
   if (rows.length === 0) return null;
-  const totals = emptyTotals();
-  const measurement: Pick<GridRow, 'measurement'> = {};
-  let comparison: BaseTotals | null = null;
+  const sums: Pick<GridRow, 'totals' | 'comparison'> = { totals: emptyTotals(), comparison: null };
+  const tally = emptyTally();
   let currency: string | null = null;
 
   for (const row of rows) {
@@ -278,20 +342,15 @@ export function grandTotal(rows: readonly GridRow[], label = 'Total'): GroupedRo
     else if (currency !== row.currencyCode) {
       throw new MixedCurrencyError([currency, row.currencyCode].sort());
     }
-    mergeMeasurement(measurement, row);
-    addTotals(totals, row.totals);
-    if (row.comparison !== null) {
-      if (comparison === null) comparison = emptyTotals();
-      addTotals(comparison, row.comparison);
-    }
+    foldRow(sums, tally, row);
   }
 
   return {
     id: 'grand-total',
-    ...measurement,
+    ...measurementOf(tally),
     dimensions: { __total__: label },
-    totals,
-    comparison,
+    totals: sums.totals,
+    comparison: sums.comparison,
     currencyCode: currency ?? '',
     groupSize: rows.length,
     groupBy: [],

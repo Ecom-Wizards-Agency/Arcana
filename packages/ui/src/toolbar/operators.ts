@@ -8,6 +8,7 @@ import type { Filter, FilterOperator } from '../filter.js';
 import { filterKeyToColumnId } from '../filter.js';
 import { metricSpec } from '../metrics.js';
 import { parseFieldId } from '../rows.js';
+import { valueLabeller } from '../value-labels.js';
 
 const NUMERIC_OPERATORS: readonly FilterOperator[] = ['>', '>=', '<', '<=', '=', '<>'];
 const TEXT_OPERATORS: readonly FilterOperator[] = ['LIKE', 'NOT_LIKE', '=', '<>'];
@@ -55,8 +56,13 @@ export function describeFilter(filter: Filter, columns: readonly GridColumn[] = 
   const spec = ref === null ? undefined : metricSpec(ref.metric);
   const unit = spec?.scale === 'percent' || ref?.part === 'delta_percent' ? '%' : '';
   const joiner = ` ${(filter.logical_operator ?? 'AND').toLowerCase()} `;
+  // A chip names a stored code the way its cell does; the filter keeps the code.
+  // Typed search text (contains, does not contain) is shown as typed.
+  const labeller = valueLabeller(column);
   const parts = filter.conditions.map((condition) => {
-    const shown = condition.values.slice(0, 3).join(', ');
+    const typed = condition.operator === 'LIKE' || condition.operator === 'NOT_LIKE';
+    const label = labeller === undefined || typed ? (value: string) => value : labeller;
+    const shown = condition.values.slice(0, 3).map(label).join(', ');
     const remaining = Math.max(0, condition.values.length - 3);
     const summary = `${shown}${remaining === 0 ? '' : ` +${remaining} more`}`;
     return `${OPERATOR_LABELS[condition.operator ?? '=']} ${summary}${unit}`;

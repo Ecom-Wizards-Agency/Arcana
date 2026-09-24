@@ -75,19 +75,89 @@ export function searchColumns(columns: readonly GridColumn[], query: string): Gr
   });
 }
 
-/** The manager groups settings by the entity they describe. Period variants stay together. */
-export function managerColumnGroups(columns: readonly GridColumn[]): Array<{ id: string; label: string; columns: GridColumn[] }> {
-  const order = ['Target settings', 'Campaign settings', 'Ad group settings', 'Ad performance', 'Rank & organic', 'SQP', 'Brand Analytics', 'Optimizer', 'Identifiers'];
-  const subject = (column: GridColumn): string => {
-    if (column.id.endsWith('_id') || ['asin', 'sku', 'profile'].includes(column.id)) return 'Identifiers';
-    if (column.subject === 'RANK & ORGANIC') return 'Rank & organic';
-    if (column.subject === 'SQP') return 'SQP';
-    if (column.subject === 'BRAND ANALYTICS') return 'Brand Analytics';
-    if (column.id === 'rpc_category' || column.id === 'verdict') return 'Optimizer';
-    if (column.id.startsWith('campaign_') || ['ad_product', 'budget_amount', 'portfolio_name'].includes(column.id)) return 'Campaign settings';
-    if (column.id.startsWith('ad_group_') || column.id === 'default_bid') return 'Ad group settings';
-    if (column.kind === 'metric' || ['top_of_search_share', 'top_of_search_range', 'spend_share', 'acos_vs_target'].includes(column.id)) return 'Ad performance';
-    return 'Target settings';
-  };
-  return order.map((label) => ({ id: label, label, columns: columns.filter((column) => subject(column) === label) })).filter((group) => group.columns.length > 0);
+/**
+ * The column manager's subjects, in reading order (V20). A flat list of every
+ * column was the complaint: sixty metric columns in one "Ad performance" block.
+ * Metrics are grouped by what they measure, and each metric's comparison
+ * variants (previous period, change, change %) nest under it rather than
+ * repeating the whole catalogue three more times.
+ */
+export const MANAGER_SUBJECTS = ['Identity', 'Delivery', 'Spend and bids', 'Sales', 'Efficiency', 'Rank', 'SQP & Brand Analytics', 'Comparison'] as const;
+export type ManagerSubject = (typeof MANAGER_SUBJECTS)[number];
+
+const METRIC_SUBJECTS: Readonly<Record<string, ManagerSubject>> = {
+  impressions: 'Delivery', clicks: 'Delivery', ctr: 'Delivery',
+  spend: 'Spend and bids', cpc: 'Spend and bids', cpm: 'Spend and bids',
+  sales: 'Sales', orders: 'Sales', units: 'Sales', aov: 'Sales',
+  acos: 'Efficiency', roas: 'Efficiency', cvr: 'Efficiency', cpa: 'Efficiency', rpc: 'Efficiency',
+};
+
+const DIMENSION_SUBJECTS: Readonly<Record<string, ManagerSubject>> = {
+  top_of_search_share: 'Delivery', top_of_search_range: 'Delivery',
+  bid: 'Spend and bids', suggested_bid: 'Spend and bids', max_potential_cpc: 'Spend and bids', break_even_bid: 'Spend and bids',
+  budget_amount: 'Spend and bids', default_bid: 'Spend and bids', placement_modifier: 'Spend and bids', spend_share: 'Spend and bids',
+  organic_rank: 'Rank', rank_grid: 'Rank',
+  rank_change: 'Comparison', acos_vs_target: 'Comparison', diff_from_suggested_bid: 'Comparison', bid_corridor_position: 'Comparison', gap: 'Comparison',
+};
+
+/** The subject a column belongs to; a metric variant belongs where its metric does. */
+export function managerSubject(column: GridColumn): ManagerSubject {
+  const ref = parseFieldId(column.id);
+  if (column.kind === 'metric' && ref !== null) return METRIC_SUBJECTS[ref.metric] ?? 'Efficiency';
+  const known = DIMENSION_SUBJECTS[column.id];
+  if (known !== undefined) return known;
+  if (column.subject === 'SQP' || column.subject === 'BRAND ANALYTICS') return 'SQP & Brand Analytics';
+  if (column.subject === 'RANK & ORGANIC') return 'Rank';
+  return 'Identity';
+}
+
+/** Non-empty subjects in reading order; columns keep their incoming order within one. */
+export function managerColumnGroups(columns: readonly GridColumn[]): Array<{ id: ManagerSubject; label: string; columns: GridColumn[] }> {
+  return MANAGER_SUBJECTS
+    .map((subject) => ({ id: subject, label: subject, columns: columns.filter((column) => managerSubject(column) === subject) }))
+    .filter((group) => group.columns.length > 0);
+}
+
+export interface NestedColumn {
+  column: GridColumn;
+  /** The previous-period, change and change % columns of this metric, in that order. */
+  variants: GridColumn[];
+}
+
+/**
+ * A subject's columns with each metric's comparison variants folded under the
+ * metric. A variant whose metric is not in the list (a search for "prev") stands
+ * on its own, so nothing a search matched is hidden.
+ */
+export function nestColumnVariants(columns: readonly GridColumn[]): NestedColumn[] {
+  const entries: NestedColumn[] = [];
+  const byMetric = new Map<string, NestedColumn>();
+  for (const column of columns) {
+    const ref = parseFieldId(column.id);
+    if (column.kind === 'metric' && ref?.part === 'value') {
+      const entry = { column, variants: [] };
+      byMetric.set(ref.metric, entry);
+      entries.push(entry);
+    }
+  }
+  for (const column of columns) {
+    const ref = parseFieldId(column.id);
+    if (column.kind === 'metric' && ref !== null && ref.part !== 'value') {
+      const parent = byMetric.get(ref.metric);
+      if (parent !== undefined) {
+        parent.variants.push(column);
+        continue;
+      }
+    }
+    if (column.kind === 'metric' && ref?.part === 'value') continue;
+    entries.push({ column, variants: [] });
+  }
+  const order = new Map(columns.map((column, index) => [column.id, index]));
+  return entries.sort((left, right) => order.get(left.column.id)! - order.get(right.column.id)!);
+}
+
+/** The short name of a comparison variant under its metric; the full header stays its accessible name. */
+export function variantLabel(column: GridColumn): string {
+  const ref = parseFieldId(column.id);
+  return ref?.part === 'comparison' ? 'Previous' : ref?.part === 'delta_absolute' ? 'Change' : ref?.part === 'delta_percent' ? 'Change %' : column.header;
 }
