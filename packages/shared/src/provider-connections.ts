@@ -70,13 +70,12 @@ export const SpApiStartRefusalClass = z.enum([
   'origin', 'unavailable', 'session', 'role', 'configuration', 'selection', 'signing_key', 'database', 'unexpected',
 ]);
 export type SpApiStartRefusalClass = z.infer<typeof SpApiStartRefusalClass>;
-/** Deployment settings a start refusal may name. A setting's value never enters a refusal. */
-export const SpApiStartSetting = z.enum([
-  'OPENSPELL_SPAPI_CONNECTIONS_ENABLED', 'SP_API_LWA_CLIENT_ID', 'SP_API_APPLICATION_ID', 'SP_API_OAUTH_REDIRECT_URI',
-  'SP_API_OAUTH_REGION', 'SP_API_TEST_CONSENT_URL', 'AMAZON_OAUTH_STATE_KEY', 'WIZARD_ADS_APP_URL', 'DATABASE_URL',
-  'NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY', 'WIZARD_ADS_PASSWORD_LOGIN', 'WIZARD_ADS_PASSWORD_RECOVERY',
-  'WIZARD_ADS_GOOGLE_LOGIN', 'WIZARD_ADS_TOTP_POLICY', 'WIZARD_ADS_PASSKEYS',
-]);
+/**
+ * A deployment setting's name, never its value. The web runtime that reads the
+ * settings owns the exact allowlist: worker artifacts bundle this package and
+ * refuse provider setting names.
+ */
+export const SpApiStartSetting = z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/);
 export type SpApiStartSetting = z.infer<typeof SpApiStartSetting>;
 /** The submitted form part a selection refusal names; `form` is an oversized submission. */
 export const SpApiStartField = z.enum(['org', 'label', 'bindings', 'form']);

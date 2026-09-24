@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { AgencyAccessDenied, createSpApiConnectionLifecycle, SpApiConnectionCommandError } from '@wizard-ads/db';
 import {
-  SpApiConnectionBegin, SpApiConnectionSubmit, SpApiStartDatabaseRefusal, SpApiStartSetting, Uuid,
+  SpApiConnectionBegin, SpApiConnectionSubmit, SpApiStartDatabaseRefusal, Uuid,
   type SpApiConsentRefusal, type SpApiConnectionOperation, type SpApiDeployment, type SpApiStartRefusal,
 } from '@wizard-ads/shared';
 import { currentOperatorIdentity, authorizeOperatorRole } from '../auth/security-authorization';
@@ -11,7 +11,9 @@ import { can } from '../auth/roles';
 import { database } from '../data/db';
 import { membershipFor, resolveOrgContext } from '../data/orgs';
 import { secureCookies, spApiConnectionsEnabled, spApiOAuthConfig, stateSigningKey } from '../env';
-import { SP_API_START_DATABASE_REFUSALS, spApiStartRefusalMessage } from '../screens/settings-connections/spapi-start-refusal';
+import {
+  isSpApiStartSetting, SP_API_START_DATABASE_REFUSALS, spApiStartRefusalMessage, type SpApiStartSettingName,
+} from '../screens/settings-connections/spapi-start-refusal';
 import { createNonce, nonceDigest } from './state';
 import { createSpApiState, verifySpApiState, spApiNonceCookie, spApiNonceName } from './spapi-state';
 
@@ -28,7 +30,7 @@ type Stage = 'origin' | 'request' | 'identity' | 'membership' | 'deployment' | '
 /** Loggable facts only: error and setting names, schema paths and SQLSTATE. No values or identifiers. */
 interface ErrorFacts {
   readonly error: string;
-  readonly setting?: { readonly name: SpApiStartSetting; readonly problem: 'missing' | 'invalid' };
+  readonly setting?: { readonly name: SpApiStartSettingName; readonly problem: 'missing' | 'invalid' };
   readonly paths?: readonly string[];
   readonly sqlstate?: string;
   readonly routine?: string;
@@ -66,7 +68,7 @@ const SETTING_ERROR = /^([A-Z][A-Z0-9_]*) (is not set|is required|must)\b/;
 const deploymentSettings = {
   clientId: 'SP_API_LWA_CLIENT_ID', applicationId: 'SP_API_APPLICATION_ID',
   redirectUri: 'SP_API_OAUTH_REDIRECT_URI', region: 'SP_API_OAUTH_REGION',
-} as const satisfies Record<keyof SpApiDeployment, SpApiStartSetting>;
+} as const satisfies Record<keyof SpApiDeployment, SpApiStartSettingName>;
 const isDeploymentKey = (key: string): key is keyof typeof deploymentSettings => Object.hasOwn(deploymentSettings, key);
 
 function schemaPaths(error: Error): string[] | undefined {
@@ -83,9 +85,9 @@ function errorFacts(error: unknown): ErrorFacts {
   if (!(error instanceof Error)) return { error: typeof error };
   const name = /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.name) ? error.name : 'Error';
   const match = SETTING_ERROR.exec(error.message);
-  const setting = SpApiStartSetting.safeParse(match?.[1]);
+  const setting = match?.[1];
   const facts: { -readonly [K in keyof ErrorFacts]: ErrorFacts[K] } = { error: name, paths: schemaPaths(error) };
-  if (setting.success) facts.setting = { name: setting.data, problem: match?.[2] === 'must' ? 'invalid' : 'missing' };
+  if (isSpApiStartSetting(setting)) facts.setting = { name: setting, problem: match?.[2] === 'must' ? 'invalid' : 'missing' };
   // postgres.js errors carry SQLSTATE in `code` and the raising C routine; bound values are never read.
   if ('severity' in error && 'code' in error && typeof error.code === 'string' && /^[0-9A-Z]{5}$/.test(error.code)) {
     const sqlstate = error.code;
@@ -103,7 +105,7 @@ function diagnose(stage: Stage, error: unknown): Diagnosis {
   const facts = errorFacts(error);
   const unexpected = (cause: string): Diagnosis => classified({ refusal: 'unexpected', detail: null }, cause, stage, facts);
   const setting = facts.setting;
-  const configuration = (name: SpApiStartSetting, problem: 'missing' | 'invalid'): Diagnosis =>
+  const configuration = (name: SpApiStartSettingName, problem: 'missing' | 'invalid'): Diagnosis =>
     classified({ refusal: 'configuration', detail: name }, `${problem}_setting`, stage, facts);
   if (setting?.name === 'AMAZON_OAUTH_STATE_KEY') {
     return classified({ refusal: 'signing_key', detail: null }, setting.problem === 'missing' ? 'missing' : 'too_short', stage, facts);
