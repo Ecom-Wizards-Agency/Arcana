@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { Uuid } from './primitives.js';
-import { CreativeChangeCertainty } from './creative.js';
+import { CreativeChangeCertainty } from './change-certainty.js';
 import { SpCompleteCampaignBiddingState } from './sp-writes.js';
 import { IngestionCounts } from './ingestion.js';
 

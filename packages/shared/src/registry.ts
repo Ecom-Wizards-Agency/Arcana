@@ -30,6 +30,7 @@ export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
   {"domain": "asset-library", "contract": "asset-library.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": []},
   {"domain": "campaign-creation", "contract": "campaign-creation.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 20, "clause": "*", "after": ""}]},
   {"domain": "campaign-creation-approval", "contract": "campaign-creation-approval.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": []},
+  {"domain": "change-certainty", "contract": "change-certainty.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": []},
   {"domain": "creative", "contract": "creative.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 13, "clause": "*", "after": ""}]},
   {"domain": "dayparting", "contract": "dayparting.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 19, "clause": "*", "after": ""}]},
   {"domain": "entities", "contract": "entities.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 7, "clause": "*", "after": ""}]},
