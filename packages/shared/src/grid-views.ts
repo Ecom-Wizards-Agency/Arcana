@@ -222,6 +222,10 @@ export function decodeGridPerformance(raw: unknown): GridPerformanceEvidence {
   return { feeds: value.feeds, unattributed: value.unattributed, ...(value.summary === undefined ? {} : { summary: value.summary }), rankDays };
 }
 
+/** The metrics a saved view can chart as series; the summary cards that toggle a series. */
+export const GRID_CHART_SERIES = ['impressions', 'clicks', 'spend', 'sales', 'orders', 'acos', 'cvr', 'cpc'] as const;
+export const GridChartSeries = z.enum(GRID_CHART_SERIES);
+export type GridChartSeries = z.infer<typeof GridChartSeries>;
 /** Every metric the grid can total, in the grid metric registry's order (`packages/ui` metrics). */
 export const GRID_SUMMARY_METRICS = ['impressions', 'clicks', 'spend', 'sales', 'orders', 'units', 'ctr', 'cvr', 'cpc', 'cpm', 'cpa', 'rpc', 'aov', 'acos', 'roas'] as const;
 export const GridSummaryMetric = z.enum(GRID_SUMMARY_METRICS);
@@ -252,7 +256,7 @@ export const GridSavedView = z.object({
   dateRange: z.object({ start: z.string(), end: z.string() }).strict().nullable(),
   chartedMeasures: z.array(TimelineMeasure).min(1).max(4).refine((values) => new Set(values).size === values.length).optional(),
   timeline: TimelineViewState.optional(),
-  chart: z.strictObject({ series: z.array(z.enum(['impressions', 'clicks', 'spend', 'sales', 'orders', 'acos', 'cvr', 'cpc'])).max(4).refine((series) => new Set(series).size === series.length) }).optional(),
+  chart: z.strictObject({ series: z.array(GridChartSeries).max(4).refine((series) => new Set(series).size === series.length) }).optional(),
   /** The metrics the summary strip shows, in card order. Absent means the default eight. */
   summary: z.strictObject({ metrics: z.array(GridSummaryMetric).min(1).max(GRID_SUMMARY_METRIC_LIMIT).refine((metrics) => new Set(metrics).size === metrics.length, 'Summary metrics must be unique') }).optional(),
   translation: TranslationView.optional(),

@@ -590,6 +590,7 @@ const SUMMARY_FACTS = [
 test('summary strip totals the campaigns that reported in each window and keeps the chosen metrics', async ({ page }) => {
   const { orgId, fixtureProfileId, connectionString } = await readState();
   const database = createDb({ connectionString, max: 1 });
+  let seeded = 0;
   try {
     const inserted = await database.sql<{ campaign_id: string }[]>`
       insert into public.fact_sp_target_daily
@@ -599,6 +600,7 @@ test('summary strip totals the campaigns that reported in each window and keeps 
              'keyword'::public.target_kind, 'exact'::public.match_type, 400, 9, offered.cost, 1, offered.sales, 1
         from jsonb_to_recordset(${JSON.stringify(SUMMARY_FACTS)}::jsonb) as offered(campaign text, date text, cost numeric, sales numeric)
       returning campaign_id`;
+    seeded = inserted.length;
     expect(inserted).toHaveLength(SUMMARY_FACTS.length);
     const [sums] = await database.sql<{ current: string; prior: string; sales: string; campaigns: number; currency: string }[]>`
       select sum(cost) filter (where date between ${SUMMARY.period.start} and ${SUMMARY.period.end})::text as current,
@@ -634,14 +636,15 @@ test('summary strip totals the campaigns that reported in each window and keeps 
     // Customize: drop Clicks, add ROAS; the choice rides in the view through reload, a shared link and a saved view.
     const chosen = ['impressions', 'spend', 'sales', 'orders', 'acos', 'cvr', 'cpc', 'roas'];
     const cards = page.getByTestId('grid-kpis').locator('[data-summary-metric]');
-    await page.getByTestId('grid-summary-picker-trigger').click();
+    await page.getByRole('button', { name: 'Choose summary metrics (8 of 8)', exact: true }).click();
     const picker = page.getByRole('dialog', { name: 'Summary metrics' });
     await expect(picker.getByRole('checkbox')).toHaveCount(15);
     await picker.getByRole('checkbox', { name: 'Clicks', exact: true }).uncheck();
     await picker.getByRole('checkbox', { name: 'ROAS', exact: true }).check();
-    await expect(picker.getByRole('status')).toHaveText("8 of 8 shown. Click a default metric's card to chart it, up to four.");
+    await expect(picker.getByRole('status')).toHaveText('8 of 8 shown.');
     await picker.getByRole('button', { name: 'Done', exact: true }).click();
     await expect(picker).toHaveCount(0);
+    await expect(page.getByTestId('grid-summary-picker-trigger')).toHaveAccessibleName('Choose summary metrics (8 of 8)');
     const order = () => cards.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-summary-metric')));
     await expect.poll(order).toEqual(chosen);
     await expect(page.getByRole('group', { name: 'ROAS summary' }).locator('strong')).toHaveText(formatValue(Number(sums!.sales) / current, 'ratio', { currencyCode: sums!.currency }));
@@ -664,9 +667,17 @@ test('summary strip totals the campaigns that reported in each window and keeps 
     expect(saved).toHaveLength(1);
     expect(saved[0]!.view.summary).toEqual({ metrics: chosen });
   } finally {
-    // Named campaign views are listed by earlier specs; leave none behind.
+    // Named campaign views are listed by earlier specs; leave none behind, and none of the seeded facts either.
     await database.sql`delete from public.grid_views where org_id = ${orgId} and name = 'Synthetic summary lens'`;
+    const removed = await database.sql<{ campaign_id: string }[]>`
+      delete from public.fact_sp_target_daily
+       where org_id = ${orgId} and profile_id = ${fixtureProfileId}
+         and campaign_id = any(${[...new Set(SUMMARY_FACTS.map((fact) => fact.campaign))]}::text[])
+         and date between ${SUMMARY.comparison.start} and ${SUMMARY.period.end}
+      returning campaign_id`;
     await database.close();
+    // Rule 4: exactly the rows this test inserted, counted on the way out.
+    expect(removed).toHaveLength(seeded);
   }
 });
 

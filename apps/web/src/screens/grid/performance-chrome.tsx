@@ -17,11 +17,11 @@ const button = { border: `1px solid ${tokens.color.border}`, background: tokens.
  * The provenance band and the KPI strip of the performance frame (Figma 5:2).
  *
  * The strip shows the operator's chosen metrics (default: the frame's eight)
- * under the WP-321 window rule in `summary-model.ts`. Cards for chartable
- * metrics still toggle up to four saved chart series, as WP-261 built them. No
- * trend chart is drawn: neither performance frame (5:2, 88:37) has one between
- * the strip and the toolbar, so the series stay a saved preference until a
- * frame places the chart.
+ * under the WP-321 window rule in `summary-model.ts`; the dashed tile opens the
+ * metric picker and shows how many are chosen. Cards for chartable metrics
+ * still toggle up to four saved chart series, as WP-261 built them. No trend
+ * chart is drawn and the picker promises none: neither performance frame
+ * (5:2, 88:37) has one between the strip and the toolbar.
  */
 export function PerformanceSummary({ rows, performance, view, onChange, currencyCode, profileId }: {
   rows: readonly GridRow[]; performance?: GridPerformanceEvidence; view: SavedView; onChange: (patch: Partial<SavedView>) => void; currencyCode: string; profileId: string;
@@ -65,9 +65,10 @@ export function PerformanceSummary({ rows, performance, view, onChange, currency
           {selected ? <span style={{ position: 'absolute', bottom: 3, left: 10, right: 10, height: 3, borderRadius: 2, background: `var(--wa-viz-${series.indexOf(key) + 1})` }} /> : null}
         </button>;
       })}
-      <button type="button" ref={trigger} aria-haspopup="dialog" aria-expanded={picking} data-testid="grid-summary-picker-trigger" title="Choose the summary metrics"
+      <button type="button" ref={trigger} aria-haspopup="dialog" aria-expanded={picking} data-testid="grid-summary-picker-trigger"
+        aria-label={`Choose summary metrics (${metrics.length} of ${GRID_SUMMARY_METRIC_LIMIT})`}
         onClick={() => setPicking(!picking)}
-        style={{ ...button, alignSelf: 'start', borderStyle: 'dashed', textAlign: 'center', fontSize: 11 }}>+ Series<br /><small>{series.length} of 4</small></button>
+        style={{ ...button, alignSelf: 'start', borderStyle: 'dashed', textAlign: 'center', fontSize: 11 }}>+ Metrics<br /><small>{metrics.length} of {GRID_SUMMARY_METRIC_LIMIT}</small></button>
       {picking ? <SummaryMetricPicker metrics={metrics} onChoose={choose} onClose={closePicker} trigger={trigger} /> : null}
     </section>
   </>;
@@ -111,7 +112,7 @@ function SummaryMetricPicker({ metrics, onChoose, onClose, trigger }: { metrics:
   return <div ref={root} role="dialog" aria-label="Summary metrics" data-testid="grid-summary-picker" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }}
     style={{ position: 'absolute', top: 60, right: 24, zIndex: 30, width: 300, padding: tokens.space(4), background: tokens.color.surface, color: tokens.color.text, border: `1px solid ${tokens.color.border}`, borderRadius: 8, boxShadow: 'var(--wa-shadow)', fontSize: 12 }}>
     <strong style={{ display: 'block', fontSize: 13 }}>Summary metrics</strong>
-    <p role="status" style={{ margin: '4px 0 8px', color: tokens.color.textMuted }}>{metrics.length} of {GRID_SUMMARY_METRIC_LIMIT} shown. Click a default metric's card to chart it, up to four.</p>
+    <p role="status" style={{ margin: '4px 0 8px', color: tokens.color.textMuted }}>{metrics.length} of {GRID_SUMMARY_METRIC_LIMIT} shown.</p>
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '4px 12px' }}>
       {GRID_SUMMARY_METRICS.map((key) => {
         const chosen = metrics.includes(key);

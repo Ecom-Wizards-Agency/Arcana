@@ -16,17 +16,17 @@
  * that lacks one base still blanks that base, and every ratio built on it, with
  * the count of rows that lack it. Nothing here renders null as zero.
  */
-import { BASE_METRICS, grandTotal, metricSpec, resolveField, type BaseMetric, type EntityLevel, type GridRow, type GroupedRow, type MetricScale } from '@wizard-ads/ui';
-import { GRID_SUMMARY_METRICS, type GridMeasurement, type GridSummaryEvidence, type GridSummaryMetric, type GridSummarySource } from '@wizard-ads/shared';
+// Group subtotals still use the ui union rule in `aggregate.ts`; WP-316 owns moving them to this one.
+import { BASE_METRICS, addTotals, emptyTotals, grandTotal, metricSpec, resolveField, type BaseMetric, type BaseTotals, type EntityLevel, type GridRow, type GroupedRow, type MetricScale } from '@wizard-ads/ui';
+import { GRID_CHART_SERIES, GRID_SUMMARY_METRICS, type GridChartSeries, type GridMeasurement, type GridSummaryEvidence, type GridSummaryMetric, type GridSummarySource } from '@wizard-ads/shared';
 import { formatDateWindow, formatShellDate } from '../../ui/date-format';
 
 /** The strip before any customization: unchanged from the performance frame. */
 export const DEFAULT_SUMMARY_METRICS: readonly GridSummaryMetric[] = ['impressions', 'clicks', 'spend', 'sales', 'orders', 'acos', 'cvr', 'cpc'];
 
-/** The metrics a card can chart; the saved view's chart series enum. */
-export const CHARTABLE_SUMMARY_METRICS = ['impressions', 'clicks', 'spend', 'sales', 'orders', 'acos', 'cvr', 'cpc'] as const;
-export type ChartableSummaryMetric = (typeof CHARTABLE_SUMMARY_METRICS)[number];
-export function isChartable(key: GridSummaryMetric): key is ChartableSummaryMetric {
+/** The metrics a card can chart: the saved view's chart series, from the shared contract. */
+export const CHARTABLE_SUMMARY_METRICS: readonly GridChartSeries[] = GRID_CHART_SERIES;
+export function isChartable(key: GridSummaryMetric): key is GridChartSeries {
   return (CHARTABLE_SUMMARY_METRICS as readonly string[]).includes(key);
 }
 
@@ -113,9 +113,10 @@ function windowMissing(counts: WindowCounts): BaseMetric[] {
 }
 
 /**
- * The grand total under the window rule. Base sums are `grandTotal`'s: a row
- * that did not report carries zero placeholders, so it adds nothing. Only the
- * measurement differs, and it is rebuilt from the rows that reported.
+ * The grand total under the window rule. Each window sums only the rows that
+ * reported in it, whatever placeholders the others carry, and its measurement
+ * is rebuilt from those rows. `grandTotal` supplies the row shape and refuses
+ * mixed currencies.
  */
 export function windowTotal(rows: readonly GridRow[]): GroupedRow | null {
   return totalWith(rows, missingCounts(rows, 'current'), missingCounts(rows, 'comparison'));
@@ -124,11 +125,21 @@ export function windowTotal(rows: readonly GridRow[]): GroupedRow | null {
 function totalWith(rows: readonly GridRow[], current: WindowCounts, comparison: WindowCounts): GroupedRow | null {
   const total = grandTotal(rows);
   if (total === null) return null;
+  const totals = emptyTotals();
+  let prior: BaseTotals | null = null;
+  for (const row of rows) {
+    if (reportedIn(row, 'current')) addTotals(totals, row.totals);
+    if (row.comparison !== null) {
+      prior ??= emptyTotals();
+      addTotals(prior, row.comparison);
+    }
+  }
   const missing = windowMissing(current);
   const comparisonMissing = windowMissing(comparison);
   const { measurement: _union, ...rest } = total;
   const measurement: GridMeasurement = { missing, comparisonMissing };
-  return missing.length || comparisonMissing.length ? { ...rest, measurement } : rest;
+  const summed = { ...rest, totals, comparison: prior };
+  return missing.length || comparisonMissing.length ? { ...summed, measurement } : summed;
 }
 
 function windowName(window: SummaryWindowName, evidence: GridSummaryEvidence | undefined): string {
@@ -152,7 +163,7 @@ function assessWindow(rows: readonly GridRow[], window: SummaryWindowName, count
     }
     return { ...counts, absence: null, note };
   }
-  if (rows.length === 0) return { ...counts, absence: { kind: 'no-rows', reason: `No ${plural} match this view.` }, note: null };
+  // Evidence first: an absent source is "not measured" even when no row is left to show.
   if (evidence !== undefined && dates !== null && source !== null) {
     if (evidence.heldFrom === null || evidence.heldThrough === null) {
       return { ...counts, absence: { kind: 'not-measured', reason: `This profile holds no ${sourceInSentence} yet.` }, note: null };
@@ -164,6 +175,8 @@ function assessWindow(rows: readonly GridRow[], window: SummaryWindowName, count
       return { ...counts, absence: { kind: 'not-measured', reason: `${source} are held only through ${formatShellDate(evidence.heldThrough)}, before ${named} starts.` }, note: null };
     }
   }
+  // The source reaches this window (or no evidence came with the rows): the view's filter left nothing.
+  if (rows.length === 0) return { ...counts, absence: { kind: 'no-rows', reason: `No ${plural} match this view.` }, note: null };
   const reason = rows.length === 1
     ? `The one ${singular} in this view has no facts for ${named}.`
     : `None of the ${rows.length} ${plural} in this view has facts for ${named}.`;

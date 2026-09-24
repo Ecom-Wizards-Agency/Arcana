@@ -59,6 +59,14 @@ describe('summary strip states', () => {
     expect(strip().querySelectorAll('[data-summary-state="not-measured"]')).toHaveLength(8);
   });
 
+  it('explained not measured with no rows at all: the absent source is named and dated, not called an empty view', () => {
+    render(<Harness rows={[]} evidence={performance({ heldFrom: '2026-09-20', heldThrough: '2026-09-22' })} />);
+    const reason = `Sponsored Products target facts are held from ${formatShellDate('2026-09-20')}, after this range (${formatDateWindow(PERIOD.start, PERIOD.end)}) ends.`;
+    expect([...strip().querySelectorAll('strong')].map((node) => node.textContent)).toEqual(Array(8).fill('Not measured'));
+    expect(card('spend').querySelector('[data-summary-reason]')?.textContent).toBe(reason);
+    expect(strip().textContent).not.toContain('match this view');
+  });
+
   it('explained not measured in the comparison window only, beside a measured value', () => {
     render(<Harness rows={[launched]} evidence={performance({ heldFrom: '2026-08-20', heldThrough: '2026-09-15' })} />);
     expect(value('spend').textContent).toBe('$6.00');
@@ -97,7 +105,7 @@ describe('summary strip states', () => {
       const { container, unmount } = render(<Harness rows={[steady]} initial={{ ...base, entity }} />);
       expect(container.querySelector('svg'), entity).toBeNull();
       expect(within(container).queryByRole('img'), entity).toBeNull();
-      expect(within(strip()).getByTestId('grid-summary-picker-trigger').textContent).toBe('+ Series2 of 4');
+      expect(within(strip()).getByRole('button', { name: 'Choose summary metrics (8 of 8)' }).textContent).toBe('+ Metrics8 of 8');
       unmount();
     }
   });
@@ -106,12 +114,15 @@ describe('summary strip states', () => {
 describe('summary metric picker', () => {
   it('bounds the choice to eight catalogue metrics, keeps one, prunes charted series and resets to the default', () => {
     render(<Harness rows={[steady]} />);
-    const trigger = within(strip()).getByTestId('grid-summary-picker-trigger');
+    const trigger = within(strip()).getByRole('button', { name: 'Choose summary metrics (8 of 8)' });
+    expect(trigger).toBe(within(strip()).getByTestId('grid-summary-picker-trigger'));
     fireEvent.click(trigger);
     const dialog = screen.getByRole('dialog', { name: 'Summary metrics' });
     const boxes = within(dialog).getAllByRole('checkbox');
     expect(boxes).toHaveLength(GRID_SUMMARY_METRICS.length);
-    expect(within(dialog).getByRole('status').textContent).toBe("8 of 8 shown. Click a default metric's card to chart it, up to four.");
+    // No chart is drawn, so the picker promises none.
+    expect(within(dialog).getByRole('status').textContent).toBe('8 of 8 shown.');
+    expect(dialog.textContent).not.toMatch(/chart/i);
     // Full: every unchosen metric is disabled until one is removed.
     expect(boxes.filter((box) => (box as HTMLInputElement).disabled).map((box) => box.parentElement!.textContent)).toEqual(['Units', 'CTR', 'CPM', 'CPA', 'RPC', 'AOV', 'ROAS']);
     expect(within(dialog).getByRole('button', { name: 'Reset to default' })).toHaveProperty('disabled', true);
@@ -122,7 +133,10 @@ describe('summary metric picker', () => {
     // Toggling keeps keyboard focus where the operator is.
     expect(document.activeElement).toBe(spendBox);
     expect(strip().querySelector('[data-summary-metric="spend"]')).toBeNull();
-    expect(trigger.textContent).toBe('+ Series1 of 4');
+    expect(trigger.textContent).toBe('+ Metrics7 of 8');
+    expect(trigger.getAttribute('aria-label')).toBe('Choose summary metrics (7 of 8)');
+    // The charted series follows its card out: Sales stays charted, Spend no longer is.
+    expect(within(strip()).getByRole('button', { name: 'Chart sales' }).getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(within(dialog).getByRole('checkbox', { name: 'ROAS' }));
     expect([...strip().querySelectorAll('[data-summary-metric]')].map((node) => node.getAttribute('data-summary-metric')))
       .toEqual(['impressions', 'clicks', 'sales', 'orders', 'acos', 'cvr', 'cpc', 'roas']);

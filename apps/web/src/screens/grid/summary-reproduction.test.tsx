@@ -85,19 +85,6 @@ it('shows the Campaigns strip as the aggregate of the rows it summarises when on
   expect(model.matchedRows).toHaveLength(CAMPAIGNS.length);
   const steady = model.matchedRows.find((row) => row.id === 'campaign:wp321-steady')!;
   expect(resolveField(steady, 'spend')).toBe(25);
-  // The gate, named: the stopped campaign has no selected-window fact row. It is
-  // now marked unreported, so the total skips it instead of adopting its blanks.
-  const stopped = model.matchedRows.find((row) => row.id === 'campaign:wp321-stopped')!;
-  expect(stopped.measurement).toEqual({ missing: ['impressions', 'clicks', 'spend', 'sales', 'orders', 'units'], comparisonMissing: [], unreported: true });
-  expect(resolveField(stopped, 'spend')).toBeNull();
-  expect(model.matchedRows.find((row) => row.id === 'campaign:wp321-launched')!.comparison).toBeNull();
-  const [heldFrom, heldThrough] = await sqlSpan('fact_sp_target_daily');
-  expect(heldFrom).toBe('2026-07-20');
-  expect(payload.performance?.summary).toEqual({ source: 'sp_target', heldFrom, heldThrough, period: PERIOD, comparison: COMPARISON });
-  // The table's pinned total follows the same rule as the strip.
-  expect(resolveField(model.totalsRow!, 'spend')).toBeCloseTo(31.2, 9);
-  expect(resolveField(model.totalsRow!, 'spend_comparison')).toBeCloseTo(27, 9);
-
   const current = await sqlSpend(PERIOD);
   const prior = await sqlSpend(COMPARISON);
   expect(current).toBe(12.5 * 2 + 3.1 * 2);
@@ -115,6 +102,19 @@ it('shows the Campaigns strip as the aggregate of the rows it summarises when on
   expect(spend?.textContent).toBe(`Spend$${current.toFixed(2)}$${prior.toFixed(2)} · +${delta}%`);
   // Every card shows a figure: no base is missing from a campaign that reported.
   expect([...host.querySelectorAll('[data-testid="grid-kpis"] button strong')].map((node) => node.textContent)).not.toContain('—');
+
+  // Only after the strip: the gate, named. The stopped campaign has no selected-window
+  // fact row; it is marked unreported, so the total skips it instead of adopting its blanks.
+  const stopped = model.matchedRows.find((row) => row.id === 'campaign:wp321-stopped')!;
+  expect(stopped.measurement).toEqual({ missing: ['impressions', 'clicks', 'spend', 'sales', 'orders', 'units'], comparisonMissing: [], unreported: true });
+  expect(resolveField(stopped, 'spend')).toBeNull();
+  expect(model.matchedRows.find((row) => row.id === 'campaign:wp321-launched')!.comparison).toBeNull();
+  const [heldFrom, heldThrough] = await sqlSpan('fact_sp_target_daily');
+  expect(heldFrom).toBe('2026-07-20');
+  expect(payload.performance?.summary).toEqual({ source: 'sp_target', heldFrom, heldThrough, period: PERIOD, comparison: COMPARISON });
+  // The table's pinned total follows the same rule as the strip.
+  expect(resolveField(model.totalsRow!, 'spend')).toBeCloseTo(31.2, 9);
+  expect(resolveField(model.totalsRow!, 'spend_comparison')).toBeCloseTo(27, 9);
 });
 
 it('explains a comparison window the source does not reach, with the source and the date it starts', async () => {

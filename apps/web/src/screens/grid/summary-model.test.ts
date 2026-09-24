@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { METRIC_SPECS, resolveField, type GridRow } from '@wizard-ads/ui';
-import { GRID_SUMMARY_METRICS, type GridSummaryEvidence } from '@wizard-ads/shared';
-import { DEFAULT_SUMMARY_METRICS, summarizeGrid, summaryMetrics, windowTotal } from './summary-model';
+import { GRID_SUMMARY_METRICS, GridChartSeries, type GridSummaryEvidence } from '@wizard-ads/shared';
+import { CHARTABLE_SUMMARY_METRICS, DEFAULT_SUMMARY_METRICS, isChartable, summarizeGrid, summaryMetrics, windowTotal } from './summary-model';
 import { formatDateWindow, formatShellDate } from '../../ui/date-format';
 
 const BASES = ['impressions', 'clicks', 'spend', 'sales', 'orders', 'units'] as const;
@@ -32,6 +32,22 @@ describe('summary window rule', () => {
     expect(card(summary, 'cvr').current.value).toBeCloseTo(4 / 40, 9);
     expect(summary.cards.map((item) => item.key)).toEqual(DEFAULT_SUMMARY_METRICS);
     expect(summary.cards.every((item) => item.current.value !== null && item.prior.value !== null)).toBe(true);
+  });
+
+  it('sums only the rows that reported in each window, whatever an unreported row carries', () => {
+    // A non-zero placeholder on an unreported row must add nothing to the selected window.
+    const loud: GridRow = { ...stopped, totals: totals(99, 500) };
+    const total = windowTotal([steady, loud, launched])!;
+    expect(resolveField(total, 'spend')).toBe(16);
+    expect(resolveField(total, 'sales')).toBe(40);
+    expect(resolveField(total, 'spend_comparison')).toBe(13);
+    const summary = summarizeGrid([steady, loud, launched], { entity: 'campaigns', metrics: ['spend', 'acos'], evidence });
+    expect(card(summary, 'spend').current.value).toBe(16);
+    expect(card(summary, 'acos').current.value).toBeCloseTo(16 / 40, 9);
+    // Every row unreported: the placeholders still never become a total.
+    const silent = windowTotal([loud])!;
+    expect(resolveField(silent, 'spend')).toBeNull();
+    expect(silent.totals.spend).toBe(0);
   });
 
   it('gives the table total the same bases and measurement as the strip', () => {
@@ -83,6 +99,19 @@ describe('summary window rule', () => {
     expect(card(one, 'clicks').current.reason).toBe('The one product in this view has no facts for this range.');
   });
 
+  it('checks the source before calling a view empty: zero rows with an absent source are not measured, named and dated', () => {
+    const none = summarizeGrid([], { entity: 'campaigns', metrics: ['spend'], evidence: { ...evidence, heldFrom: null, heldThrough: null } });
+    expect(card(none, 'spend').current).toEqual({ value: null, notMeasured: true, note: null, reason: 'This profile holds no Sponsored Products target facts yet.' });
+    expect(card(none, 'spend').prior).toMatchObject({ value: null, notMeasured: true });
+    const later = summarizeGrid([], { entity: 'campaigns', metrics: ['spend'], evidence: { ...evidence, heldFrom: '2026-09-20', heldThrough: '2026-09-22' } });
+    expect(card(later, 'spend').current).toMatchObject({ notMeasured: true, reason: `Sponsored Products target facts are held from ${formatShellDate('2026-09-20')}, after ${RANGE} ends.` });
+    expect(card(later, 'spend').prior).toMatchObject({ notMeasured: true, reason: `Sponsored Products target facts are held from ${formatShellDate('2026-09-20')}, after ${PRIOR} ends.` });
+    // The source covers both windows, so an empty view means the filter removed the rows.
+    const filtered = summarizeGrid([], { entity: 'campaigns', metrics: ['spend'], evidence });
+    expect(card(filtered, 'spend').current).toMatchObject({ value: null, notMeasured: false, reason: 'No campaigns match this view.' });
+    expect(card(filtered, 'spend').prior).toMatchObject({ notMeasured: false, reason: 'No campaigns match this view.' });
+  });
+
   it('covers an empty view, a switched-off comparison and a zero denominator', () => {
     const empty = summarizeGrid([], { entity: 'targets', metrics: ['spend'], evidence });
     expect(card(empty, 'spend').current).toMatchObject({ value: null, reason: 'No targets match this view.' });
@@ -98,6 +127,10 @@ describe('summary window rule', () => {
 describe('summary metric catalogue', () => {
   it('mirrors the grid metric registry exactly, in its order', () => {
     expect([...GRID_SUMMARY_METRICS]).toEqual(METRIC_SPECS.map((spec) => spec.key));
+  });
+  it('takes the chartable cards from the shared chart-series enum', () => {
+    expect(CHARTABLE_SUMMARY_METRICS).toEqual(GridChartSeries.options);
+    expect(GRID_SUMMARY_METRICS.filter(isChartable)).toEqual(['impressions', 'clicks', 'spend', 'sales', 'orders', 'cvr', 'cpc', 'acos']);
   });
   it('keeps catalogue metrics once, in the saved order, and falls back to the frame default', () => {
     expect(summaryMetrics(undefined)).toEqual(DEFAULT_SUMMARY_METRICS);

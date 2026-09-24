@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeGridRowColumns, encodeGridRowColumns, encodeGridPerformance, decodeGridPerformance, parseGridView, serializeGridView, type GridSavedView, type GridTransportRow, GridSavedView as GridSavedViewSchema, GridMeasurement, GridSummaryEvidence, GRID_SUMMARY_METRICS, GRID_SUMMARY_METRIC_LIMIT } from './grid-views.js';
+import { decodeGridRowColumns, encodeGridRowColumns, encodeGridPerformance, decodeGridPerformance, parseGridView, serializeGridView, type GridSavedView, type GridTransportRow, GridSavedView as GridSavedViewSchema, GridMeasurement, GridSummaryEvidence, GRID_SUMMARY_METRICS, GRID_SUMMARY_METRIC_LIMIT, GRID_CHART_SERIES, GridChartSeries } from './grid-views.js';
 const view: GridSavedView = {
   id: 'synthetic', name: '分析 café', entity: 'targets', columns: ['targeting', 'spend'],
   widths: { targeting: 301 }, alignments: { targeting: 'left', spend: 'right' }, pinned: ['targeting'], density: 'compact',
@@ -154,5 +154,11 @@ describe('WP-321 summary contracts', () => {
       expect(GridSavedViewSchema.safeParse({ ...view, summary: { metrics } }).success, JSON.stringify(metrics)).toBe(false);
     }
     expect(GridSavedViewSchema.safeParse({ ...view, summary: { metrics: ['spend'], extra: true } }).success).toBe(false);
+  });
+  it('exports the chart-series enum the saved view charts with, a subset of the summary catalogue', () => {
+    expect(GridChartSeries.options).toEqual([...GRID_CHART_SERIES]);
+    expect(GRID_CHART_SERIES.every((key) => (GRID_SUMMARY_METRICS as readonly string[]).includes(key))).toBe(true);
+    expect(GridSavedViewSchema.safeParse({ ...view, chart: { series: ['spend', 'acos'] } }).success).toBe(true);
+    expect(GridSavedViewSchema.safeParse({ ...view, chart: { series: ['roas'] } }).success).toBe(false);
   });
 });
