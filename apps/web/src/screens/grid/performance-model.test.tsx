@@ -78,11 +78,17 @@ describe('performance population', () => {
     const orFilter = { groups: [...active.groups, ...verdictFilter({ groups: [{ filters: [{ key: 'TARGETING', conditions: [{ operator: '=' as const, values: ['b'] }] }] }] }, 'Efficient').groups] };
     expect(buildPerformanceModel(scoped, { filter: verdictFilter(orFilter, 'Rank gap') }).model.matchedRows.map((row) => row.id)).toEqual(['b']);
   });
-  it('renders KPI comparison and delta unknown for an absent comparison contributor', () => {
+  // WP-321 changed this expectation: a row without comparison facts adds nothing
+  // to the comparison total; it used to blank it. The prior is the $10.00 the
+  // other row reported, and it stays unknown only when no row reported at all.
+  it('sums the KPI comparison over the rows that reported in the comparison window', () => {
     const host = document.createElement('div');
     const first = { ...rows[0]!, totals: { ...rows[0]!.totals, spend: 10 }, comparison: { ...rows[0]!.totals, spend: 10 } };
     const second = { ...rows[1]!, totals: { ...rows[1]!.totals, spend: 20 } };
-    host.innerHTML = renderToStaticMarkup(createElement(PerformanceSummary, { rows: [first, second], currencyCode: 'USD', profileId: 'synthetic', onChange: () => {}, view: { id: 'test', name: 'Test', entity: 'targets', columns: [], pinned: [], widths: {}, filter: { groups: [] }, sort: [], groupBy: [], dateRange: null, updatedAt: '' } }));
+    const view = { id: 'test', name: 'Test', entity: 'targets' as const, columns: [], pinned: [], widths: {}, filter: { groups: [] }, sort: [], groupBy: [], dateRange: null, updatedAt: '' };
+    host.innerHTML = renderToStaticMarkup(createElement(PerformanceSummary, { rows: [first, second], currencyCode: 'USD', profileId: 'synthetic', onChange: () => {}, view }));
+    expect(host.querySelector('[aria-label="Chart spend"]')?.textContent).toBe('Spend$30.00$10.00 · +200.0%');
+    host.innerHTML = renderToStaticMarkup(createElement(PerformanceSummary, { rows: [{ ...first, comparison: null }, second], currencyCode: 'USD', profileId: 'synthetic', onChange: () => {}, view }));
     expect(host.querySelector('[aria-label="Chart spend"]')?.textContent).toBe('Spend$30.00— · —');
   });
 });

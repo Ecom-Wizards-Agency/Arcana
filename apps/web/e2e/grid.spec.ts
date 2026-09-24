@@ -1,6 +1,8 @@
 /** Ordered nested grouping through the real session guard and production grid model. */
 import { expect, test, type Page } from '@playwright/test';
 import { createDb } from '@wizard-ads/db';
+import { parseGridView, serializeGridView } from '@wizard-ads/shared';
+import { columnsFor, defaultVisibleColumns, formatValue } from '@wizard-ads/ui';
 import { signIn } from './support/auth';
 import { applyRequestedCpuThrottle } from './support/cpu-throttle';
 import { expectDateRangePresets } from './support/date-range';
@@ -342,8 +344,11 @@ test('grid charts up to four of eight KPI series and restores the shared view wi
   page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/grid/rows') rowRequests.push(request.url()); });
   await page.goto('/grid?entity=campaigns');
   await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
-  const tiles = page.getByTestId('grid-kpis').getByRole('button');
+  // WP-321 made the dashed series tile the summary picker's button, so the eight
+  // KPI cards are counted by their chart names rather than as every button.
+  const tiles = page.getByTestId('grid-kpis').getByRole('button', { name: /^Chart / });
   await expect(tiles).toHaveCount(8);
+  await expect(page.getByTestId('grid-summary-picker-trigger')).toHaveCount(1);
   await page.getByRole('button', { name: 'Chart clicks', exact: true }).click();
   await page.getByRole('button', { name: 'Chart orders', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Chart impressions', exact: true })).toBeDisabled();
@@ -565,4 +570,109 @@ async function seedOptimizerCampaigns(): Promise<void> {
   } finally {
     await database.close();
   }
+}
+
+/**
+ * WP-321, the feedback case on the synthetic fixture: one campaign reports in
+ * both windows, one only in the comparison window, one only in the selected
+ * window. Before the fix the first silent campaign blanked every card. Facts
+ * only, two months ahead: no other spec reads these dates, and no campaign row
+ * is added that the optimizer's counted campaign list above would see.
+ */
+const SUMMARY = summaryWindows();
+const SUMMARY_FACTS = [
+  { campaign: 'wp321-e2e-steady', date: SUMMARY.comparison.start, cost: 12.5, sales: 50 },
+  { campaign: 'wp321-e2e-steady', date: SUMMARY.period.start, cost: 12.5, sales: 50 },
+  { campaign: 'wp321-e2e-stopped', date: SUMMARY.comparison.end, cost: 7.25, sales: 20 },
+  { campaign: 'wp321-e2e-launched', date: SUMMARY.period.end, cost: 3.1, sales: 0 },
+] as const;
+
+test('summary strip totals the campaigns that reported in each window and keeps the chosen metrics', async ({ page }) => {
+  const { orgId, fixtureProfileId, connectionString } = await readState();
+  const database = createDb({ connectionString, max: 1 });
+  try {
+    const inserted = await database.sql<{ campaign_id: string }[]>`
+      insert into public.fact_sp_target_daily
+        (org_id, profile_id, date, ad_product, campaign_id, ad_group_id, target_id, target_kind, match_type,
+         impressions, clicks, cost, purchases_7d, sales_7d, units_sold_7d)
+      select ${orgId}, ${fixtureProfileId}, offered.date::date, 'SP', offered.campaign, offered.campaign || '-ag', offered.campaign || '-kw',
+             'keyword'::public.target_kind, 'exact'::public.match_type, 400, 9, offered.cost, 1, offered.sales, 1
+        from jsonb_to_recordset(${JSON.stringify(SUMMARY_FACTS)}::jsonb) as offered(campaign text, date text, cost numeric, sales numeric)
+      returning campaign_id`;
+    expect(inserted).toHaveLength(SUMMARY_FACTS.length);
+    const [sums] = await database.sql<{ current: string; prior: string; sales: string; campaigns: number; currency: string }[]>`
+      select sum(cost) filter (where date between ${SUMMARY.period.start} and ${SUMMARY.period.end})::text as current,
+             sum(cost) filter (where date between ${SUMMARY.comparison.start} and ${SUMMARY.comparison.end})::text as prior,
+             sum(sales_7d) filter (where date between ${SUMMARY.period.start} and ${SUMMARY.period.end})::text as sales,
+             count(distinct campaign_id)::int as campaigns,
+             (select currency_code from public.ad_profiles where id = ${fixtureProfileId}) as currency
+        from public.fact_sp_target_daily
+       where org_id = ${orgId} and profile_id = ${fixtureProfileId} and date between ${SUMMARY.comparison.start} and ${SUMMARY.period.end}`;
+    const money = (value: number) => formatValue(value, 'money', { currencyCode: sums!.currency });
+    const [current, prior] = [Number(sums!.current), Number(sums!.prior)];
+    expect(sums!.campaigns).toBe(3);
+
+    await signIn(page, 'admin');
+    // Every campaign in view: these fact-only campaigns have no synced state for the default filter to match.
+    const view = { id: 'wp321', name: 'Synthetic summary', entity: 'campaigns' as const, columns: defaultVisibleColumns('campaigns'),
+      pinned: columnsFor('campaigns').filter((column) => column.pinned).map((column) => column.id), widths: {}, filter: { groups: [] },
+      sort: [{ columnId: 'spend', direction: 'desc' as const }], groupBy: [], dateRange: null, updatedAt: '2026-09-24T00:00:00.000Z' };
+    const query = new URLSearchParams({ profile: fixtureProfileId, entity: 'campaigns', from: SUMMARY.period.start, to: SUMMARY.period.end,
+      compareFrom: SUMMARY.comparison.start, compareTo: SUMMARY.comparison.end, view: serializeGridView(view) });
+    await page.goto(['/grid', '?', query.toString()].join(''));
+    await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+    await expect(page.getByRole('button', { name: 'Export CSV (3 of 3)', exact: true })).toBeVisible();
+    const spend = page.getByRole('button', { name: 'Chart spend', exact: true });
+    await expect(spend.locator('strong')).toHaveText(money(current));
+    const delta = (current - prior) / Math.abs(prior) * 100;
+    await expect(spend).toContainText(`${money(prior)} · ${delta > 0 ? '+' : ''}${delta.toFixed(1)}%`);
+    const values = page.getByTestId('grid-kpis').locator('button strong');
+    await expect(values).toHaveCount(8);
+    expect(await values.allTextContents()).not.toContain('—');
+    await expect(page.getByTestId('grid-scroller').getByRole('row').filter({ hasText: 'Total · 3 rows' })).toContainText(money(current));
+
+    // Customize: drop Clicks, add ROAS; the choice rides in the view through reload, a shared link and a saved view.
+    const chosen = ['impressions', 'spend', 'sales', 'orders', 'acos', 'cvr', 'cpc', 'roas'];
+    const cards = page.getByTestId('grid-kpis').locator('[data-summary-metric]');
+    await page.getByTestId('grid-summary-picker-trigger').click();
+    const picker = page.getByRole('dialog', { name: 'Summary metrics' });
+    await expect(picker.getByRole('checkbox')).toHaveCount(15);
+    await picker.getByRole('checkbox', { name: 'Clicks', exact: true }).uncheck();
+    await picker.getByRole('checkbox', { name: 'ROAS', exact: true }).check();
+    await expect(picker.getByRole('status')).toHaveText("8 of 8 shown. Click a default metric's card to chart it, up to four.");
+    await picker.getByRole('button', { name: 'Done', exact: true }).click();
+    await expect(picker).toHaveCount(0);
+    const order = () => cards.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-summary-metric')));
+    await expect.poll(order).toEqual(chosen);
+    await expect(page.getByRole('group', { name: 'ROAS summary' }).locator('strong')).toHaveText(formatValue(Number(sums!.sales) / current, 'ratio', { currencyCode: sums!.currency }));
+    await expect.poll(() => parseGridView(new URL(page.url()).searchParams.get('view'))?.summary?.metrics).toEqual(chosen);
+    await page.reload();
+    await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+    await expect.poll(order).toEqual(chosen);
+    const shared = page.url();
+    await page.evaluate(() => window.localStorage.clear());
+    await page.goto(shared);
+    await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+    await expect.poll(order).toEqual(chosen);
+
+    await openGridControls(page);
+    await page.getByRole('textbox', { name: 'New view name' }).fill('Synthetic summary lens');
+    await page.getByRole('button', { name: 'Save view', exact: true }).click();
+    await expect(page.getByRole('combobox', { name: 'Saved view', exact: true }).locator('option').filter({ hasText: 'Synthetic summary lens' })).toHaveCount(1);
+    const saved = await database.sql<{ view: { summary?: { metrics: string[] } } }[]>`
+      select view from public.grid_views where org_id = ${orgId} and name = 'Synthetic summary lens'`;
+    expect(saved).toHaveLength(1);
+    expect(saved[0]!.view.summary).toEqual({ metrics: chosen });
+  } finally {
+    // Named campaign views are listed by earlier specs; leave none behind.
+    await database.sql`delete from public.grid_views where org_id = ${orgId} and name = 'Synthetic summary lens'`;
+    await database.close();
+  }
+});
+
+/** Two adjacent five-day windows two months ahead, inside the pre-created fact partitions. */
+function summaryWindows(): { period: { start: string; end: string }; comparison: { start: string; end: string } } {
+  const now = new Date();
+  const day = (date: number) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 2, date)).toISOString().slice(0, 10);
+  return { period: { start: day(16), end: day(20) }, comparison: { start: day(11), end: day(15) } };
 }

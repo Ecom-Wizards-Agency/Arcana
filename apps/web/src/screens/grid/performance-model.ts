@@ -1,6 +1,7 @@
-import { buildGridModelSafely, grandTotal, resolveField, type FilterSet, type GridModelResult, type GridQuery, type GridRow } from '@wizard-ads/ui';
+import { buildGridModelSafely, resolveField, type FilterSet, type GridModelResult, type GridQuery, type GridRow } from '@wizard-ads/ui';
 import { PerformanceVerdict } from '@wizard-ads/shared';
 import { shareOfSpend } from '@wizard-ads/core';
+import { windowTotal } from './summary-model';
 
 /** A quick chip replaces every selected verdict, retaining each non-verdict OR branch. */
 export function verdictFilter(filter: FilterSet, diagnosis: string): FilterSet {
@@ -38,12 +39,16 @@ export function buildPerformanceModel(rows: readonly GridRow[], query: GridQuery
     rows = population;
   }
   const filtered = buildGridModelSafely(rows, { filter: query.filter, totals: 'none' });
-  const total = grandTotal(filtered.model.matchedRows);
+  // The strip's window rule (WP-321): a row with no facts in the window adds
+  // nothing, rather than making the whole denominator unknown.
+  const total = windowTotal(filtered.model.matchedRows);
   const denominator = total === null ? null : resolveField(total, 'spend');
   const withShare = <T extends GridRow>(row: T): T => ({ ...row, dimensions: { ...row.dimensions,
     spend_share: shareOfSpend(resolveField(row, 'spend') as number | null, typeof denominator === 'number' ? denominator : null),
   } });
-  const { filter: _filter, ...shape } = query;
+  const { filter: _filter, ...rest } = query;
+  // The pinned total follows the same rule unless the caller chose its own totals.
+  const shape: GridQuery = rest.totals === 'none' || rest.totals === 'custom' ? rest : { ...rest, totals: 'custom', customTotals: windowTotal };
   // For a measured denominator, group shares sort exactly as group spend.
   if (shape.groupBy?.length) shape.sort = shape.sort?.map((rule) => rule.columnId === 'spend_share' ? { ...rule, columnId: 'spend' } : rule);
   const result = buildGridModelSafely(filtered.model.matchedRows.map(withShare), shape);

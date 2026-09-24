@@ -7,17 +7,39 @@ import { EmptyState } from '@wizard-ads/ui';
 import { Badge, Button } from '../../ui/primitives';
 import { periodFromParams, todayIso } from '../../../app/_lib/periods';
 import { countPerformanceRows, verdictFilter } from './performance-model';
-import { useMemo, useState, type ReactNode, type Ref, useEffect, useRef } from 'react';
-import { deltaColor, grandTotal, resolveField, describeFilter, formatValue, metricSpec, NumericValue, GridToolbar, ColumnManager, GroupBar, isGroupedRow, type ColumnLayout, readEntitySearch, writeEntitySearch, entitySearchColumn, tokens, type GridToolbarProps, type GridRow, type SavedView } from '@wizard-ads/ui';
-import { TRANSLATION_LANGUAGES, TranslationLanguage, PerformanceVerdict, type GridPerformanceEvidence } from '@wizard-ads/shared';
+import { useCallback, useId, useMemo, useState, type ReactNode, type Ref, type RefObject, useEffect, useRef } from 'react';
+import { deltaColor, resolveField, describeFilter, formatValue, metricSpec, NumericValue, GridToolbar, ColumnManager, GroupBar, isGroupedRow, type ColumnLayout, readEntitySearch, writeEntitySearch, entitySearchColumn, tokens, type GridToolbarProps, type GridRow, type SavedView } from '@wizard-ads/ui';
+import { GRID_SUMMARY_METRIC_LIMIT, GRID_SUMMARY_METRICS, TRANSLATION_LANGUAGES, TranslationLanguage, PerformanceVerdict, type GridPerformanceEvidence, type GridSummaryMetric } from '@wizard-ads/shared';
+import { DEFAULT_SUMMARY_METRICS, isChartable, summarizeGrid, summaryMetrics, type SummaryCard } from './summary-model';
 
 const button = { border: `1px solid ${tokens.color.border}`, background: tokens.color.surface, color: tokens.color.text, borderRadius: 6, padding: '5px 9px', fontSize: 12, whiteSpace: 'nowrap' as const };
-const keys = ['impressions', 'clicks', 'spend', 'sales', 'orders', 'acos', 'cvr', 'cpc'] as const;
+/**
+ * The provenance band and the KPI strip of the performance frame (Figma 5:2).
+ *
+ * The strip shows the operator's chosen metrics (default: the frame's eight)
+ * under the WP-321 window rule in `summary-model.ts`. Cards for chartable
+ * metrics still toggle up to four saved chart series, as WP-261 built them. No
+ * trend chart is drawn: neither performance frame (5:2, 88:37) has one between
+ * the strip and the toolbar, so the series stay a saved preference until a
+ * frame places the chart.
+ */
 export function PerformanceSummary({ rows, performance, view, onChange, currencyCode, profileId }: {
   rows: readonly GridRow[]; performance?: GridPerformanceEvidence; view: SavedView; onChange: (patch: Partial<SavedView>) => void; currencyCode: string; profileId: string;
 }): ReactNode {
   const series: NonNullable<SavedView['chart']>['series'] = view.chart?.series ?? ['spend', 'sales'];
-  const aggregate = useMemo(() => grandTotal(rows), [rows]);
+  const metrics = useMemo(() => summaryMetrics(view.summary?.metrics), [view.summary?.metrics]);
+  // Outside the app router (render tests) there are no search params and the comparison is on.
+  const comparisonOff = useSearchParams()?.get('comparison') === 'none';
+  const evidence = performance?.summary;
+  const summary = useMemo(() => summarizeGrid(rows, { entity: view.entity, metrics, evidence, comparisonOff }), [rows, view.entity, metrics, evidence, comparisonOff]);
+  const [picking, setPicking] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const closePicker = useCallback(() => { setPicking(false); trigger.current?.focus(); }, []);
+  const ids = useId();
+  const choose = (next: readonly GridSummaryMetric[]) => {
+    const kept = series.filter((key) => next.includes(key));
+    onChange({ summary: { metrics: [...next] }, ...(kept.length === series.length ? {} : { chart: { series: kept } }) });
+  };
   return <>
     <ProductAssignmentBanner profileId={profileId} currencyCode={currencyCode} enabled={performance !== undefined} />
     <section data-testid="grid-provenance" aria-label="Data completeness" style={{ height: 120, boxSizing: 'border-box', padding: '10px 24px', display: 'flex', alignItems: 'flex-start', gap: 18, background: tokens.color.surfaceAlt, borderBottom: `1px solid ${tokens.color.border}` }}>
@@ -27,26 +49,84 @@ export function PerformanceSummary({ rows, performance, view, onChange, currency
       </div>)}
       <span style={{ width: 200, flexShrink: 0, paddingLeft: 12, borderLeft: `1px solid ${tokens.color.border}`, fontSize: 11, color: tokens.color.textFaint }}>Current bids as last read from Amazon.<br />Not affected by the date range.</span>
     </section>
-    <section data-testid="grid-kpis" aria-label="Performance metrics" style={{ height: 100, boxSizing: 'border-box', padding: '16px 24px 10px', display: 'grid', gridTemplateColumns: 'repeat(9,minmax(0,1fr))', gap: 8 }}>
-      {keys.map((key) => {
-        const current = aggregate === null ? null : resolveField(aggregate, key);
-        const value = typeof current === 'number' ? current : null;
-        const comparison = aggregate === null ? null : resolveField(aggregate, `${key}_comparison`);
-        const prior = typeof comparison === 'number' ? comparison : null;
-        const delta = value === null || prior === null || prior === 0 ? null : (value - prior) / Math.abs(prior) * 100;
+    <section data-testid="grid-kpis" aria-label="Performance metrics" style={{ position: 'relative', height: 100, boxSizing: 'border-box', padding: '16px 24px 10px', display: 'grid', gridTemplateColumns: `repeat(${GRID_SUMMARY_METRIC_LIMIT + 1},minmax(0,1fr))`, gap: 8 }}>
+      {summary.cards.map((card) => {
+        const valueId = `${ids}-${card.key}-value`;
+        const detailId = `${ids}-${card.key}-detail`;
+        const body = <SummaryCardBody card={card} currencyCode={currencyCode} valueId={valueId} detailId={detailId} />;
+        const style = { ...button, position: 'relative' as const, textAlign: 'left' as const, padding: '6px 10px 9px', lineHeight: '16px', minWidth: 0, overflow: 'hidden', borderRadius: 8 };
+        if (!isChartable(card.key)) return <div key={card.key} role="group" aria-label={`${card.label} summary`} aria-describedby={`${valueId} ${detailId}`} data-summary-metric={card.key} style={style}>{body}</div>;
+        const key = card.key;
         const selected = series.includes(key);
-        return <button type="button" key={key} aria-label={`Chart ${key}`} aria-pressed={selected} disabled={!selected && series.length === 4}
+        return <button type="button" key={key} aria-label={`Chart ${key}`} aria-describedby={`${valueId} ${detailId}`} aria-pressed={selected} disabled={!selected && series.length === 4} data-summary-metric={key}
           onClick={() => onChange({ chart: { series: selected ? series.filter((item) => item !== key) : [...series, key] } })}
-          style={{ ...button, position: 'relative', textAlign: 'left', padding: '6px 10px 9px', lineHeight: '16px', minWidth: 0, overflow: 'hidden', borderRadius: 8 }}>
-          <span style={{ display: 'block', fontSize: 11, color: tokens.color.textMuted }}>{key === 'acos' || key === 'cvr' || key === 'cpc' ? key.toUpperCase() : key[0]!.toUpperCase() + key.slice(1)}</span>
-          <strong style={{ display: 'block', fontSize: 18, fontVariantNumeric: 'tabular-nums' }}><NumericValue value={formatValue(value, metricSpec(key)!.scale, { currencyCode })} /></strong>
-          <span style={{ fontSize: 11, color: tokens.color.textMuted }}>{formatValue(prior, metricSpec(key)!.scale, { currencyCode })} · <span style={{ color: deltaColor(delta, metricSpec(key)!.better) }}>{delta === null ? '—' : `${delta > 0 ? '+' : ''}${delta.toFixed(1)}%`}</span></span>
+          style={style}>
+          {body}
           {selected ? <span style={{ position: 'absolute', bottom: 3, left: 10, right: 10, height: 3, borderRadius: 2, background: `var(--wa-viz-${series.indexOf(key) + 1})` }} /> : null}
         </button>;
       })}
-      <span style={{ ...button, alignSelf: 'start', borderStyle: 'dashed', textAlign: 'center', fontSize: 11 }}>+ Series<br /><small>{series.length} of 4</small></span>
+      <button type="button" ref={trigger} aria-haspopup="dialog" aria-expanded={picking} data-testid="grid-summary-picker-trigger" title="Choose the summary metrics"
+        onClick={() => setPicking(!picking)}
+        style={{ ...button, alignSelf: 'start', borderStyle: 'dashed', textAlign: 'center', fontSize: 11 }}>+ Series<br /><small>{series.length} of 4</small></button>
+      {picking ? <SummaryMetricPicker metrics={metrics} onChoose={choose} onClose={closePicker} trigger={trigger} /> : null}
     </section>
   </>;
+}
+
+const clipped = { display: 'block', overflow: 'hidden', whiteSpace: 'nowrap' as const, textOverflow: 'ellipsis' };
+
+/** One card: label, the window value or why it has none, then the comparison or the reason. */
+function SummaryCardBody({ card, currencyCode, valueId, detailId }: { card: SummaryCard; currencyCode: string; valueId: string; detailId: string }): ReactNode {
+  const format = (value: number) => formatValue(value, card.scale, { currencyCode });
+  const { current, prior } = card;
+  return <>
+    <span style={{ display: 'block', fontSize: 11, color: tokens.color.textMuted }}>{card.label}</span>
+    <strong id={valueId} data-summary-state={current.value !== null ? 'measured' : current.notMeasured ? 'not-measured' : 'unknown'} title={current.reason ?? current.note ?? undefined}
+      style={{ ...clipped, fontSize: current.notMeasured ? 13 : 18, lineHeight: '22px', fontVariantNumeric: 'tabular-nums', color: current.value === null ? tokens.color.textMuted : undefined }}>
+      {current.value !== null ? <NumericValue value={format(current.value)} /> : current.notMeasured ? 'Not measured' : '—'}
+    </strong>
+    {current.value === null && current.reason !== null
+      ? <span id={detailId} data-summary-reason title={current.reason} style={{ ...clipped, fontSize: 11, color: tokens.color.textMuted }}>{current.reason}</span>
+      : <span id={detailId} title={prior.reason ?? prior.note ?? undefined} style={{ ...clipped, fontSize: 11, color: tokens.color.textMuted }}>
+        {prior.value !== null ? format(prior.value) : prior.notMeasured ? 'Not measured' : '—'} · <span style={{ color: deltaColor(card.delta, card.better) }}>{card.delta === null ? '—' : `${card.delta > 0 ? '+' : ''}${card.delta.toFixed(1)}%`}</span>
+      </span>}
+  </>;
+}
+
+/** A bounded picker over the grid metric catalogue; the choice travels with the saved view. */
+function SummaryMetricPicker({ metrics, onChoose, onClose, trigger }: { metrics: readonly GridSummaryMetric[]; onChoose: (next: readonly GridSummaryMetric[]) => void; onClose: () => void; trigger: RefObject<HTMLButtonElement | null> }): ReactNode {
+  const root = useRef<HTMLDivElement>(null);
+  // Focus lands once, on open; a toggle re-renders without moving it.
+  useEffect(() => { root.current?.querySelector<HTMLInputElement>('input:not(:disabled)')?.focus(); }, []);
+  useEffect(() => {
+    const outside = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (target !== null && !root.current?.contains(target) && !trigger.current?.contains(target)) onClose();
+    };
+    document.addEventListener('mousedown', outside);
+    return () => document.removeEventListener('mousedown', outside);
+  }, [onClose, trigger]);
+  const full = metrics.length >= GRID_SUMMARY_METRIC_LIMIT;
+  const isDefault = metrics.length === DEFAULT_SUMMARY_METRICS.length && metrics.every((key, index) => key === DEFAULT_SUMMARY_METRICS[index]);
+  return <div ref={root} role="dialog" aria-label="Summary metrics" data-testid="grid-summary-picker" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }}
+    style={{ position: 'absolute', top: 60, right: 24, zIndex: 30, width: 300, padding: tokens.space(4), background: tokens.color.surface, color: tokens.color.text, border: `1px solid ${tokens.color.border}`, borderRadius: 8, boxShadow: 'var(--wa-shadow)', fontSize: 12 }}>
+    <strong style={{ display: 'block', fontSize: 13 }}>Summary metrics</strong>
+    <p role="status" style={{ margin: '4px 0 8px', color: tokens.color.textMuted }}>{metrics.length} of {GRID_SUMMARY_METRIC_LIMIT} shown. Click a default metric's card to chart it, up to four.</p>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '4px 12px' }}>
+      {GRID_SUMMARY_METRICS.map((key) => {
+        const chosen = metrics.includes(key);
+        return <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input type="checkbox" checked={chosen} disabled={chosen ? metrics.length === 1 : full}
+            onChange={() => onChoose(chosen ? metrics.filter((item) => item !== key) : [...metrics, key])} />
+          {metricSpec(key)!.label}
+        </label>;
+      })}
+    </div>
+    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10 }}>
+      <button type="button" style={button} disabled={isDefault} onClick={() => onChoose(DEFAULT_SUMMARY_METRICS)}>Reset to default</button>
+      <button type="button" style={button} onClick={onClose}>Done</button>
+    </div>
+  </div>;
 }
 
 export function PerformanceToolbar(props: GridToolbarProps & { view: SavedView; update: (patch: Partial<SavedView>) => void; profileId: string; onSaveColumnPreset: (name: string, layout: ColumnLayout) => Promise<void>; onTranslation: () => void; onRefreshTranslation: () => void; asinScope?: string | null; onRemoveScope?: () => void }): ReactNode {
