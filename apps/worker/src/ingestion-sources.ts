@@ -7,7 +7,10 @@ export const INGESTION_SOURCES: readonly IngestionSource[] = [
   { jobType: 'aba.report.request', source: 'amazon_spapi', laneAffinity: ['integrations'], counts: ['sourceRows', 'parsedRows', 'refusedRows', 'canonicalRows', 'verifiedLoadedRows'] },
   { jobType: 'catalogue.report.request', source: 'amazon_spapi', laneAffinity: ['integrations'], counts: ['sourceRows', 'parsedRows', 'refusedRows', 'canonicalRows', 'verifiedLoadedRows'] },
   { jobType: 'provider.evidence.collect', source: 'amazon_provider_evidence', laneAffinity: ['integrations'], counts: ['source', 'parsed', 'refused', 'duplicates', 'canonical', 'written', 'existing', 'readback'] },
+  ...(['own_bids.collect','own_listings.collect','prompts.collect'] as const).map((jobType) => ({ jobType, source: jobType, reportType: jobType, laneAffinity: ['integrations'] as IngestionLane[], counts: ['sourceRows','parsedRows','refusedRows','loadedRows','verifiedLoadedRows'] })),
   { jobType: 'translation.request', source: 'target_translation', laneAffinity: ['integrations'], counts: ['requested', 'completed', 'superseded', 'alreadyCompleted'] },
+  { jobType: 'budget_usage.collect', source: 'amazon_ads_api', reportType: 'campaign_budget_usage', laneAffinity: ['integrations'], counts: ['selected', 'requested', 'returned', 'failed', 'sourceRows', 'parsedRows', 'refusedRows', 'loadedRows', 'existingRows', 'verifiedLoadedRows'] },
+  { jobType: 'budget_usage.stream', source: 'amazon_marketing_stream', reportType: 'campaign_budget_usage', laneAffinity: ['integrations'], counts: ['selected', 'requested', 'returned', 'failed', 'sourceRows', 'parsedRows', 'refusedRows', 'loadedRows', 'existingRows', 'verifiedLoadedRows'] },
   { jobType: 'entity.sync', source: 'amazon_ads', laneAffinity: ['vercel-default', 'vercel-reduced'], counts: ['listed', 'upserted', 'duplicates'] },
   { jobType: 'creative.sync', source: 'amazon_ads', laneAffinity: ['evo-report', 'evo-report-unified'], counts: ['adsReceived', 'adsPersisted'] },
   ...(['report.request', 'report.poll', 'report.fetch'] as const).map((jobType) => ({
@@ -21,7 +24,7 @@ export const INGESTION_SOURCES: readonly IngestionSource[] = [
   { jobType: 'economics.sync', source: 'mrp', laneAffinity: ['integrations'], counts: ['asinsSelected', 'rowsLoaded'] },
   { jobType: 'sqp.request', source: 'amazon_spapi', reportType: 'GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT', laneAffinity: ['integrations'], counts: ['sourceRows', 'parsedRows', 'refusedRows', 'upserts'] },
   { jobType: 'crosscheck.ingest', source: 'secondary_import', laneAffinity: [], counts: ['rowsParsed', 'rowsKept', 'written'] },
-  { jobType: 'marketing_stream.normalize', source: 'amazon_marketing_stream', laneAffinity: [], counts: ['offered', 'normalized'] },
+  { jobType: 'marketing_stream.normalize', source: 'amazon_marketing_stream', laneAffinity: ['integrations'], counts: ['offered', 'normalized'] },
   { jobType: 'report.unified.advance', source: 'amazon_unified_reporting', laneAffinity: ['evo-report-unified'], counts: ['received', 'accepted', 'refused'] },
   ...(['sqp.categorize', 'history.bootstrap', 'report.promote'] as const).map((jobType) => ({
     jobType, source: 'unimplemented', laneAffinity: [], counts: ['offered', 'written'],

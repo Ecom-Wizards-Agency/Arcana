@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type {
   DbHandle,
   MarketingStreamProjectionBlock,
@@ -18,6 +18,28 @@ const PROFILE = '82828282-8282-4282-8282-828282828282';
 const HOUR = '2026-08-01T10:00:00.000Z';
 
 describe('Marketing Stream queued normalization', () => {
+  it('continues budget collection only after the existing projection has verified its rows', async () => {
+    const source = snapshot();
+    source.events[0]!.dataset = 'budget_usage';
+    source.events[0]!.rawPayload = { currencyCode: 'USD', metrics: [{ campaignId: 'campaign-one', budgetUsagePercent: 0, budgetObservedAt: HOUR }] };
+    const onBudgetNormalized = vi.fn(async () => {});
+    const replacements: string[][] = [];
+    const normalStore = store(source, replacements);
+    const options = {
+      handle: {} as DbHandle, queue: { enqueue: async () => true },
+      now: () => new Date('2026-08-01T10:30:00.000Z'),
+      contexts: { load: async () => ({ profileTimeZone: 'UTC', currencyCode: 'USD', settlingWindowHours: 1, budgetCappedAtPercent: 90 }) },
+      resolveScopes: async () => ({ requestedMessages: 1, foundMessages: 1, scopes: [{ adProduct: 'SP' as const, utcHour: HOUR }] }),
+      blocks: projectionBlocks(), onBudgetNormalized,
+    };
+    await createMarketingStreamNormalizeHandler({ ...options, store: normalStore })(job());
+    expect(onBudgetNormalized).toHaveBeenCalledOnce();
+    onBudgetNormalized.mockClear();
+    await expect(createMarketingStreamNormalizeHandler({ ...options, store: {
+      ...normalStore, replace: async () => ({ scopesReplaced: 1, factsDeleted: 0, factsInserted: 1, factsReadBack: 0 }),
+    } })(job())).rejects.toThrow('projection counts');
+    expect(onBudgetNormalized).not.toHaveBeenCalled();
+  });
   it('provides an executable operator recovery for an alerted quiet profile', async () => {
     await expect(requeueMarketingStreamBlockedProfile({
       handle: {} as DbHandle,

@@ -29,6 +29,8 @@ declare
   v_provider_scope jsonb;
   v_provider_config_json jsonb;
   v_provider_counts jsonb;
+  v_budget_run uuid := gen_random_uuid();
+  v_budget_observation jsonb;
   v_conn uuid;
   v_profile uuid;
   v_run uuid;
@@ -918,6 +920,43 @@ begin
     'kind','synthetic','action','unknown','current',jsonb_build_object('value',null,'units',null,'currency',null),'proposed',jsonb_build_object('value',null,'units',null,'currency',null),
     'estimates','[]'::jsonb,'objective',null,'horizon',null,'attribution',null,'eligibility','unknown','generatedAt',null,'expiresAt',null,'retrievedAt',now(),'observedAt',now(),'payload','{}'::jsonb));
   insert into public.provider_recommendation_run_rows(org_id,profile_id,run_id,evidence_id) values(v_org,v_profile,v_provider_run,v_provider_evidence);
+  end if;
+
+  if to_regclass('public.own_effective_bid_observations') is not null then
+    insert into public.own_effective_bid_observations(id,org_id,profile_id,marketplace,target_id,observed_at,collected_at,observation)
+    values(v_org::text||':own-bid',v_org,v_profile,'US','collector-fixture-target','1970-01-01','1970-01-01',
+      jsonb_build_object('scope',jsonb_build_object('orgId',v_org,'profileId',v_profile,'marketplace','US'),
+      'sourceIdentity','fixture','campaignId','fixture','adGroupId','fixture','targetId','collector-fixture-target','targetKind','keyword',
+      'observedAt','1970-01-01T00:00:00.000Z','collectedAt','1970-01-01T00:00:00.000Z','bid',null,'bidOrigin','unknown','bidding',null,'placementProvenance',null,'audienceProvenance',null));
+  end if;
+  if to_regclass('public.own_listing_observations') is not null then
+    insert into public.own_listing_observations(id,org_id,profile_id,marketplace,asin,field,observed_at,collected_at,observation)
+    values(v_org::text||':own-listing',v_org,v_profile,'US','B000000291','price','1970-01-01','1970-01-01',
+      jsonb_build_object('field','price','value',1,'provenance',jsonb_build_object('source','synthetic','sourceIdentity','fixture','observedAt','1970-01-01T00:00:00.000Z','collectedAt','1970-01-01T00:00:00.000Z')));
+    insert into public.own_listing_changes(id,org_id,profile_id,marketplace,asin,observed_at,change)
+    select id,org_id,profile_id,marketplace,asin,observed_at,jsonb_build_object('id',id,'scope',jsonb_build_object('orgId',v_org,'profileId',v_profile,'marketplace','US'),
+      'asin',asin,'previous',null,'current',observation,'certainty',jsonb_build_object('kind','first','from',null,'to','1970-01-01T00:00:00.000Z','widthDays',null))
+    from public.own_listing_observations where id=v_org::text||':own-listing';
+    insert into public.collector_export_references(id,org_id,profile_id,marketplace,family,object_key)
+      values(v_org,v_org,v_profile,'US','listing','fixture.json');
+    insert into public.collector_import_receipts(id,org_id,profile_id,marketplace,reference_id,fingerprint,observed_at,collected_at,receipt)
+      values(v_org::text||':import',v_org,v_profile,'US',v_org,repeat('a',64),'1970-01-01','1970-01-01',
+        jsonb_build_object('counts',jsonb_build_object('sourceRows',0,'parsedRows',0,'refusedRows',0,'loadedRows',0,'verifiedLoadedRows',0),
+          'inserted',0,'alreadyPresent',0,'outputIdentities','[]'::jsonb,'observedAt',null,'state','missing'));
+  end if;
+
+  if to_regclass('public.budget_usage_settings') is not null then
+    v_budget_observation := jsonb_build_object('orgId',v_org,'profileId',v_profile,'adProduct','SP','campaignId','c-1','sourceIdentity','synthetic-budget-observation',
+      'source','amazon_ads_api','providerUpdatedAt',p_date::timestamptz,'receivedAt',p_date::timestamptz,'currency','USD','budgetAmount',10,'budgetType','daily','period',null,'usagePercent',0,'completeness','complete');
+    insert into public.budget_usage_settings(org_id,profile_id) values(v_org,v_profile);
+    insert into public.budget_usage_runs(id,org_id,profile_id,source,received_at,input,counts)
+    values(v_budget_run,v_org,v_profile,'amazon_ads_api',p_date::timestamptz,
+      jsonb_build_object('runId',v_budget_run,'scope',jsonb_build_object('orgId',v_org,'profileId',v_profile),'source','amazon_ads_api',
+        'selected',jsonb_build_array(jsonb_build_object('adProduct','SP','campaignId','c-1')),'observations',jsonb_build_array(v_budget_observation),'failures','[]'::jsonb,'receivedAt',p_date::timestamptz,'populationComplete',false),
+      '{"selected":1,"requested":1,"returned":1,"failed":0,"sourceRows":1,"parsedRows":1,"refusedRows":0,"loadedRows":1,"existingRows":0,"verifiedLoadedRows":1}'::jsonb);
+    insert into public.budget_usage_observations(org_id,profile_id,ad_product,campaign_id,source_identity,provider_updated_at,received_at,run_id,observation)
+    values(v_org,v_profile,'SP','c-1','synthetic-budget-observation',p_date::timestamptz,p_date::timestamptz,v_budget_run,
+      v_budget_observation);
   end if;
   return v_org;
 end;

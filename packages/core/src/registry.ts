@@ -133,6 +133,10 @@ export const PACKAGE_REGISTRY = [
   {
     "module": "./campaign-builder/eligibility.js",
     "clause": "{ campaignBuilderEligibility }"
+  },
+  {
+    "module": "./budget-usage.js",
+    "clause": "*"
   }
 ] as const;
 

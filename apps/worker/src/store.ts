@@ -25,6 +25,7 @@ import {
   reconcileEntityChangeLinks,
   reportRequests,
   recordReportCoverage,
+  publishBudgetUsageCoverage,
   upsertReportCoverage,
   quarantineReportCreate,
   type ReportCreateEvidence,
@@ -62,6 +63,7 @@ type AttributedReportCounts = WorkerReportAccountingShape;
 import type { AdsProfileContext } from './ads-api.js';
 import type { CampaignFactRow, ParsedFactBatch } from './parsers.js';
 import { defaultSchedules, coreFamilySchedules, type ScheduleSpec } from './schedules.js';
+import { ensureBudgetUsageSchedules } from './budget-usage/schedules.js';
 
 export type ReportRequestState = Omit<
   WorkerReportLedger,
@@ -278,7 +280,9 @@ export class ClaimOwnershipLost extends Error {
 }
 
 export interface PostgresWorkerStoreOptions {
+  ownCollectorsEnabled?: boolean;
   claimProtocol?: 'legacy' | 'fenced';
+  budgetUsageApiEnabled?: boolean;
   keywordMirror?: KeywordMirrorCapability;
 }
 
@@ -293,9 +297,11 @@ type ExistingEntity = { amazonId: string; deletedAt: Date | string | null; snaps
 
 export class PostgresWorkerStore implements WorkerStore {
   private readonly logger: StoreLogger;
+  private readonly ownCollectorsEnabled: boolean;
   private readonly keywordMirror: KeywordMirrorCapability | undefined;
   private readonly reportedDisabledSbKeywords = new Set<string>();
   private readonly claimProtocol: 'legacy' | 'fenced';
+  private readonly budgetUsageApiEnabled: boolean | undefined;
 
   constructor(
     readonly handle: DbHandle,
@@ -304,7 +310,9 @@ export class PostgresWorkerStore implements WorkerStore {
   ) {
     this.logger = logger ?? { info: (message, details) => console.info(message, details ?? {}) };
     this.claimProtocol = options.claimProtocol ?? 'legacy';
+    this.budgetUsageApiEnabled = options.budgetUsageApiEnabled;
     this.keywordMirror = options.keywordMirror;
+    this.ownCollectorsEnabled = options.ownCollectorsEnabled === true;
   }
 
   /** Activation requires explicit composition; construction never queries the DB. */
@@ -858,11 +866,20 @@ export class PostgresWorkerStore implements WorkerStore {
    */
   async ensureIntegrationSchedules(): Promise<number> {
     await this.ensureProviderEvidenceSchedules();
+    // Other runtimes also reconcile integrations. Only explicit budget composition owns these schedules.
+    const budgetSchedules = this.budgetUsageApiEnabled === undefined ? 0
+      : await ensureBudgetUsageSchedules(this.handle, this.budgetUsageApiEnabled);
     const [relation] = await this.handle.sql<{ relation: string | null }[]>`
       select to_regclass('public.integration_connections')::text as relation
     `;
-    if (!relation?.relation) return 0;
+    if (!relation?.relation) return budgetSchedules;
 
+    const ownSources = this.ownCollectorsEnabled ? this.handle.sql`
+        union select p.org_id,p.id,'own_bids.collect'::public.sync_job_type,interval '1 day','{}'::jsonb from public.ad_profiles p where p.sync_enabled
+        union select s.org_id,s.profile_id,'own_listings.collect'::public.sync_job_type,interval '1 day','{}'::jsonb from selected_profiles s where s.provider='keepa'
+        union select r.org_id,r.profile_id,(case when r.family='prompts' then 'prompts.collect' else 'own_listings.collect' end)::public.sync_job_type,interval '1 day','{}'::jsonb
+          from public.collector_export_references r join public.ad_profiles p on p.org_id=r.org_id and p.id=r.profile_id
+          where r.enabled and p.sync_enabled and r.marketplace=p.country_code` : this.handle.sql``;
     const [result] = await this.handle.sql<{ changed: string }[]>`
       with active_connections as (
         select c.org_id, c.provider::text as provider, c.config
@@ -901,13 +918,14 @@ export class PostgresWorkerStore implements WorkerStore {
             ('mrp',     'economics.sync',   '1 day',  '{}'::jsonb)
           ) as m(provider, job_type, cadence, payload)
             on m.provider = s.provider
+        ${ownSources}
       ),
       disabled as (
         update public.sync_schedules schedule
            set enabled = false
          where schedule.variant = 'integration'
-           and schedule.job_type in (
-             'keepa.sync', 'rank.sync', 'economics.sync', 'sqp.categorize'
+           and schedule.job_type::text in (
+             'keepa.sync', 'rank.sync', 'economics.sync', 'sqp.categorize', 'own_bids.collect', 'own_listings.collect', 'prompts.collect'
            )
            and schedule.enabled
            and not exists (
@@ -934,7 +952,7 @@ export class PostgresWorkerStore implements WorkerStore {
       select ((select count(*) from disabled) + (select count(*) from upserted))::text as changed
     `;
     const spapi = await provisionSpApiReportJobs(this.handle);
-    return Number(result?.changed ?? 0) + spapi.enqueued + spapi.disabledScopes;
+    return budgetSchedules + Number(result?.changed ?? 0) + spapi.enqueued + spapi.disabledScopes;
   }
 
   private async ensureProviderEvidenceSchedules(): Promise<void> {
@@ -1044,6 +1062,9 @@ export class PostgresWorkerStore implements WorkerStore {
   }
 
   async recordCoverage(observation: ReportCoverageObservation, verifiedLoadedRows: number) {
+    if (observation.reportType === 'campaign_budget_usage') {
+      return publishBudgetUsageCoverage(this.handle, observation, verifiedLoadedRows);
+    }
     return upsertReportCoverage(this.handle, observation, verifiedLoadedRows);
   }
 

@@ -164,3 +164,6 @@ export function defaultSchedules(
   }
   return specs;
 }
+
+/** Read-only collectors use integration schedules; exports require an enabled scoped reference. */
+export const OWN_COLLECTOR_CADENCES = { bids: '1 day', listings: '1 day', prompts: '1 day' } as const;
