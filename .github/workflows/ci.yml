@@ -144,7 +144,8 @@ jobs:
         run: pnpm --filter @wizard-ads/web run build
 
       - name: Test e2e (serial)
-        # e2e/run.ts executes eleven database-owning suites in order; every
+        # e2e/run.ts executes the fourteen registered database-owning suites in
+        # order (src/e2e-suite-registry.ts), including undesigned-routes; every
         # Playwright config also pins workers to one. Large route sweeps and
         # stateful workflows get fresh processes, so Next dev releases retained
         # route graphs between bounded suites.

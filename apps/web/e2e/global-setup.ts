@@ -51,6 +51,9 @@ const MIGRATIONS = `${REPO_ROOT}supabase/migrations`;
 const SHIM = `${REPO_ROOT}supabase/tests/supabase-platform-shim.sql`;
 const FIXTURE = `${REPO_ROOT}supabase/tests/tenant-fixture.sql`;
 
+/** Suites whose dev process enables the creative, report and prompts lanes. */
+const ROUTE_ACCEPTANCE_SHELL_SUITES = new Set(['route-acceptance', 'undesigned-routes']);
+
 /** Assembled from fragments; nothing in this repository may look like a credential. */
 const RENEWAL_VALUE = ['synthetic', 'e2e', 'renewal', 'value'].join('-');
 
@@ -407,7 +410,9 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock, fixturePro
         SP_API_TEST_CONSENT_URL: `${amazon.url}/spapi/consent`,
         // This process owns only the synthetic suite database. The creative
         // producer allowlist is confined to its seeded profile; no cron runs.
-        ...(process.env['WIZARD_ADS_E2E_SUITE'] === 'route-acceptance' ? {
+        // The undesigned captures keep the operator shell route acceptance had
+        // when they shared its process, including the prompts navigation entry.
+        ...(ROUTE_ACCEPTANCE_SHELL_SUITES.has(process.env['WIZARD_ADS_E2E_SUITE'] ?? '') ? {
           OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '1',
           OPENSPELL_EVO_REPORT_LANE_READY: '1',
           OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST: fixtureProfileId,
