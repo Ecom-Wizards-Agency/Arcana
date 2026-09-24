@@ -1,5 +1,7 @@
-import { ListingChangeInput } from '@wizard-ads/shared';
-import type { EffectiveBidObservation, EffectiveBidProjection, ListingChange } from '@wizard-ads/shared';
+// Type-only: persistListingSnapshots parses ListingChangeInput before calling `derive`. A runtime
+// import would bundle the collector contracts and their job, SP-write and campaign-creation
+// dependencies into every client component that imports @wizard-ads/core.
+import type { EffectiveBidObservation, EffectiveBidProjection, ListingChange, ListingChangeInput } from '@wizard-ads/shared';
 import { creativeChangeCertainty } from './creative/certainty.js';
 
 export function collectorDate(at: string, timezone: string): string {
@@ -34,8 +36,7 @@ export function dailyEffectiveBids(rows: readonly EffectiveBidObservation[], tim
   return [...days.values()].sort((a, b) => a.date.localeCompare(b.date) || a.observation.sourceIdentity.localeCompare(b.observation.sourceIdentity));
 }
 
-export function listingFieldChange(raw: ListingChangeInput): ListingChange | null {
-  const input = ListingChangeInput.parse(raw);
+export function listingFieldChange(input: ListingChangeInput): ListingChange | null {
   const { previous, current } = input;
   if (previous && previous.field !== current.field) throw new Error('Listing boundary fields differ');
   if (previous && JSON.stringify(previous.value) === JSON.stringify(current.value)) return null;
