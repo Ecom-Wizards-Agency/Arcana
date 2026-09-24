@@ -14,7 +14,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { randomUUID } from 'node:crypto';
 import { JSDOM } from 'jsdom';
-import { afterAll, beforeAll, expect, it } from 'vitest';
+import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { createTestDatabase, type TestDatabase } from '@wizard-ads/db/testing';
 import { resolveField, type SavedView } from '@wizard-ads/ui';
 import { promoteCoreReportWindow, readGridSummaryEvidence } from '@wizard-ads/db';
@@ -23,6 +23,9 @@ import { loadGridRows } from '../../../app/_lib/grid-data';
 import { buildPerformanceModel } from './performance-model';
 import { PerformanceSummary } from './performance-chrome';
 import { formatDateWindow, formatShellDate } from '../../ui/date-format';
+
+// The product-assignment banner renders whenever performance evidence is present and reads the route's period.
+vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams() }));
 
 const PERIOD = { start: '2026-08-17', end: '2026-09-15' };
 const COMPARISON = { start: '2026-07-18', end: '2026-08-16' };
