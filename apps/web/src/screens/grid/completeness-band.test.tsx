@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { tokens } from '@wizard-ads/ui';
 import type { SavedView } from '@wizard-ads/ui';
 import type { GridFeedCoverage } from '@wizard-ads/shared';
 import { PerformanceSummary } from './performance-chrome';
 import { coverageFor, type CoverageRow } from './data-evidence';
+
+// The product-assignment banner renders whenever performance evidence is present and reads the route's period.
+vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams() }));
 
 const view: SavedView = { id: 'test', name: 'Test', entity: 'targets', columns: [], pinned: [], widths: {}, filter: { groups: [] }, sort: [], groupBy: [], dateRange: null, updatedAt: '' };
 // WP-324: what the report lifecycle now records for two loads with a two-day gap between them.
