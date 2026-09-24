@@ -91,7 +91,15 @@ export const negativeScope = pgEnum('negative_scope', ['campaign', 'ad_group']);
 export const entityChangeSource = pgEnum('entity_change_source', ['sync', 'apply']);
 export const targetKind = pgEnum('target_kind', ['keyword', 'target']);
 
-export const syncJobType = pgEnum('sync_job_type', tuple(JobType.options));
+// PostgreSQL appends these labels in migration order, independently of UI ordering.
+const appendedJobs = [
+  'retail.report.request', 'aba.report.request', 'catalogue.report.request',
+  'provider.evidence.collect',
+] as const satisfies readonly JobType[];
+const appendedJobSet = new Set<string>(appendedJobs);
+export const syncJobType = pgEnum('sync_job_type', tuple([
+  ...JobType.options.filter(value => !appendedJobSet.has(value)), ...appendedJobs,
+]));
 export const syncJobStatus = pgEnum('sync_job_status', [
   'queued',
   'running',

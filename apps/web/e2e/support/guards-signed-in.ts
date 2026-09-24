@@ -1,38 +1,12 @@
-/** Signed-in frame, guarded-route acceptance and not-found proofs in a fresh Next process. */
-import { expect, test } from '@playwright/test';
-import { GUARDED_ROUTES } from '../src/e2e-guard-routes';
-import { signIn } from './support/auth';
-import { readState } from './support/fixture';
-import { guardRoutePath } from './support/guard-route-path';
+import { expect, test, type Page } from '@playwright/test';
+import type { GuardedRoute } from '../../src/e2e-guard-routes';
+import { signIn } from './auth';
+import { guardRoutePath } from './guard-route-path';
 
-test.describe.configure({ mode: 'serial' });
-
-test('the index opens the signed-in operator dashboard with its active profile', async ({ page }) => {
-  await signIn(page, 'admin');
-  await page.goto('/');
-  const { fixtureProfileId } = await readState();
-
-  await page.waitForURL((url) =>
-    url.pathname === '/' && url.searchParams.get('profile') === fixtureProfileId,
-  );
-  await expect(page.getByTestId('shell-title')).toBeVisible();
-
-  const nav = page.getByTestId('app-nav');
-  await expect(nav).toBeVisible();
-  await expect(nav.getByTestId('nav-identity')).toBeVisible();
-  // The way out lives inside the avatar menu since the design system pass.
-  await nav.getByTestId('nav-identity').locator('summary').click();
-  await expect(nav.getByTestId('nav-signout')).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(nav.getByTestId('nav-signin')).toHaveCount(0);
-  await expect(page.getByTestId('home-signed-in')).toHaveCount(0);
-  await expect(page.getByTestId('feedback-entry')).toBeVisible();
-});
-
-test('the same screens open once there is a session', async ({ page }) => {
+export async function assertSignedInGuardRoutes(page: Page, routes: readonly GuardedRoute[]): Promise<void> {
   // Each guarded route compiles on first visit. Night mode can exceed eight
   // minutes before Timeline loads; keep the hydration assertions below and
-  // allow the complete route list to finish on the four-core runner.
+  // allow this half of the route list to finish on the four-core runner.
   test.setTimeout(900_000);
   await signIn(page, 'admin');
 
@@ -43,7 +17,7 @@ test('the same screens open once there is a session', async ({ page }) => {
   page.on('pageerror', error => captureTimelineError(error.message));
   page.on('console', message => { if (message.type() === 'error') captureTimelineError(message.text()); });
   const landed: string[] = [];
-  for (const { path, signedIn } of GUARDED_ROUTES) {
+  for (const { path, signedIn } of routes) {
     const requestedPath = guardRoutePath(path);
     const expectedPath = new URL(requestedPath, 'https://example.test').pathname;
     const expectedFollowUp = signedIn.canonicalProfile === true;
@@ -84,27 +58,8 @@ test('the same screens open once there is a session', async ({ page }) => {
 
   // Declared redirects retain their destination; every other route stays on
   // its concrete requested pathname, counted against every descriptor.
-  expect(landed).toEqual(GUARDED_ROUTES.map(({ path, signedIn }) => (
+  expect(landed).toEqual(routes.map(({ path, signedIn }) => (
     signedIn.kind === 'redirect' ? signedIn.pathname : guardRoutePath(path)
   )));
   await expect(page.getByTestId('app-nav')).toBeVisible();
-});
-
-test('an unknown address is a not-found page, not a crash', async ({ page }) => {
-  await signIn(page, 'admin');
-  const shellRequests: string[] = [];
-  const errors: string[] = [];
-  page.on('request', (request) => {
-    if (request.headers()['next-action'] !== undefined) shellRequests.push(request.url());
-  });
-  page.on('pageerror', (error) => errors.push(error.message));
-  const response = await page.goto('/no-such-screen');
-  expect(response?.status()).toBe(404);
-  await expect(page.getByTestId('app-not-found')).toBeVisible();
-  await page.waitForLoadState('networkidle');
-  expect(shellRequests.filter((url) => new URL(url).pathname === '/no-such-screen')).toEqual([]);
-  expect(errors).toEqual([]);
-  // The next request also proves the process survived navigation away from a shell read.
-  expect((await page.reload())?.status()).toBe(404);
-  await expect(page.getByTestId('app-not-found')).toBeVisible();
-});
+}

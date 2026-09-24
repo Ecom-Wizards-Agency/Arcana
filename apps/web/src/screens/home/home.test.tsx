@@ -6,7 +6,8 @@ import { descriptor } from '../cockpit/descriptor';
 import SharedError from '../shared-error';
 import Home, { HomeContent } from './view';
 import Loading from './loading';
-import { withBudget, withoutBudget } from './fixtures';
+import { selectBudgetUsage } from '@wizard-ads/core';
+import { budgetEvidence, budgetObservation, withBudget, withBudgetUsage, withoutBudget } from './fixtures';
 
 afterEach(() => vi.unstubAllGlobals());
 verifyScreen(descriptor, [
@@ -127,4 +128,81 @@ it('keeps missing market and rank evidence explicit, with all three market expla
   render(<HomeContent {...withoutBudget} home={{ ...withoutBudget.home, ranks: [] }} />);
   expect(screen.getByLabelText('Market position').querySelectorAll('.wa-home-explanation li')).toHaveLength(3);
   expect(screen.getByLabelText('Rank watch').querySelector('[data-state="not-measured"]')).not.toBeNull();
+});
+
+it('labels measured campaign usage and its provider time separately from profile MTD remaining', () => {
+  render(<HomeContent {...withBudgetUsage} />);
+  const usage = screen.getByLabelText('Campaigns near their limit');
+  expect(usage.textContent).toContain('95% used');
+  expect(usage.textContent).toContain('Near limit');
+  expect(usage.textContent).toContain('Remaining at observation time: $1.00');
+  expect(usage.textContent).toContain('Ads API');
+  expect(usage.querySelector('time')?.getAttribute('datetime')).toBe(budgetObservation.providerUpdatedAt);
+  expect(screen.getByLabelText('Pacing', { exact: true }).textContent).toContain('$1,747.00');
+  expect(screen.getByLabelText('Portfolio pacing').textContent).toContain('Remaining for this period $210.00');
+  expect(screen.getByLabelText('Portfolio pacing').textContent).toContain('1 profile campaigns have no portfolio assignment');
+});
+
+it('renders source-off and enabled-without-observations states without inventing usage', () => {
+  const { rerender } = render(<HomeContent {...withoutBudget} />);
+  const usage = screen.getByLabelText('Campaigns near their limit');
+  expect(usage.textContent).toContain('sources are off');
+  const budgetUsage = selectBudgetUsage({ ...budgetEvidence, observations: [] }, budgetObservation.receivedAt);
+  rerender(<HomeContent {...withBudget} home={{ ...withBudget.home, budgetUsage }} />);
+  expect(usage.textContent).toContain('Usage not measured');
+  expect(usage.textContent).not.toContain('0% used');
+});
+
+it('shows measured zero while leaving a missing near-limit policy unmeasured', () => {
+  const budgetUsage = selectBudgetUsage({ ...budgetEvidence, config: { ...budgetEvidence.config, nearLimitPercent: null },
+    observations: [{ ...budgetObservation, usagePercent: 0 }] }, budgetObservation.receivedAt);
+  render(<HomeContent {...withBudget} home={{ ...withBudget.home, budgetUsage }} />);
+  const usage = screen.getByLabelText('Campaigns near their limit');
+  expect(usage.textContent).toContain('0% used');
+  expect(usage.textContent).toContain('Near-limit classification not measured');
+  expect(usage.textContent).toContain('Remaining at observation time: $20.00');
+});
+
+it('reports partial API responses and preserves failed campaigns as unavailable', () => {
+  const budgetUsage = selectBudgetUsage({ ...budgetEvidence,
+    totalCampaigns: 2,
+    campaigns: [...budgetEvidence.campaigns, { ...budgetEvidence.campaigns[0]!, campaignId: '102', campaignName: 'Failed campaign' }],
+    sources: [{ source: 'amazon_ads_api', enabled: true, complete: false, requested: 2, failed: 1 }],
+  }, budgetObservation.receivedAt);
+  render(<HomeContent {...withBudget} home={{ ...withBudget.home, budgetUsage }} />);
+  const usage = screen.getByLabelText('Campaigns near their limit');
+  expect(usage.textContent).toContain('1 of 2 campaigns have current usage evidence · partial');
+  expect(screen.getByText('Failed campaign').closest('li')?.textContent).toContain('Usage not measured');
+  expect(screen.getByText('Failed campaign').closest('li')?.textContent).not.toContain('0%');
+});
+
+it('labels stale evidence and switches to separately enabled fresh Stream fallback', () => {
+  const stale = { ...budgetObservation, providerUpdatedAt: '2026-06-13T12:00:00Z' };
+  const { rerender } = render(<HomeContent {...withBudget} home={{ ...withBudget.home,
+    budgetUsage: selectBudgetUsage({ ...budgetEvidence, observations: [stale] }, budgetObservation.receivedAt) }} />);
+  const usage = screen.getByLabelText('Campaigns near their limit');
+  expect(usage.textContent).toContain('stale observation');
+  expect(usage.textContent).toContain('Near-limit classification not measured');
+  const budgetUsage = selectBudgetUsage({ ...budgetEvidence,
+    config: { ...budgetEvidence.config, streamEnabled: true, allowFreshStreamFallback: true },
+    observations: [stale, { ...budgetObservation, source: 'amazon_marketing_stream', budgetAmount: null }],
+    sources: [...budgetEvidence.sources, { source: 'amazon_marketing_stream', enabled: true, complete: true, requested: 1, failed: 0 }],
+  }, budgetObservation.receivedAt);
+  rerender(<HomeContent {...withBudget} home={{ ...withBudget.home, budgetUsage }} />);
+  expect(within(usage).getByRole('list').textContent).toContain('Marketing Stream');
+  expect(within(usage).getByRole('list').textContent).not.toContain('stale observation');
+  expect(usage.textContent).toContain('Remaining at observation time: —');
+});
+
+it('keeps unsupported and partial portfolio amounts unmeasured within the existing Pacing card', () => {
+  const row = withBudgetUsage.home.portfolioPacing[0]!;
+  render(<HomeContent {...withBudgetUsage} home={{ ...withBudgetUsage.home, portfolioPacing: [
+    { ...row, availability: 'partial', pace: null, remainingAmount: null, evidence: { ...row.evidence, membershipComplete: false, observedCampaignDays: 27 } },
+    { ...row, availability: 'unavailable', pace: null, remainingAmount: null, evidence: { ...row.evidence, portfolioId: '202', name: 'Unsupported portfolio', period: null } },
+  ] }} />);
+  const portfolios = screen.getByLabelText('Portfolio pacing');
+  expect(within(portfolios).getAllByRole('listitem')).toHaveLength(2);
+  expect(portfolios.textContent).toContain('Partial evidence');
+  expect(portfolios.textContent).toContain('Budget period unavailable');
+  expect(portfolios.textContent).not.toContain('$210.00');
 });

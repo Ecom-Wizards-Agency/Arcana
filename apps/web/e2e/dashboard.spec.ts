@@ -1,7 +1,9 @@
 /** Figma Home composition and both budget states through the authenticated loader. */
 import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { createDb } from '@wizard-ads/db';
+import { createDb, persistBudgetUsageRun } from '@wizard-ads/db';
+import { BudgetUsageConfig, type AdProduct, type BudgetUsageObservation } from '@wizard-ads/shared';
 import { expect, test } from '@playwright/test';
 import { signIn } from './support/auth';
 import { expectDateRangePresets } from './support/date-range';
@@ -45,7 +47,9 @@ test('Home renders five KPIs and the two-column decision cards in both budget st
   const state = await readState();
   const database = createDb({ connectionString: state.connectionString, max: 1 });
   const [original] = await database.sql`select monthly_budget from public.ad_profiles where id=${fixtureProfileId}`;
+  const [originalBudgetConfig] = await database.sql`select config from public.budget_usage_settings where org_id=${state.orgId} and profile_id=${fixtureProfileId}`;
   const insertedEvents: string[] = [];
+  const budgetRunIds: string[] = [];
   try {
     const events = await database.sql<{ id: string }[]>`insert into public.insights
       (org_id, profile_id, date, kind, title, body, source)
@@ -99,7 +103,74 @@ test('Home renders five KPIs and the two-column decision cards in both budget st
     await page.reload();
     await expect(page.getByLabel('Market position', { exact: true })).toContainText('30 places behind');
     await expect(page.getByRole('link', { name: 'View market position →' })).toHaveAttribute('href', `/market-position?profile=${fixtureProfileId}`);
+
+    // Synthetic observations exercise the authenticated Home reader; no provider is called.
+    const insertedCampaigns = await database.sql`insert into public.campaigns
+      (org_id,profile_id,amazon_id,ad_product,name,state,budget_amount,budget_type)
+      values (${state.orgId},${fixtureProfileId},'292000001','SP','Sample budget campaign','enabled',20,'daily') returning id`;
+    expect(insertedCampaigns).toHaveLength(1);
+    const budgetConfig = BudgetUsageConfig.parse({ apiEnabled: true, maxAgeSeconds: 3600, nearLimitPercent: 90 });
+    await database.sql`insert into public.budget_usage_settings(org_id,profile_id,config)
+      values (${state.orgId},${fixtureProfileId},${JSON.stringify(budgetConfig)}::jsonb)
+      on conflict (profile_id) do update set config=excluded.config`;
+    const campaignRows = await database.sql<{ amazon_id: string; ad_product: AdProduct; budget_type: 'daily' | 'lifetime'; currency_code: string; timezone: string }[]>`
+      select c.amazon_id,c.ad_product,c.budget_type,p.currency_code,p.timezone from public.campaigns c
+      join public.ad_profiles p on p.id=c.profile_id and p.org_id=c.org_id
+      where c.org_id=${state.orgId} and c.profile_id=${fixtureProfileId} and c.deleted_at is null and c.state<>'archived' order by c.amazon_id`;
+    const providerTime = new Date().toISOString();
+    const selected = campaignRows.map((row) => ({ campaignId: row.amazon_id, adProduct: row.ad_product }));
+    const observations: BudgetUsageObservation[] = campaignRows.map((row) => {
+      const parts = new Intl.DateTimeFormat('en-CA', { timeZone: row.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(providerTime));
+      const part = (kind: string) => parts.find((value) => value.type === kind)!.value;
+      const localDate = `${part('year')}-${part('month')}-${part('day')}`;
+      return { orgId: state.orgId, profileId: fixtureProfileId, campaignId: row.amazon_id, adProduct: row.ad_product,
+        source: 'amazon_ads_api', sourceIdentity: `home-fixture-${row.amazon_id}-${providerTime}`, currency: row.currency_code,
+        budgetAmount: 20, budgetType: row.budget_type, period: row.budget_type === 'daily' ? { start: localDate, end: localDate } : null,
+        usagePercent: row.amazon_id === '292000001' ? 95 : 0, providerUpdatedAt: providerTime, receivedAt: providerTime, completeness: 'complete' };
+    });
+    const completeRunId = randomUUID(); budgetRunIds.push(completeRunId);
+    const counts = await persistBudgetUsageRun(database, { runId: completeRunId, scope: { orgId: state.orgId, profileId: fixtureProfileId },
+      source: 'amazon_ads_api', receivedAt: providerTime, selected, observations, failures: [], populationComplete: true });
+    expect(counts.selected).toBe(campaignRows.length);
+    expect(counts.loadedRows).toBe(counts.verifiedLoadedRows);
+    const screenshotDirectory = resolve('node_modules/.cache/playwright/profile-context');
+    for (const mode of ['measured', 'partial', 'source-off'] as const) {
+      if (mode === 'partial') {
+        const runId = randomUUID(); budgetRunIds.push(runId);
+        const failed = selected.find((row) => row.campaignId === '292000001')!;
+        const partial = await persistBudgetUsageRun(database, { runId, scope: { orgId: state.orgId, profileId: fixtureProfileId },
+          source: 'amazon_ads_api', receivedAt: new Date(Date.now() + 1).toISOString(), selected,
+          observations: observations.filter((row) => row.campaignId !== failed.campaignId), failures: [{ ...failed, code: 'SYNTHETIC_FAILURE', details: null }], populationComplete: true });
+        expect(partial.failed).toBe(1);
+        expect(partial.sourceRows).toBe(partial.parsedRows + partial.refusedRows);
+      }
+      if (mode === 'source-off') await database.sql`update public.budget_usage_settings
+        set config=${JSON.stringify({ ...budgetConfig, apiEnabled: false })}::jsonb where org_id=${state.orgId} and profile_id=${fixtureProfileId}`;
+      await page.reload();
+      const usage = page.getByLabel('Campaigns near their limit');
+      if (mode === 'source-off') {
+        await expect(usage).toContainText('sources are off');
+        await expect(usage).not.toContainText('95% used');
+      } else {
+        await expect(usage).toContainText(`current usage evidence · ${mode}`);
+        if (mode === 'measured') {
+          await expect(usage).toContainText('95% used');
+          await expect(usage).toContainText('Ads API');
+          await expect(usage.locator('time').first()).toBeVisible();
+        } else {
+          await expect(usage.getByText('Sample budget campaign').locator('..')).toContainText('Usage not measured');
+          await expect(usage).not.toContainText('95% used');
+        }
+      }
+      const path = resolve(screenshotDirectory, `home-budget-usage-${mode}-1440x1024.png`);
+      await page.screenshot({ path, fullPage: true, animations: 'disabled', style: 'nextjs-portal { display: none; }' });
+      await testInfo.attach(`home-budget-usage-${mode}`, { path, contentType: 'image/png' });
+    }
   } finally {
+    await database.sql`delete from public.budget_usage_runs where org_id=${state.orgId} and profile_id=${fixtureProfileId} and id=any(${budgetRunIds}::uuid[])`;
+    await database.sql`delete from public.campaigns where org_id=${state.orgId} and profile_id=${fixtureProfileId} and amazon_id='292000001'`;
+    if (originalBudgetConfig) await database.sql`update public.budget_usage_settings set config=${JSON.stringify(originalBudgetConfig.config)}::jsonb where org_id=${state.orgId} and profile_id=${fixtureProfileId}`;
+    else await database.sql`delete from public.budget_usage_settings where org_id=${state.orgId} and profile_id=${fixtureProfileId}`;
     await database.sql`delete from public.insights where org_id=${state.orgId} and id=any(${insertedEvents}::uuid[])`;
     await database.sql`delete from public.rank_observations where org_id=${state.orgId} and profile_id=${fixtureProfileId} and asin='B0HOME0001'`;
     await database.sql`delete from public.competitor_links where org_id=${state.orgId} and profile_id=${fixtureProfileId} and our_asin='B0HOME0001'`;
@@ -118,4 +189,32 @@ test('Home renders five KPIs and the two-column decision cards in both budget st
     '1. Choose campaigns', '2. Review suggestions', '3. Confirm and results',
   ]);
   await expect(steps.getByRole('listitem').first()).toHaveAttribute('aria-current', 'step');
+});
+
+test('SP-API reader components expose measured, partial, stale and unavailable evidence', async ({ page }, testInfo) => {
+  const { execFileSync } = await import('node:child_process');
+  const rendered = JSON.parse(execFileSync(process.execPath, ['--import', 'tsx', 'e2e/support/render-spapi-evidence.ts'], {
+    cwd: process.cwd(), encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,
+  })) as Record<string, string>;
+  const states = ['measured', 'partial', 'stale', 'unavailable'];
+  expect(Object.keys(rendered)).toEqual(states);
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  const screenshots: string[] = [];
+  for (const state of states) {
+    await page.setContent(rendered[state]!);
+    await expect(page.getByTestId('sp-source-status')).toHaveCount(3);
+    await expect(page.locator(`[data-state="${state}"]`)).toHaveCount(3);
+    await expect(page.getByRole('columnheader', { name: 'TACOS', exact: true })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Click share', exact: true })).toBeVisible();
+    if (state === 'measured') {
+      await expect(page.getByRole('cell', { name: 'Not top 3', exact: true })).toHaveCount(1);
+      await expect(page.getByRole('cell', { name: '2,400 EUR', exact: true })).toHaveCount(1);
+      await expect(page.getByRole('cell', { name: '10.00%', exact: true })).toHaveCount(1);
+      await expect(page.getByRole('cell', { name: 'Observed synthetic listing title', exact: true })).toHaveCount(1);
+    } else await expect(page.getByRole('cell', { name: 'Not top 3', exact: true })).toHaveCount(0);
+    const path = testInfo.outputPath(`spapi-${state}.png`);
+    await page.screenshot({ path, fullPage: true, animations: 'disabled' });
+    await testInfo.attach(`SP-API ${state}`, { path, contentType: 'image/png' }); screenshots.push(path);
+  }
+  expect(screenshots).toHaveLength(states.length);
 });

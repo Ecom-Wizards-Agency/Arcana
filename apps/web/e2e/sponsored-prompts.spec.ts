@@ -98,9 +98,19 @@ test('prompt import preserves observations, detects returns and keeps visits per
     const [unchangedAdminVisit] = await db.sql<{ last_visited_at: Date }[]>`select last_visited_at from public.sponsored_prompt_visits
       where org_id=${state.orgId} and profile_id=${state.fixtureProfileId} and user_id=${USERS.admin}`;
     expect(unchangedAdminVisit?.last_visited_at).toEqual(adminVisit[0]?.last_visited_at);
+    const [reference] = await db.sql<{ id: string }[]>`insert into public.collector_export_references(org_id,profile_id,marketplace,family,enabled,object_key)
+      values(${state.orgId},${state.fixtureProfileId},'US','prompts',true,'synthetic-prompts.json') returning id`;
+    const receipt = { counts: { sourceRows: rows.length, parsedRows: rows.length, refusedRows: 0, loadedRows: rows.length, verifiedLoadedRows: rows.length },
+      inserted: rows.length, alreadyPresent: 0, outputIdentities: rows.map((_,i) => `synthetic-${i}`), observedAt: stamp(8), state: 'measured' };
+    const imports = await db.sql`insert into public.collector_import_receipts(id,org_id,profile_id,marketplace,reference_id,fingerprint,observed_at,collected_at,receipt)
+      values(${reference!.id},${state.orgId},${state.fixtureProfileId},'US',${reference!.id},repeat('b',64),${stamp(8)},${stamp(0)},${JSON.stringify(receipt)}::jsonb) returning id`;
+    expect(imports).toHaveLength(1);
     await page.goto(`/sponsored-prompts?${new URLSearchParams({ profile: state.fixtureProfileId })}`);
     await expect(page).toHaveURL(new RegExp(`/prompts\\?profile=${state.fixtureProfileId}$`));
     await expect(page.getByRole('main', { name: 'Sponsored prompts' })).toBeVisible();
+    await expect(page.getByText('Scheduled export observed', { exact: false })).toBeVisible();
+    await waitForCreativeShell(page);
+    await page.screenshot({ path: testInfo.outputPath('scheduled-export-provenance.png'), fullPage: true, animations: 'disabled' });
   } finally { await db.close(); }
 });
 

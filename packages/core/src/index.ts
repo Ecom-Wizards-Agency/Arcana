@@ -10,9 +10,19 @@
  *
  * Doctrine VALUES are not here. Thresholds arrive as arguments; what lives in
  * this package is method.
+ *
+ * This file holds re-exports only. Next skips `optimizePackageImports` for a
+ * barrel with any local declaration, and every named import then bundles the
+ * whole engine.
  */
-export const PACKAGE_NAME = '@wizard-ads/core' as const;
+export { PACKAGE_NAME } from './package-name.js';
 
+export * from './report-metrics.js';
+export * from './creative/performance.js';
+export * from './creative/certainty.js';
+export * from './creative/prompt-loop.js';
+export * from './spapi-evidence.js';
+export * from './provider-evidence.js';
 export * from './types.js';
 export * from './num.js';
 export * from './rows.js';
@@ -47,3 +57,5 @@ export { calculateCampaignStartingBid, campaignBidRationale } from './campaign-b
 export { campaignBuilderEligibility } from './campaign-builder/eligibility.js';
 export * from './dayparting/schedule.js';
 export * from './brand-lens/model.js';
+export * from './own-collectors.js';
+export * from './budget-usage.js';

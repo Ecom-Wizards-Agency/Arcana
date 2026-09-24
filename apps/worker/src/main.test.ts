@@ -12,7 +12,16 @@ describe('runtime job coverage', () => {
     // These are production bindings, not injectable test-only handlers.
     const bindings = {
       'asset-library.search': 'registerAssetLibrarySource(',
+      'retail.report.request': 'registerSpApiReportSources(',
+      'aba.report.request': 'registerSpApiReportSources(',
+      'catalogue.report.request': 'registerSpApiReportSources(',
+      'provider.evidence.collect': 'registerProviderEvidence(',
+      'own_bids.collect': 'registerOwnCollectors(',
+      'own_listings.collect': 'registerOwnCollectors(',
+      'prompts.collect': 'registerOwnCollectors(',
       'translation.request': 'registerTargetTranslation(',
+      'budget_usage.collect': 'registerBudgetUsageSources(',
+      'budget_usage.stream': 'registerBudgetUsageSources(',
       'entity.sync': 'adsApi,',
       'report.request': 'adsApi,',
       'report.poll': 'adsApi,',

@@ -1,3 +1,6 @@
+import { provisionSpApiReportJobs } from './spapi-report-scheduler.js';
+import { ProviderCollectionConfig } from '@wizard-ads/shared';
+import { providerEvidenceSchedule } from './schedules.js';
 import type { ReportCoverageObservation } from '@wizard-ads/shared';
 import { mergeControlMirror, mergeKeywordMirror, readKeywordMirrorStart } from '@wizard-ads/db/sp-write-worker';
 import type { ControlMirrorMergeCounts, KeywordMirrorMergeCounts, KeywordMirrorMergeRequest } from '@wizard-ads/shared/sp-write-mirror';
@@ -22,6 +25,7 @@ import {
   reconcileEntityChangeLinks,
   reportRequests,
   recordReportCoverage,
+  publishBudgetUsageCoverage,
   upsertReportCoverage,
   quarantineReportCreate,
   type ReportCreateEvidence,
@@ -43,8 +47,12 @@ import {
   type StagedReportDate,
 } from '@wizard-ads/db';
 import { MAX_REPORT_RANGE_DAYS } from '@wizard-ads/ads-api';
+import { readCoreReportCapability, promoteCoreReportWindow, coreReportGrain } from '@wizard-ads/db';
+import type { CoreReportConfiguration, CoreFeatureReportType, CoreReportCapability, CoreReportPromotion } from '@wizard-ads/shared';
 import {
+  ReportRequestJob,
   WorkerReportAccounting,
+  classifyReportLaneFailure,
   type ReportCoverageAccounting,
   type WorkerReportAccounting as WorkerReportAccountingShape,
   type EntityRow,
@@ -56,7 +64,8 @@ import {
 type AttributedReportCounts = WorkerReportAccountingShape;
 import type { AdsProfileContext } from './ads-api.js';
 import type { CampaignFactRow, ParsedFactBatch } from './parsers.js';
-import { defaultSchedules, type ScheduleSpec } from './schedules.js';
+import { defaultSchedules, coreFamilySchedules, type ScheduleSpec } from './schedules.js';
+import { ensureBudgetUsageSchedules } from './budget-usage/schedules.js';
 
 export type ReportRequestState = Omit<
   WorkerReportLedger,
@@ -65,7 +74,63 @@ export type ReportRequestState = Omit<
   requestedAt: Date;
   /** Absent on base-report test adapters; production always returns null or a UUID. */
   creativeSyncSnapshotId?: string | null;
+  /** The URL the latest poll recorded, and when Amazon said it stops working. */
+  downloadUrl?: string | null;
+  downloadExpiresAt?: Date | null;
+  /** Dedupe key of the request job that minted this ledger; carries re-request lineage. */
+  requestDedupeKey?: string | null;
 };
+
+/**
+ * WP-323 claim priority, higher first (`claim_sync_jobs` orders by
+ * `priority desc, run_after, created_at`). A fetch holds a pre-signed URL that
+ * expires an hour after its poll, and a poll turns Amazon's finished work into
+ * that URL; new requests only add work. Every due fetch is therefore claimed
+ * before any due poll, and every due poll before any new request, entity or
+ * integration job (the column default, 100). Recommendation runs stay lower (50).
+ */
+export const REPORT_LANE_CLAIM_PRIORITY: Readonly<Partial<Record<JobType, number>>> = Object.freeze({
+  'report.fetch': 300,
+  'report.poll': 200,
+});
+
+/**
+ * How many times one report window may be re-requested because its download
+ * failed in a way a fresh report repairs. Bounds the loop when the cause is not
+ * the URL after all; the weekly restatement still re-pulls the dates.
+ */
+export const MAX_REPORT_RE_REQUESTS = 3;
+
+const RE_REQUEST_KEY = /^report\.(?:rerequest|recover):(\d+):/;
+
+/** The re-request generation a request job's dedupe key records; 0 for a scheduled request. */
+export function reRequestGeneration(dedupeKey: string | null | undefined): number {
+  const match = RE_REQUEST_KEY.exec(dedupeKey ?? '');
+  const generation = match ? Number(match[1]) : 0;
+  return Number.isSafeInteger(generation) && generation >= 0 ? generation : 0;
+}
+
+export type ReportReRequestOutcome =
+  | { kind: 're-requested'; requestJobId: string; generation: number; enqueued: boolean }
+  | { kind: 'exhausted'; generation: number };
+
+/** Counted outcome of one dead-fetch recovery pass. `scanned` is always the sum of the four verdicts. */
+export interface DeadFetchRecoveryCounts {
+  /** Dead fetches of a profile's restatement-scheduled report type whose window overlaps its horizon. */
+  scanned: number;
+  /** Attached to a new re-request of the restatement window. */
+  reRequested: number;
+  /** Attached to a request for the same window that was already queued or running. */
+  joined: number;
+  /** The recorded failure is not one a fresh report repairs (load and parser refusals). */
+  unrecoverable: number;
+  /** The window already used every re-request generation. */
+  exhausted: number;
+  /** (profile, report type) windows re-requested or joined. */
+  windows: number;
+  /** New `report.request` jobs inserted by this pass. */
+  requestsEnqueued: number;
+}
 
 export interface ReportPartitionCounts {
   expectedMonths: number;
@@ -98,6 +163,7 @@ export interface EntitySyncOptions {
   readStartedAt?: string;
   /** Unlisted kinds are not refreshed or tombstoned; requires an ad-product scope. */
   excludedEntityTypes?: readonly EntityRow['entityType'][];
+  preserveCampaignNegativeTargets?: boolean;
   adProduct?: 'SP' | 'SB' | 'SD';
   /**
    * A full pass re-lists every entity the profile has, so an id the mirror
@@ -133,6 +199,7 @@ export interface StoreLogger {
 const MAX_LOGGED_DUPLICATE_IDS = 20;
 
 export interface WorkerStore {
+  coreReportCapability?(orgId: string, profileId: string, family: CoreFeatureReportType): Promise<CoreReportCapability | null>;
   /** WP-256 source-neutral producer. Required when installing additional ingestion sources. */
   recordCoverage?(observation: ReportCoverageObservation, verifiedLoadedRows: number): Promise<{ offered: number; written: number; unchanged: number }>;
   claim(workerId: string, limit: number, jobTypes?: readonly JobType[]): Promise<ClaimedJob[]>;
@@ -207,6 +274,26 @@ export interface WorkerStore {
     },
   ): Promise<void>;
   enqueue(payload: JobPayload, runAt: Date, dedupeKey: string): Promise<boolean>;
+  /**
+   * WP-323: replace a report whose download URL can no longer be used with a
+   * fresh request for the same window, through the normal request path, and
+   * mark the old ledger `expired`, atomically. Idempotent per ledger; returns
+   * `exhausted` once the window used `maxGenerations` re-requests.
+   */
+  reRequestReport?(input: {
+    reportRequestId: string;
+    orgId: string;
+    profileId: string;
+    payload: Extract<JobPayload, { type: 'report.request' }>;
+    error: string;
+    maxGenerations: number;
+  }): Promise<ReportReRequestOutcome>;
+  /**
+   * WP-323: re-request, once, the restatement window of every report type
+   * with a dead fetch a fresh report repairs. Each dead fetch receives exactly
+   * one recorded verdict; the pass is safe to repeat and to run concurrently.
+   */
+  recoverDeadReportFetches?(input: { maxGenerations: number; limit: number }): Promise<DeadFetchRecoveryCounts>;
   /** Install the default cadences for a profile. Idempotent on the scope key. */
   provisionSchedules(
     orgId: string,
@@ -250,7 +337,7 @@ export interface WorkerStore {
   finishAttributedReport(
     reportRequestId: string,
     counts: AttributedReportCounts,
-    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null; coverage?: ReportCoverageAccounting },
+    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null; coverage?: ReportCoverageAccounting; promotion?: CoreReportPromotion },
   ): Promise<void>;
 }
 
@@ -271,7 +358,9 @@ export class ClaimOwnershipLost extends Error {
 }
 
 export interface PostgresWorkerStoreOptions {
+  ownCollectorsEnabled?: boolean;
   claimProtocol?: 'legacy' | 'fenced';
+  budgetUsageApiEnabled?: boolean;
   keywordMirror?: KeywordMirrorCapability;
 }
 
@@ -286,9 +375,11 @@ type ExistingEntity = { amazonId: string; deletedAt: Date | string | null; snaps
 
 export class PostgresWorkerStore implements WorkerStore {
   private readonly logger: StoreLogger;
+  private readonly ownCollectorsEnabled: boolean;
   private readonly keywordMirror: KeywordMirrorCapability | undefined;
   private readonly reportedDisabledSbKeywords = new Set<string>();
   private readonly claimProtocol: 'legacy' | 'fenced';
+  private readonly budgetUsageApiEnabled: boolean | undefined;
 
   constructor(
     readonly handle: DbHandle,
@@ -297,7 +388,9 @@ export class PostgresWorkerStore implements WorkerStore {
   ) {
     this.logger = logger ?? { info: (message, details) => console.info(message, details ?? {}) };
     this.claimProtocol = options.claimProtocol ?? 'legacy';
+    this.budgetUsageApiEnabled = options.budgetUsageApiEnabled;
     this.keywordMirror = options.keywordMirror;
+    this.ownCollectorsEnabled = options.ownCollectorsEnabled === true;
   }
 
   /** Activation requires explicit composition; construction never queries the DB. */
@@ -512,7 +605,14 @@ export class PostgresWorkerStore implements WorkerStore {
         tombstoned += keywordMirror.tombstoned;
         continue;
       }
-      const existing = await this.existingEntities(profile.id, entityType, adProduct);
+      const allExisting = await this.existingEntities(profile.id, entityType);
+      const priorById = new Map(allExisting.map((row) => [row.amazonId, row]));
+      for (const row of incoming) {
+        const prior = priorById.get(row.amazonId);
+        if (prior && prior.snapshot['adProduct'] !== row.adProduct) throw new Error('entity mirror product identity changed');
+        if (prior && row.entityType === 'negative' && (prior.snapshot['keywordText'] == null) !== (row.keywordText === null)) throw new Error('negative mirror identity kind changed');
+      }
+      const existing = adProduct ? allExisting.filter((row) => row.snapshot['adProduct'] === adProduct) : allExisting;
       const byId = new Map(existing.map((row) => [row.amazonId, row]));
       const seen = new Set<string>();
 
@@ -535,7 +635,7 @@ export class PostgresWorkerStore implements WorkerStore {
         }
       }
 
-      const missing = full ? existing.filter((row) => !row.deletedAt && !seen.has(row.amazonId)) : [];
+      const missing = full ? existing.filter((row) => !row.deletedAt && !seen.has(row.amazonId) && !(options.preserveCampaignNegativeTargets && entityType === 'negative' && row.snapshot['scope'] === 'campaign' && row.snapshot['keywordText'] == null)) : [];
       tombstoned += missing.length;
       if (missing.length > 0) {
         const ids = missing.map((row) => row.amazonId);
@@ -591,6 +691,7 @@ export class PostgresWorkerStore implements WorkerStore {
       startDate: payload.startDate,
       endDate: payload.endDate,
       creativeSyncSnapshotId: payload.creativeSyncSnapshotId ?? null,
+      familyConfiguration: payload.familyConfiguration ?? null,
     }).onConflictDoNothing();
     return this.getReportRequest(jobId, payload.orgId, payload.profileId);
   }
@@ -695,14 +796,21 @@ export class PostgresWorkerStore implements WorkerStore {
       requested_at: Date | string;
       poll_attempts: number;
       creative_sync_snapshot_id: string | null;
+      family_configuration: CoreReportConfiguration | null;
+      download_url: string | null;
+      download_expires_at: Date | string | null;
+      request_dedupe_key: string | null;
     }[]>`
-      select id, org_id, profile_id, report_type, start_date::text, end_date::text,
-             source, amazon_report_id, requested_at, poll_attempts,
-             creative_sync_snapshot_id
-        from public.report_requests
-       where id = ${reportRequestId}
-         and org_id = ${orgId}
-         and profile_id = ${profileId}
+      select r.id, r.org_id, r.profile_id, r.report_type, r.start_date::text as start_date,
+             r.end_date::text as end_date, r.source, r.amazon_report_id, r.requested_at,
+             r.poll_attempts, r.creative_sync_snapshot_id, r.family_configuration,
+             r.download_url, r.download_expires_at, j.dedupe_key as request_dedupe_key
+        from public.report_requests r
+        left join public.sync_jobs j
+          on j.id = r.id and j.org_id = r.org_id and j.profile_id = r.profile_id
+       where r.id = ${reportRequestId}
+         and r.org_id = ${orgId}
+         and r.profile_id = ${profileId}
     `;
     const row = rows[0];
     if (!row) throw new Error(`report request ${reportRequestId} does not exist`);
@@ -718,6 +826,10 @@ export class PostgresWorkerStore implements WorkerStore {
       requestedAt: asDate(row.requested_at),
       pollAttempts: Number(row.poll_attempts),
       creativeSyncSnapshotId: row.creative_sync_snapshot_id,
+      familyConfiguration: row.family_configuration,
+      downloadUrl: row.download_url,
+      downloadExpiresAt: row.download_expires_at === null ? null : asDate(row.download_expires_at),
+      requestDedupeKey: row.request_dedupe_key,
     };
   }
 
@@ -745,16 +857,226 @@ export class PostgresWorkerStore implements WorkerStore {
   }
 
   async enqueue(payload: JobPayload, runAt: Date, dedupeKey: string): Promise<boolean> {
-    const rows = await this.handle.sql<{ id: string }[]>`
-      insert into public.sync_jobs
-        (org_id, profile_id, job_type, payload, run_after, dedupe_key)
-      values
-        (${payload.orgId}, ${payload.profileId}, ${payload.type}::public.sync_job_type,
-         ${JSON.stringify(payload)}::jsonb, ${runAt.toISOString()}::timestamptz, ${dedupeKey})
-      on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
-      returning id
-    `;
+    const priority = REPORT_LANE_CLAIM_PRIORITY[payload.type];
+    const rows = priority === undefined
+      ? await this.handle.sql<{ id: string }[]>`
+          insert into public.sync_jobs
+            (org_id, profile_id, job_type, payload, run_after, dedupe_key)
+          values
+            (${payload.orgId}, ${payload.profileId}, ${payload.type}::public.sync_job_type,
+             ${JSON.stringify(payload)}::jsonb, ${runAt.toISOString()}::timestamptz, ${dedupeKey})
+          on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
+          returning id
+        `
+      : await this.handle.sql<{ id: string }[]>`
+          insert into public.sync_jobs
+            (org_id, profile_id, job_type, payload, run_after, dedupe_key, priority)
+          values
+            (${payload.orgId}, ${payload.profileId}, ${payload.type}::public.sync_job_type,
+             ${JSON.stringify(payload)}::jsonb, ${runAt.toISOString()}::timestamptz, ${dedupeKey},
+             ${priority})
+          on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
+          returning id
+        `;
     return rows.length === 1;
+  }
+
+  async reRequestReport(input: {
+    reportRequestId: string;
+    orgId: string;
+    profileId: string;
+    payload: Extract<JobPayload, { type: 'report.request' }>;
+    error: string;
+    maxGenerations: number;
+  }): Promise<ReportReRequestOutcome> {
+    const payload = ReportRequestJob.parse(input.payload);
+    if (payload.orgId !== input.orgId || payload.profileId !== input.profileId) {
+      throw new Error('re-request payload scope does not match its report request');
+    }
+    return this.handle.sql.begin(async (sql) => {
+      const [ledger] = await sql<{ request_dedupe_key: string | null }[]>`
+        select j.dedupe_key as request_dedupe_key
+          from public.report_requests r
+          left join public.sync_jobs j
+            on j.id = r.id and j.org_id = r.org_id and j.profile_id = r.profile_id
+         where r.id = ${input.reportRequestId}
+           and r.org_id = ${input.orgId}
+           and r.profile_id = ${input.profileId}
+         for update of r
+      `;
+      if (!ledger) throw new Error(`report request ${input.reportRequestId} does not exist`);
+      const generation = reRequestGeneration(ledger.request_dedupe_key) + 1;
+      if (generation > input.maxGenerations) return { kind: 'exhausted' as const, generation: generation - 1 };
+      const dedupeKey = `report.rerequest:${generation}:${input.reportRequestId}`;
+      const inserted = await sql<{ id: string }[]>`
+        insert into public.sync_jobs (org_id, profile_id, job_type, payload, run_after, dedupe_key)
+        values (${input.orgId}, ${input.profileId}, 'report.request'::public.sync_job_type,
+                ${JSON.stringify(payload)}::jsonb, now(), ${dedupeKey})
+        on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
+        returning id
+      `;
+      const existing = inserted.length === 1 ? inserted : await sql<{ id: string }[]>`
+        select id from public.sync_jobs where org_id = ${input.orgId} and dedupe_key = ${dedupeKey}
+      `;
+      const requestJobId = existing[0]?.id;
+      if (existing.length !== 1 || requestJobId === undefined) {
+        throw new Error('re-request job could not be read back exactly once');
+      }
+      await sql`
+        update public.report_requests
+           set status = 'expired'::public.report_status,
+               completed_at = coalesce(completed_at, now()),
+               next_poll_at = null,
+               error = ${input.error}
+         where id = ${input.reportRequestId}
+           and org_id = ${input.orgId}
+           and profile_id = ${input.profileId}
+           and status <> 'completed'::public.report_status
+      `;
+      return { kind: 're-requested' as const, requestJobId, generation, enqueued: inserted.length === 1 };
+    });
+  }
+
+  /**
+   * One pass of WP-323 backlog recovery. A dead fetch qualifies when its
+   * profile syncs, its report type has an enabled restatement schedule, and
+   * its window overlaps that schedule's current window (the "restatement
+   * horizon", derived exactly as `enqueue_due_schedules` derives it). Instead
+   * of re-requesting every overlapping 3-day window, the pass requests the
+   * restatement window itself once per (profile, report type): one report that
+   * covers every dead window inside the horizon and every gap between them.
+   */
+  async recoverDeadReportFetches(input: { maxGenerations: number; limit: number }): Promise<DeadFetchRecoveryCounts> {
+    if (!Number.isSafeInteger(input.limit) || input.limit <= 0) throw new RangeError('recovery limit must be a positive integer');
+    return this.handle.sql.begin(async (sql) => {
+      const candidates = await sql<{
+        jobId: string; orgId: string; profileId: string; lastError: string | null;
+        reportType: string; requestDedupeKey: string | null; schedulePayload: Record<string, unknown> | null;
+        horizonStart: string; horizonEnd: string;
+      }[]>`
+        select j.id as "jobId", j.org_id as "orgId", j.profile_id as "profileId", j.last_error as "lastError",
+               r.report_type::text as "reportType", rj.dedupe_key as "requestDedupeKey",
+               s.payload as "schedulePayload",
+               pg_catalog.to_char(h.horizon_start, 'YYYY-MM-DD') as "horizonStart",
+               pg_catalog.to_char(h.horizon_end, 'YYYY-MM-DD') as "horizonEnd"
+          from public.sync_jobs j
+          join public.report_requests r
+            on r.org_id = j.org_id and r.profile_id = j.profile_id
+           and r.id::text = j.payload ->> 'reportRequestId'
+          left join public.sync_jobs rj
+            on rj.id = r.id and rj.org_id = r.org_id and rj.profile_id = r.profile_id
+          join public.ad_profiles p
+            on p.id = r.profile_id and p.org_id = r.org_id and p.sync_enabled
+          join public.sync_schedules s
+            on s.org_id = r.org_id and s.profile_id = r.profile_id
+           and s.job_type = 'report.request' and s.report_type = r.report_type
+           and s.variant = 'restatement' and s.enabled
+          cross join lateral (
+            select ((now() at time zone p.timezone)::date - 1 - s.window_offset_days) as horizon_end,
+                   ((now() at time zone p.timezone)::date - 1 - s.window_offset_days
+                     - (coalesce(s.lookback_days, 1) - 1)) as horizon_start
+          ) h
+         where j.job_type = 'report.fetch'
+           and j.status = 'dead'
+           and not (coalesce(j.result, '{}'::jsonb) ? 'recovery')
+           and r.source = 'amazon_api'
+           and r.status <> 'completed'
+           and r.end_date >= h.horizon_start
+         order by j.finished_at nulls first, j.id
+         limit ${input.limit}
+         for update of j skip locked
+      `;
+      const counts: DeadFetchRecoveryCounts = {
+        scanned: candidates.length, reRequested: 0, joined: 0, unrecoverable: 0, exhausted: 0,
+        windows: 0, requestsEnqueued: 0,
+      };
+      const verdict = async (ids: readonly string[], recovery: Record<string, unknown>): Promise<void> => {
+        if (ids.length === 0) return;
+        const marked = await sql<{ id: string }[]>`
+          update public.sync_jobs
+             set result = coalesce(result, '{}'::jsonb)
+               || jsonb_build_object('recovery', ${JSON.stringify(recovery)}::jsonb || jsonb_build_object('at', now()))
+           where id = any(${sql.array([...ids])}::uuid[]) and status = 'dead'
+          returning id
+        `;
+        if (marked.length !== ids.length) throw new Error('dead fetch recovery verdicts do not reconcile');
+      };
+      type Candidate = (typeof candidates)[number];
+      const groups = new Map<string, { rows: Candidate[]; generation: number }>();
+      const unrecoverable = new Map<string, string[]>();
+      const exhausted: string[] = [];
+      for (const row of candidates) {
+        const failure = classifyReportLaneFailure('report.fetch', row.lastError);
+        if (!failure.recoverableByReRequest) {
+          unrecoverable.set(failure.errorClass, [...(unrecoverable.get(failure.errorClass) ?? []), row.jobId]);
+          continue;
+        }
+        const generation = reRequestGeneration(row.requestDedupeKey);
+        if (generation >= input.maxGenerations) { exhausted.push(row.jobId); continue; }
+        const key = JSON.stringify([row.orgId, row.profileId, row.reportType, row.horizonStart, row.horizonEnd]);
+        const group = groups.get(key) ?? { rows: [], generation: 0 };
+        group.rows.push(row);
+        group.generation = Math.max(group.generation, generation + 1);
+        groups.set(key, group);
+      }
+      for (const [errorClass, ids] of unrecoverable) {
+        await verdict(ids, { state: 'unrecoverable', errorClass });
+        counts.unrecoverable += ids.length;
+      }
+      await verdict(exhausted, { state: 'exhausted', maxGenerations: input.maxGenerations });
+      counts.exhausted += exhausted.length;
+      for (const { rows, generation } of groups.values()) {
+        const first = rows[0]!;
+        const window = { startDate: first.horizonStart, endDate: first.horizonEnd };
+        const [live] = await sql<{ id: string }[]>`
+          select id from public.sync_jobs
+           where org_id = ${first.orgId} and profile_id = ${first.profileId}
+             and job_type = 'report.request' and status in ('queued', 'running')
+             and payload ->> 'reportType' = ${first.reportType}
+             and payload ->> 'startDate' = ${window.startDate}
+             and payload ->> 'endDate' = ${window.endDate}
+           order by created_at, id
+           limit 1
+        `;
+        const ids = rows.map((row) => row.jobId);
+        counts.windows += 1;
+        if (live) {
+          await verdict(ids, { state: 'joined', requestJobId: live.id, generation, window });
+          counts.joined += ids.length;
+          continue;
+        }
+        const payload = ReportRequestJob.parse({
+          type: 'report.request', orgId: first.orgId, profileId: first.profileId,
+          ...(first.schedulePayload ?? {}),
+          reportType: first.reportType, startDate: window.startDate, endDate: window.endDate,
+        });
+        if (payload.orgId !== first.orgId || payload.profileId !== first.profileId) {
+          throw new Error('restatement schedule payload changed the request scope');
+        }
+        const dedupeKey = `report.recover:${generation}:${first.profileId}:${first.reportType}:${window.startDate}:${window.endDate}`;
+        const inserted = await sql<{ id: string }[]>`
+          insert into public.sync_jobs (org_id, profile_id, job_type, payload, run_after, dedupe_key)
+          values (${first.orgId}, ${first.profileId}, 'report.request'::public.sync_job_type,
+                  ${JSON.stringify(payload)}::jsonb, now(), ${dedupeKey})
+          on conflict (org_id, dedupe_key) where dedupe_key is not null do nothing
+          returning id
+        `;
+        const request = inserted.length === 1 ? inserted : await sql<{ id: string }[]>`
+          select id from public.sync_jobs where org_id = ${first.orgId} and dedupe_key = ${dedupeKey}
+        `;
+        const requestJobId = request[0]?.id;
+        if (request.length !== 1 || requestJobId === undefined) {
+          throw new Error('recovery request could not be read back exactly once');
+        }
+        counts.requestsEnqueued += inserted.length;
+        await verdict(ids, { state: 're-requested', requestJobId, generation, window });
+        counts.reRequested += ids.length;
+      }
+      if (counts.scanned !== counts.reRequested + counts.joined + counts.unrecoverable + counts.exhausted) {
+        throw new Error('dead fetch recovery counts do not reconcile');
+      }
+      return counts;
+    });
   }
 
   async provisionSchedules(
@@ -780,6 +1102,22 @@ export class PostgresWorkerStore implements WorkerStore {
     }
     await this.repairOverlongLookbacks(profileId);
     return written;
+  }
+
+  async provisionCoreFamilySchedules(orgId: string, profileId: string): Promise<{ offered: number; written: number; existing: number }> {
+    const capabilities = await this.handle.sql<{ family: string }[]>`select family from public.report_family_capabilities where org_id=${orgId} and profile_id=${profileId} and enabled=true`;
+    const enabled = new Set(capabilities.map((row) => row.family));
+    const schedules = coreFamilySchedules().filter((spec) => enabled.has(spec.reportType));
+    if (!schedules.length) return { offered: 0, written: 0, existing: 0 };
+    let written = 0;
+    for (const spec of schedules) {
+      const rows = await this.handle.sql`insert into public.sync_schedules (org_id,profile_id,job_type,report_type,variant,cadence,lookback_days,window_offset_days,payload,enabled) values (${orgId},${profileId},'report.request',${spec.reportType}::public.report_type,${spec.variant},${spec.cadence}::interval,${spec.lookbackDays},${spec.windowOffsetDays},${JSON.stringify(spec.payload)}::jsonb,false) on conflict (profile_id,job_type,report_type,variant) do nothing returning id`;
+      written += rows.length;
+    }
+    const persisted = await this.handle.sql<{ report_type: string; variant: string }[]>`select report_type::text,variant from public.sync_schedules where org_id=${orgId} and profile_id=${profileId} and report_type::text=any(${schedules.map((spec) => spec.reportType)}) and variant in ('default','restatement','comparison')`;
+    const expected = new Set(schedules.map((spec) => `${spec.reportType}:${spec.variant}`));
+    if (persisted.length !== expected.size || persisted.some((row) => !expected.has(`${row.report_type}:${row.variant}`))) throw new Error('family schedule readback mismatch');
+    return { offered: schedules.length, written, existing: persisted.length - written };
   }
 
   /**
@@ -824,11 +1162,21 @@ export class PostgresWorkerStore implements WorkerStore {
    * them, while a later reactivation enables the same rows again.
    */
   async ensureIntegrationSchedules(): Promise<number> {
+    await this.ensureProviderEvidenceSchedules();
+    // Other runtimes also reconcile integrations. Only explicit budget composition owns these schedules.
+    const budgetSchedules = this.budgetUsageApiEnabled === undefined ? 0
+      : await ensureBudgetUsageSchedules(this.handle, this.budgetUsageApiEnabled);
     const [relation] = await this.handle.sql<{ relation: string | null }[]>`
       select to_regclass('public.integration_connections')::text as relation
     `;
-    if (!relation?.relation) return 0;
+    if (!relation?.relation) return budgetSchedules;
 
+    const ownSources = this.ownCollectorsEnabled ? this.handle.sql`
+        union select p.org_id,p.id,'own_bids.collect'::public.sync_job_type,interval '1 day','{}'::jsonb from public.ad_profiles p where p.sync_enabled
+        union select s.org_id,s.profile_id,'own_listings.collect'::public.sync_job_type,interval '1 day','{}'::jsonb from selected_profiles s where s.provider='keepa'
+        union select r.org_id,r.profile_id,(case when r.family='prompts' then 'prompts.collect' else 'own_listings.collect' end)::public.sync_job_type,interval '1 day','{}'::jsonb
+          from public.collector_export_references r join public.ad_profiles p on p.org_id=r.org_id and p.id=r.profile_id
+          where r.enabled and p.sync_enabled and r.marketplace=p.country_code` : this.handle.sql``;
     const [result] = await this.handle.sql<{ changed: string }[]>`
       with active_connections as (
         select c.org_id, c.provider::text as provider, c.config
@@ -867,13 +1215,14 @@ export class PostgresWorkerStore implements WorkerStore {
             ('mrp',     'economics.sync',   '1 day',  '{}'::jsonb)
           ) as m(provider, job_type, cadence, payload)
             on m.provider = s.provider
+        ${ownSources}
       ),
       disabled as (
         update public.sync_schedules schedule
            set enabled = false
          where schedule.variant = 'integration'
-           and schedule.job_type in (
-             'keepa.sync', 'rank.sync', 'economics.sync', 'sqp.categorize'
+           and schedule.job_type::text in (
+             'keepa.sync', 'rank.sync', 'economics.sync', 'sqp.categorize', 'own_bids.collect', 'own_listings.collect', 'prompts.collect'
            )
            and schedule.enabled
            and not exists (
@@ -899,7 +1248,30 @@ export class PostgresWorkerStore implements WorkerStore {
       )
       select ((select count(*) from disabled) + (select count(*) from upserted))::text as changed
     `;
-    return Number(result?.changed ?? 0);
+    const spapi = await provisionSpApiReportJobs(this.handle);
+    return budgetSchedules + Number(result?.changed ?? 0) + spapi.enqueued + spapi.disabledScopes;
+  }
+
+  private async ensureProviderEvidenceSchedules(): Promise<void> {
+    if (process.env['OPENSPELL_PROVIDER_EVIDENCE_SCHEDULE_OWNER'] !== '1') return;
+    const [relation] = await this.handle.sql<{ relation: string | null }[]>`select to_regclass('public.provider_evidence_configs')::text as relation`;
+    if (!relation?.relation) return;
+    const enabled = process.env['OPENSPELL_PROVIDER_EVIDENCE_ENABLED'] === '1';
+    const rows = await this.handle.sql<{ config: unknown; enabled: boolean }[]>`select config,enabled from public.provider_evidence_configs`;
+    const keep: string[] = [];
+    for (const row of rows) {
+      const config = ProviderCollectionConfig.parse(row.config);
+      const spec = providerEvidenceSchedule(config, enabled && row.enabled);
+      if (!spec) continue;
+      keep.push(spec.variant);
+      const written = await this.handle.sql`insert into public.sync_schedules(org_id,profile_id,job_type,report_type,variant,cadence,payload,enabled)
+        values(${config.scope.orgId},${config.scope.profileId},'provider.evidence.collect',null,${spec.variant},${spec.cadence}::interval,${JSON.stringify(spec.payload)}::jsonb,true)
+        on conflict(profile_id,job_type,report_type,variant) do update set cadence=excluded.cadence,payload=excluded.payload,enabled=true returning id`;
+      if (written.length !== 1) throw new Error('Provider collection schedule count mismatch');
+    }
+    await this.handle.sql`update public.sync_schedules set enabled=false where job_type='provider.evidence.collect' and enabled and not (variant=any(${keep}))`;
+    const verified = await this.handle.sql<{ variant: string }[]>`select variant from public.sync_schedules where job_type='provider.evidence.collect' and enabled`;
+    if (verified.length !== keep.length || verified.some((row) => !keep.includes(row.variant))) throw new Error('Provider collection schedule readback mismatch');
   }
 
   async unscheduledProfiles(): Promise<{ orgId: string; profileId: string }[]> {
@@ -987,6 +1359,9 @@ export class PostgresWorkerStore implements WorkerStore {
   }
 
   async recordCoverage(observation: ReportCoverageObservation, verifiedLoadedRows: number) {
+    if (observation.reportType === 'campaign_budget_usage') {
+      return publishBudgetUsageCoverage(this.handle, observation, verifiedLoadedRows);
+    }
     return upsertReportCoverage(this.handle, observation, verifiedLoadedRows);
   }
 
@@ -1013,16 +1388,29 @@ export class PostgresWorkerStore implements WorkerStore {
     if (counts.parsed !== counts.loaded) throw new ParsedLoadedMismatch(counts.parsed, counts.loaded);
   }
 
+  async coreReportCapability(orgId: string, profileId: string, family: CoreFeatureReportType): Promise<CoreReportCapability | null> {
+    return readCoreReportCapability(this.handle, orgId, profileId, family);
+  }
+
   async finishAttributedReport(
     reportRequestId: string,
     input: AttributedReportCounts,
-    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null; coverage?: ReportCoverageAccounting },
+    options: { status: 'completed' | 'failed'; bytesDownloaded: number; error?: string | null; coverage?: ReportCoverageAccounting; promotion?: CoreReportPromotion },
   ): Promise<void> {
     const counts = WorkerReportAccounting.parse(input);
+    let superseded = false;
     const finish = async (sql: QueryHandle['sql']) => {
+      const promoted = options.promotion ? await promoteCoreReportWindow({ sql }, options.promotion) : null;
+      superseded = promoted?.superseded === true;
+      if (superseded) {
+        counts.promotedRows = 0;
+        counts.canonicalRows = 0;
+        counts.unpromotedRows = counts.parsedRows;
+      }
+      if (promoted && promoted.loadedRows !== counts.canonicalRows) throw new Error('report family completion readback mismatch');
       const rows = await sql<{ id: string; accounting_complete: boolean }[]>`
         update public.report_requests
-           set status = ${options.status}::public.report_status,
+           set status = ${superseded ? 'failed' : options.status}::public.report_status,
                completed_at = now(), next_poll_at = null,
                source_rows = ${counts.sourceRows},
                rows_parsed = ${counts.parsedRows},
@@ -1031,7 +1419,7 @@ export class PostgresWorkerStore implements WorkerStore {
                unpromoted_rows = ${counts.unpromotedRows},
                rows_loaded = ${counts.canonicalRows},
                bytes_downloaded = ${options.bytesDownloaded},
-               error = ${options.error ?? null}
+               error = ${superseded ? 'report family superseded by newer facts' : options.error ?? null}
          where id = ${reportRequestId}
          returning id, accounting_complete
       `;
@@ -1041,13 +1429,23 @@ export class PostgresWorkerStore implements WorkerStore {
       if (rows[0]?.accounting_complete !== true) {
         throw new Error('attributed report durable accounting did not reconcile');
       }
-      if (options.status === 'completed' && options.coverage !== undefined) {
-        await recordReportCoverage({ sql }, reportRequestId, options.coverage);
+      if (!superseded && options.status === 'completed' && options.coverage !== undefined) {
+        if (options.promotion && promoted) {
+          const p = options.promotion;
+          await upsertReportCoverage({ sql }, {
+            orgId: p.orgId, profileId: p.profileId, reportType: p.parsed.configuration.family,
+            grain: coreReportGrain(p.parsed.configuration), source: 'amazon_reporting_v3', status: 'complete',
+            earliestDate: p.startDate, coveredThrough: p.endDate, settledThrough: null,
+            observedAt: promoted.observedAt, sourceRows: counts.sourceRows, parsedRows: counts.parsedRows,
+            loadedRows: promoted.loadedRows, refusedRows: counts.refusedRows, countsMatch: true,
+          }, promoted.loadedRows);
+        } else await recordReportCoverage({ sql }, reportRequestId, options.coverage);
       }
     };
     // Existing callers retain ledger-only completion; the ingestion hook supplies coverage.
-    if (options.coverage === undefined) await finish(this.handle.sql);
+    if (options.coverage === undefined && options.promotion === undefined) await finish(this.handle.sql);
     else await this.handle.sql.begin(finish);
+    if (superseded) throw new PermanentJobError('report family superseded by newer facts');
   }
 
   private async upsertCampaignFacts(kind: 'sb' | 'sd', rows: readonly CampaignFactRow[]): Promise<number> {

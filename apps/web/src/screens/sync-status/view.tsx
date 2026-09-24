@@ -1,9 +1,13 @@
+import { SpSourceStatus } from '../grid/spapi-evidence';
+import { ProviderEvidencePanel } from '../recommendations/provider-evidence';
 import { formatShellDate, formatTimestamp, formatDateWindow } from '../../ui/date-format';
 import { TableFrame } from '../../ui/primitives';
 import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
+import { CoreReportEvidencePanel } from '../grid/core-report-evidence';
 import { reportAccountingLabel } from '../../data/sync-status';
 
 import { ReportLifecycleTables } from '../../../app/sync-status/report-lifecycle-tables';
+import { ReportLaneBanner } from './lane-banner';
 
 import { Shell } from '../settings/frame';
 
@@ -32,10 +36,14 @@ function renderGated({ result }: Extract<ScreenData, { view: 'gated'; }>['props'
   </main>);
 }
 
-function renderReady({ context, status }: Extract<ScreenData, { view: 'ready'; }>['props']) {
-  return (<main style={page}>
+function renderReady({ context, status, lane, sources, coreEvidence, providerEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+  // Measured per profile by the lane query, including explicit zeros. A legacy
+  // failure returns its job to Queued, so a stored `failed` state never exists.
+  const health = new Map(lane.profiles.map((row) => [row.profileId, row]));
+  return (<main style={page}>{providerEvidence?.map((item) => <section key={item.profileId}><h2>Profile {item.profileId}</h2><ProviderEvidencePanel evidence={item.evidence} consumer="sync-status" /></section>)}
     <Shell context={context} current="sync">
       <h1 style={heading}>Sync status</h1>
+      {coreEvidence ? <CoreReportEvidencePanel evidence={coreEvidence} title="Report family coverage" /> : null}
       <p style={muted}>
         Freshness is the newest fact date a profile holds, not the last time a job ran. Same-day
         figures are provisional and sales restate for about fourteen days, so a fresh date is not
@@ -43,7 +51,12 @@ function renderReady({ context, status }: Extract<ScreenData, { view: 'ready'; }
       </p>
 
       {status.freshness.some((row) => row.latestFactDate === null) ? <ScreenState variant="not-measured" title="Facts not measured" body="Some profiles have no synchronized fact date yet. Their freshness is shown as never." /> : null}
+      <ReportLaneBanner lane={lane} factDates={status.freshness.map((row) => row.latestFactDate)} />
       <h2 style={subheading}>Profiles</h2>
+      <p style={muted}>
+        Retrying and Dead count this profile&apos;s jobs of every type. A failed job that will retry
+        waits in Queued; a dead job exhausted its retries or failed permanently.
+      </p>
       <TableFrame><table style={table}>
         <thead>
           <tr>
@@ -53,7 +66,8 @@ function renderReady({ context, status }: Extract<ScreenData, { view: 'ready'; }
             <th style={th}>Newest facts</th>
             <th style={th}>Queued</th>
             <th style={th}>Running</th>
-            <th style={th}>Failed</th>
+            <th style={th}>Retrying (this profile)</th>
+            <th style={th}>Dead (this profile)</th>
           </tr>
         </thead>
         <tbody>
@@ -67,8 +81,12 @@ function renderReady({ context, status }: Extract<ScreenData, { view: 'ready'; }
               <td style={td}>{row.latestFactDate === null ? 'never' : formatShellDate(row.latestFactDate)}</td>
               <td style={td}>{row.queued}</td>
               <td style={td}>{row.running}</td>
-              <td style={{ ...td, color: row.failed > 0 ? colors.bad : undefined }}>
-                {row.failed}
+              <td style={td} data-testid="profile-retrying">{health.get(row.profileId)?.retrying ?? 'not measured'}</td>
+              <td
+                style={{ ...td, color: (health.get(row.profileId)?.dead ?? 0) > 0 ? colors.bad : undefined }}
+                data-testid="profile-dead"
+              >
+                {health.get(row.profileId)?.dead ?? 'not measured'}
               </td>
             </tr>
           ))}
@@ -76,6 +94,7 @@ function renderReady({ context, status }: Extract<ScreenData, { view: 'ready'; }
       </table></TableFrame>
       {status.freshness.length === 0 ? <ScreenState title="No profiles yet." body="Choose a connected profile or check again after the next sync." /> : null}
 
+      <section aria-label="SP-API source status"><h2>SP-API sources</h2>{sources?.length ? sources.map(source => <SpSourceStatus key={source.family} evidence={source.evidence} label={source.family} />) : <p>Select a profile to inspect retail, ABA and catalogue source evidence.</p>}</section>
       <ReportLifecycleTables deadLetters={status.deadLetters} lifecycle={status.lifecycle} />
 
       <h2 style={subheading}>Jobs</h2>

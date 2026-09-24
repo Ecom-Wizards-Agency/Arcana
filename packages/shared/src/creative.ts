@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { AdProduct, AmazonId, IsoDate, Placement, Uuid } from './primitives.js';
 import { TimelineDaily, TimelineEvent } from './timeline-events.js';
+import { CreativeChangeCertainty } from './change-certainty.js';
 import { CampaignCreationAmazonModerationStatus } from './campaign-creation.js';
 
 const count = z.number().int().nonnegative();
@@ -199,17 +200,7 @@ export const CreativePerformanceAsset = z.object({
   drilldown: z.array(CreativePerformanceDrilldown),
 });
 export type CreativePerformanceAsset = z.infer<typeof CreativePerformanceAsset>;
-export const CreativeChangeCertainty = z.object({
-  kind: z.enum(['exact', 'window', 'first']),
-  from: z.iso.datetime().nullable(), to: z.iso.datetime(), widthDays: count.nullable(),
-}).superRefine((value, context) => {
-  if (value.from !== null && value.from > value.to) context.addIssue({ code: 'custom', message: 'Observation order is reversed' });
-  if (value.kind === 'exact' && (value.from === null || value.widthDays === null || value.widthDays > 1))
-    context.addIssue({ code: 'custom', message: 'Exact certainty needs consecutive daily observations' });
-  if (value.kind === 'first' && (value.from !== null || value.widthDays !== null))
-    context.addIssue({ code: 'custom', message: 'First observation has no earlier boundary' });
-});
-export type CreativeChangeCertainty = z.infer<typeof CreativeChangeCertainty>;
+export { CreativeChangeCertainty } from './change-certainty.js';
 export const CreativeWorkspaceAsset = z.object({
   assetId: z.string().nullable(), attributionState: CreativeAttributionState,
   name: z.string().nullable(), assetType: z.string().nullable(), thumbnailUrl: z.string().nullable(),
@@ -237,12 +228,13 @@ export const CreativeWorkspacePlacement = z.object({
 export type CreativeWorkspacePlacement = z.infer<typeof CreativeWorkspacePlacement>;
 export const CreativeWorkspaceChange = z.object({
   id: z.string(), assetIds: z.array(z.string()), campaignId: z.string().nullable(), adGroupId: z.string().nullable(),
-  kind: z.enum(['Bid', 'Placement', 'Creative']), field: z.string(), oldValue: z.unknown(), newValue: z.unknown(),
+  kind: z.enum(['Bid', 'Placement', 'Creative', 'Listing', 'Promotion']), field: z.string(), oldValue: z.unknown(), newValue: z.unknown(),
   observedAt: z.iso.datetime(), certainty: CreativeChangeCertainty,
   scope: z.string(), effect: z.enum(['direct', 'whole campaign']),
 });
 export type CreativeWorkspaceChange = z.infer<typeof CreativeWorkspaceChange>;
 export const CreativeWorkspace = z.object({
+  listingCoverage: z.object({ measuredFields: count, staleFields: count }).optional(),
   assets: z.array(CreativeWorkspaceAsset), campaigns: z.array(CreativeWorkspaceCampaign),
   placements: z.array(CreativeWorkspacePlacement), changes: z.array(CreativeWorkspaceChange),
   history: z.array(TimelineDaily), events: z.array(TimelineEvent),

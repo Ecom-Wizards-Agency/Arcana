@@ -1,3 +1,4 @@
+import { CoreFeatureReportType } from '@wizard-ads/shared';
 /**
  * The public surface, asserted rather than assumed.
  *
@@ -95,6 +96,7 @@ describe('@wizard-ads/ads-api', () => {
 
   it('exports one parser per report type in the contract', () => {
     expect(Object.keys(api.REPORT_SPECS).sort()).toEqual([
+      ...CoreFeatureReportType.options,
       'sbAds',
       'sbCampaigns',
       'sdCampaigns',
@@ -102,7 +104,7 @@ describe('@wizard-ads/ads-api', () => {
       'spPlacement',
       'spSearchTerm',
       'spTargeting',
-    ]);
+    ].sort());
     for (const parser of [
       api.parseSpCampaignReport,
       api.parseSpTargetingReport,

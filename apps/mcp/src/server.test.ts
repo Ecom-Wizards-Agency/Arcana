@@ -164,8 +164,10 @@ describe.skipIf(!available)('the MCP server', () => {
           'get_flags',
           'get_pacing',
           'get_experiment',
+          'get_provider_evidence',
           'get_recommendations',
           'get_sync_status',
+          'get_report_family_facts',
           'group_by',
           'list_experiments',
           'list_profiles',
@@ -177,6 +179,18 @@ describe.skipIf(!available)('the MCP server', () => {
     } finally {
       await client.close();
     }
+  });
+
+  it('scopes feature family reads to the owning tenant and reports missing evidence', async () => {
+    const client = await connect(server, tokenA);
+    try {
+      const input = { family: 'sbPurchasedProduct', start_date: window.start, end_date: window.end };
+      const own = await call(client, 'get_report_family_facts', { ...input, profile_id: profileA });
+      expect(own.isError).toBe(false);
+      expect(JSON.stringify(own.payload)).toContain('unmeasured');
+      const denied = await call(client, 'get_report_family_facts', { ...input, profile_id: orgBProfile });
+      expect(denied.isError).toBe(true);
+    } finally { await client.close(); }
   });
 
   it('answers "top 10 wasted-spend targets last week" the same way SQL does', async () => {
@@ -264,6 +278,23 @@ describe.skipIf(!available)('the MCP server', () => {
     } finally {
       await client.close();
     }
+  });
+
+  it('exports counted provider evidence with separate comparison and no execution authority', async () => {
+    const client = await connect(server, tokenB);
+    try {
+      const result = await call(client, 'get_provider_evidence', { profile_id: orgBProfile, limit: 10 });
+      expect(result.isError).toBe(false);
+      const rows = result.payload['rows'] as { recommendation: { scope: { profileId: string }; proposed: { value: unknown } }; comparison: { status: string } }[];
+      const persisted = await database.sql`select id from public.provider_recommendations where org_id=${orgBId} and profile_id=${orgBProfile}`;
+      expect(rows).toHaveLength(persisted.length);
+      expect(result.payload['returnedCount']).toBe(1);
+      expect(result.payload['totalCount']).toBe(1);
+      expect(rows[0]?.recommendation.scope.profileId).toBe(orgBProfile);
+      expect(rows[0]?.recommendation.proposed.value).toBeNull();
+      expect(rows[0]?.comparison.status).toBe('not-comparable');
+      expect(result.payload).not.toHaveProperty('approval');
+    } finally { await client.close(); }
   });
 
   it('recomputes ratios from summed bases when grouping', async () => {
@@ -568,7 +599,7 @@ describe.skipIf(!available)('the MCP server', () => {
       const visible = profiles.payload['profiles'] as { id: string }[];
       expect(visible.map((profile) => profile.id)).toEqual([orgBProfile]);
 
-      for (const tool of ['get_entity_data', 'get_sync_status', 'get_flags', 'get_recommendations']) {
+      for (const tool of ['get_entity_data', 'get_sync_status', 'get_flags', 'get_recommendations', 'get_provider_evidence']) {
         const result = await call(client, tool, {
           entity: 'keyword',
           profile_id: profileA,

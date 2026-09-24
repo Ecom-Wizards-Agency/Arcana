@@ -41,6 +41,8 @@ describe('worker deployment role', () => {
       jobTypes: undefined,
       startsBackgroundPasses: true,
       amazonConnectionsEnabled: false,
+      budgetUsageApiEnabled: false,
+      budgetUsageStreamEnabled: false,
       unifiedReporting: { enabled: false, profileIds: [] },
     });
   });
@@ -175,6 +177,25 @@ describe('SP-API configuration', () => {
     expect(config.spApiClientId).toBe(appId);
     expect(config.spApiClientSecret).toBe(appKey);
     expect(config.spApiReportMinIntervalMs).toBe(2_500);
+  });
+
+  it('requires an explicit gate and complete deployment policy before claiming consent', () => {
+    const configured = { ...base, SP_API_LWA_CLIENT_ID: appId, SP_API_LWA_CLIENT_SECRET: appKey,
+      SP_API_APPLICATION_ID: 'synthetic-application', SP_API_OAUTH_REGION: 'NA',
+      SP_API_OAUTH_ALLOWED_REDIRECT_URIS: 'https://app.example.test/api/amazon/spapi/oauth/callback' };
+    expect(configFromEnv(configured).spApiConnectionsEnabled).toBe(false);
+    expect(configFromEnv({ ...configured, OPENSPELL_SPAPI_CONNECTIONS_ENABLED: '1' }))
+      .toMatchObject({ spApiConnectionsEnabled: true, spApiConsentRegion: 'NA',
+        spApiApplicationId: 'synthetic-application',
+        spApiConnectionRedirects: [configured.SP_API_OAUTH_ALLOWED_REDIRECT_URIS] });
+    const invalid = [
+      { SP_API_APPLICATION_ID: '' }, { SP_API_OAUTH_REGION: 'unknown' },
+      { SP_API_OAUTH_ALLOWED_REDIRECT_URIS: '' },
+      { SP_API_OAUTH_ALLOWED_REDIRECT_URIS: 'https://user:password@app.example.test/callback' },
+      { WORKER_DEPLOYMENT_ROLE: 'evo-report-lane', WORKER_JOB_TYPES: 'creative.sync,report.request,report.poll,report.fetch' },
+    ];
+    for (const policy of invalid) expect(() => configFromEnv({ ...configured,
+      OPENSPELL_SPAPI_CONNECTIONS_ENABLED: '1', ...policy })).toThrow(/SP-API connection/);
   });
 });
 

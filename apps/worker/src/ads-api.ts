@@ -67,6 +67,7 @@ export interface EntityListFailure {
  * winners and records the losers rather than throwing everything away.
  */
 export interface EntityListing {
+  preserveCampaignNegativeTargets?: boolean;
   /** Unlisted kinds must be excluded from both mirror refresh and tombstoning. */
   excludedEntityTypes?: Partial<Record<AdProductCode, readonly EntityRow['entityType'][]>>;
   rows: readonly EntityRow[];
@@ -168,11 +169,92 @@ export class AdsApiRetryableError extends Error {
   }
 }
 
+/**
+ * Why a pre-signed report URL stopped working: its signature expired (S3's
+ * 403 `Request has expired`), the object is gone (410), or storage rejected
+ * it for another reason. All three are repaired the same way, by getting a fresh
+ * report, and none of them is a size problem.
+ */
+export type DownloadUrlRejection = 'expired' | 'gone' | 'rejected';
+
+const DOWNLOAD_URL_MESSAGES: Readonly<Record<DownloadUrlRejection, string>> = {
+  expired: 'report download URL expired',
+  gone: 'report download URL expired; the stored report is gone',
+  rejected: 'report download URL was rejected by report storage',
+};
+
 export class DownloadUrlExpiredError extends AdsApiRetryableError {
-  constructor(message = 'report download URL expired') {
-    super(message);
+  /** The report-lane error class (`@wizard-ads/shared` `ReportLaneErrorClass`). */
+  readonly errorClass: 'download_url_expired' | 'download_url_rejected';
+
+  constructor(message?: string, readonly rejection: DownloadUrlRejection = 'expired') {
+    super(message ?? DOWNLOAD_URL_MESSAGES[rejection]);
     this.name = 'DownloadUrlExpiredError';
+    this.errorClass = rejection === 'rejected' ? 'download_url_rejected' : 'download_url_expired';
   }
+}
+
+/**
+ * When a pre-signed report URL stops being accepted, read from its own
+ * signature parameters (SigV4 `X-Amz-Date` + `X-Amz-Expires`, or SigV2
+ * `Expires`). Null when the URL carries neither.
+ */
+export function downloadUrlExpiresAt(url: string): Date | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const signedAt = parsed.searchParams.get('X-Amz-Date');
+  const lifetime = parsed.searchParams.get('X-Amz-Expires');
+  if (signedAt !== null && lifetime !== null) {
+    const match = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(signedAt);
+    const seconds = Number(lifetime);
+    if (match && /^\d+$/.test(lifetime) && Number.isSafeInteger(seconds) && seconds > 0) {
+      const [, year, month, day, hour, minute, second] = match.map(Number);
+      return new Date(Date.UTC(year!, month! - 1, day!, hour!, minute!, second!) + seconds * 1_000);
+    }
+  }
+  const expires = parsed.searchParams.get('Expires');
+  if (expires !== null && /^\d{9,11}$/.test(expires)) return new Date(Number(expires) * 1_000);
+  return null;
+}
+
+/** The most of a refusal body read to classify it; S3 error documents are a few hundred bytes. */
+const REFUSAL_BODY_MAX_BYTES = 4_096;
+
+async function readRefusalBody(response: Response): Promise<string> {
+  const body = response.body;
+  if (!body) return '';
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (total < REFUSAL_BODY_MAX_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      total += value.byteLength;
+    }
+  } catch {
+    return '';
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return Buffer.concat(chunks).subarray(0, REFUSAL_BODY_MAX_BYTES).toString('utf8');
+}
+
+/**
+ * Classify a 403 from report storage. The body is inspected only for S3's
+ * fixed expiry wording and is never retained or logged.
+ */
+async function classifyDownloadRefusal(response: Response, url: string, now: Date): Promise<DownloadUrlRejection> {
+  const body = await readRefusalBody(response);
+  if (/request has expired|<code>\s*expiredtoken\s*<\/code>/i.test(body)) return 'expired';
+  const expiresAt = downloadUrlExpiresAt(url);
+  if (expiresAt !== null && expiresAt.getTime() <= now.getTime()) return 'expired';
+  return 'rejected';
 }
 
 /**
@@ -228,13 +310,15 @@ export type UnderlyingClient = Pick<
   | 'getSpBidRecommendations'
 > & Partial<Pick<
   UnderlyingAdsApiClient,
-  'probeSbAdsPage' | 'probeCreativeAssetsPage' | 'listSbKeywords'
+  'probeSbAdsPage' | 'probeCreativeAssetsPage' | 'listSbKeywords' | 'listSpCampaignNegativeTargets' | 'listSdProductAds' | 'listSdTargets' | 'listSdNegativeTargets'
 >>;
 
 /** The subset of `fetch` the report download needs. */
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface AdsApiAdapterDeps {
+  coreEntitySyncEnabled?: boolean;
+  coreEntityProfileIds?: readonly string[];
   sbKeywordSyncEnabled?: boolean;
   /** Match organization, profile, provider identity and region before credential access. */
   resolveProfileBinding(profile: AdsProfileContext): Promise<AdsConnectionCredentialBinding | null>;
@@ -269,7 +353,7 @@ const KNOWN_REPORT_STATUSES = new Set<AdsReportStatus['status']>([
  * Every Amazon error is narrowed to what the worker's retry policy can act on:
  * a 429 or 5xx (or a timeout) becomes `AdsApiRetryableError` so the job is
  * requeued with backoff, a stale download URL becomes `DownloadUrlExpiredError`
- * so the fetch re-polls, and everything else is left as-is for the generic
+ * so the fetch re-requests the report, and everything else is left as-is for the generic
  * attempt counter to age out into the dead-letter.
  */
 export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, SuggestedBidClient, SbVideoContractProbeClient {
@@ -285,6 +369,14 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
   async listEntities(profile: AdsProfileContext, _full: boolean): Promise<EntityListing> {
     const client = await this.clientForProfile(profile);
     const p = profile.amazonProfileId;
+    const coreEntities = this.deps.coreEntitySyncEnabled === true && this.deps.coreEntityProfileIds?.includes(profile.id) === true;
+    const bounded = async (method: 'listSpCampaignNegativeTargets' | 'listSdProductAds' | 'listSdTargets' | 'listSdNegativeTargets') => {
+      const list = client[method];
+      if (!list) throw new Error('core entity capability missing');
+      const result = await client[method]!(p, { maxPages: 100, maxResults: 100 });
+      if (result.truncated || result.skipped.length || result.raw.length !== result.items.length) throw new Error('core entity inventory is incomplete');
+      return result;
+    };
     // Grouped by ad product so one product's failure is contained to that
     // product. Within a group the steps stay sequential: a single profile
     // firing a dozen simultaneous requests would defeat the region concurrency
@@ -302,6 +394,7 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
           () => client.listSpNegativeKeywords(p),
           () => client.listSpCampaignNegativeKeywords(p),
           () => client.listSpNegativeTargets(p),
+          ...(coreEntities ? [() => bounded('listSpCampaignNegativeTargets')] : []),
         ],
       },
       { product: 'SB', steps: [
@@ -316,7 +409,7 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
           return listed;
         }] : []),
       ] },
-      { product: 'SD', steps: [() => client.listSdCampaigns(p), () => client.listSdAdGroups(p)] },
+      { product: 'SD', steps: [() => client.listSdCampaigns(p), () => client.listSdAdGroups(p), ...(coreEntities ? [() => bounded('listSdProductAds'), () => bounded('listSdTargets'), () => bounded('listSdNegativeTargets')] : [])] },
     ];
 
     const rows: EntityRow[] = [];
@@ -347,9 +440,8 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
     }
     return {
       rows, succeeded, failures,
-      ...(this.deps.sbKeywordSyncEnabled === true ? {} : {
-        excludedEntityTypes: { SB: ['keyword'] as const },
-      }),
+      preserveCampaignNegativeTargets: !coreEntities,
+      excludedEntityTypes: { ...(this.deps.sbKeywordSyncEnabled === true ? {} : { SB: ['keyword'] as const }), ...(coreEntities ? {} : { SD: ['product_ad', 'target', 'negative'] as const }) },
     };
   }
 
@@ -364,6 +456,7 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
         ...(input.filters === undefined ? {} : { filters: input.filters }),
         ...(input.name === undefined ? {} : { name: input.name }),
         ...(input.timeUnit === undefined ? {} : { timeUnit: input.timeUnit }),
+        ...(input.familyConfiguration === undefined ? {} : { familyConfiguration: input.familyConfiguration }),
       });
       return { reportId: meta.reportId };
     } catch (error) {
@@ -445,10 +538,14 @@ export class DbAdsApiClient implements AdsApiClient, UnifiedReportingClient, Sug
       // A dropped connection mid-download is worth retrying.
       throw new AdsApiRetryableError(errorText(error));
     }
-    // A pre-signed S3 URL answers 403 once its signature has expired, and 410
-    // once the object is gone. Both mean "the URL is stale" — re-poll for a
-    // fresh one rather than retry the same dead link.
-    if (response.status === 403 || response.status === 410) throw new DownloadUrlExpiredError();
+    // A pre-signed S3 URL answers 403 (`Request has expired`, an XML body)
+    // once its signature has expired, and 410 once the object is gone. Both
+    // mean "the URL is stale": the worker re-requests the report rather than
+    // retry the same dead link, and never reads the refusal as a report body.
+    if (response.status === 410) throw new DownloadUrlExpiredError(undefined, 'gone');
+    if (response.status === 403) {
+      throw new DownloadUrlExpiredError(undefined, await classifyDownloadRefusal(response, url, new Date()));
+    }
     if (response.status === 429 || response.status >= 500) {
       throw new AdsApiRetryableError(`report download failed with ${response.status}`);
     }
@@ -735,6 +832,8 @@ export function createAdsApiClientFromEnv(
 
   return new DbAdsApiClient({
     sbKeywordSyncEnabled: sbKeywordSyncEnabledFromEnv(env),
+    coreEntitySyncEnabled: env['OPENSPELL_CORE_ENTITY_SYNC_ENABLED'] === '1',
+    coreEntityProfileIds: (env['OPENSPELL_CORE_ENTITY_PROFILE_IDS'] ?? '').split(',').map((id) => id.trim()).filter(Boolean),
     resolveProfileBinding: (profile) => getProfileCredentialBinding(
       handle, profile.orgId, profile.id, profile.amazonProfileId, profile.region,
     ),

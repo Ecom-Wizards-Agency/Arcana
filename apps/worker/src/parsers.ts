@@ -1,6 +1,5 @@
-import { createGunzip } from 'node:zlib';
+import { createGunzip, type Gunzip } from 'node:zlib';
 import { Readable } from 'node:stream';
-import { Worker } from 'node:worker_threads';
 import {
   parseSpCampaignReport,
   parseSpPlacementReport,
@@ -81,7 +80,7 @@ export interface ReportDownloadControl {
   signal?: AbortSignal;
   /** Abort the HTTP transport synchronously when a local bound fires. */
   abortSource?: (reason: Error) => void;
-  /** Consume one structurally-cloned, byte-and-row-bounded chunk at a time. */
+  /** Consume one freshly parsed, byte-and-row-bounded chunk at a time. */
   consumeRows: ReportRowChunkConsumer;
   /** Testable fail-closed deadline for proving iterator/transport cancellation. */
   cancellationTimeoutMs?: number;
@@ -90,7 +89,7 @@ export interface ReportDownloadControl {
 export interface ReportDownloadLimits {
   /** Compressed wire bytes accepted from the pre-signed report URL. */
   maxCompressedBytes: number;
-  /** Inflated JSON bytes retained before parsing. */
+  /** Inflated JSON bytes streamed through the parser (the inflate limit). */
   maxDecompressedBytes: number;
   /** Longest permitted wait between compressed chunks. */
   idleTimeoutMs: number;
@@ -99,9 +98,12 @@ export interface ReportDownloadLimits {
 }
 
 /**
- * Production aggregates currently remain below 300 KiB compressed. These
- * limits preserve over 100x compressed headroom and a separate decompression
- * ceiling while making the process memory bound explicit.
+ * Production aggregates currently remain below 300 KiB compressed (the largest
+ * completed report in the 40 days before WP-323 was 275,732 bytes, average
+ * about 11 KB). These limits keep over 100x compressed headroom. The inflated
+ * document is streamed, never retained, so the inflate ceiling bounds work and
+ * decompression-bomb amplification rather than resident memory; a realistic
+ * report inflates to a few MB, so 64 MiB is not raised.
  */
 export const DEFAULT_REPORT_DOWNLOAD_LIMITS: Readonly<ReportDownloadLimits> = Object.freeze({
   maxCompressedBytes: 32 * 1024 * 1024,
@@ -110,6 +112,12 @@ export const DEFAULT_REPORT_DOWNLOAD_LIMITS: Readonly<ReportDownloadLimits> = Ob
   totalTimeoutMs: 15 * 60_000,
 });
 
+/**
+ * One kind per bound. `decompressed_bytes` is only ever the inflate loop; the
+ * JSON parser's own bounds (`parsed_row_bytes`, `parsed_rows`) and the parent's
+ * normalized-row bound (`parsed_bytes`) are named separately, so a parser
+ * failure can never be reported as an oversized download again.
+ */
 export type ReportDownloadLimitKind =
   | 'compressed_bytes'
   | 'decompressed_bytes'
@@ -141,14 +149,49 @@ export class ReportPayloadShapeError extends Error {
   }
 }
 
+/**
+ * The body is not a report document at all. `corrupt_gzip` is the only
+ * retryable kind: a truncated or damaged stream is a transport accident, while
+ * an empty body, a non-JSON body (an XML or HTML error page answered with a
+ * success status) or malformed JSON will be the same on every retry.
+ */
+export type ReportPayloadFormatKind = 'empty' | 'not_gzip_or_json' | 'corrupt_gzip' | 'invalid_json';
+
+const PAYLOAD_FORMAT_MESSAGES: Readonly<Record<ReportPayloadFormatKind, string>> = {
+  empty: 'report payload is empty',
+  not_gzip_or_json: 'report payload is neither gzip nor JSON',
+  corrupt_gzip: 'report payload gzip stream is corrupt or truncated',
+  invalid_json: 'report payload is not valid JSON',
+};
+
+/** Fixed-category payload failure. Source bytes are never quoted. */
+export class ReportPayloadFormatError extends Error {
+  readonly provider = 'amazon_ads';
+  readonly retryAfterSeconds = undefined;
+  get retryable(): boolean { return this.kind === 'corrupt_gzip'; }
+  override readonly name = 'ReportPayloadFormatError';
+
+  constructor(readonly kind: ReportPayloadFormatKind) {
+    super(PAYLOAD_FORMAT_MESSAGES[kind]);
+  }
+}
+
 const PARSED_CHUNK_MAX_ROWS = 128;
 const PARSED_CHUNK_MAX_BYTES = 256 * 1024;
 const PARSED_DOCUMENT_MAX_ROWS = 100_000;
 const SOURCE_CANCELLATION_TIMEOUT_MS = 5_000;
+const GZIP_MAGIC = [0x1f, 0x8b] as const;
 
 /**
- * Stream compressed bytes through gunzip under explicit byte and time bounds.
- * Only the bounded inflated JSON document is retained.
+ * Stream a report body through gunzip (when it is gzip) and a streaming JSON
+ * array parser under explicit byte, row and time bounds.
+ *
+ * Amazon stores reports gzip-compressed, but a transport that honours
+ * `Content-Encoding: gzip` hands over the inflated JSON instead; the first two
+ * bytes decide which one arrived. The document is never buffered whole: each
+ * top-level array element is parsed as soon as its closing byte inflates, and
+ * rows reach `consumeRows` in bounded chunks. Parsing happens on this thread,
+ * so the path does not depend on a bundler resolving a worker module URL.
  */
 export async function gunzipJson(
   source: AsyncIterable<Uint8Array>,
@@ -235,158 +278,264 @@ export async function gunzipJson(
           throw error;
         }
         bytesDownloaded = nextBytes;
-        yield item.value;
+        if (item.value.byteLength > 0) yield item.value;
       }
     } finally {
       await closeIterator();
     }
   }
 
-  const chunks: Buffer[] = [];
-  let decompressedBytes = 0;
-  const compressed = Readable.from(measured());
-  const unzipped = createGunzip();
-  compressed.once('error', (error) => unzipped.destroy(error));
-  compressed.pipe(unzipped);
-
+  const wire = measured();
+  let compressed: Readable | undefined;
+  let unzipped: Gunzip | undefined;
   const abort = (): void => {
     const reason = controller.signal.reason instanceof Error
       ? controller.signal.reason
       : totalError;
-    compressed.destroy(reason);
-    unzipped.destroy(reason);
+    compressed?.destroy(reason);
+    unzipped?.destroy(reason);
   };
   controller.signal.addEventListener('abort', abort, { once: true });
 
-  try {
-    for await (const chunk of unzipped) {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
-      const nextBytes = decompressedBytes + buffer.byteLength;
-      if (nextBytes > limits.maxDecompressedBytes) {
-        const error = new ReportDownloadLimitError(
-          'decompressed_bytes',
-          limits.maxDecompressedBytes,
-        );
-        abortSource(error);
-        throw error;
+  const pending: { value: unknown; bytes: number }[] = [];
+  let emitted = 0;
+  const flush = async (final: boolean): Promise<void> => {
+    while (pending.length > 0) {
+      let bytes = 2;
+      let take = 0;
+      while (take < pending.length && take < PARSED_CHUNK_MAX_ROWS) {
+        const next = bytes + pending[take]!.bytes + (take === 0 ? 0 : 1);
+        if (take > 0 && next > PARSED_CHUNK_MAX_BYTES) break;
+        bytes = next;
+        take += 1;
       }
-      decompressedBytes = nextBytes;
-      chunks.push(buffer);
+      // Hold a partial chunk back until more rows arrive, so chunk sizes stay
+      // independent of how the transport happened to split the bytes.
+      if (!final && take === pending.length && take < PARSED_CHUNK_MAX_ROWS
+        && bytes < PARSED_CHUNK_MAX_BYTES) return;
+      const rows = pending.splice(0, take).map((row) => row.value);
+      const offset = emitted;
+      emitted += rows.length;
+      await control.consumeRows(rows, offset);
+      if (controller.signal.aborted) throw abortReason(controller.signal, totalError);
+    }
+  };
+
+  try {
+    // Sniff the encoding from the first bytes without consuming them.
+    const head: Uint8Array[] = [];
+    let headBytes = 0;
+    while (headBytes < GZIP_MAGIC.length) {
+      const next = await wire.next();
+      if (next.done) break;
+      head.push(next.value);
+      headBytes += next.value.byteLength;
+    }
+    const prefix = Buffer.concat(head.map((chunk) => Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)));
+    const encoding = prefix.length >= GZIP_MAGIC.length
+      && prefix[0] === GZIP_MAGIC[0] && prefix[1] === GZIP_MAGIC[1] ? 'gzip' : 'identity';
+    async function* replay(): AsyncGenerator<Uint8Array> {
+      if (prefix.length > 0) yield prefix;
+      yield* wire;
+    }
+    let body: AsyncIterable<Uint8Array>;
+    if (encoding === 'gzip') {
+      compressed = Readable.from(replay());
+      unzipped = createGunzip();
+      const inflater = unzipped;
+      compressed.once('error', (error) => inflater.destroy(error));
+      compressed.pipe(inflater);
+      body = inflater;
+    } else {
+      body = replay();
+    }
+
+    const parser = new JsonArrayStreamParser(encoding, PARSED_CHUNK_MAX_BYTES, PARSED_DOCUMENT_MAX_ROWS);
+    let inflatedBytes = 0;
+    try {
+      for await (const chunk of body) {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+        const nextBytes = inflatedBytes + buffer.byteLength;
+        if (nextBytes > limits.maxDecompressedBytes) {
+          const error = new ReportDownloadLimitError(
+            'decompressed_bytes',
+            limits.maxDecompressedBytes,
+          );
+          abortSource(error);
+          throw error;
+        }
+        inflatedBytes = nextBytes;
+        parser.push(buffer, (value, bytes) => { pending.push({ value, bytes }); });
+        await flush(false);
+      }
+    } catch (error) {
+      const failure = isZlibError(error) ? new ReportPayloadFormatError('corrupt_gzip') : error;
+      // Stop the transport on any mid-stream failure, not only on a bound:
+      // a parser or consumer refusal must not leave the download running.
+      if (!controller.signal.aborted) {
+        abortSource(failure instanceof Error ? failure : new Error('report download failed'));
+      }
+      throw failure;
     }
     if (controller.signal.aborted || Date.now() - startedAt >= limits.totalTimeoutMs) {
-      throw totalError;
+      throw abortReason(controller.signal, totalError);
     }
-    const rowsParsed = await parseJsonInWorker(
-      Buffer.concat(chunks, decompressedBytes),
-      controller.signal,
-      limits.maxDecompressedBytes,
-      control.consumeRows,
-    );
+    parser.end();
+    await flush(true);
     if (controller.signal.aborted || Date.now() - startedAt >= limits.totalTimeoutMs) {
-      throw totalError;
+      throw abortReason(controller.signal, totalError);
     }
     return {
-      rowsParsed,
+      rowsParsed: parser.elements,
       bytesDownloaded,
     };
   } finally {
     clearTimeout(totalTimer);
     control.signal?.removeEventListener('abort', abortFromCaller);
     controller.signal.removeEventListener('abort', abort);
-    compressed.destroy();
-    unzipped.destroy();
+    compressed?.destroy();
+    unzipped?.destroy();
     await closeIterator();
   }
 }
 
+function abortReason(signal: AbortSignal, fallback: Error): Error {
+  return signal.reason instanceof Error ? signal.reason : fallback;
+}
+
+function isZlibError(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && typeof error.code === 'string'
+    && /^Z_[A-Z_]+$/.test(error.code);
+}
+
+const WHITESPACE = new Set([0x20, 0x09, 0x0a, 0x0d]);
+const QUOTE = 0x22;
+const BACKSLASH = 0x5c;
+const OPEN_ARRAY = 0x5b;
+const CLOSE_ARRAY = 0x5d;
+const OPEN_OBJECT = 0x7b;
+const CLOSE_OBJECT = 0x7d;
+const COMMA = 0x2c;
+
+/** First bytes of a JSON value that is valid but not an array. */
+function startsNonArrayJson(byte: number): boolean {
+  return byte === OPEN_OBJECT || byte === QUOTE || byte === 0x2d || (byte >= 0x30 && byte <= 0x39)
+    || byte === 0x74 || byte === 0x66 || byte === 0x6e;
+}
+
 /**
- * Parse away from the queue-custody event loop. The worker has an explicit
- * heap ceiling and is terminated before this promise settles, so both the
- * total deadline and a memory-hostile document have a real kill boundary.
+ * Split a top-level JSON array into its elements as bytes arrive.
+ *
+ * Only structural ASCII bytes are interpreted, and every UTF-8 continuation
+ * byte is above 0x7f, so scanning bytes is exact across chunk boundaries. Each
+ * complete element is validated by `JSON.parse`; the scanner itself only
+ * tracks string, escape and nesting state. At most one element (bounded by
+ * `maxElementBytes`) is retained between chunks.
  */
-function parseJsonInWorker(
-  bytes: Buffer,
-  signal: AbortSignal,
-  memoryLimit: number,
-  consumeRows: ReportRowChunkConsumer,
-): Promise<number> {
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./report-json-parser-worker.mjs', import.meta.url), {
-      resourceLimits: {
-        maxOldGenerationSizeMb: 192,
-        maxYoungGenerationSizeMb: 32,
-      },
-    });
-    let settled = false;
+class JsonArrayStreamParser {
+  elements = 0;
+  private state: 'document' | 'first' | 'element' | 'next' | 'closed' = 'document';
+  private depth = 0;
+  private inString = false;
+  private escaped = false;
+  private pieces: Buffer[] = [];
+  private pieceBytes = 0;
 
-    const finish = (callback: () => void): void => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener('abort', onAbort);
-      void worker.terminate().then(callback, callback);
-    };
-    const onAbort = (): void => finish(() => reject(signal.reason));
+  constructor(
+    private readonly encoding: 'gzip' | 'identity',
+    private readonly maxElementBytes: number,
+    private readonly maxElements: number,
+  ) {}
 
-    signal.addEventListener('abort', onAbort, { once: true });
-    worker.on('message', (message: unknown) => {
-      if (settled || typeof message !== 'object' || message === null || !('kind' in message)) {
-        finish(() => reject(new Error('report payload is not valid JSON')));
-        return;
+  push(chunk: Buffer, emit: (value: unknown, bytes: number) => void): void {
+    let start = this.state === 'element' ? 0 : -1;
+    for (let index = 0; index < chunk.length; index += 1) {
+      const byte = chunk[index]!;
+      if (this.state === 'element') {
+        if (this.inString) {
+          if (this.escaped) this.escaped = false;
+          else if (byte === BACKSLASH) this.escaped = true;
+          else if (byte === QUOTE) this.inString = false;
+          continue;
+        }
+        if (byte === QUOTE) { this.inString = true; continue; }
+        if (byte === OPEN_OBJECT || byte === OPEN_ARRAY) { this.depth += 1; continue; }
+        if (byte === CLOSE_OBJECT || byte === CLOSE_ARRAY) {
+          if (this.depth > 0) { this.depth -= 1; continue; }
+          if (byte === CLOSE_OBJECT) throw new ReportPayloadFormatError('invalid_json');
+          this.finish(chunk.subarray(start, index), emit);
+          this.state = 'closed';
+          start = -1;
+          continue;
+        }
+        if (byte === COMMA && this.depth === 0) {
+          this.finish(chunk.subarray(start, index), emit);
+          this.state = 'next';
+          start = -1;
+        }
+        continue;
       }
-      if (message.kind === 'rows' && 'rows' in message && 'offset' in message
-        && Array.isArray(message.rows) && Number.isSafeInteger(message.offset)) {
-        void Promise.resolve(consumeRows(message.rows, Number(message.offset))).then(
-          () => {
-            if (!settled) worker.postMessage({ kind: 'next' });
-          },
-          (error: unknown) => finish(() => reject(error)),
-        );
-        return;
+      if (WHITESPACE.has(byte)) continue;
+      if (this.state === 'document') {
+        if (byte === OPEN_ARRAY) { this.state = 'first'; continue; }
+        if (startsNonArrayJson(byte)) throw new ReportPayloadShapeError();
+        throw new ReportPayloadFormatError(this.encoding === 'gzip' ? 'invalid_json' : 'not_gzip_or_json');
       }
-      if (message.kind === 'done' && 'rowCount' in message
-        && Number.isSafeInteger(message.rowCount) && Number(message.rowCount) >= 0) {
-        finish(() => resolve(Number(message.rowCount)));
-        return;
-      }
-      if (message.kind === 'not_array') {
-        finish(() => reject(new ReportPayloadShapeError()));
-        return;
-      }
-      if (message.kind === 'row_limit') {
-        finish(() => reject(new ReportDownloadLimitError(
-          'parsed_row_bytes',
-          PARSED_CHUNK_MAX_BYTES,
-        )));
-        return;
-      }
-      if (message.kind === 'row_count_limit') {
-        finish(() => reject(new ReportDownloadLimitError(
-          'parsed_rows',
-          PARSED_DOCUMENT_MAX_ROWS,
-        )));
-        return;
-      }
-      finish(() => reject(new Error('report payload is not valid JSON')));
-    });
-    worker.once('error', () => {
-      finish(() => reject(new ReportDownloadLimitError('decompressed_bytes', memoryLimit)));
-    });
-    worker.once('exit', (code) => {
-      if (code !== 0) {
-        finish(() => reject(new ReportDownloadLimitError('decompressed_bytes', memoryLimit)));
-      }
-    });
-    const transferable = new Uint8Array(bytes.byteLength);
-    transferable.set(bytes);
-    worker.postMessage({
-      kind: 'start',
-      bytes: transferable.buffer,
-      maxRows: PARSED_CHUNK_MAX_ROWS,
-      maxBytes: PARSED_CHUNK_MAX_BYTES,
-      maxTotalRows: PARSED_DOCUMENT_MAX_ROWS,
-    }, [transferable.buffer]);
-  });
+      if (this.state === 'closed') throw new ReportPayloadFormatError('invalid_json');
+      if (byte === CLOSE_ARRAY && this.state === 'first') { this.state = 'closed'; continue; }
+      if (byte === CLOSE_ARRAY || byte === COMMA) throw new ReportPayloadFormatError('invalid_json');
+      // First byte of an element: re-read it in element state.
+      this.state = 'element';
+      this.depth = 0;
+      this.inString = false;
+      this.escaped = false;
+      start = index;
+      index -= 1;
+    }
+    if (this.state === 'element' && start >= 0 && start < chunk.length) {
+      this.retain(chunk.subarray(start));
+    }
+  }
+
+  end(): void {
+    if (this.state === 'closed') return;
+    if (this.state === 'document') {
+      throw new ReportPayloadFormatError(this.encoding === 'gzip' ? 'invalid_json' : 'empty');
+    }
+    throw new ReportPayloadFormatError('invalid_json');
+  }
+
+  private retain(piece: Buffer): void {
+    this.pieceBytes += piece.byteLength;
+    if (this.pieceBytes > this.maxElementBytes) {
+      throw new ReportDownloadLimitError('parsed_row_bytes', this.maxElementBytes);
+    }
+    // Copy: the inflater may reuse its output buffer for the next chunk.
+    this.pieces.push(Buffer.from(piece));
+  }
+
+  private finish(tail: Buffer, emit: (value: unknown, bytes: number) => void): void {
+    const bytes = this.pieceBytes + tail.byteLength;
+    if (bytes > this.maxElementBytes) {
+      throw new ReportDownloadLimitError('parsed_row_bytes', this.maxElementBytes);
+    }
+    const text = (this.pieces.length === 0 ? tail : Buffer.concat([...this.pieces, tail], bytes))
+      .toString('utf8');
+    this.pieces = [];
+    this.pieceBytes = 0;
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      // JSON parser errors can quote source text. Return only a closed category.
+      throw new ReportPayloadFormatError('invalid_json');
+    }
+    this.elements += 1;
+    if (this.elements > this.maxElements) {
+      throw new ReportDownloadLimitError('parsed_rows', this.maxElements);
+    }
+    emit(value, bytes);
+  }
 }
 
 function assertDownloadLimits(limits: Readonly<ReportDownloadLimits>): void {

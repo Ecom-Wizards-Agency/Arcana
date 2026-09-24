@@ -4,6 +4,76 @@ import type { FetchLike, SpApiAccessTokenProvider } from './types.js';
 const LWA_TOKEN_URL = 'https://api.amazon.com/auth/o2/token';
 const EXPIRY_MARGIN_MS = 60_000;
 
+/** One-use exchange errors never retain request values, provider bodies or causes. */
+export class SpApiCodeExchangeError extends Error {
+  override readonly name = 'SpApiCodeExchangeError';
+  constructor(readonly outcome: 'exchange_refused' | 'exchange_uncertain') {
+    super(outcome === 'exchange_refused' ? 'SP-API consent was refused' : 'SP-API consent exchange could not be confirmed');
+  }
+}
+
+/** A single bounded POST. Callers must never retry an authorization code. */
+export async function exchangeLwaAuthorizationCode(options: {
+  clientId: string; clientSecret: string; redirectUri: string; code: string;
+  signal: AbortSignal; fetch?: FetchLike;
+}): Promise<string> {
+  const { clientId, clientSecret: applicationKey, redirectUri, code } = options;
+  const signal = AbortSignal.any([options.signal, AbortSignal.timeout(30_000)]);
+  const bounded = async <T>(promise: Promise<T>): Promise<T> => {
+    if (signal.aborted) {
+      // An injected transport can abort synchronously while returning a rejection.
+      // Consume that rejection even though custody already treats the call as uncertain.
+      void promise.catch(() => {});
+      throw new SpApiCodeExchangeError('exchange_uncertain');
+    }
+    let abort: () => void = () => {};
+    try {
+      return await Promise.race([promise, new Promise<never>((_resolve, reject) => {
+        abort = () => reject(new SpApiCodeExchangeError('exchange_uncertain'));
+        signal.addEventListener('abort', abort, { once: true });
+      })]);
+    } finally { signal.removeEventListener('abort', abort); }
+  };
+  try {
+    signal.throwIfAborted();
+    const response = await bounded((options.fetch ?? fetch)(LWA_TOKEN_URL, {
+      method: 'POST', redirect: 'error', signal,
+      headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'authorization_code', code,
+        client_id: clientId, client_secret: applicationKey, redirect_uri: redirectUri }).toString(),
+    }));
+    if (!response.body) throw new SpApiCodeExchangeError('exchange_uncertain');
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = []; let length = 0;
+    try {
+      for (;;) {
+        const next = await bounded(reader.read());
+        if (next.done) break;
+        length += next.value.byteLength;
+        if (length > 131_072) throw new SpApiCodeExchangeError('exchange_uncertain');
+        chunks.push(next.value);
+      }
+    } finally { void reader.cancel().catch(() => {}); }
+    const bytes = new Uint8Array(length); let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+    const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    if (!isRecord(value)) throw new SpApiCodeExchangeError('exchange_uncertain');
+    if (!response.ok) {
+      const refusal = [400, 401, 403].includes(response.status)
+        && ['invalid_grant', 'invalid_client', 'unauthorized_client', 'invalid_request', 'unsupported_grant_type', 'access_denied'].includes(String(value['error']));
+      throw new SpApiCodeExchangeError(refusal ? 'exchange_refused' : 'exchange_uncertain');
+    }
+    const refresh = value['refresh_token'];
+    if (typeof refresh !== 'string' || !refresh.trim() || refresh.length > 65_536) {
+      throw new SpApiCodeExchangeError('exchange_uncertain');
+    }
+    signal.throwIfAborted();
+    return refresh;
+  } catch (error) {
+    throw new SpApiCodeExchangeError(error instanceof SpApiCodeExchangeError ? error.outcome : 'exchange_uncertain');
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

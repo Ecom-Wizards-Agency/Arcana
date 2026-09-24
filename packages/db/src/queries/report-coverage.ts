@@ -2,13 +2,23 @@ import { ReportCoverageAccounting, ReportCoverageObservation } from '@wizard-ads
 import type { DbHandle, QueryHandle } from '../client.js';
 import type postgres from 'postgres';
 
-/** Verify the persisted observation inside the same transaction as its upsert. */
+/** Verify the persisted observation inside the same transaction as its upsert.
+ * Budget callers must verify the latest immutable run under its source lock before
+ * replacing accounting. Provider time remains the observation time, even when
+ * that run changes completeness/counts without advancing provider freshness.
+ */
 export async function upsertReportCoverage(
   handle: QueryHandle,
   raw: ReportCoverageObservation,
   verifiedLoadedRows: number | null,
+  options?: { accounting: 'verified_budget_run' },
 ): Promise<{ offered: number; written: number; unchanged: number }> {
   const input = ReportCoverageObservation.parse(raw);
+  const replaceAccounting = options?.accounting === 'verified_budget_run';
+  if (replaceAccounting && (input.reportType !== 'campaign_budget_usage' || input.grain !== 'campaign_budget_usage'
+    || !['amazon_ads_api', 'amazon_marketing_stream'].includes(input.source) || !input.sourceRunId || !input.countsMatch)) {
+    throw new Error('verified budget accounting requires a scoped budget source run');
+  }
   if (input.loadedRows !== verifiedLoadedRows) throw new Error('coverage loaded count differs from verified load');
   if (input.sourceRows !== null && input.parsedRows !== null && input.refusedRows !== null &&
       input.sourceRows !== input.parsedRows + input.refusedRows) {
@@ -21,32 +31,40 @@ export async function upsertReportCoverage(
          earliest_requested_date, earliest_returned_date, latest_loaded_date, latest_settled_date,
          source_rows, parsed_rows, loaded_rows, refused_rows, counts_match, observed_at)
       values (${input.orgId}, ${input.profileId}, ${input.reportType}, ${input.grain}, ${input.source},
-              ${input.status}, ${input.earliestDate}, null,
+              ${input.status}, ${input.earliestDate}, ${input.verifiedStartDate ?? null},
               ${input.coveredThrough}, ${input.settledThrough}, ${input.sourceRows}, ${input.parsedRows},
               ${input.loadedRows}, ${input.refusedRows}, ${input.countsMatch}, ${input.observedAt})
       on conflict (profile_id, report_type, grain, source) do update set
         status = excluded.status,
         earliest_requested_date = least(report_coverage.earliest_requested_date, excluded.earliest_requested_date),
-        earliest_returned_date = least(report_coverage.earliest_returned_date, excluded.earliest_returned_date),
+        earliest_returned_date = coalesce(excluded.earliest_returned_date, report_coverage.earliest_returned_date),
         latest_loaded_date = excluded.latest_loaded_date,
-        latest_settled_date = greatest(report_coverage.latest_settled_date, excluded.latest_settled_date),
+        latest_settled_date = case when ${replaceAccounting} then excluded.latest_settled_date else greatest(report_coverage.latest_settled_date, excluded.latest_settled_date) end,
         source_rows = excluded.source_rows, parsed_rows = excluded.parsed_rows,
         loaded_rows = excluded.loaded_rows, refused_rows = excluded.refused_rows,
         counts_match = excluded.counts_match, observed_at = excluded.observed_at
       where report_coverage.org_id = excluded.org_id
-        and (report_coverage.latest_loaded_date is null
-          or excluded.latest_loaded_date > report_coverage.latest_loaded_date
-          or (excluded.latest_loaded_date = report_coverage.latest_loaded_date
-            and (report_coverage.observed_at is null or excluded.observed_at > report_coverage.observed_at)))
+        and ((${replaceAccounting} and
+          (report_coverage.status,report_coverage.latest_loaded_date,report_coverage.latest_settled_date,
+            report_coverage.source_rows,report_coverage.parsed_rows,report_coverage.loaded_rows,
+            report_coverage.refused_rows,report_coverage.counts_match,report_coverage.observed_at)
+          is distinct from
+          (excluded.status,excluded.latest_loaded_date,excluded.latest_settled_date,
+            excluded.source_rows,excluded.parsed_rows,excluded.loaded_rows,
+            excluded.refused_rows,excluded.counts_match,excluded.observed_at))
+          or (not ${replaceAccounting} and (report_coverage.latest_loaded_date is null
+            or excluded.latest_loaded_date > report_coverage.latest_loaded_date
+            or (excluded.latest_loaded_date = report_coverage.latest_loaded_date
+              and (report_coverage.observed_at is null or excluded.observed_at > report_coverage.observed_at)))))
       returning id
     `;
     const rows = await sql<{
-      org_id: string; source_rows: string | null; parsed_rows: string | null;
+      org_id: string; status: string; counts_match: boolean | null; latest_settled_date: string | null; source_rows: string | null; parsed_rows: string | null;
       loaded_rows: string | null; refused_rows: string | null;
-      observed_at: Date | string | null; latest_loaded_date: string | null;
+      observed_at: Date | string | null; latest_loaded_date: string | null; earliest_returned_date: string | null;
     }[]>`
-      select org_id, source_rows, parsed_rows, loaded_rows, refused_rows, observed_at,
-             latest_loaded_date::text
+      select org_id, status, counts_match, latest_settled_date::text, source_rows, parsed_rows, loaded_rows, refused_rows, observed_at,
+             latest_loaded_date::text, earliest_returned_date::text
         from public.report_coverage
        where profile_id = ${input.profileId} and report_type = ${input.reportType}
          and grain = ${input.grain} and source = ${input.source}
@@ -58,7 +76,9 @@ export async function upsertReportCoverage(
     const sameCounts = [row.source_rows, row.parsed_rows, row.loaded_rows, row.refused_rows]
       .every((value, index) => (value === null ? null : Number(value)) ===
         [input.sourceRows, input.parsedRows, input.loadedRows, input.refusedRows][index]);
-    if (written.length === 1 && (!sameCounts || row.latest_loaded_date !== input.coveredThrough ||
+    if ((written.length === 1 || replaceAccounting) && (!sameCounts || row.latest_loaded_date !== input.coveredThrough ||
+        (replaceAccounting && (row.status !== input.status || row.counts_match !== input.countsMatch || row.latest_settled_date !== input.settledThrough)) ||
+        (input.verifiedStartDate !== undefined && row.earliest_returned_date !== input.verifiedStartDate) ||
         (row.observed_at === null ? null : new Date(row.observed_at).toISOString()) !== new Date(input.observedAt).toISOString())) {
       throw new Error('coverage readback differs from verified promotion counts');
     }

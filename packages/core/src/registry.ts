@@ -1,5 +1,11 @@
 /** Public export inventory. generatedBarrels is pure; the caller owns file I/O. */
 export const PACKAGE_REGISTRY = [
+  { module: './report-metrics.js', clause: '*' },
+  { "module": "./creative/performance.js", "clause": "*" },
+  { "module": "./creative/certainty.js", "clause": "*" },
+  { "module": "./creative/prompt-loop.js", "clause": "*" },
+  { "module": "./spapi-evidence.js", "clause": "*" },
+  { module: './provider-evidence.js', clause: '*' },
   {
     "module": "./types.js",
     "clause": "*"
@@ -127,10 +133,14 @@ export const PACKAGE_REGISTRY = [
   {
     "module": "./campaign-builder/eligibility.js",
     "clause": "{ campaignBuilderEligibility }"
+  },
+  {
+    "module": "./budget-usage.js",
+    "clause": "*"
   }
 ] as const;
 
-const header = "/**\n * @wizard-ads/core (owned by WP-05).\n *\n * The doctrine engine: analyze, flags, pacing, recommendations, crosscheck,\n * campaign classification, n-grams, and White Box bidding. Pure functions with\n * ZERO I/O, ported from the Python reference tools with their selftests as\n * ground truth. It never imports `db` or `ads-api`, which is exactly what makes\n * the parity harness possible: an engine that can read a database cannot be\n * replayed against a golden.\n *\n * Doctrine VALUES are not here. Thresholds arrive as arguments; what lives in\n * this package is method.\n */\nexport const PACKAGE_NAME = '@wizard-ads/core' as const;\n\n";
+const header = "/**\n * @wizard-ads/core (owned by WP-05).\n *\n * The doctrine engine: analyze, flags, pacing, recommendations, crosscheck,\n * campaign classification, n-grams, and White Box bidding. Pure functions with\n * ZERO I/O, ported from the Python reference tools with their selftests as\n * ground truth. It never imports `db` or `ads-api`, which is exactly what makes\n * the parity harness possible: an engine that can read a database cannot be\n * replayed against a golden.\n *\n * Doctrine VALUES are not here. Thresholds arrive as arguments; what lives in\n * this package is method.\n *\n * This file holds re-exports only. Next skips `optimizePackageImports` for a\n * barrel with any local declaration, and every named import then bundles the\n * whole engine.\n */\nexport { PACKAGE_NAME } from './package-name.js';\n\n";
 export function generatedBarrels(): Record<string, string> {
   return { "index.ts": header + PACKAGE_REGISTRY.map(({ clause, module }) => `export ${clause} from '${module}';`).join("\n") + "\n" };
 }

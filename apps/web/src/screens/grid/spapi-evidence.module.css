@@ -1,0 +1,9 @@
+.panel { margin: 12px 0; padding: 16px; border: 1px solid var(--wa-border, #d7dce2); border-radius: 8px; background: var(--wa-surface, #fff); font-size: 13px; overflow-x: auto; }
+.panel h2 { margin: 0 0 8px; font-size: 16px; }
+.panel p { margin: 8px 0; line-height: 1.5; }
+.panel table { width: 100%; border-collapse: collapse; margin-top: 12px; text-align: left; }
+.panel th, .panel td { padding: 8px 12px; vertical-align: top; border-bottom: 1px solid var(--wa-border, #d7dce2); overflow-wrap: anywhere; }
+.panel th { font-weight: 600; white-space: nowrap; }
+.panel label { display: inline-flex; gap: 8px; align-items: center; }
+.panel input { padding: 6px 8px; border: 1px solid var(--wa-border, #d7dce2); border-radius: 4px; }
+.panel [data-state='partial'], .panel [data-state='stale'] { color: var(--wa-warning, #865207); }

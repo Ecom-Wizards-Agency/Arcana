@@ -1,4 +1,7 @@
+import { isDeepStrictEqual } from 'node:util';
 import { IngestionRegistry, ReportCoverageCompletion } from './ingestion-registry.js';
+import { CoreFeatureReportType, CoreReportConfiguration, ReportType as DefaultReportType } from '@wizard-ads/shared';
+import { defaultCoreReportConfiguration, parseCoreReport, assertCoreReportAdmission, validateCoreReportWindow } from '@wizard-ads/ads-api';
 import { ingestionSource } from './ingestion-sources.js';
 import { ControlMirrorMergeCounts, KeywordMirrorMergeCounts } from '@wizard-ads/shared/sp-write-mirror';
 import { Buffer } from 'node:buffer';
@@ -14,6 +17,7 @@ import {
 } from '@wizard-ads/db';
 import {
   JobPayload,
+  ReportRequestJob,
   isProviderFailure,
   isPermanentProviderFailure,
   type EconomicsSyncJob,
@@ -32,6 +36,8 @@ import {
   AdsApiRetryableError,
   DownloadUrlExpiredError,
   ReportCreateOutcomeUnknownError,
+  downloadUrlExpiresAt,
+  type DownloadUrlRejection,
   type AdProductCode,
   type AdsApiClient,
   type AdsProfileContext,
@@ -46,6 +52,7 @@ import {
   DEFAULT_REPORT_DOWNLOAD_LIMITS,
   mergeParsedFactBatches,
   ReportDownloadLimitError,
+  ReportPayloadFormatError,
   ReportPayloadShapeError,
   type ParsedFactBatch,
   type ReportDownloadLimits,
@@ -66,6 +73,7 @@ import {
 } from './region-token-buckets.js';
 import {
   ClaimOwnershipLost,
+  MAX_REPORT_RE_REQUESTS,
   type ReportRequestState,
   type WorkerStore,
 } from './store.js';
@@ -86,9 +94,20 @@ const MINUTE_MS = 60_000;
 const FOUR_HOURS_MS = 4 * 60 * MINUTE_MS;
 const POLL_DELAYS_MINUTES = [5, 10, 20, 30] as const;
 const SP_REPORT_TYPES = new Set(['spCampaigns', 'spTargeting', 'spSearchTerm', 'spPlacement']);
-// The parser worker also caps source rows at 100k. Together these bounds keep
-// normalized object overhead finite without cloning the raw document here.
+// The streaming parser also caps source rows at 100k. Together these bounds
+// keep normalized object overhead finite without retaining the raw document.
 const MAX_PARENT_PARSED_BYTES = 16 * 1024 * 1024;
+/**
+ * A pre-signed report URL with less than this left is not downloaded. S3
+ * checks expiry when the GET starts, so a started download finishes; the
+ * margin absorbs clock drift between this host and storage.
+ */
+const DOWNLOAD_URL_MIN_REMAINING_MS = 2 * MINUTE_MS;
+/** Backlog recovery runs at most this often per worker instance (once per cron tick). */
+const BACKLOG_RECOVERY_INTERVAL_MS = 5 * MINUTE_MS;
+/** Dead fetches examined per recovery pass; the pass repeats until none are left. */
+const BACKLOG_RECOVERY_LIMIT = 2_000;
+const RE_REQUESTED_LEDGER_ERROR = 'report download URL expired; report re-requested';
 type BaseReportRequestState = Omit<ReportRequestState, 'reportType'> & { reportType: ReportType };
 
 type LongLivedClaimPass =
@@ -164,6 +183,7 @@ const consoleLogger: WorkerLogger = {
 };
 
 export interface SyncWorkerOptions {
+  coreReportingEnabled?: boolean;
   workerId: string;
   store: WorkerStore;
   /** Optional so an integration-only runtime needs no Amazon credentials. */
@@ -190,9 +210,16 @@ export interface SyncWorkerOptions {
   logger?: WorkerLogger;
   /** Injectable only to prove worker-level cancellation and quarantine paths. */
   reportDownloadLimits?: Readonly<ReportDownloadLimits>;
+  /**
+   * WP-323: before claiming, re-request dead fetches whose windows overlap the
+   * restatement horizon (see `WorkerStore.recoverDeadReportFetches`). Only the
+   * runtime that owns `report.request` does it; off unless composed on.
+   */
+  reportBacklogRecovery?: boolean;
 }
 
 export class SyncWorker {
+  private readonly coreReportingEnabled: boolean;
   readonly workerId: string;
   private readonly registry: IngestionRegistry;
   private readonly store: WorkerStore;
@@ -210,6 +237,8 @@ export class SyncWorker {
   private readonly now: () => Date;
   private readonly logger: WorkerLogger;
   private readonly reportDownloadLimits: Readonly<ReportDownloadLimits>;
+  private readonly reportBacklogRecovery: boolean;
+  private lastBacklogRecoveryAt: number | null = null;
   private readonly claimLoop: ClaimLoopController;
   private readonly running = new Map<string, { job: ClaimedJob; promise: Promise<void> }>();
   private readonly quarantined = new Map<string, ClaimedJob>();
@@ -219,6 +248,7 @@ export class SyncWorker {
   private stopping = false;
 
   constructor(options: SyncWorkerOptions) {
+    this.coreReportingEnabled = options.coreReportingEnabled === true;
     this.workerId = options.workerId;
     this.store = options.store;
     this.adsApi = options.adsApi;
@@ -235,6 +265,7 @@ export class SyncWorker {
     this.now = options.now ?? (() => new Date());
     this.logger = options.logger ?? consoleLogger;
     this.reportDownloadLimits = options.reportDownloadLimits ?? DEFAULT_REPORT_DOWNLOAD_LIMITS;
+    this.reportBacklogRecovery = options.reportBacklogRecovery === true;
     this.claimLoop = new ClaimLoopController(this.pollIntervalMs, this.now);
     this.registry = new IngestionRegistry((observation, loaded) => {
       if (!this.store.recordCoverage) throw new Error('Worker store lacks the ingestion coverage producer');
@@ -322,6 +353,7 @@ export class SyncWorker {
   async drainOnce(maxJobs?: number, deadlineMs?: number): Promise<number> {
     if (this.settlementFailure) throw this.settlementFailure;
     if (deadlineMs !== undefined && Date.now() >= deadlineMs) return 0;
+    await this.recoverReportBacklogIfDue();
     const before = new Set(this.running.keys());
     const batchSize = this.availableClaimBatchSize(maxJobs);
     if (batchSize <= 0) return 0;
@@ -397,6 +429,27 @@ export class SyncWorker {
     return Math.min(maxJobs ?? this.claimBatchSize, capacity);
   }
 
+  /**
+   * WP-323 backlog recovery. Contained: a failed pass is logged and claiming
+   * continues, because the queue must keep draining whatever the ledger says.
+   */
+  private async recoverReportBacklogIfDue(): Promise<void> {
+    if (!this.reportBacklogRecovery || !this.store.recoverDeadReportFetches) return;
+    if (this.jobTypes !== undefined && !this.jobTypes.includes('report.request')) return;
+    const now = this.now().getTime();
+    if (this.lastBacklogRecoveryAt !== null && now - this.lastBacklogRecoveryAt < BACKLOG_RECOVERY_INTERVAL_MS) return;
+    this.lastBacklogRecoveryAt = now;
+    try {
+      const counts = await this.store.recoverDeadReportFetches({
+        maxGenerations: MAX_REPORT_RE_REQUESTS,
+        limit: BACKLOG_RECOVERY_LIMIT,
+      });
+      if (counts.scanned > 0) this.logger.info('dead report fetches recovered', { ...counts });
+    } catch (error) {
+      this.logger.error('dead report fetch recovery failed', { error: errorMessage(error) });
+    }
+  }
+
   private fetchClaimBatch(batchSize: number): Promise<readonly ClaimedJob[]> {
     return this.store.claim(this.workerId, batchSize, this.jobTypes);
   }
@@ -436,6 +489,7 @@ export class SyncWorker {
   private async runLongLivedClaimPass(): Promise<LongLivedClaimPass> {
     const batchSize = this.availableClaimBatchSize();
     if (batchSize <= 0) return { kind: 'no_capacity' };
+    await this.recoverReportBacklogIfDue();
     let jobs: readonly ClaimedJob[];
     try {
       jobs = await this.fetchClaimBatch(batchSize);
@@ -710,6 +764,7 @@ export class SyncWorker {
         ...(listing.excludedEntityTypes?.[product] === undefined ? {} : {
           excludedEntityTypes: listing.excludedEntityTypes[product],
         }),
+        ...(product === 'SP' ? { preserveCampaignNegativeTargets: listing.preserveCampaignNegativeTargets ?? true } : {}),
       });
       // Program rule 4: the artifact, not the exit code. A listing that
       // upserted fewer rows than it listed lost some — unless the shortfall is
@@ -817,7 +872,18 @@ export class SyncWorker {
     if (payload.reportType !== 'sbAds' && payload.creativeSyncSnapshotId != null) {
       throw new PermanentJobError('base report request must not carry creative snapshot provenance');
     }
+    const coreFamily = CoreFeatureReportType.safeParse(payload.reportType);
+    if (coreFamily.success) {
+      if (!this.coreReportingEnabled) throw new PermanentJobError('core reporting is disabled');
+      const configuration = CoreReportConfiguration.parse(payload.familyConfiguration ?? defaultCoreReportConfiguration(coreFamily.data));
+      if (configuration.family !== coreFamily.data) throw new PermanentJobError('report configuration family mismatch');
+      const capability = await this.store.coreReportCapability?.(payload.orgId, payload.profileId, coreFamily.data) ?? null;
+      assertCoreReportAdmission(configuration, capability, payload);
+      validateCoreReportWindow(configuration, payload.startDate, payload.endDate, new Intl.DateTimeFormat('en-CA', { timeZone: profile.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(this.now()));
+      payload = { ...payload, familyConfiguration: configuration };
+    } else if (payload.familyConfiguration !== undefined) throw new PermanentJobError('base report cannot carry family configuration');
     const ledger = await this.store.ensureReportRequest(job.id, payload);
+    if (coreFamily.success && !isDeepStrictEqual(CoreReportConfiguration.parse(ledger.familyConfiguration), payload.familyConfiguration)) throw new PermanentJobError('immutable report configuration changed');
     let amazonReportId = ledger.amazonReportId;
     if (!amazonReportId) {
       try {
@@ -826,6 +892,7 @@ export class SyncWorker {
           reportType: payload.reportType,
           startDate: payload.startDate,
           endDate: payload.endDate,
+          ...(payload.familyConfiguration ? { familyConfiguration: payload.familyConfiguration } : {}),
         }));
         amazonReportId = created.reportId;
         const persistence = {
@@ -870,7 +937,7 @@ export class SyncWorker {
     };
     const enqueued = await this.store.enqueue(pollPayload, addMinutes(this.now(), 5), `report.poll:${ledger.id}:0`);
     let unified: Awaited<ReturnType<UnifiedDualRun['admit']>> = { kind: 'disabled' };
-    if (this.unifiedReporting) {
+    if (this.unifiedReporting && !coreFamily.success) {
       try {
         unified = await this.unifiedReporting.admit({
           v3ReportRequestId: ledger.id,
@@ -900,6 +967,11 @@ export class SyncWorker {
       payload.profileId,
     );
     assertAmazonReportId(ledger, payload.amazonReportId);
+    const coreFamily = CoreFeatureReportType.safeParse(ledger.reportType);
+    if (coreFamily.success) {
+      if (!this.coreReportingEnabled) throw new PermanentJobError('core reporting is disabled');
+      assertCoreReportAdmission(CoreReportConfiguration.parse(ledger.familyConfiguration), await this.store.coreReportCapability?.(payload.orgId, payload.profileId, coreFamily.data) ?? null, payload);
+    }
     const status = await this.buckets.run(profile.region, () => adsApi.getReport(profile, payload.amazonReportId));
     if (status.status === 'PENDING' || status.status === 'PROCESSING') {
       if (this.now().getTime() - ledger.requestedAt.getTime() >= FOUR_HOURS_MS) {
@@ -951,6 +1023,25 @@ export class SyncWorker {
     );
     assertAmazonReportId(ledger, payload.amazonReportId);
     let parsedBatch: ParsedFactBatch | undefined;
+    const coreFamily = CoreFeatureReportType.safeParse(ledger.reportType);
+    if (coreFamily.success) {
+      if (!this.coreReportingEnabled) throw new PermanentJobError('core reporting is disabled');
+      assertCoreReportAdmission(CoreReportConfiguration.parse(ledger.familyConfiguration), await this.store.coreReportCapability?.(payload.orgId, payload.profileId, coreFamily.data) ?? null, payload);
+    }
+    // Expiry-aware fetch: a URL that is expired, or will be before a download
+    // could start, is never fetched. Its report is re-requested instead.
+    const urlExpiresAt = downloadUrlExpiresAt(payload.downloadUrl)
+      ?? (ledger.downloadUrl === payload.downloadUrl ? ledger.downloadExpiresAt ?? null : null);
+    if (urlExpiresAt !== null
+      && urlExpiresAt.getTime() - this.now().getTime() < DOWNLOAD_URL_MIN_REMAINING_MS) {
+      return this.reRequestExpiredReport(
+        ledger,
+        payload,
+        coverage,
+        urlExpiresAt.getTime() <= this.now().getTime() ? 'expired_before_download' : 'expiring_before_download',
+      );
+    }
+    const coreRows: unknown[] = [];
     let sbReport: SbAdsReportProbeParseResult | undefined;
     let parentParsedBytes = 0;
     const sourceDateCounts = new Map<string, ReportDateSourceCounts>();
@@ -971,6 +1062,11 @@ export class SyncWorker {
           signal: downloadController.signal,
           abortSource: (reason) => downloadController.abort(reason),
           consumeRows: (rows, offset) => {
+            if (coreFamily.success) {
+              parentParsedBytes = accountParentParsedBytes(parentParsedBytes, rows);
+              coreRows.push(...rows);
+              return;
+            }
             if (ledger.reportType === 'sbAds') {
               const chunk = parseSbAdsReportProbe(rows);
               parentParsedBytes = accountParentParsedBytes(parentParsedBytes, chunk);
@@ -981,7 +1077,7 @@ export class SyncWorker {
               );
               return;
             }
-            const chunk = parseReportRows(ledger.reportType, rows, profile, ledger.id);
+            const chunk = parseReportRows(DefaultReportType.parse(ledger.reportType), rows, profile, ledger.id);
             parentParsedBytes = accountParentParsedBytes(parentParsedBytes, chunk);
             if (SP_REPORT_TYPES.has(ledger.reportType)) {
               accountSponsoredProductsSourceChunk(rows, chunk.skipped, sourceDateCounts);
@@ -990,13 +1086,29 @@ export class SyncWorker {
           },
         },
       );
+      if (coreFamily.success) {
+        if (coreRows.length !== downloaded.rowsParsed) throw new PermanentJobError('core report download count mismatch');
+        const configuration = CoreReportConfiguration.parse(ledger.familyConfiguration);
+        const parsed = parseCoreReport(configuration, coreRows, ledger.startDate, ledger.endDate);
+        const accepted = parsed.refusals.length === 0 ? parsed.rows.length : 0;
+        const accounting = { sourceRows: parsed.sourceRows, parsedRows: parsed.parsedRows, refusedRows: parsed.refusals.length, promotedRows: accepted, unpromotedRows: parsed.parsedRows - accepted, canonicalRows: accepted };
+        const observedAt = this.now().toISOString();
+        await coverage.attributed(ledger.id, accounting, {
+          status: parsed.refusals.length ? 'failed' : 'completed', bytesDownloaded: downloaded.bytesDownloaded,
+          ...(parsed.refusals.length ? { error: 'core report parser refused rows' } : {}),
+          coverage: { sourceRows: parsed.sourceRows, parsedRows: parsed.parsedRows, refusedRows: parsed.refusals.length, observedAt, settledThrough: null },
+          promotion: { orgId: ledger.orgId, profileId: ledger.profileId, reportRequestId: ledger.id, requestedAt: ledger.requestedAt.toISOString(), observedAt, startDate: ledger.startDate, endDate: ledger.endDate, parsed },
+        });
+        if (parsed.refusals.length) throw new PermanentJobError('core report parser refused rows');
+        return { ...accounting, duplicates: parsed.duplicateRows, bytesDownloaded: downloaded.bytesDownloaded };
+      }
       if (ledger.reportType === 'sbAds') {
         sbReport ??= parseSbAdsReportProbe([]);
         if (sbReport.sourceRows !== downloaded.rowsParsed) {
           throw new PermanentJobError('sbAds parser chunk accounting did not match the downloaded rows');
         }
       } else {
-        parsedBatch ??= parseReportRows(ledger.reportType, [], profile, ledger.id);
+        parsedBatch ??= parseReportRows(DefaultReportType.parse(ledger.reportType), [], profile, ledger.id);
         if (parsedBatch.sourceRows !== downloaded.rowsParsed) {
           throw new PermanentJobError('report parser chunk accounting did not match the downloaded rows');
         }
@@ -1020,27 +1132,101 @@ export class SyncWorker {
         await this.store.failReport(ledger.id, detail);
         throw new PermanentJobError(detail);
       }
-      if (!(error instanceof DownloadUrlExpiredError)) throw error;
-      if (this.now().getTime() - ledger.requestedAt.getTime() >= FOUR_HOURS_MS) {
-        const detail = 'report download URL remained expired beyond the 4-hour request horizon';
-        await this.store.failReport(ledger.id, detail);
-        throw new PermanentJobError(detail);
+      if (error instanceof ReportPayloadFormatError) {
+        // A corrupt or truncated gzip stream is a transport accident and keeps
+        // the queue's retry budget. Empty, non-report and malformed bodies are
+        // the same on every retry; say which one it was and stop.
+        if (error.retryable) throw error;
+        await this.store.failReport(ledger.id, error.message);
+        throw new PermanentJobError(error.message);
       }
-      const attempt = ledger.pollAttempts;
-      const pollPayload: Extract<JobPayload, { type: 'report.poll' }> = {
-        type: 'report.poll', orgId: payload.orgId, profileId: payload.profileId,
-        reportRequestId: ledger.id, amazonReportId: payload.amazonReportId, attempt,
-      };
-      const enqueued = await this.store.enqueue(
-        pollPayload,
-        this.now(),
-        `report.repoll:${ledger.id}:${attempt}`,
-      );
-      coverage.deferDownload();
-      return { downloadExpired: true, repollEnqueued: enqueued };
+      if (!(error instanceof DownloadUrlExpiredError)) throw error;
+      return await this.reRequestExpiredReport(ledger, payload, coverage, error.rejection);
     } finally {
       clearTimeout(downloadTimer);
     }
+  }
+
+  /**
+   * A stale pre-signed URL is repaired by a fresh report, not by retrying the
+   * same link: request the same window again through the normal request path
+   * (bounded per window), mark this ledger expired, and finish the fetch
+   * without a coverage observation.
+   */
+  private async reRequestExpiredReport(
+    ledger: ReportRequestState,
+    payload: Extract<JobPayload, { type: 'report.fetch' }>,
+    coverage: ReportCoverageCompletion,
+    reason: DownloadUrlRejection | 'expired_before_download' | 'expiring_before_download',
+  ): Promise<Record<string, unknown>> {
+    // A Creative snapshot is bound to exactly this ledger, and an expired
+    // ledger blocks its snapshot (`block_creative_snapshot_on_report_terminal`).
+    // Such a report keeps its ledger and re-polls the same Amazon report for a
+    // fresh URL, within the request horizon.
+    if (ledger.creativeSyncSnapshotId) return this.rePollSnapshotReport(ledger, payload, coverage, reason);
+    if (!this.store.reRequestReport) {
+      throw new PermanentJobError('worker store cannot re-request a report whose download URL expired');
+    }
+    const request = ReportRequestJob.parse({
+      type: 'report.request',
+      orgId: payload.orgId,
+      profileId: payload.profileId,
+      reportType: ledger.reportType,
+      startDate: ledger.startDate,
+      endDate: ledger.endDate,
+      ...(ledger.familyConfiguration ? { familyConfiguration: ledger.familyConfiguration } : {}),
+      ...(ledger.creativeSyncSnapshotId ? { creativeSyncSnapshotId: ledger.creativeSyncSnapshotId } : {}),
+    });
+    const outcome = await this.store.reRequestReport({
+      reportRequestId: ledger.id,
+      orgId: payload.orgId,
+      profileId: payload.profileId,
+      payload: request,
+      error: RE_REQUESTED_LEDGER_ERROR,
+      maxGenerations: MAX_REPORT_RE_REQUESTS,
+    });
+    if (outcome.kind === 'exhausted') {
+      const detail = `report download URL expired after ${MAX_REPORT_RE_REQUESTS} re-requests of this window`;
+      await this.store.failReport(ledger.id, detail);
+      throw new PermanentJobError(detail);
+    }
+    coverage.deferDownload();
+    this.logger.info('report re-requested because its download URL cannot be used', {
+      reportRequestId: ledger.id,
+      reportType: ledger.reportType,
+      reason,
+      generation: outcome.generation,
+      requestJobId: outcome.requestJobId,
+    });
+    return {
+      downloadExpired: true,
+      reason,
+      reRequested: true,
+      reRequestJobId: outcome.requestJobId,
+      reRequestEnqueued: outcome.enqueued,
+      generation: outcome.generation,
+    };
+  }
+
+  private async rePollSnapshotReport(
+    ledger: ReportRequestState,
+    payload: Extract<JobPayload, { type: 'report.fetch' }>,
+    coverage: ReportCoverageCompletion,
+    reason: DownloadUrlRejection | 'expired_before_download' | 'expiring_before_download',
+  ): Promise<Record<string, unknown>> {
+    if (this.now().getTime() - ledger.requestedAt.getTime() >= FOUR_HOURS_MS) {
+      const detail = 'report download URL remained expired beyond the 4-hour request horizon';
+      await this.store.failReport(ledger.id, detail);
+      throw new PermanentJobError(detail);
+    }
+    const attempt = ledger.pollAttempts;
+    const pollPayload: Extract<JobPayload, { type: 'report.poll' }> = {
+      type: 'report.poll', orgId: payload.orgId, profileId: payload.profileId,
+      reportRequestId: ledger.id, amazonReportId: payload.amazonReportId, attempt,
+    };
+    const enqueued = await this.store.enqueue(pollPayload, this.now(), `report.repoll:${ledger.id}:${attempt}`);
+    coverage.deferDownload();
+    return { downloadExpired: true, reason, repollEnqueued: enqueued };
   }
 
   private async finishFetchedReport(
@@ -1099,7 +1285,7 @@ export class SyncWorker {
       });
       return { ...result, bytesDownloaded };
     }
-    const baseLedger: BaseReportRequestState = { ...ledger, reportType: ledger.reportType };
+    const baseLedger: BaseReportRequestState = { ...ledger, reportType: DefaultReportType.parse(ledger.reportType) };
     const batch = parsedBatch ?? parseReportRows(baseLedger.reportType, [], profile, ledger.id);
     if (SP_REPORT_TYPES.has(baseLedger.reportType)) {
       return this.promoteSponsoredProductsReport(

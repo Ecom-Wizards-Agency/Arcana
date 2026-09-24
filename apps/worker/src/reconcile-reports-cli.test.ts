@@ -16,6 +16,24 @@ describe('report reconciliation command', () => {
       ['abandon', ...common, '--worker-stopped', '--amazon-report-id', 'unexpected'],
       ['list', '--org-id', org, '--org-id', org]]) expect(() => parseReconcileReportsArgs(args)).toThrow();
   });
+  it('accepts abandon-dead by cut-off date with the attended attestation, and nothing narrower', () => {
+    const bulk = ['abandon-dead', '--org-id', org, '--before', '2026-09-16', '--actor', 'synthetic operator',
+      '--reason', 'covered by the weekly restatement'];
+    expect(parseReconcileReportsArgs([...bulk, '--worker-stopped'])).toEqual({
+      action: 'abandon-dead', orgId: org, before: '2026-09-16', actor: 'synthetic operator',
+      reason: 'covered by the weekly restatement', workerStopped: true,
+    });
+    for (const args of [
+      bulk,
+      [...bulk.slice(0, 3), ...bulk.slice(5), '--worker-stopped'],
+      [...bulk.slice(0, 4), '16-09-2026', ...bulk.slice(5), '--worker-stopped'],
+      [...bulk.slice(0, 4), '2026-02-30T00', ...bulk.slice(5), '--worker-stopped'],
+      [...bulk, '--worker-stopped', '--request-id', request],
+      [...bulk, '--worker-stopped', '--amazon-report-id', 'synthetic-report'],
+      ['abandon', ...common, '--worker-stopped', '--before', '2026-09-16'],
+      ['list', '--org-id', org, '--before', '2026-09-16'],
+    ]) expect(() => parseReconcileReportsArgs(args)).toThrow();
+  });
   it('has no provider dependency or report-create enqueue in its command or DB implementation', () => {
     const cli = readFileSync(new URL('./reconcile-reports-cli.ts', import.meta.url), 'utf8');
     const db = readFileSync(new URL('../../../packages/db/src/queries/report-reconciliation.ts', import.meta.url), 'utf8');

@@ -1,9 +1,9 @@
 /**
  * The one entry point for this app's browser tests.
  *
- * ## Why there are eleven suites and not one
+ * ## Why there are fourteen suites and not one
  *
- * `apps/web` carries eleven end-to-end suites that need mutually exclusive
+ * `apps/web` carries fourteen end-to-end suites that need mutually exclusive
  * servers, so they run one after the other rather than under a single config:
  *
  *  - **tags-goto** (WP-08, and WP-15's feedback surfaces) serves a
@@ -20,14 +20,17 @@
  *  - **profile-context** compiles every account-scoped operator route while
  *    proving navigation identity. It owns a fresh process so those route
  *    graphs cannot exhaust the broad auth process after unrelated workflows.
- *  - **auth-guards-anonymous** and **auth-guards-signed-in** split the two
- *    complete protected-route sweeps across fresh processes. Each sweep keeps
- *    its anonymous or cookie-backed identity while releasing compiled route
- *    graphs before the next partition starts.
+ *  - **auth-guards-anonymous-a/b** and **auth-guards-signed-in-a/b** each
+ *    visit one index half of the protected routes. Every half gets a fresh
+ *    dev process so compiled route graphs are released before the next half.
  *  - **route-acceptance** uses the authenticated boundary in a fresh process.
  *    It compiles the optimizer, creative, strategy, and dashboard routes; doing
  *    that after the complete auth sweep leaves enough development route graphs
  *    retained to exhaust a bounded CI heap even though every assertion passes.
+ *  - **undesigned-routes** captures the 17 utility routes awaiting design
+ *    frames in a fresh process. After route acceptance's workflows the shared
+ *    dev server held about 6 GB of heap, and the capture test used 4.8 of its
+ *    5 minutes on CI.
  *  - **auth** (WP-04) serves `next dev`. Supabase Auth is a hosted service — a
  *    magic link means an inbox — so the suite signs in through a test-only
  *    seam (`WIZARD_ADS_E2E_AUTH=1`) that *refuses to run under
@@ -45,26 +48,29 @@
  *    heap after the assertions themselves had passed.
  *
  * Merging them would mean weakening one guard or accepting a suite that cannot
- * hydrate. Sequential is the honest answer: eleven named configs, one runner.
+ * hydrate. Sequential is the honest answer: fourteen named configs, one runner.
  *
- * Each suite owns its own database, and the eleven never overlap: this file
+ * Each suite owns its own database, and the fourteen never overlap: this file
  * creates and drops the tags-goto database, while each authenticated suite's
  * `global-setup.ts` creates and drops its own (plus the fake Amazon and the dev
  * server). The admin connection comes from `WIZARD_ADS_TEST_DATABASE_URL` (or
  * `DATABASE_URL`), the same variable the Vitest database suites use.
  *
- *   pnpm --filter @wizard-ads/web test:e2e             # all eleven, in order
+ *   pnpm --filter @wizard-ads/web test:e2e             # all fourteen, in order
  *   pnpm --filter @wizard-ads/web test:e2e:tags-goto   # just WP-08
  *   pnpm --filter @wizard-ads/web test:e2e:grid-performance
  *   pnpm --filter @wizard-ads/web test:e2e:optimization-groups
  *   pnpm --filter @wizard-ads/web test:e2e:profile-context
- *   pnpm --filter @wizard-ads/web test:e2e:auth-guards-anonymous
- *   pnpm --filter @wizard-ads/web test:e2e:auth-guards-signed-in
+ *   pnpm --filter @wizard-ads/web test:e2e:auth-guards-anonymous-a
+ *   pnpm --filter @wizard-ads/web test:e2e:auth-guards-anonymous-b
+ *   pnpm --filter @wizard-ads/web test:e2e:auth-guards-signed-in-a
+ *   pnpm --filter @wizard-ads/web test:e2e:auth-guards-signed-in-b
  *   pnpm --filter @wizard-ads/web test:e2e:auth        # auth/operator routes without members, OAuth, roles, or the isolated Grid load
  *   pnpm --filter @wizard-ads/web test:e2e:auth-members # member and invitation flows in a fresh process
  *   pnpm --filter @wizard-ads/web test:e2e:auth-oauth  # Amazon OAuth in a fresh process
  *   pnpm --filter @wizard-ads/web test:e2e:auth-roles  # settings role matrix in a fresh process
  *   pnpm --filter @wizard-ads/web test:e2e:route-acceptance
+ *   pnpm --filter @wizard-ads/web test:e2e:undesigned-routes
  *   WIZARD_ADS_E2E_CPU_RATE=10 pnpm --filter @wizard-ads/web test:e2e:auth
  *
  * `WIZARD_ADS_E2E_CPU_RATE` accepts whole numbers from 1 through 10. That is
