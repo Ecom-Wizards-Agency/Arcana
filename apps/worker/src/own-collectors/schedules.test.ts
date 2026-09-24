@@ -11,6 +11,8 @@ beforeAll(async()=>{
 afterAll(async()=>{await db?.drop();});
 it('requires explicit source enablement and reconciles bounded daily schedules',async()=>{
   const off=new PostgresWorkerStore(db);
+  // The first pass provisions only the default Creative schedule (variant 'default'), no collector source.
+  expect(await off.ensureIntegrationSchedules()).toBe(1);
   expect(await off.ensureIntegrationSchedules()).toBe(0);
   const on=new PostgresWorkerStore(db,undefined,{ownCollectorsEnabled:true});
   expect(await on.ensureIntegrationSchedules()).toBe(1);

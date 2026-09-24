@@ -28,11 +28,15 @@ describe('budget usage schedule activation on a local test database', () => {
     expect(await ensureBudgetUsageSchedules(database, true)).toBe(1);
     expect(await ensureBudgetUsageSchedules(database, true)).toBe(0);
     await new PostgresWorkerStore(database).ensureIntegrationSchedules();
-    const rows = await database.sql<{ job_type: string; enabled: boolean; cadence: string }[]>`select job_type::text,enabled,cadence::text from public.sync_schedules where profile_id=${profileId}`;
-    expect(rows).toEqual([{ job_type: 'budget_usage.collect', enabled: true, cadence: '00:23:00' }]);
+    const rows = await database.sql<{ job_type: string; enabled: boolean; cadence: string }[]>`select job_type::text,enabled,cadence::text from public.sync_schedules where profile_id=${profileId} order by job_type::text`;
+    // Integration reconciliation also provisions the default daily Creative schedule; nothing for Stream or reporting.
+    expect(rows).toEqual([
+      { job_type: 'budget_usage.collect', enabled: true, cadence: '00:23:00' },
+      { job_type: 'creative.sync', enabled: true, cadence: '1 day' },
+    ]);
     expect(await ensureBudgetUsageSchedules(database, false)).toBe(1);
     expect(await ensureBudgetUsageSchedules(database, false)).toBe(0);
-    const [disabled] = await database.sql<{ enabled: boolean }[]>`select enabled from public.sync_schedules where profile_id=${profileId}`;
+    const [disabled] = await database.sql<{ enabled: boolean }[]>`select enabled from public.sync_schedules where profile_id=${profileId} and job_type='budget_usage.collect'`;
     expect(disabled!.enabled).toBe(false);
   });
   it('disables prior schedules when profile configuration is revoked', async () => {
