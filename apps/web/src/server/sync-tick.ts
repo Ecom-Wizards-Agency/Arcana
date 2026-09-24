@@ -30,13 +30,12 @@
  *  7. **Release** anything still running back to `queued`, and unlock.
  */
 import type { Sql } from '@wizard-ads/db';
-import type { JobType } from '@wizard-ads/shared';
+import type { CreativeSyncPolicy, JobType } from '@wizard-ads/shared';
 import {
   DEFAULT_VERCEL_CRON_JOB_TYPES,
   resolveCreativeSyncPolicy,
   vercelCronJobTypesFromEnv,
 } from '@wizard-ads/worker/deployment-role';
-import type { CreativeSyncPolicy } from '@wizard-ads/worker/deployment-role';
 import type { DailyCreativeSyncEnqueueResult } from '@wizard-ads/db';
 import { requireValidRecommendationLaneIntent } from '../optimizer/readiness';
 

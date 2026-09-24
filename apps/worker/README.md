@@ -196,7 +196,8 @@ allowlist. `OPENSPELL_CREATIVE_SYNC_DISABLED=1` stops new Creative production wi
 reason code `deployment_disabled`; unset or `0` permits it. Profile sync disabled
 returns `profile_sync_disabled`. Other kill-switch values fail configuration validation.
 The report-lane handoff controls ownership separately from creative eligibility. Vercel produces
-while it owns the report lane; the Evo report worker produces under fenced database authority.
+while it owns the report lane and its cron worker executes `creative.sync` and `sbAds` `report.fetch`
+with the same SB Video runtime as Evo; the Evo report worker produces under fenced database authority.
 Both use the same daily schedule producer, which defers pending reports and advances schedules
 only after reconciling the offered jobs. Generic SQL scheduling excludes Creative schedules.
 Apply `20260916120000_creative_schedule_producer.sql` before deploying this worker/web release;

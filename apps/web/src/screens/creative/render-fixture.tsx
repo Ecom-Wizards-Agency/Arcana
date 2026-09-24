@@ -7,7 +7,7 @@ import Screen, { type ScreenData } from './view';
 
 export const emptyWorkspace: CreativeWorkspace = { assets: [], campaigns: [], placements: [], changes: [], listingChanges: [], history: [], events: [], minClicks: null, targetAcos: null };
 export const ready: Extract<ScreenData, { view: 'ready' }> = { view: 'ready', props: { profile, period, profileToday: '2026-08-29', selectedPresetId: undefined,
-  workspace: emptyWorkspace, evidence: { producerEligible: true, latestJob: null, snapshot: null }, mode: 'list', tab: 'overview', selectedAssetId: null, campaignId: null, sbKeywordSyncEnabled: true } };
+  workspace: emptyWorkspace, evidence: { producerEligible: true, reason: null, latestJob: null, snapshot: null }, mode: 'list', tab: 'overview', selectedAssetId: null, campaignId: null, sbKeywordSyncEnabled: true } };
 
 const performance = (id: string, orders: number, clicks = 210): CreativePerformanceAsset => ({
   assetId: id, attributionState: 'mapped', name: `Synthetic cut ${id.at(-1)}`, assetType: 'VIDEO', thumbnailUrl: null,
@@ -34,7 +34,9 @@ export function visualFixture(state: string): ScreenData {
   if (state === 'no-profiles') return { view: 'empty', props: {} };
   const data = structuredClone(ready);
   data.props.workspace = syntheticWorkspace();
-  data.props.evidence = { producerEligible: state !== 'sync-off', reason: state === 'sync-off' ? 'deployment_disabled' : null, latestJob: null, snapshot };
+  data.props.evidence = state === 'sync-off'
+    ? { producerEligible: false, reason: 'deployment_disabled', latestJob: null, snapshot }
+    : { producerEligible: true, reason: null, latestJob: null, snapshot };
   const workspace = data.props.workspace;
   if (state === 'no-facts') { workspace.assets = []; data.props.evidence.snapshot = null; }
   if (state === 'selected-asset') data.props.selectedAssetId = 'synthetic-asset-b';

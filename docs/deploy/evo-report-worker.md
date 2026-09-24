@@ -9,6 +9,8 @@ The Evo report worker owns exactly four queue types after an attended handoff:
 
 The service consumes the report queue and produces daily Creative observations while the database
 claim authority is fenced. `OPENSPELL_CREATIVE_SYNC_DISABLED=1` stops new Creative production.
+Set the switch on the Vercel deployment, the current production lane; the six-key public configuration
+below has no place for it, so an Evo-lane switch needs a separately scoped contract change.
 It does not run other schedule producers, recommendation passes, or Marketing Stream. Deploying source or staging a release does not
 transfer claims from Vercel.
 

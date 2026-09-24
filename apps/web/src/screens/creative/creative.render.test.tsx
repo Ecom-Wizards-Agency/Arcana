@@ -31,12 +31,17 @@ describe('Creatives list and overview evidence', () => {
     expect(host.textContent).toContain('Evidence date 1 Aug 2026 – 29 Aug 2026');
     expect(host.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}/);
   });
-  it('explains the deployment kill switch and keeps its sync link', () => {
+  it('explains the deployment kill switch above the retained creative observations', () => {
     render(renderVisualFixture('sync-off'));
-    expect(screen.getByTestId('creative-sync-disabled').textContent).toContain('Creative sync is switched off for this deployment');
-    expect(screen.getByTestId('creative-sync-disabled').textContent).toContain('deployment_disabled');
-    expect(screen.queryByRole('complementary', { name: 'Creative list' })).toBeNull();
-    expect(within(screen.getByTestId('creative-sync-disabled')).getByRole('link', { name: 'Sync status →' }).getAttribute('href')).toContain('/sync-status?profile=');
+    const notice = screen.getByTestId('creative-sync-disabled');
+    expect(notice.textContent).toContain('Creative sync is switched off for this deployment');
+    expect(notice.textContent).toContain('deployment_disabled');
+    expect(within(notice).getByRole('link', { name: 'Sync status →' }).getAttribute('href')).toContain('/sync-status?profile=');
+    // The switch stops new observations; the two retained rows stay visible below the notice.
+    const list = screen.getByRole('complementary', { name: 'Creative list' });
+    expect(within(list).getAllByTestId('creative-list-row')).toHaveLength(2);
+    expect(notice.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId('creative-lifecycle').getAttribute('data-state')).toBe('performance_ready');
   });
   it('shows a new profile without facts as not measured', () => {
     render(renderVisualFixture('no-facts'));
@@ -52,20 +57,47 @@ describe('Creatives list and overview evidence', () => {
     render(<Screen data={data} />);
     expect(screen.getByTestId('creative-not-measured').textContent).toContain('not measured until the first creative sync completes');
   });
-  it('explains disabled profile sync separately from the deployment switch', () => {
+  it('explains disabled profile sync separately from the deployment switch and keeps retained rows', () => {
+    const data = visualFixture('selected-asset');
+    if (data.view !== 'ready') throw new Error('Expected ready fixture');
+    data.props.evidence = { ...data.props.evidence, producerEligible: false, reason: 'profile_sync_disabled' };
+    render(<Screen data={data} />);
+    const notice = screen.getByTestId('creative-profile-sync-disabled');
+    expect(notice.textContent).toContain('Profile sync is switched off');
+    expect(screen.queryByTestId('creative-sync-disabled')).toBeNull();
+    const list = screen.getByRole('complementary', { name: 'Creative list' });
+    expect(within(list).getAllByTestId('creative-list-row')).toHaveLength(2);
+    expect(notice.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+  it('explains a switched-off profile without facts in the sync evidence too', () => {
     const data = structuredClone(ready);
-    data.props.evidence.producerEligible = false;
-    data.props.evidence.reason = 'profile_sync_disabled';
+    data.props.evidence = { ...data.props.evidence, producerEligible: false, reason: 'profile_sync_disabled' };
     render(<Screen data={data} />);
     expect(screen.getByTestId('creative-profile-sync-disabled').textContent).toContain('Profile sync is switched off');
-    expect(screen.queryByTestId('creative-sync-disabled')).toBeNull();
+    expect(screen.getByTestId('creative-lifecycle').textContent).toContain('Profile sync is switched off');
+    expect(screen.getByTestId('creative-not-measured').textContent).toContain('not measured until the first creative sync completes');
   });
-  it('shows the deployment switch on eligibility screens too', () => {
+  it('shows the deployment switch above the retained eligibility view', () => {
     const data = visualFixture('sync-off');
     if (data.view !== 'ready') throw new Error('Expected ready fixture');
     data.props.mode = 'eligibility';
     render(<Screen data={data} />);
-    expect(screen.getByTestId('creative-sync-disabled').textContent).toContain('deployment_disabled');
+    const notice = screen.getByTestId('creative-sync-disabled');
+    expect(notice.textContent).toContain('deployment_disabled');
+    const eligibility = screen.getByRole('region', { name: 'Asset eligibility' });
+    // Header row plus the two retained assets.
+    expect(within(screen.getByRole('region', { name: 'Asset eligibility and moderation' })).getAllByRole('row')).toHaveLength(3);
+    expect(notice.compareDocumentPosition(eligibility) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+  it('names the deployment switch in the sync evidence before any snapshot exists', () => {
+    const data = visualFixture('sync-off');
+    if (data.view !== 'ready') throw new Error('Expected ready fixture');
+    data.props.evidence = { ...data.props.evidence, snapshot: null };
+    render(<Screen data={data} />);
+    const lifecycle = screen.getByTestId('creative-lifecycle');
+    expect(lifecycle.getAttribute('data-state')).toBe('inactive');
+    expect(lifecycle.textContent).toContain('Creative sync is switched off for this deployment');
+    expect(lifecycle.textContent).not.toContain('Profile sync is switched off');
   });
   it('selects the requested asset, retains both list rows and keeps all shipped controls', () => {
     render(renderVisualFixture('selected-asset'));

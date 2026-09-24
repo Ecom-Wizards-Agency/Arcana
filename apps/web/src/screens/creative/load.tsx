@@ -1,11 +1,10 @@
-import type { CreativeWorkspace, SpEvidence, SpParsedReport, StreamConsumerEvidence } from '@wizard-ads/shared';
+import type { CreativeSyncPolicy, CreativeWorkspace, SpEvidence, SpParsedReport, StreamConsumerEvidence } from '@wizard-ads/shared';
 import { readListingEvidence, readCoreReportEvidence, readCreativeWorkspace, readSpReportEvidence, readSpListingHistory, readLatestCreativeSyncJobState, readLatestCreativeSyncSnapshot, readProviderEvidence } from '@wizard-ads/db';
 import { readStreamConsumerEvidence } from '../creative/stream-evidence-load';
 import { deriveAssetEligibility } from '@wizard-ads/core';
 import type { ScreenActor } from '../../server/page-read';
 import type { ScreenParams } from '../types';
-import type { CreativeSyncPolicy } from '@wizard-ads/worker/deployment-role';
-import type { CreativeLifecycleEvidence } from '../../creative/lifecycle';
+import { producerEligibility, type CreativeLifecycleEvidence } from '../../creative/lifecycle';
 import { creativeSyncPolicyFromEnv } from '../../server/sync-tick';
 import { periodFromParamsThroughToday, todayIsoInTimeZone } from '../../../app/_lib/periods';
 import { listProfiles } from '../../../app/_lib/profiles';
@@ -59,11 +58,8 @@ export async function loadCreativeScreen(access: ScreenActor, input: ScreenParam
     assetId: mode === 'detail' ? input.params['assetId'] ?? one(input.searchParams['asset']) ?? null : null,
     campaignId: mode === 'campaign' ? input.params['campaignId'] ?? null : null,
   }));
-  const policy = creativeSyncPolicyFromEnv(process.env, profile.syncEnabled);
-  const evidence: CreativeLifecycleEvidence & { reason?: CreativeSyncPolicy['reason'] } = {
-    producerEligible: policy.enabled, reason: policy.reason,
-    snapshot, latestJob,
-  };
+  const policy: CreativeSyncPolicy = creativeSyncPolicyFromEnv(process.env, profile.syncEnabled);
+  const evidence: CreativeLifecycleEvidence = { ...producerEligibility(policy), snapshot, latestJob };
   const requestedTab = one(input.searchParams['tab']);
   const tab: CreativeTab = creativeTabs.find((value) => value === requestedTab) ?? 'overview';
   return { view: 'ready' as const, props: { ...(providerEvidence ? { providerEvidence } : {}), ...({ listingEvidence, listingReports } as { listingEvidence?: SpEvidence; listingReports?: SpParsedReport[] }), profile, period, profileToday, selectedPresetId, workspace: displayedWorkspace, evidence, ...({ streamEvidence } as { streamEvidence?: StreamConsumerEvidence }), mode, tab, ...(coreEvidence.some((item) => item.status !== 'unmeasured') ? { coreEvidence } : {}),

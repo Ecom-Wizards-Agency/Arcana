@@ -243,15 +243,14 @@ for forbidden_pattern in '/home/' "$private_locator_pattern" 'Environment=HOME='
   fi
 done
 
-test_tmp_root="${TMPDIR:-/tmp}"
-test_tmp="$(mktemp -d "$test_tmp_root/openspell-report-worker-test.XXXXXX")"
+test_tmp="$(mktemp -d /tmp/openspell-report-worker-test.XXXXXX)"
 server_pid=
 dirty_probe=
 cleanup() {
   if [[ -n "$server_pid" ]]; then kill "$server_pid" 2>/dev/null || true; fi
   if [[ -n "$dirty_probe" ]]; then find "$dirty_probe" -delete 2>/dev/null || true; fi
   case "$test_tmp" in
-    "$test_tmp_root"/openspell-report-worker-test.*)
+    /tmp/openspell-report-worker-test.*)
       find "$test_tmp" -depth -delete 2>/dev/null || true
       ;;
   esac
