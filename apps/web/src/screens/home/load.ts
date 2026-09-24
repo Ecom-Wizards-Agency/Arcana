@@ -1,6 +1,7 @@
-import type { SpEvidence, SpRetailSpendEvidence } from '@wizard-ads/shared';
+import type { SpEvidence, SpRetailSpendEvidence, StreamExtensionEvidence, StreamConsumerEvidence } from '@wizard-ads/shared';
 import { analyzeAccount, classifyCampaignCategory, computePacing, computePortfolioPacing, evaluate, pacingFlag, selectBudgetUsage } from '@wizard-ads/core';
-import { listHomeInsights, listHomeMarketGaps, listRecommendations, listPortfolioSpendEvidence, readBudgetUsageEvidence, readProviderEvidence, readSpReportEvidence, readSpRetailSpendEvidence } from '@wizard-ads/db';
+import { listHomeInsights, listHomeMarketGaps, listRecommendations, listPortfolioSpendEvidence, readBudgetUsageEvidence, readProviderEvidence, readSpReportEvidence, readSpRetailSpendEvidence, readStreamExtensionEvidence } from '@wizard-ads/db';
+import { readStreamConsumerEvidence } from '../creative/stream-evidence-load';
 import { loadCampaignDailyRows, loadHomeRankWatch, loadProfileDailyRows } from '../../../app/_lib/dashboard-data';
 import { kpiTiles, totalsOf } from '../../optimizer/view';
 import { addDays, precedingPeriod, periodFromParams } from '../../../app/_lib/periods';
@@ -44,6 +45,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       readBudgetUsageEvidence(handle, scope),
       listPortfolioSpendEvidence(handle, { ...scope, asOf: reportDate }),
     ]);
+    const provider: { providerBudget?: StreamConsumerEvidence; providerDiagnostics?: StreamExtensionEvidence } = { providerBudget: await readStreamConsumerEvidence(handle, { ...scope, datasets: ['sp-budget-recommendations'], asOf: new Date().toISOString(), maxAgeMs: 86400000 }), providerDiagnostics: await readStreamExtensionEvidence(handle, { ...scope, datasetId: 'sponsored-ads-campaign-diagnostics-recommendations', asOf: new Date().toISOString(), maxAgeMs: 86400000 }) };
     const pacing = computePacing(monthRows, reportDate, profile.monthlyBudget);
     const pacingAlert = pacingFlag(pacing, null);
     const flags = evaluate(analyzeAccount(profile.label, reportDate, analysisRows,
@@ -51,6 +53,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
     return {
       ...({ retail, previousRetail, retailSpend: retailSpend ?? undefined } as { retail?: SpEvidence; previousRetail?: SpEvidence; retailSpend?: SpRetailSpendEvidence }),
       ...(providerEvidence ? { providerEvidence } : {}),
+      ...provider,
       tiles: kpiTiles(totalsOf(accountRows.filter((row) => row.date >= period.start && row.date <= period.end)), totalsOf(comparisonRows)),
       // No confirmed profile break-even economics exist in the current read contract.
       breakEvenAcos: null as number | null,

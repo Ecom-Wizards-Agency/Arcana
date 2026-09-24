@@ -39,6 +39,13 @@ import {
   type BudgetUsageFailure,
   type BudgetUsageResult,
 } from './budgets.js';
+import {
+  CHANGE_HISTORY_ACCEPT, CHANGE_HISTORY_PATH, PRODUCT_ELIGIBILITY_PATH, PRODUCT_METADATA_MEDIA, PRODUCT_METADATA_PATH,
+  VALIDATION_ENDPOINTS, buildChangeHistoryBody, buildProductEligibilityBody, buildProductMetadataBody, buildValidationBody,
+  parseChangeHistoryPage, parseProductEligibility, parseProductMetadataPage, parseValidation,
+  type ChangeHistoryPage, type ChangeHistoryRequest, type ProductEligibilityRequest, type ProductEligibilityResult,
+  type ProductMetadataPage, type ProductMetadataRequest, type ValidationRequest, type ValidationResult,
+} from './catalogue.js';
 import { createHttpContext, type EffectOptions } from './context.js';
 import {
   DEFAULT_PAGE_SIZE,
@@ -274,6 +281,29 @@ export class AdsApiClient implements SbV4MediaCreativeApi {
       ...(input.accept === undefined ? {} : { accept: input.accept }),
       ...(this.userAgent === undefined ? {} : { userAgent: this.userAgent }),
     });
+  }
+
+  private async cataloguePost(profileId: string, path: string, body: unknown, contentType: string, accept = contentType): Promise<unknown> {
+    const result = await httpRequest(this.ctx, { method: 'POST', url: `${hostFor(this.region)}${path}`, path,
+      headers: this.headers({ profileId, contentType, accept }), body: JSON.stringify(body), idempotent: true });
+    return this.json(result, `POST ${path}`);
+  }
+
+  async getProductMetadataPage(profileId: string, request: ProductMetadataRequest): Promise<ProductMetadataPage> {
+    return parseProductMetadataPage(await this.cataloguePost(profileId, PRODUCT_METADATA_PATH, buildProductMetadataBody(request), PRODUCT_METADATA_MEDIA.request, PRODUCT_METADATA_MEDIA.response));
+  }
+
+  async getProductEligibility(profileId: string, request: ProductEligibilityRequest): Promise<ProductEligibilityResult> {
+    return parseProductEligibility(await this.cataloguePost(profileId, PRODUCT_ELIGIBILITY_PATH, buildProductEligibilityBody(request), 'application/json'), request.asins);
+  }
+
+  async getValidationConfigurations(profileId: string, resource: keyof typeof VALIDATION_ENDPOINTS, request: ValidationRequest): Promise<ValidationResult> {
+    const endpoint = VALIDATION_ENDPOINTS[resource];
+    return parseValidation(await this.cataloguePost(profileId, endpoint.path, buildValidationBody(request), endpoint.mediaType), resource, request);
+  }
+
+  async getChangeHistoryPage(profileId: string, request: ChangeHistoryRequest): Promise<ChangeHistoryPage> {
+    return parseChangeHistoryPage(await this.cataloguePost(profileId, CHANGE_HISTORY_PATH, buildChangeHistoryBody(request), 'application/json', CHANGE_HISTORY_ACCEPT));
   }
 
   private json(result: HttpResult, what: string): unknown {

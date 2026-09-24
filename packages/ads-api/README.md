@@ -122,9 +122,15 @@ Do not assign an ad group's totals to a guessed asset or present generic `ACTIVE
 status as proof of program/marketplace eligibility, moderation approval or delivery.
 Missing, partial, rejected and pending states remain visible and fail closed.
 
-Product eligibility, brands/Stores, Asset Library registration/moderation and ad
-delivery need their own proven provider contracts before being offered in a creation
-workflow. SP-API retail/Brand Analytics data cannot be reconstructed from advertising
+Product Metadata v1, Product Eligibility v1, Validation Configurations v1 and
+Change History v1 are page or bounded-batch reads. Their worker sources remain
+disabled by default. Metadata and eligibility do not return provider observation
+timestamps, validation does not return a provider configuration version, and Change
+History does not return a provider event id. Arcana preserves those absences; a
+derived event fingerprint is never presented as an Amazon-issued id.
+
+Brands/Stores, Asset Library registration/moderation and ad delivery need their own
+proven provider contracts before being offered in a creation workflow. SP-API retail/Brand Analytics data cannot be reconstructed from advertising
 reports. Marketing Stream needs separate delivery infrastructure, subscription
 binding and counted provider-to-ledger translation; an HTTP client alone does not
 provide it.
@@ -452,3 +458,121 @@ rows, verify two-agency isolation and zero writes/approvals/execution cadences,
 then separately authorize collection schedules. Resolve conditional extension
 contracts before probing them. Provider-derived application remains a separate
 guarded action.
+## Catalogue and Amazon Change History
+
+The four clients in `src/catalogue.ts` use the public OpenAPI documents inspected
+on 2026-09-15. Fixtures in `src/catalogue.test.ts` are synthetic protocol examples;
+they do not verify live permissions or provider availability.
+
+| Delivery row | Pinned document under `https://d1y2lf8k3vrkfu.cloudfront.net/openapi/en-us/dest/` | SHA-256 |
+| --- | --- | --- |
+| catalog-46 | ProductSelector_prod_3p.json | f57ee28943b52097697ab74959ce827dd07a224f81c3b61ba241154a720343ff |
+| catalog-47 | Eligibility_prod_3p.json | f9e23e41e87582c50482e460bc210f59a8a77c740c7f58b479a10bbbede2ea83 |
+| catalog-51 | ValidationConfigurationsAPI_prod_3p.json | fec38640f4a6e8ff2558f4dc2da703b51679bec8d3c9afa083b4fd1e1870902a |
+| catalog-53 | Changehistory_prod_3p.json | a4944c16e893322b3e560452c33c3033db2c2f872c68a64b405404683a2bbc57 |
+
+All four use POST reads. Metadata accepts up to 300 ASINs and returns a cursor;
+eligibility accepts 50 ASINs and may return multiple SKU rows per ASIN. Validation
+uses separate campaign and targeting-clause endpoints, with explicit country,
+entity-type and ad-product contexts. Its schema response keys take precedence over
+the inconsistent descriptive prose. The provider has no configuration version
+field, so persistence caches content digests.
+
+Change History v1 uses 200-event pages and a bounded window within the documented
+90-day retention. It excludes SD and the v1.1 THEME event type. The pinned schema
+has no provider event ID or actor: the ledger labels its identity as derived from
+tenant scope, entity, change type and occurrence time. Different payloads under
+that key remain visible as conflicts. Timestamp units need bounded hosted
+verification; the worker accepts contemporary millisecond timestamps only.
+
+Metadata has no observation timestamp or inventory quantity in this contract.
+Retrieval and acquisition times remain separate from a null provider observation
+time. Missing members create unavailable evidence, and signed image URLs are
+excluded. Product eligibility never establishes asset moderation approval.
+All four source gates and provisioned schedules remain disabled by default;
+reporting recovery evidence and explicit source authorization are prerequisites.
+
+### Product-evidence consumer handoff
+
+The DB reader `readCampaignProductEvidence(handle, request)` accepts an exact
+organization/profile/marketplace, advertised ASINs, ad product, optional SKU and
+staleness cutoff. It returns one product and one check per requested ASIN. Missing,
+refused, unknown, stale or ambiguous SKU evidence produces an unavailable check;
+fresh explicit eligible/ineligible evidence retains its provider reasons. The
+response explicitly carries `campaignCreationAuthority: false` and
+`assetModeration: 'unknown'`. Its DB contract tests cover eight evidence states
+and conflicting SKU candidates. Campaign-builder screen wiring remains deferred
+to that screen's owner.
+
+Change History keys include the pinned metadata discriminators (including
+`placementGroupPosition` and full targeting expressions before display
+truncation). They remain derived identities with `provider_id_unavailable`
+ambiguity. Identical simultaneous provider events cannot be proven distinct by
+this contract; conflicting payloads under a derived identity remain inspectable.
+## Stream, Asset Library and read graph evidence (WP-313)
+
+The additional clients are pure HTTP adapters with injected transports. Importing
+one does not install a worker source, acquire infrastructure authority or enable a
+schedule. Tests use synthetic fixtures and the public contracts listed below;
+they do not establish hosted capability.
+
+- `StreamSubscriptionsClient`: sponsored `/streams/subscriptions` list/create,
+  exact lookup and archive. The documented update supports status/notes, not a
+  destination change. SNS confirmation validates the approved challenge against
+  exact region/topic/destination and uses a fixed SNS host. Provisioning is a
+  separate default-denied worker authority; an uncertain create is never resent.
+- `AssetLibraryClient`: validated upload, single and asynchronous batch
+  registration, counted search, and exact ID/version lookup. URLs and upload
+  handles remain transient. Registration acceptance, processing, specification
+  checks and moderation are separate observations. The DB admits an exact immutable request against separately issued asset
+  authority. Worker execution validates bytes and provider scope before reserving
+  an attempt; campaign write authority cannot authorize these calls. No production
+  upload/registration caller is composed.
+- `ModerationClient`: v4 result reads and SD creative moderation. Ad and creative
+  versions require verified associations to Asset Library versions. The public
+  Unified Pre-moderation contract exposes submission; this implementation parses
+  supplied evidence but provides no implicit submission or claimed status reader.
+- `readProviderGraph`: eleven product-specific SB/SD resources, strict counted
+  pages and typed node/edge observations. It does not replace the existing entity
+  mirror or adopt Ads v1. Remaining SB target/negative and localization contracts
+  remain unsupported pending their prerequisites and a named consumer.
+
+The eight additional Stream datasets register strict `fixture.v1` parsers with
+synthetic recorded payloads. Each uses the existing SQS durable receipt boundary,
+one `marketing_stream.extensions.project` job on `integrations`, independently
+verified event counts and WP-256 partial coverage. These fixtures do not establish
+Amazon wire parity. Unknown versions are refused; live contract/access evidence
+is required before activation.
+
+Both `OPENSPELL_STREAM_EXTENSIONS_ENABLED=1` and an exact
+`OPENSPELL_STREAM_EXTENSIONS_DESTINATION_ARN` are required for intake. Projection
+execution also requires an explicit job claimant and a confirmed, enabled,
+capability-verified binding matching the advertiser, profile, region and queue.
+No event schedule is installed. After opt-in, startup and bounded 60-second
+DB-only reconciliation repair missing work using the existing queue custody,
+backoff and eight-attempt ceiling. Existing normalizer claimant sets stay intact.
+
+Stored observations feed Campaigns, Ad groups, Products, Targets, Target 360,
+Creatives, Creative detail, Creative campaign, Timeline, Time Machine,
+Recommendations, Home and Sync status. Aggregate measures require verified
+creative/asset/campaign associations throughout the event window. Windows remain
+separate from report totals; zero is rendered only when measured. Provider budget
+advice exposes `readStreamBudgetHandoff` with Stream provenance, no observed usage
+and no approval authority for the WP-292 consumer.
+
+Accepted asset registrations enqueue the existing `asset-library.search` consumer
+once. Search persists immutable ownership/version evidence before coverage.
+`OPENSPELL_ASSET_RECONCILIATION_ENABLED=1` and an explicit search claimant opt into
+restart repair; interrupted writes become uncertain and cannot be uploaded again.
+Only an independently verified read can settle an uncertain provider identity.
+The shared/DB `readAssetSelectionEvidence` seam provides scope-specific moderation
+to the builder; builder wiring remains with its owner. Prompt/video extension
+reports remain disabled and unsupported until real identity mapping and capability
+evidence exist, followed by reporting recovery and separate activation.
+
+Public contract references:
+
+- [Sponsored Stream subscriptions](https://dtrnk0o2zy01c.cloudfront.net/openapi/en-us/dest/AmazonMarketingStream_prod_3p.json)
+- [Asset Library v3](https://d3a0d0y2hgofx6.cloudfront.net/openapi/en-us/creative-asset-library/creative-asset-library-openapi.yaml)
+- [Moderation](https://d1y2lf8k3vrkfu.cloudfront.net/openapi/en-us/dest/Moderation_prod_3p.json)
+- [Unified Pre-moderation](https://d1y2lf8k3vrkfu.cloudfront.net/openapi/en-us/dest/PreModeration_prod_3p.json)

@@ -7,8 +7,11 @@ The Evo report worker owns exactly four queue types after an attended handoff:
 - `report.poll`
 - `report.fetch`
 
-The service is an exclusive queue consumer. It does not run schedules, recommendation passes,
-Marketing Stream, or other background producers. Deploying source or staging a release does not
+The service consumes the report queue and produces daily Creative observations while the database
+claim authority is fenced. `OPENSPELL_CREATIVE_SYNC_DISABLED=1` stops new Creative production.
+Set the switch on the Vercel deployment, the current production lane; the six-key public configuration
+below has no place for it, so an Evo-lane switch needs a separately scoped contract change.
+It does not run other schedule producers, recommendation passes, or Marketing Stream. Deploying source or staging a release does not
 transfer claims from Vercel.
 
 ## Runtime and credential contract
@@ -95,7 +98,7 @@ are completely accounted. Other report jobs may remain queued in this no-consume
 The Evo service is a continuous four-type consumer, not a one-cycle command. Before activation,
 either quiesce every producer and record the exact eligible backlog or explicitly authorize the
 complete observed backlog plus jobs that may arrive while the service runs. Include already-queued
-`creative.sync` jobs in that scope even when the Creative producer gate is off. Only after those
+`creative.sync` jobs in that scope even when `OPENSPELL_CREATIVE_SYNC_DISABLED=1` stops new Creative production. Only after those
 checks may the operator activate the staged release and record the attended handoff:
 
 ```bash

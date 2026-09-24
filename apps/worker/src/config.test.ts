@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { JobType } from '@wizard-ads/shared';
 import {
   configFromEnv,
   workerHealthHostFromEnv,
@@ -33,18 +34,21 @@ describe('WORKER_JOB_TYPES', () => {
 describe('worker deployment role', () => {
   const base = { DATABASE_URL: 'postgres://synthetic.invalid/db' };
 
-  it('preserves the general all-queue startup defaults', () => {
+  it('preserves existing general claimants and requires an explicit Stream extension claimant', () => {
     expect(configFromEnv(base)).toMatchObject({
       deploymentRole: 'general',
       claimProtocol: 'legacy',
       revision: 'unknown',
-      jobTypes: undefined,
+      jobTypes: JobType.options.filter(type => type !== 'marketing_stream.extensions.project'),
       startsBackgroundPasses: true,
       amazonConnectionsEnabled: false,
       budgetUsageApiEnabled: false,
       budgetUsageStreamEnabled: false,
       unifiedReporting: { enabled: false, profileIds: [] },
     });
+    expect(configFromEnv(base).jobTypes).toContain('marketing_stream.normalize');
+    expect(configFromEnv(base).jobTypes).not.toContain('marketing_stream.extensions.project');
+    expect(configFromEnv({...base,WORKER_JOB_TYPES:'marketing_stream.extensions.project'}).jobTypes).toEqual(['marketing_stream.extensions.project']);
   });
 
   it('requires and canonicalizes the exact Evo report allowlist', () => {
@@ -204,4 +208,16 @@ describe('SB keyword configuration', () => {
     expect(configFromEnv({ DATABASE_URL: 'postgres://synthetic.invalid/db',
       OPENSPELL_SB_KEYWORD_SYNC_ENABLED: value }).sbKeywordSyncEnabled).toBe(value === '1');
   });
+});
+
+describe('WP-311 catalogue source deployment gate', () => {
+  it.each([undefined, '', '0', 'false', 'true', '1'])(
+    'enables only the explicit value 1: %j',
+    (value) => {
+      expect(configFromEnv({
+        DATABASE_URL: 'postgres://synthetic.invalid/db',
+        OPENSPELL_ADS_CATALOGUE_SOURCES_ENABLED: value,
+      }).catalogueSourcesEnabled).toBe(value === '1');
+    },
+  );
 });

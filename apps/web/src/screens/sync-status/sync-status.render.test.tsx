@@ -1,10 +1,13 @@
-// @vitest-environment jsdom
-import Loading from '../../../app/sync-status/loading';
+import { render, screen } from '@testing-library/react';
+import { expect, it } from 'vitest';
+import { catalogueReady, ready } from './render-fixture';
+import { StreamExtensionDataset } from '@wizard-ads/shared';
 import { verifyScreen } from '../settings/render-support';
-import SharedError from '../../../app/sync-status/error';
 import { context } from '../synthetic-render-fixtures';
 import { descriptor } from './descriptor';
-import { ready } from './render-fixture';
+// @vitest-environment jsdom
+import Loading from '../../../app/sync-status/loading';
+import SharedError from '../../../app/sync-status/error';
 import Screen, { type ScreenData } from './view';
 import type { ReportLaneErrorClass, ReportLaneStage, ReportLaneStageStatus } from '@wizard-ads/shared';
 
@@ -41,3 +44,20 @@ verifyScreen(descriptor, [
   { state: 'ready', name: 'labels the per-profile retrying and dead columns', render: () => <Screen data={blockedAt('fetch', 'download_inflate_limit')} />, text: 'Retrying (this profile)Dead (this profile)' },
   { state: 'ready', name: 'says no stage is blocked when none is', render: () => <Screen data={ready} />, text: 'No report stage is blocked for every profile', absent: ['[data-testid="report-lane-blocking"]'] },
 ]);
+
+it('renders four source scopes with nullable, empty, complete and failed cursor counts',()=>{
+  render(<Screen data={catalogueReady}/>);
+  const rows=screen.getAllByTestId('catalogue-source-row');expect(rows).toHaveLength(4);
+  expect(rows[0]!.textContent).toContain('UnavailableUnavailableNot run');expect(rows[0]!.textContent).not.toContain('00');
+  expect(rows[1]!.children[6]!.textContent).toBe('0');expect(rows[1]!.children[7]!.textContent).toBe('0');
+  expect(rows[2]!.children[7]!.textContent).toBe('3');expect(rows[3]!.textContent).toContain('Synthetic cursor failure');
+});
+
+it('renders eight disabled bindings without inventing rejection or dead-letter counts', () => {
+  const streams = StreamExtensionDataset.options.map((datasetId) => ({ datasetId, bindingCount: 0, enabled: false, confirmed: false,
+    stored: 0, latestEventAt: null, maximumLagSeconds: null, duplicates: null, rejected: null, deadLettered: null }));
+  render(<Screen data={{ ...ready, props: { ...ready.props, status: { ...ready.props.status, streams } } }} />);
+  expect(screen.getAllByTestId('stream-extension-row')).toHaveLength(8);
+  expect(screen.getAllByText('missing confirmation')).toHaveLength(8);
+  expect(screen.getAllByText('unmeasured / unmeasured / unmeasured')).toHaveLength(8);
+});

@@ -9,7 +9,7 @@ import SharedError from '../shared-error';
 import Loading from '../../../app/timeline/loading';
 import { descriptor } from './descriptor';
 import Screen from './view';
-import { ready } from './render-fixture';
+import { ready, catalogueReady } from './render-fixture';
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: vi.fn(), refresh: vi.fn() }), useSearchParams: () => new URLSearchParams() }));
 verifyScreen(descriptor, [
     { state: 'ready', name: 'renders stale 49-day facts and six measures', render: () => <Screen data={ready}/>, text: '49 days of facts' },
@@ -102,4 +102,12 @@ it('hydrates the server-rendered timeline without console errors when compact cu
         if (root) await act(async () => root!.unmount());
         container.remove();formatter.mockRestore();errors.mockRestore();
     }
+});
+
+it('renders three imported Amazon events alongside one local applied event',()=>{
+  const host=render(<Screen data={catalogueReady}/>);
+  const rows=screen.getAllByTestId('timeline-event');expect(rows).toHaveLength(4);
+  expect(rows.filter(row=>row.textContent?.includes('Amazon observed'))).toHaveLength(3);
+  expect(rows[3]!.textContent).toContain('identity conflict');expect(host.container.textContent).toContain('SYNTHETIC-MARKET-0');
+  expect(screen.queryByRole('button',{name:/Restore|Acknowledge|Approve/})).toBeNull();
 });

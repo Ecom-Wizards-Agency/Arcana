@@ -55,7 +55,7 @@ export function coreFamilySchedules() {
 }
 
 export interface ScheduleSpec {
-  jobType: 'entity.sync' | 'report.request';
+  jobType: 'entity.sync' | 'report.request' | 'creative.sync';
   reportType: ReportType | null;
   variant: ScheduleVariant;
   cadence: string;
@@ -117,12 +117,19 @@ export const DEFAULT_CADENCES = {
    * request/poll/fetch pipeline land fresher facts before the preview runs.
    */
   recommendations: RECOMMENDATION_CADENCE,
+  /** Provisioned only as disabled rows after explicit profile/marketplace binding. */
+  catalogue: { metadata: '1 day', eligibility: '1 day', validation: '1 day', changeHistory: '1 hour', enabled: false },
 } as const;
 
 export function defaultSchedules(
   reportTypes: readonly ReportType[] = DEFAULT_REPORT_TYPES,
 ): ScheduleSpec[] {
   const specs: ScheduleSpec[] = [
+    {
+      jobType: 'creative.sync', reportType: null, variant: 'default',
+      cadence: '1 day', lookbackDays: null, windowOffsetDays: 0,
+      payload: { adProduct: 'SB', allowObservedAttributionFacts: true },
+    },
     {
       jobType: 'entity.sync',
       reportType: null,

@@ -3,7 +3,9 @@ import { ChangeQueueRestoreBatchPreview, COORDINATED_RESTORE_UNAVAILABLE } from 
 import type { ScreenActor } from '../../server/page-read';
 import { context, profile as baseProfile } from '../synthetic-render-fixtures';
 const mocks=vi.hoisted(()=>({preview:vi.fn(),entries:vi.fn(),profiles:vi.fn(),role:vi.fn()}));
-vi.mock('@wizard-ads/db',()=>({getReversionBatchPreview:mocks.preview,listChangeQueue:mocks.entries,readRestoreProposal:vi.fn()}));
+vi.mock('@wizard-ads/db',()=>({
+  readStreamConsumerSource:vi.fn(async()=>({
+    events:[],scope:{orgId:'00000000-0000-4000-8000-000000000001',profileId:'00000000-0000-4000-8000-000000000002',amazonProfileId:'313',region:'EU'},graph:{observations:[],associations:[],persistedObservations:0,persistedAssociations:0},truncated:false})),getReversionBatchPreview:mocks.preview,listChangeQueue:mocks.entries,readRestoreProposal:vi.fn()}));
 vi.mock('../../recommendations/data',()=>({listOrgProfiles:mocks.profiles}));
 vi.mock('../../server/org-role',()=>({requireOrgRole:mocks.role}));
 vi.mock('../../server/request-context',()=>({authenticationDestination:()=>null}));

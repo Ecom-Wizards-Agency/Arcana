@@ -18,6 +18,7 @@
 export const PACKAGE_NAME = '@wizard-ads/ads-api' as const;
 export { PROVIDER_READ_CONTRACTS } from './provider-contracts.js';
 export { providerReadContract, buildProviderEvidenceRequest, parseProviderEvidenceResponse, providerFingerprint, ProviderEvidenceProtocolError } from './provider-evidence.js';
+export * from './catalogue.js';
 
 // Client
 export { AdsApiClient, amazonAdProduct } from './client.js';
@@ -310,3 +311,9 @@ export {
   ExportFailedError,
   ReportFailedError,
 } from './errors.js';
+
+export { StreamSubscriptionsClient, validateStreamConfirmation, STREAM_SUBSCRIPTIONS_PATH, STREAM_SUBSCRIPTIONS_MEDIA_TYPE } from './stream-subscriptions.js';
+
+export * from './provider-graph.js';
+export * from './asset-library.js';
+export * from './moderation.js';

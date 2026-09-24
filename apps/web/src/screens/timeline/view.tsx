@@ -1,5 +1,7 @@
 'use client';
+
 import { ListingEvidencePanel } from '../grid/spapi-evidence';
+import { StreamEvidencePanel } from '../creative/stream-evidence';
 import { useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { TrendChart } from '@wizard-ads/ui';
@@ -11,7 +13,7 @@ import { Button, EmptyState } from '../../ui/primitives';
 import type { TimelineData } from './load';
 import { ManualEventForm } from './manual-event-form';
 import './timeline.css';
-const names = { experiment: 'experiment', apply_batch: 'apply batch', promotion: 'promotion', market: 'market', listing: 'listing', supply: 'supply' };
+const names = { experiment: 'experiment', apply_batch: 'apply batch', amazon_change: 'Amazon observed', promotion: 'promotion', market: 'market', listing: 'listing', supply: 'supply' };
 const date = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 const delta = (value: number | null) => value === null ? '—' : `${value > 0 ? '+' : ''}${(value * 100).toFixed(1)}%`;
 const overlaps = (event: TimelineEvent, start: string, end: string) => event.start <= end && (event.end === null || event.end >= start);
@@ -63,7 +65,7 @@ function Timeline({ data }: {
         window.history.replaceState(null, '', `/timeline?${params}`);
     }
     function zoom(id: string | null) { setEventId(id); save({ eventId: id }); }
-    function changeMode(next: TimelineViewState['mode']) { setMode(next); setEventId(null); const kinds = next === 'performance' ? [] : ['experiment', 'market', 'listing', 'supply'] as TimelineEventKind[]; setHidden(kinds); save({ mode: next, eventId: null, hiddenKinds: kinds }); }
+    function changeMode(next: TimelineViewState['mode']) { setMode(next); setEventId(null); const kinds = next === 'performance' ? [] : ['experiment', 'amazon_change', 'market', 'listing', 'supply'] as TimelineEventKind[]; setHidden(kinds); save({ mode: next, eventId: null, hiddenKinds: kinds }); }
     function toggleKind(kind: TimelineEventKind) { const next = hidden.includes(kind) ? hidden.filter((item) => item !== kind) : [...hidden, kind]; setHidden(next); save({ hiddenKinds: next }); }
     function toggleMeasure(measure: TimelineMeasure) { const next = selected.includes(measure) ? selected.filter((item) => item !== measure) : selected.length < 4 ? [...selected, measure] : selected; if (!next.length)
         return; setSelected(next); save({}, next); }
@@ -94,6 +96,7 @@ function Timeline({ data }: {
             throw Error(); setSettingsMessage('Settings saved.'); router.refresh(); }).catch(() => setSettingsMessage('Settings could not be confirmed. Reload before trying again.')); }}><label>Minimum observed days<input name="minDays" type="number" min="1" defaultValue={snapshot.settings.minDays ?? ''}/></label><label>Minimum treated clicks<input name="minClicks" type="number" min="0" defaultValue={snapshot.settings.minClicks ?? ''}/></label><Button type="submit">Save evidence settings</Button><span role="status">{settingsMessage}</span></form></details> : null}
     </>}
     {manual ? <ManualEventForm profileId={data.profileId} event={manual === 'new' ? null : manual} start={start} onClose={() => setManual(null)} onSaved={() => { setManual(null); router.refresh(); }}/> : null}
-    {info ? <section className="tl-dialog" role="dialog" aria-label="Event info"><h2>{info.name}</h2><p>{names[info.kind]} · {info.start} → {info.end ?? 'running'}</p><p>{info.scopeText}</p><p>{info.note || 'No note recorded.'}</p><p>Event overlap alone does not prove causation.</p>{info.kind === 'experiment' ? <a href={`/experiments/${info.id}`}>Status trail and result</a> : data.canEdit && info.kind !== 'apply_batch' ? <Button onClick={() => { setManual(info); setInfo(null); }}>Supersede event</Button> : null}<Button onClick={() => setInfo(null)}>Close</Button></section> : null}
+    {info ? <section className="tl-dialog" role="dialog" aria-label="Event info"><h2>{info.name}</h2><p>{names[info.kind]} · {info.start} → {info.end ?? 'running'}</p><p>{info.scopeText}</p><p>{info.note || 'No note recorded.'}</p><p>Event overlap alone does not prove causation.</p>{info.kind === 'experiment' ? <a href={`/experiments/${info.id}`}>Status trail and result</a> : data.canEdit && ['promotion','market','listing','supply'].includes(info.kind) ? <Button onClick={() => { setManual(info); setInfo(null); }}>Supersede event</Button> : null}<Button onClick={() => setInfo(null)}>Close</Button></section> : null}
+    <StreamEvidencePanel evidence={data.streamEvidence} title="Provider change observations" />
   </main>;
 }

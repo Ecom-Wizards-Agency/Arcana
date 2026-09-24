@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AmazonObservation } from './ads-catalogue.js';
 import { ApplyValue } from './apply.js';
 import { ReversionBatchPreview, ReversionRowPreview } from './optimization.js';
 
@@ -21,17 +22,23 @@ export const ChangeQueueRestoreBatchPreview = z.object({
 });
 export type ChangeQueueRestoreBatchPreview = z.infer<typeof ChangeQueueRestoreBatchPreview>;
 
-export const ChangeQueueSource = z.enum(['apply', 'sync', 'queued', 'restore']);
+export const ChangeQueueSource = z.enum(['apply', 'sync', 'amazon', 'queued', 'restore']);
 export type ChangeQueueSource = z.infer<typeof ChangeQueueSource>;
 export const ChangeQueueState = z.enum(['confirmed', 'exported', 'observed', 'unattributed', 'awaiting review', 'approved', 'acknowledged', 'requested', 'admitted', 'attempted', 'succeeded', 'failed']);
 export type ChangeQueueState = z.infer<typeof ChangeQueueState>;
 export const ChangeQueueEntry = z.object({
+  amazonObservation: AmazonObservation.nullable().optional(),
   id: z.string(), when: z.string(), entity: z.string(), entityType: z.string(), entityId: z.string(),
   field: z.string(), oldValue: z.unknown(), newValue: z.unknown(), source: ChangeQueueSource, state: ChangeQueueState,
   batchId: z.uuid().nullable(), batchLabel: z.string().nullable(), batchCount: z.number().int().nonnegative().nullable(),
   experimentStart: z.boolean(), candidateCount: z.number().int().nonnegative(),
   acknowledgedAt: z.string().nullable(), acknowledgedBy: z.uuid().nullable(), reviewHref: z.string().nullable(),
-}).strict();
+ }).strict().superRefine((row,context)=>{
+  if(row.source==='amazon' && (!row.amazonObservation || row.batchId!==null || row.reviewHref!==null || row.acknowledgedBy!==null || row.acknowledgedAt!==null || row.state!=='observed')) {
+    context.addIssue({code:'custom',message:'Amazon observations have provenance and no local approval or restore authority'});
+  }
+});
+
 export type ChangeQueueEntry = z.infer<typeof ChangeQueueEntry>;
 export const RestorePreviewState = z.enum(['ready', 'conflict', 'already restored', 'unsupported', 'awaiting sync', 'ambiguous']);
 export type RestorePreviewState = z.infer<typeof RestorePreviewState>;

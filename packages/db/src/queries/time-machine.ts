@@ -915,11 +915,26 @@ export async function listChangeQueue(
       left join public.sp_write_restore_reviews review on review.org_id=p.org_id and review.profile_id=p.profile_id and review.plan_id=p.plan_id
       where p.org_id=${input.orgId}::uuid and p.profile_id=${input.profileId}::uuid
         and plan.artifact #>> '{source,restoreProposal,kind}'='restore_proposal'
+      union all
+      select 'amazon:'||e.id::text,e.occurred_at,lower(e.entity_type),e.entity_id,e.entity_id,e.change_type,
+        e.sanitized_payload->'previousValue',e.sanitized_payload->'newValue','amazon','observed',
+        null::uuid,null::text,null::integer,false,0,null::timestamptz,null::uuid,null::text
+      from public.amazon_change_events e
+      where e.org_id=${input.orgId}::uuid and e.profile_id=${input.profileId}::uuid
     ) select jsonb_build_object('id',id,'when',to_char(at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
       'entity',entity,'entityType',entity_type,'entityId',entity_id,'field',field,'oldValue',old_value,'newValue',new_value,
       'source',source,'state',state,'batchId',batch_id,'batchLabel',batch_label,'batchCount',batch_count,
       'experimentStart',experiment_start,'candidateCount',candidate_count,'acknowledgedAt',acknowledged_at,
-      'acknowledgedBy',acknowledged_by,'reviewHref',review_href) as artifact
+      'acknowledgedBy',acknowledged_by,'reviewHref',review_href,
+      'amazonObservation',case when source='amazon' then (
+        select jsonb_build_object('marketplaceId',e.marketplace_id,'retrievedAt',to_char(e.retrieved_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+          'identityQuality','derived','identityAmbiguity','provider_id_unavailable',
+          'identityConflict',exists(select 1 from public.amazon_change_events conflict where conflict.org_id=e.org_id and conflict.profile_id=e.profile_id and conflict.marketplace_id=e.marketplace_id and conflict.source_namespace=e.source_namespace and conflict.source_event_key=e.source_event_key and conflict.payload_digest<>e.payload_digest),
+          'resolution',case when resolved.event_id is null then 'unresolved' else 'resolved' end,
+          'resolvedEntityType',resolved.resolved_entity_type,'resolvedAmazonId',resolved.resolved_amazon_id)
+        from public.amazon_change_events e left join lateral(select event_id,resolved_entity_type,resolved_amazon_id from public.amazon_change_event_resolutions where org_id=e.org_id and profile_id=e.profile_id and event_id=e.id order by resolved_at desc,id desc limit 1) resolved on true
+        where 'amazon:'||e.id::text=entries.id and e.org_id=${input.orgId}::uuid and e.profile_id=${input.profileId}::uuid
+      ) else null end) as artifact
     from entries where (${input.source ?? null}::text is null or source=${input.source ?? null})
       and (${input.state ?? null}::text is null or state=${input.state ?? null})
       and (${input.field ?? null}::text is null or field=${input.field ?? null})
@@ -978,7 +993,8 @@ export async function countChangeQueue(handle: TimeMachineReadHandle, scope: { o
       and not exists(select 1 from public.sp_write_restore_reviews r where r.org_id=p.org_id and r.profile_id=p.profile_id and r.plan_id=p.plan_id)
       and not exists(select 1 from public.sp_write_cycle_plans c where c.org_id=p.org_id and c.profile_id=p.profile_id and c.plan_id=p.plan_id))
     +(select count(*) from public.entity_changes ec where ec.org_id=${scope.orgId}::uuid and ec.profile_id=${scope.profileId}::uuid
-      and ec.source='sync' and ec.acknowledged_at is null))::int as count`;
+      and ec.source='sync' and ec.acknowledged_at is null)
+    +(select count(*) from public.amazon_change_events e where e.org_id=${scope.orgId}::uuid and e.profile_id=${scope.profileId}::uuid))::int as count`;
   if (row === undefined) throw new Error('Change queue count unavailable');
   return row.count;
 }

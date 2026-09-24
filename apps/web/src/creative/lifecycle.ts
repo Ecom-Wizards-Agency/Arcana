@@ -1,5 +1,5 @@
 import type { CreativeSyncJobState } from '@wizard-ads/db';
-import type { CreativeSyncSnapshot } from '@wizard-ads/shared';
+import type { CreativeSyncPolicy, CreativeSyncSnapshot } from '@wizard-ads/shared';
 
 export type CreativeLifecycleState =
   | 'inactive'
@@ -13,10 +13,23 @@ export type CreativeLifecycleState =
   | 'unsupported'
   | 'blocked';
 
-export interface CreativeLifecycleEvidence {
-  producerEligible: boolean;
+/** Why the Creative producer is off, straight from the resolved shared policy. */
+export type CreativeSyncOffReason = Extract<CreativeSyncPolicy, { enabled: false }>['reason'];
+
+/** Eligibility and its reason come from one policy, so they cannot disagree. */
+export type CreativeProducerEligibility =
+  | { producerEligible: true; reason: null }
+  | { producerEligible: false; reason: CreativeSyncOffReason };
+
+export type CreativeLifecycleEvidence = CreativeProducerEligibility & {
   latestJob: CreativeSyncJobState | null;
   snapshot: CreativeSyncSnapshot | null;
+};
+
+export function producerEligibility(policy: CreativeSyncPolicy): CreativeProducerEligibility {
+  return policy.enabled
+    ? { producerEligible: true, reason: null }
+    : { producerEligible: false, reason: policy.reason };
 }
 
 export interface CreativeLifecycleView {
@@ -44,18 +57,27 @@ const EMPTY_BASE: LifecycleBase = { observedAt: null, coverage: null, counts: []
  * observation visible until its replacement reconciles.
  */
 export function creativeLifecycle(evidence: CreativeLifecycleEvidence): CreativeLifecycleView {
-  const { latestJob, producerEligible, snapshot } = evidence;
+  const { latestJob, snapshot } = evidence;
   const base = snapshot === null ? EMPTY_BASE : snapshotBase(snapshot);
 
   if (snapshot === null) {
     if (latestJob !== null) return jobLifecycle(latestJob, base, false);
-    if (!producerEligible) {
+    if (evidence.reason === 'deployment_disabled') {
       return {
         ...EMPTY_BASE,
         state: 'inactive',
         eyebrow: 'Automatic sync inactive',
-        title: 'Creative sync is not active for this profile',
-        body: 'Arcana has not been enabled to inventory Sponsored Brands Video ads and Amazon Asset IDs for this profile.',
+        title: 'Creative sync is switched off for this deployment',
+        body: 'OPENSPELL_CREATIVE_SYNC_DISABLED=1 stops new creative observations.',
+      };
+    }
+    if (evidence.reason === 'profile_sync_disabled') {
+      return {
+        ...EMPTY_BASE,
+        state: 'inactive',
+        eyebrow: 'Automatic sync inactive',
+        title: 'Profile sync is switched off',
+        body: 'Enable profile sync to schedule creative observations.',
       };
     }
     return {

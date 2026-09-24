@@ -1,5 +1,4 @@
 import { expect, test } from '@playwright/test';
-import { mkdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { serializeApplyRows, type ApplyRow } from '@wizard-ads/shared';
@@ -37,7 +36,7 @@ test('acknowledging an observed change retains a visible receipt',async({page})=
 test('captures both screens at 1440 by 1024 in light and dark themes',async({page},testInfo)=>{
   await signIn(page,'admin');
   const {fixtureProfileId:profile}=await readState();
-  await page.setViewportSize({width:1440,height:1024});await mkdir(testInfo.outputDir,{recursive:true});
+  await page.setViewportSize({width:1440,height:1024});
   await page.goto(`/change-queue?${new URLSearchParams({profile})}`);
   await expect(page.locator('[data-badge-source="change-queue"]')).not.toHaveText('—');
   await expect(page.locator('main[data-interactive="true"]')).toBeVisible();
@@ -71,6 +70,20 @@ test('captures both screens at 1440 by 1024 in light and dark themes',async({pag
       }
     }
   }
+  const catalogueMarkup=JSON.parse(execFileSync('node',['--import','tsx','e2e/support/render-catalogue-states.ts'],{encoding:'utf8'})) as Record<string,string>;
+  const catalogueCases=[['products','[data-testid="catalogue-product-row"]',9],['shelf','[aria-label="Product evidence"] tbody tr',9],['creative','[aria-label="Amazon listing observations"] tbody tr',2],['sync','[data-testid="catalogue-source-row"]',4],['time-machine','[data-testid="timeline-entry"]',4],['timeline','[data-testid="timeline-event"]',4]] as const;
+  expect(Object.keys(catalogueMarkup)).toHaveLength(catalogueCases.length);
+  for(const [name,selector,count] of catalogueCases) {
+    await page.goto(`/change-queue?${new URLSearchParams({profile})}`);
+    await page.locator('main.cq').evaluate((element,html)=>{element.outerHTML=`<main id="catalogue-proof" style="padding:20px;overflow:auto">${html}</main>`;},catalogueMarkup[name]!);
+    await expect(page.locator(`#catalogue-proof ${selector}`)).toHaveCount(count);
+    if(name==='time-machine') await expect(page.locator('#catalogue-proof [data-source="amazon"] a, #catalogue-proof [data-source="amazon"] button')).toHaveCount(0);
+    for(const theme of ['light','dark']) {
+      await page.evaluate(value=>document.documentElement.dataset['theme']=value,theme);
+      await page.screenshot({path:testInfo.outputPath(`catalogue-${name}-${theme}.png`),fullPage:true});
+    }
+  }
+
 });
 
 test('persists Change queue filters and density with URL precedence',async({page})=>{

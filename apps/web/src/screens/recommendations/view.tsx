@@ -1,15 +1,17 @@
 import { ProviderEvidencePanel } from './provider-evidence';
+import { StreamEvidencePanel } from '../creative/stream-evidence';
+import { ProviderDiagnostics } from './provider-diagnostics';
 import { formatShellDate, formatTimestamp, formatDateWindow } from '../../ui/date-format';
 import { ScreenSurface, EmptyState as ScreenState } from '@wizard-ads/ui';
 import type { CSSProperties } from 'react';
-
 import { EmptyState } from '../../ui/primitives';
-
 import { RELEASE_ARTIFACT } from '../../ui/artifact-markers';
-
 import { ReviewWorkspace } from '../../../app/recommendations/review';
-
 import type { load } from './load';
+
+
+
+
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
 
@@ -39,13 +41,14 @@ function renderEmpty(_props: Extract<ScreenData, { view: 'empty'; }>['props']) {
   </main>);
 }
 
-function renderReady({ run, proposals, profile, runs, role, providerEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ run, proposals, profile, runs, role, providerEvidence, providerDiagnostics, providerBudget }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   return (<main
     style={main}
     data-interactive="true"
     data-release-artifact={RELEASE_ARTIFACT.recommendationReview}
   >
     <ProviderEvidencePanel evidence={providerEvidence} consumer="recommendations" />
+    <ProviderDiagnostics evidence={providerDiagnostics} /><StreamEvidencePanel evidence={providerBudget} title="Provider budget advice" />
     <header style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
       <div style={{ alignItems: 'center', display: 'flex', justifyContent: 'space-between' }}>
         <h1 style={heading}>Recommendations</h1>

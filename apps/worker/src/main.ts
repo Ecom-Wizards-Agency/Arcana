@@ -1,7 +1,11 @@
+import { reconcileEvidenceOnWorkerStart, startEvidenceReconciliation } from './evidence-reconciliation.js';
+import { assertStreamQueueDestination, streamExtensionPolicyFromEnv } from './stream-dataset-adapters.js';
+import { createCreativeSyncProducer } from './creative-sync-producer.js';
 import { registerAssetLibrarySource } from './asset-library.js';
 import { registerSpApiReportSources, postgresSpReportDependencies } from './spapi-report-sources.js';
-import { registerProviderEvidence, postgresProviderEvidenceDependencies } from "./provider-evidence.js";
+import { registerProviderEvidence, postgresProviderEvidenceDependencies } from './provider-evidence.js';
 import { registerOwnCollectors, postgresOwnCollectors } from './own-collectors/index.js';
+import { registerStreamExtensionProjection, createStreamExtensionIntake, isStreamExtensionDelivery } from './marketing-stream-extensions.js';
 import { registerTargetTranslation } from './translation/register.js';
 import { registerBudgetUsageSources } from './budget-usage/register.js';
 import { createBudgetUsageStore } from './budget-usage/composition.js';
@@ -9,6 +13,7 @@ import { createBudgetUsageProvider } from './budget-usage/provider.js';
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
 import { exchangeSpApiAuthorizationCode, runSpApiConnectionPass } from './spapi-connections.js';
 import { registerIntegrationSources } from './integration-sources.js';
+import { CatalogueSourceRunner, registerCatalogueSources } from './catalogue-sources.js';
 import { createKeywordMirrorCapability, createSpWriteWorker } from './sp-write-outbox/composition.js';
 import { startSpWritePolling } from './sp-write-outbox/polling.js';
 import { spWritePolicyFromEnv } from './sp-write-outbox/policy.js';
@@ -26,34 +31,16 @@ import { createMarketingStreamSqsConsumer } from './marketing-stream-sqs.js';
 import { createMarketingStreamNormalizeHandler } from './marketing-stream-normalize.js';
 import { createSpApiSqpRequestHandler } from './spapi-sqp.js';
 import { PostgresWeeklySqpScheduler } from './sqp-scheduler.js';
-import {
-  PostgresRecommendationRunStore,
-  createRecommendationsRunner,
-} from './recommendations-run.js';
+import { PostgresRecommendationRunStore, createRecommendationsRunner } from './recommendations-run.js';
 import { RecommendationObservationPass } from './recommendation-observer.js';
 import { createReadinessGatedRecommendationSchedules } from './recommendation-schedule-readiness.js';
 import { PostgresWorkerStore } from './store.js';
 import { WorkerUnifiedDualRun } from './unified-reporting.js';
 import { PostgresUnifiedDualRunStore } from './unified-reporting-store.js';
-import {
-  ObservedSbVideoIngestion,
-  PostgresSbVideoIngestionStore,
-} from './sb-video-ingestion.js';
+import { ObservedSbVideoIngestion, PostgresSbVideoIngestionStore } from './sb-video-ingestion.js';
 import { createMrpEconomicsSync } from './mrp.js';
-import {
-  terminateAfterFatalWorkerFailure,
-  terminateAfterFinalShutdown,
-} from './fatal-exit.js';
-import {
-  AuthHealthMonitor,
-  BidSeriesSyncPass,
-  QueueSettlementError,
-  ScheduleProvisioner,
-  shutdownExitCode,
-  StaleClaimReaper,
-  SyncWorker,
-  type WorkerShutdownEvidence,
-} from './worker.js';
+import { terminateAfterFatalWorkerFailure, terminateAfterFinalShutdown } from './fatal-exit.js';
+import { AuthHealthMonitor, BidSeriesSyncPass, QueueSettlementError, ScheduleProvisioner, shutdownExitCode, StaleClaimReaper, SyncWorker, type WorkerShutdownEvidence } from './worker.js';
 import type { JobType } from '@wizard-ads/shared';
 
 const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
@@ -64,6 +51,10 @@ const AMAZON_JOB_TYPES: ReadonlySet<JobType> = new Set([
   'report.fetch',
   'report.unified.advance',
   'creative.sync',
+  'ads.product_metadata.sync',
+  'ads.product_eligibility.sync',
+  'ads.validation_configurations.sync',
+  'ads.change_history.sync',
 ]);
 
 const config = configFromEnv();
@@ -77,16 +68,22 @@ const store = new PostgresWorkerStore(handle, undefined, {
   ownCollectorsEnabled: config.ownCollectorsEnabled,
   ...((config.jobTypes === undefined || config.jobTypes.includes('budget_usage.collect'))
     ? { budgetUsageApiEnabled: config.budgetUsageApiEnabled } : {}),
+  catalogueDeploymentEnabled: () => config.catalogueSourcesEnabled,
   ...((config.spWrites.dispatchEnabled || config.spWrites.reconcileEnabled)
     ? { keywordMirror: createKeywordMirrorCapability(handle) } : {}),
 });
 const spWriteLoop = config.startsBackgroundPasses && (config.spWrites.dispatchEnabled || config.spWrites.reconcileEnabled)
   ? createSpWriteWorker(store, { claimantId: `${config.workerId}:sp-writes`, policy: () => spWritePolicyFromEnv(process.env) })
   : undefined;
+const extensionPolicy = streamExtensionPolicyFromEnv(process.env);
+if (extensionPolicy.destinationArn && config.marketingStreamQueueUrl) assertStreamQueueDestination(config.marketingStreamQueueUrl, extensionPolicy.destinationArn);
+const extensionIntake = extensionPolicy.destinationArn ? createStreamExtensionIntake(handle, extensionPolicy.destinationArn, extensionPolicy.enabled) : null;
 const marketingStream = config.startsBackgroundPasses && config.marketingStreamQueueUrl
   ? createMarketingStreamSqsConsumer({
       handle,
       queueUrl: config.marketingStreamQueueUrl,
+      extensionIntake: async (message) => message.body && message.messageId && isStreamExtensionDelivery(message.body) && extensionIntake
+        ? extensionIntake.retain({ messageId: message.messageId, body: message.body }) : null,
       scheduler: {
         enqueue: ({ orgId, profileId, messageIds, runAt, dedupeKey }) => store.enqueue({
           type: 'marketing_stream.normalize',
@@ -181,9 +178,12 @@ const worker = new SyncWorker({
     if (spApiClientId && lwaKey) registerSpApiReportSources(registry, postgresSpReportDependencies({ handle, clientId: spApiClientId, clientSecret: lwaKey }));
     registerOwnCollectors(registry, postgresOwnCollectors(handle, config.ownCollectorDropRoot, config.ownCollectorsEnabled));
     registerTargetTranslation(registry, handle);
+    registerStreamExtensionProjection(registry, handle, () => extensionPolicy.enabled && config.jobTypes?.includes('marketing_stream.extensions.project') === true);
     registerProviderEvidence(registry, postgresProviderEvidenceDependencies(handle));
     registerBudgetUsageSources(registry, { store: budgetUsageStore, provider: createBudgetUsageProvider(handle),
       apiEnabled: config.budgetUsageApiEnabled, streamEnabled: config.budgetUsageStreamEnabled });
+    registerCatalogueSources(registry, new CatalogueSourceRunner({ handle, client: adsApi,
+      deploymentEnabled: () => config.catalogueSourcesEnabled }));
   },
   claimBatchSize: config.claimBatchSize,
   maxConcurrentJobs: config.maxConcurrentJobs,
@@ -225,6 +225,8 @@ const bidSeries = config.startsBackgroundPasses && adsApi
 const recommendationObserver = config.startsBackgroundPasses
   ? new RecommendationObservationPass(handle, console)
   : undefined;
+const creativeSync = createCreativeSyncProducer(handle, config.deploymentRole);
+creativeSync?.start();
 authHealth?.start();
 reaper?.start();
 provisioner?.start();
@@ -233,6 +235,7 @@ recommendationObserver?.start();
 
 const CUSTODY_EXIT_CODE = 78;
 let shutdownPromise: Promise<WorkerShutdownEvidence> | null = null;
+let evidenceRecovery: ReturnType<typeof startEvidenceReconciliation> | undefined;
 
 function shutdown(): Promise<WorkerShutdownEvidence> {
   shutdownPromise ??= performShutdown();
@@ -245,6 +248,8 @@ async function performShutdown(): Promise<WorkerShutdownEvidence> {
   provisioner?.stop();
   bidSeries?.stop();
   recommendationObserver?.stop();
+  await evidenceRecovery?.stop();
+  await creativeSync?.stop();
   await spWritePolling?.stop();
   await marketingStream?.stop();
   await amazonConnections?.stop();
@@ -281,6 +286,16 @@ process.once('SIGTERM', () => void shutdownForSignal());
 process.once('SIGINT', () => void shutdownForSignal());
 
 try {
+  const evidencePolicy = {
+    streamEnabled: extensionPolicy.enabled && config.jobTypes?.includes('marketing_stream.extensions.project') === true,
+    assetEnabled: process.env['OPENSPELL_ASSET_RECONCILIATION_ENABLED'] === '1'
+      && process.env['WORKER_JOB_TYPES'] !== undefined && config.jobTypes?.includes('asset-library.search') === true,
+  };
+  const recovery = await reconcileEvidenceOnWorkerStart(handle,evidencePolicy);
+  console.info('Evidence startup reconciliation', recovery);
+  if (evidencePolicy.streamEnabled || evidencePolicy.assetEnabled) evidenceRecovery = startEvidenceReconciliation(
+    async () => { const result = await reconcileEvidenceOnWorkerStart(handle,evidencePolicy); console.info('Evidence retry reconciliation', result); },
+    () => console.error('Evidence reconciliation failed'));
   await worker.start();
 } catch (error) {
   const failureKind = error instanceof QueueSettlementError ? error.kind : 'unexpected';

@@ -1,13 +1,15 @@
 'use client';
+
 import { AbaEvidencePanel } from '../grid/spapi-evidence';
 import { ProviderEvidencePanel } from '../recommendations/provider-evidence';
+import { ProductShelf } from './product-shelf';
 import { useEffect, useRef, useState } from 'react';
 import { BidCorridorChart, TrendChart } from '@wizard-ads/ui';
 import { corridorReading, corridorSummary, targetBidChecks } from '@wizard-ads/core';
 import { normalizeQueuedBidOverride, parseGridView, serializeGridView, type GridSavedView, type ListingFieldObservation } from '@wizard-ads/shared';
 import type { Target360Model } from './model';
-import styles from './target360.module.css';
 import { CoreReportEvidencePanel } from '../grid/core-report-evidence';
+import styles from './target360.module.css';
 const tabs = ['Corridor', 'Shelf', 'Rank', 'Changes', 'Performance'] as const;
 const defaultTarget: NonNullable<GridSavedView['target']> = { series: { bid: true, realisedCpc: true, suggestedBand: true, maxCpc: true, dailySpend: true, acos: true }, maxCpcExpanded: true };
 const seriesLabels = { bid: 'Bid', realisedCpc: 'Realised CPC', suggestedBand: 'Amazon suggested band', maxCpc: 'Max CPC', dailySpend: 'Daily spend', acos: 'ACOS' };
@@ -129,6 +131,7 @@ export function Target360({ model, currencyCode, back, savedView, onClose, showL
     <section aria-label="SQP query evidence"><h2>SQP query evidence</h2>{model.searchEvidence?.sqp.length ? <table><thead><tr><th>ASIN</th><th>Query</th><th>Provider week</th><th>Impression share</th><th>Purchase share</th><th>Observed</th></tr></thead><tbody>{model.searchEvidence.sqp.map(row => <tr key={`${row.asin}:${row.start}`}><td>{row.asin}</td><td>{row.query}</td><td>{row.start} to {row.end}</td><td>{percent(row.impressionShare)}</td><td>{percent(row.purchaseShare)}</td><td>{row.observedAt}</td></tr>)}</tbody></table> : <p>Not measured for this exact query, ASIN and period.</p>}</section>
     <AbaEvidencePanel evidence={model.searchEvidence?.aba} selectedAsin={model.searchEvidence?.asin ?? ''} query={model.payload.target.targeting} />
       </> : null}
+      {tab === 'Shelf' ? <ProductShelf products={model.shelf}/> : null}
       {tab === 'Changes' ? <><h2>Changes</h2>{model.changes.length === 0 ? <p>No entity changes recorded in this period.</p> : <table><thead><tr><th>Date</th><th>Field</th><th>Before</th><th>After</th><th>Source</th></tr></thead><tbody>{model.changes.map((r) => <tr key={r.id}><td>{r.date}</td><td>{r.field}</td><td>{r.oldValue ?? 'Not measured'}</td><td>{r.newValue ?? 'Not measured'}</td><td>{r.source}</td></tr>)}</tbody></table>}</> : null}
       {tab === 'Performance' ? <><h2>Performance</h2>{model.performance.length === 0 ? <p>No target facts measured in this period.</p> : <table><thead><tr><th>Date</th><th>Impressions</th><th>Clicks</th><th>Spend</th><th>Sales</th><th>Orders</th><th>ACOS</th><th>Top-of-search share</th></tr></thead><tbody>{model.performance.map((r) => <tr key={r.date}><td>{r.date}</td><td>{r.impressions ?? 'Not measured'}</td><td>{r.clicks ?? 'Not measured'}</td><td>{money(r.spend)}</td><td>{money(r.sales)}</td><td>{r.orders ?? 'Not measured'}</td><td>{percent(r.acos)}</td><td>{percent(r.topOfSearchShare)}</td></tr>)}</tbody></table>}</> : null}
     </section>}
@@ -153,5 +156,19 @@ export function Target360({ model, currencyCode, back, savedView, onClose, showL
       return <section key={key}><button className="wa-btn" onClick={() => update({ ...view, compare: view.compare!.filter((c) => c !== p) })}>Remove {other?.payload.target.targeting ?? p.targetId}</button>{other ? <BidCorridorChart title={other.payload.target.targeting} ariaLabel={`Compare ${other.payload.target.targeting}`} currencyCode={other.currencyCode} points={other.payload.points} /> : <p aria-busy="true">Loading comparison {p.targetId}…</p>}</section>;
     })}</section> : null}
     <ProviderEvidencePanel evidence={model.providerEvidence} consumer="targets" />
+    <section className={styles.panel} aria-label="Provider associations" data-state={model.graph?.status ?? 'missing'}>
+      <h2>Provider associations</h2>
+      {model.graph?.observation ? <p>Provider target state: {model.graph.observation.state} · {model.graph.observation.source} · {model.graph.observation.sourceEventAt}</p> : null}
+      {!model.graph || model.graph.status === 'missing' ? <p>No provider associations measured for this target.</p> : <>
+        <p>{model.graph.status === 'stale' ? 'Provider association evidence is stale.' : model.graph.status === 'partial' ? 'Provider association evidence is partial.' : 'Observed provider associations.'}
+          {' '}{model.graph.rows.length} resolved · {model.graph.unresolvedCount} awaiting endpoint evidence.</p>
+        {model.graph.rows.length>0 ? <table><thead><tr><th>Association</th><th>Entity</th><th>Source</th><th>Observed</th></tr></thead>
+          <tbody>{model.graph.rows.map((row) => <tr key={`${row.relation}:${row.kind}:${row.providerId}:${row.version ?? ''}`}>
+            <td>{row.relation.replaceAll('_',' ')}</td><td>{row.kind.replaceAll('_',' ')} · {row.providerId}{row.version ? ` · ${row.version}` : ''}</td>
+            <td>{row.source === 'marketing_stream' ? 'Amazon Marketing Stream' : 'Amazon Ads API'}</td>
+            <td>{row.sourceEventAt.slice(0,10)}{row.stale ? ' · Stale' : ''}</td>
+          </tr>)}</tbody></table> : null}
+      </>}
+    </section>
   </article>;
 }

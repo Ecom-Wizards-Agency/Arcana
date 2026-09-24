@@ -11,8 +11,12 @@ export const INGESTION_SOURCES: readonly IngestionSource[] = [
   { jobType: 'translation.request', source: 'target_translation', laneAffinity: ['integrations'], counts: ['requested', 'completed', 'superseded', 'alreadyCompleted'] },
   { jobType: 'budget_usage.collect', source: 'amazon_ads_api', reportType: 'campaign_budget_usage', laneAffinity: ['integrations'], counts: ['selected', 'requested', 'returned', 'failed', 'sourceRows', 'parsedRows', 'refusedRows', 'loadedRows', 'existingRows', 'verifiedLoadedRows'] },
   { jobType: 'budget_usage.stream', source: 'amazon_marketing_stream', reportType: 'campaign_budget_usage', laneAffinity: ['integrations'], counts: ['selected', 'requested', 'returned', 'failed', 'sourceRows', 'parsedRows', 'refusedRows', 'loadedRows', 'existingRows', 'verifiedLoadedRows'] },
+  { jobType: 'ads.product_metadata.sync', source: 'amazon_ads_product_metadata', laneAffinity: ['integrations'], counts: ['requestedMembers','pages','sourceRows','parsedRows','refusedRows','duplicates','canonicalRows','writtenRows','existingRows','verifiedRows'] },
+  { jobType: 'ads.product_eligibility.sync', source: 'amazon_ads_product_eligibility', laneAffinity: ['integrations'], counts: ['requestedMembers','pages','sourceRows','parsedRows','refusedRows','duplicates','canonicalRows','writtenRows','existingRows','verifiedRows'] },
+  { jobType: 'ads.validation_configurations.sync', source: 'amazon_ads_validation_configurations', laneAffinity: ['integrations'], counts: ['requestedMembers','pages','sourceRows','parsedRows','refusedRows','duplicates','canonicalRows','writtenRows','existingRows','verifiedRows'] },
+  { jobType: 'ads.change_history.sync', source: 'amazon_ads_change_history', laneAffinity: ['integrations'], counts: ['requestedMembers','pages','sourceRows','parsedRows','refusedRows','duplicates','canonicalRows','writtenRows','existingRows','verifiedRows'] },
   { jobType: 'entity.sync', source: 'amazon_ads', laneAffinity: ['vercel-default', 'vercel-reduced'], counts: ['listed', 'upserted', 'duplicates'] },
-  { jobType: 'creative.sync', source: 'amazon_ads', laneAffinity: ['evo-report', 'evo-report-unified'], counts: ['adsReceived', 'adsPersisted'] },
+  { jobType: 'creative.sync', source: 'amazon_ads', laneAffinity: ['vercel-default', 'evo-report', 'evo-report-unified'], counts: ['adsReceived', 'adsPersisted'] },
   ...(['report.request', 'report.poll', 'report.fetch'] as const).map((jobType) => ({
     jobType, source: 'amazon_reporting_v3',
     laneAffinity: ['vercel-default', 'evo-report', 'evo-report-unified'] as IngestionLane[],
@@ -25,6 +29,7 @@ export const INGESTION_SOURCES: readonly IngestionSource[] = [
   { jobType: 'sqp.request', source: 'amazon_spapi', reportType: 'GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT', laneAffinity: ['integrations'], counts: ['sourceRows', 'parsedRows', 'refusedRows', 'upserts'] },
   { jobType: 'crosscheck.ingest', source: 'secondary_import', laneAffinity: [], counts: ['rowsParsed', 'rowsKept', 'written'] },
   { jobType: 'marketing_stream.normalize', source: 'amazon_marketing_stream', laneAffinity: ['integrations'], counts: ['offered', 'normalized'] },
+  { jobType: 'marketing_stream.extensions.project', source: 'amazon_marketing_stream', laneAffinity: ['integrations'], counts: ['received', 'undecodable', 'decoded', 'accepted', 'deduplicated', 'stored', 'rejected', 'deadLettered', 'verifiedStored'] },
   { jobType: 'report.unified.advance', source: 'amazon_unified_reporting', laneAffinity: ['evo-report-unified'], counts: ['received', 'accepted', 'refused'] },
   ...(['sqp.categorize', 'history.bootstrap', 'report.promote'] as const).map((jobType) => ({
     jobType, source: 'unimplemented', laneAffinity: [], counts: ['offered', 'written'],

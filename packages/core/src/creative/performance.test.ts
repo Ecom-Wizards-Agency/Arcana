@@ -23,7 +23,7 @@ function workspace(): CreativeWorkspace {
       adGroups: [{ adGroupId: 'group-one', name: null, assetIds: ['asset-one'], unmappedCount: 0 },
         { adGroupId: 'group-two', name: null, assetIds: ['asset-two'], unmappedCount: 0 }],
       modifiers: { topOfSearch: null, restOfSearch: null, productPages: null } }],
-    placements: [], changes: [], history: history(), events: [], minClicks: 80, targetAcos: null };
+    placements: [], changes: [], listingChanges: [], history: history(), events: [], minClicks: 80, targetAcos: null };
 }
 describe('creative campaign comparison', () => {
   it('aggregates each campaign once and preserves absent completion', () => {

@@ -1,3 +1,9 @@
+import { SpReportPlan } from './spapi-reports.js';
+import { z } from 'zod';
+import { AssetLibrarySearchJob } from './asset-library.js';
+import { CoreFeatureReportType, CoreReportConfiguration } from './report-families.js';
+import { StreamExtensionDataset } from './marketing-stream-extensions.js';
+import { AdProduct, AmazonId, IsoDate, Uuid } from './primitives.js';
 /**
  * `JobPayload`: what one row in the `sync_jobs` queue carries.
  *
@@ -7,11 +13,6 @@
  * counts parsed rows against loaded rows. Splitting them is what makes a killed
  * worker resumable instead of a lost report.
  */
-import { SpReportPlan } from './spapi-reports.js';
-import { z } from 'zod';
-import { AssetLibrarySearchJob } from './asset-library.js';
-import { CoreFeatureReportType, CoreReportConfiguration } from './report-families.js';
-import { AdProduct, AmazonId, IsoDate, Uuid } from './primitives.js';
 
 export const JobType = z.enum([
   'retail.report.request', 'aba.report.request', 'catalogue.report.request',
@@ -39,6 +40,11 @@ export const JobType = z.enum([
   'prompts.collect',
   'budget_usage.collect',
   'budget_usage.stream',
+  'ads.product_metadata.sync',
+  'ads.product_eligibility.sync',
+  'ads.validation_configurations.sync',
+  'ads.change_history.sync',
+  'marketing_stream.extensions.project',
 ]);
 export type JobType = z.infer<typeof JobType>;
 
@@ -49,6 +55,7 @@ export const FeatureJobType = z.enum([
   'history.bootstrap',
   'report.promote',
   'marketing_stream.normalize',
+  'marketing_stream.extensions.project',
   'report.unified.advance',
 ]);
 export type FeatureJobType = z.infer<typeof FeatureJobType>;
@@ -305,7 +312,22 @@ export const BudgetUsageCollectJob = z.object({ ...jobBase, type: z.literal('bud
 export type BudgetUsageCollectJob = z.infer<typeof BudgetUsageCollectJob>;
 export const BudgetUsageStreamJob = z.object({ ...jobBase, type: z.literal('budget_usage.stream') });
 export type BudgetUsageStreamJob = z.infer<typeof BudgetUsageStreamJob>;
+const catalogueJobBase = {
+  ...jobBase, marketplaceId: AmazonId,
+  /** Explicit admission remains false unless an operator provisioner sets it. */
+  sourceEnabled: z.literal(true),
+};
+export const ProductMetadataSyncJob = z.strictObject({ ...catalogueJobBase,
+  type: z.literal(JobType.enum['ads.product_metadata.sync']), asins: z.array(AmazonId).min(1).max(300), adProduct: AdProduct });
+export const ProductEligibilitySyncJob = z.strictObject({ ...catalogueJobBase,
+  type: z.literal(JobType.enum['ads.product_eligibility.sync']), asins: z.array(AmazonId).min(1), adProduct: AdProduct });
+export const ValidationConfigurationsSyncJob = z.strictObject({ ...catalogueJobBase,
+  type: z.literal(JobType.enum['ads.validation_configurations.sync']), countryCode: z.string().regex(/^[A-Z]{2}$/),
+  entityType: z.enum(['SELLER', 'VENDOR']), adProducts: z.array(AdProduct).min(1).max(3) });
+export const AdsChangeHistorySyncJob = z.strictObject({ ...catalogueJobBase,
+  type: z.literal(JobType.enum['ads.change_history.sync']), from: z.iso.datetime(), to: z.iso.datetime() });
 
+export const StreamExtensionProjectionJob = z.object({ ...jobBase, type: z.literal('marketing_stream.extensions.project'), datasetId: StreamExtensionDataset, eventIdentity: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 export const JobPayload = z.discriminatedUnion('type', [
   RetailReportJob, AbaReportJob, CatalogueReportJob,
   z.strictObject({ ...jobBase, type: z.literal('provider.evidence.collect'), configId: Uuid }),
@@ -328,8 +350,13 @@ export const JobPayload = z.discriminatedUnion('type', [
   HistoryBootstrapJob,
   ReportPromoteJob,
   MarketingStreamNormalizeJob,
+  StreamExtensionProjectionJob,
   UnifiedReportAdvanceJob,
   TargetTranslationJob,
+  ProductMetadataSyncJob,
+  ProductEligibilitySyncJob,
+  ValidationConfigurationsSyncJob,
+  AdsChangeHistorySyncJob,
 ]);
 export type JobPayload = z.infer<typeof JobPayload>;
 
@@ -339,6 +366,7 @@ export const FeatureJobPayload = z.discriminatedUnion('type', [
   HistoryBootstrapJob,
   ReportPromoteJob,
   MarketingStreamNormalizeJob,
+  StreamExtensionProjectionJob,
   UnifiedReportAdvanceJob,
 ]);
 export type FeatureJobPayload = z.infer<typeof FeatureJobPayload>;
@@ -359,3 +387,7 @@ export type HistoryBootstrapJob = z.infer<typeof HistoryBootstrapJob>;
 export type ReportPromoteJob = z.infer<typeof ReportPromoteJob>;
 export type MarketingStreamNormalizeJob = z.infer<typeof MarketingStreamNormalizeJob>;
 export type UnifiedReportAdvanceJob = z.infer<typeof UnifiedReportAdvanceJob>;
+export type ProductMetadataSyncJob = z.infer<typeof ProductMetadataSyncJob>;
+export type ProductEligibilitySyncJob = z.infer<typeof ProductEligibilitySyncJob>;
+export type ValidationConfigurationsSyncJob = z.infer<typeof ValidationConfigurationsSyncJob>;
+export type AdsChangeHistorySyncJob = z.infer<typeof AdsChangeHistorySyncJob>;
