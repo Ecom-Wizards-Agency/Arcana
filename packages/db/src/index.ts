@@ -99,6 +99,7 @@ export * from './queries/dayparting-schedules.js';
 export * from './queries/optimizer-export.js';
 export * from './queries/sponsored-prompts.js';
 export { prepareOptimizerRetry, readOptimizerRetryExclusions } from './queries/sp-write-application-optimizer.js';
+export { readProviderEvidence } from './queries/provider-evidence.js';
 export * from './queries/report-families.js';
 export * from './queries/spapi-reports.js';
 export * from './queries/grid-performance-evidence.js';

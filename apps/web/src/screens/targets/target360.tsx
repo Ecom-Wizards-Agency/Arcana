@@ -1,5 +1,6 @@
 'use client';
 import { AbaEvidencePanel } from '../grid/spapi-evidence';
+import { ProviderEvidencePanel } from '../recommendations/provider-evidence';
 import { useEffect, useRef, useState } from 'react';
 import { BidCorridorChart, TrendChart } from '@wizard-ads/ui';
 import { corridorReading, corridorSummary, targetBidChecks } from '@wizard-ads/core';
@@ -147,5 +148,6 @@ export function Target360({ model, currencyCode, back, savedView, onClose, showL
       const other = p.profileId === model.profileId && p.targetId === model.payload.target.targetId ? model : comparisons[key];
       return <section key={key}><button className="wa-btn" onClick={() => update({ ...view, compare: view.compare!.filter((c) => c !== p) })}>Remove {other?.payload.target.targeting ?? p.targetId}</button>{other ? <BidCorridorChart title={other.payload.target.targeting} ariaLabel={`Compare ${other.payload.target.targeting}`} currencyCode={other.currencyCode} points={other.payload.points} /> : <p aria-busy="true">Loading comparison {p.targetId}…</p>}</section>;
     })}</section> : null}
+    <ProviderEvidencePanel evidence={model.providerEvidence} consumer="targets" />
   </article>;
 }

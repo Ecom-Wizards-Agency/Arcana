@@ -33,6 +33,7 @@ export const JobType = z.enum([
   'report.unified.advance',
   'translation.request',
   'asset-library.search',
+  'provider.evidence.collect',
 ]);
 export type JobType = z.infer<typeof JobType>;
 
@@ -294,6 +295,7 @@ export const CatalogueReportJob = z.object({ ...jobBase, type: z.literal("catalo
 
 export const JobPayload = z.discriminatedUnion('type', [
   RetailReportJob, AbaReportJob, CatalogueReportJob,
+  z.strictObject({ ...jobBase, type: z.literal('provider.evidence.collect'), configId: Uuid }),
   EntitySyncJob,
   AssetLibrarySearchJob,
   ReportRequestJob,

@@ -1,5 +1,6 @@
 import { readSpReportEvidence } from '@wizard-ads/db';
 import type { SpEvidence } from '@wizard-ads/shared';
+import { readProviderEvidence } from '@wizard-ads/db';
 import type { ScreenActor } from '../../server/page-read';
 import { readCoreReportEvidence } from '@wizard-ads/db';
 import { CoreFeatureReportType } from '@wizard-ads/shared';
@@ -45,5 +46,6 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   const today = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
   const coreEvidence = profileId ? await access.readSql((sql) => readCoreReportEvidence({ sql }, { orgId: org.orgId, profileId, families: CoreFeatureReportType.options, startDate: today, endDate: today, limit: 10 })) : [];
   const sources = profileId ? await access.readSql(sql => Promise.all((['retail', 'aba', 'catalogue'] as const).map(async family => ({ family, evidence: await readSpReportEvidence({ sql }, { orgId: org.orgId, profileId: profileId!, family, start: today, end: today, latest: true }) })))) : [];
-  return { view: 'ready' as const, props: { context, status, ...(coreEvidence.length ? { coreEvidence } : {}), ...({ sources } as { sources?: { family: string; evidence: SpEvidence }[] }) } };
+  const providerEvidence = await access.readSql(async (sql) => Promise.all(status.freshness.map(async (profile) => ({ profileId: profile.profileId, evidence: await readProviderEvidence({ sql }, { orgId: org.orgId, profileId: profile.profileId, consumer: 'sync-status' }) }))));
+  return { view: 'ready' as const, props: { ...(providerEvidence ? { providerEvidence } : {}), context, status, ...(coreEvidence.length ? { coreEvidence } : {}), ...({ sources } as { sources?: { family: string; evidence: SpEvidence }[] }) } };
 }

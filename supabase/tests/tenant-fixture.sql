@@ -23,6 +23,12 @@ as $$
 declare
   v_family_table text;
   v_org uuid;
+  v_provider_config uuid := gen_random_uuid();
+  v_provider_run uuid := gen_random_uuid();
+  v_provider_evidence uuid := gen_random_uuid();
+  v_provider_scope jsonb;
+  v_provider_config_json jsonb;
+  v_provider_counts jsonb;
   v_conn uuid;
   v_profile uuid;
   v_run uuid;
@@ -899,6 +905,20 @@ begin
     end loop;
   end if;
 
+  if to_regclass('public.provider_evidence_configs') is not null then
+  v_provider_scope := jsonb_build_object('orgId',v_org,'profileId',v_profile,'marketplaceId','synthetic-market','amazonProfileId',p_slug||'-profile-1');
+  v_provider_config_json := jsonb_build_object('id',v_provider_config,'scope',v_provider_scope,'family','tactical','operation','tactical.ListRecommendations','enabled',false,'request','{}'::jsonb,'maxPages',2,'maxRows',100,'cadence','manual');
+  v_provider_counts := jsonb_build_object('source',1,'parsed',1,'refused',0,'duplicates',0,'conflicts',0,'canonical',1,'written',1,'existing',0,'readback',1);
+  insert into public.provider_evidence_configs(id,org_id,profile_id,config) values(v_provider_config,v_org,v_profile,v_provider_config_json);
+  insert into public.provider_recommendation_runs(id,org_id,profile_id,config_id,run) values(v_provider_run,v_org,v_profile,v_provider_config,jsonb_build_object('id',v_provider_run,'config',v_provider_config_json,'status','complete','page',1,'nextToken',null,'startedAt',now(),'observedAt',now(),'counts',v_provider_counts,'incomplete',false));
+  insert into public.provider_recommendations(id,org_id,profile_id,family,namespace,provider_id,version,evidence)
+  values(v_provider_evidence,v_org,v_profile,'tactical','synthetic-fixture','synthetic',repeat('a',64),jsonb_build_object(
+    'family','tactical','namespace','synthetic-fixture','providerId','synthetic','identityMethod','provider','version',repeat('a',64),'apiVersion','synthetic-v1','contractHash',repeat('b',64),'transport','http','scope',v_provider_scope,
+    'entity',jsonb_build_object('adProduct','SP','entityType','unknown','entityId',null,'campaignId',null,'adGroupId',null,'mapping','unresolved'),
+    'kind','synthetic','action','unknown','current',jsonb_build_object('value',null,'units',null,'currency',null),'proposed',jsonb_build_object('value',null,'units',null,'currency',null),
+    'estimates','[]'::jsonb,'objective',null,'horizon',null,'attribution',null,'eligibility','unknown','generatedAt',null,'expiresAt',null,'retrievedAt',now(),'observedAt',now(),'payload','{}'::jsonb));
+  insert into public.provider_recommendation_run_rows(org_id,profile_id,run_id,evidence_id) values(v_org,v_profile,v_provider_run,v_provider_evidence);
+  end if;
   return v_org;
 end;
 $$;

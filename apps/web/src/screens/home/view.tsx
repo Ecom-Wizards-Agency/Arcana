@@ -1,4 +1,5 @@
 import { RetailEvidencePanel } from '../grid/spapi-evidence';
+import { ProviderEvidencePanel } from '../recommendations/provider-evidence';
 import { EmptyState, formatValue } from '@wizard-ads/ui';
 import { remainingBudget, resolvePacingThresholds } from '@wizard-ads/core';
 import { gateMessage } from '../../ui/gate-message';
@@ -25,6 +26,7 @@ export function HomeContent({ profile, context, home, period }: HomeReady) {
   const money = (value: number | null) => value === null ? '—' : value.toLocaleString('en-US', { style: 'currency', currency: profile.currencyCode });
   const measuredPacing = pacing !== null && pacing.daysWithData > 0;
   return <main className="wa-home" data-profile-id={profile.id}>
+    <ProviderEvidencePanel evidence={home.providerEvidence} consumer="home" />
     <section className="wa-home-kpis" aria-label="Performance summary">
       {['spend', 'sales', 'acos', 'orders'].map((metric) => {
         const tile = home.tiles.find((candidate) => candidate.metric === metric)!;
