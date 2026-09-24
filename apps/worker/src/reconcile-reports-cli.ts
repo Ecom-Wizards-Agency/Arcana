@@ -1,16 +1,25 @@
 import { pathToFileURL } from 'node:url';
 import { Uuid } from '@wizard-ads/shared';
-import { connectionStringFromEnv, createDb, listQuarantinedReports, reconcileReport } from '@wizard-ads/db';
+import {
+  abandonDeadLegacyCandidates,
+  connectionStringFromEnv,
+  createDb,
+  listQuarantinedReports,
+  reconcileReport,
+} from '@wizard-ads/db';
+
+const USAGE = 'usage: reconcile-reports <list|adopt|abandon|abandon-dead> --org-id <uuid> [resolution options]';
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 export function parseReconcileReportsArgs(args: readonly string[]) {
   const [action, ...rest] = args;
-  if (!['list', 'adopt', 'abandon'].includes(action ?? '')) throw new Error('usage: reconcile-reports <list|adopt|abandon> --org-id <uuid> [resolution options]');
+  if (!['list', 'adopt', 'abandon', 'abandon-dead'].includes(action ?? '')) throw new Error(USAGE);
   const values = new Map<string, string>();
   let workerStopped = false;
   for (let i = 0; i < rest.length; i++) {
     const key = rest[i]!;
     if (key === '--worker-stopped' && !workerStopped) { workerStopped = true; continue; }
-    if (!['--org-id', '--request-id', '--actor', '--reason', '--amazon-report-id'].includes(key)
+    if (!['--org-id', '--request-id', '--actor', '--reason', '--amazon-report-id', '--before'].includes(key)
       || values.has(key) || !rest[i + 1] || rest[i + 1]!.startsWith('--')) throw new Error('invalid or duplicate reconciliation option');
     values.set(key, rest[++i]!);
   }
@@ -19,11 +28,24 @@ export function parseReconcileReportsArgs(args: readonly string[]) {
     if (values.size !== 1 || workerStopped) throw new Error('list accepts only --org-id');
     return { action: 'list' as const, orgId };
   }
-  const requestId = Uuid.parse(values.get('--request-id'));
   const actor = values.get('--actor')?.trim();
   const reason = values.get('--reason')?.trim();
-  const amazonReportId = values.get('--amazon-report-id')?.trim();
   if (!actor || !reason || !workerStopped) throw new Error('resolution requires --actor, --reason and --worker-stopped');
+  if (action === 'abandon-dead') {
+    // Resolves by restatement window, never by one request: the per-request
+    // commands keep their own identity and evidence checks.
+    if (values.has('--request-id') || values.has('--amazon-report-id')) {
+      throw new Error('abandon-dead accepts no --request-id or --amazon-report-id');
+    }
+    const before = values.get('--before')?.trim();
+    if (!before || !ISO_DATE.test(before) || Number.isNaN(Date.parse(`${before}T00:00:00Z`))) {
+      throw new Error('abandon-dead requires --before YYYY-MM-DD');
+    }
+    return { action: 'abandon-dead' as const, orgId, before, actor, reason, workerStopped: true as const };
+  }
+  if (values.has('--before')) throw new Error('--before applies only to abandon-dead');
+  const requestId = Uuid.parse(values.get('--request-id'));
+  const amazonReportId = values.get('--amazon-report-id')?.trim();
   if (action === 'adopt' && !amazonReportId) throw new Error('adopt requires --amazon-report-id');
   if (action === 'abandon' && amazonReportId !== undefined) throw new Error('abandon does not accept --amazon-report-id');
   return { action: action as 'adopt' | 'abandon', orgId, requestId, actor, reason, workerStopped: true as const,
@@ -37,6 +59,8 @@ export async function runReconcileReportsCli(args: readonly string[], env = proc
     if (input.action === 'list') {
       const requests = await listQuarantinedReports(handle, input.orgId);
       write(JSON.stringify({ count: requests.length, requests }));
+    } else if (input.action === 'abandon-dead') {
+      write(JSON.stringify(await abandonDeadLegacyCandidates(handle, input)));
     } else {
       write(JSON.stringify(await reconcileReport(handle, input)));
     }

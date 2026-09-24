@@ -763,7 +763,7 @@ if (manifest.offered !== 11 || manifest.normalized !== 11
 NODE
 if [[ ! -f "$package_one/node_modules/tsx/dist/cli.mjs" \
   || ! -f "$package_one/node_modules/@wizard-ads/sp-api/src/index.ts" \
-  || ! -f "$package_one/src/report-json-parser-worker.mjs" \
+  || ! -f "$package_one/src/parsers.ts" \
   || ! -f "$package_one/src/main.ts" ]]; then
   echo "normalized report worker packaging is incomplete" >&2
   exit 1

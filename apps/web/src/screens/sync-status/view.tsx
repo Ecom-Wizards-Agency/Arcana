@@ -7,6 +7,7 @@ import { CoreReportEvidencePanel } from '../grid/core-report-evidence';
 import { reportAccountingLabel } from '../../data/sync-status';
 
 import { ReportLifecycleTables } from '../../../app/sync-status/report-lifecycle-tables';
+import { ReportLaneBanner } from './lane-banner';
 
 import { Shell } from '../settings/frame';
 
@@ -35,7 +36,10 @@ function renderGated({ result }: Extract<ScreenData, { view: 'gated'; }>['props'
   </main>);
 }
 
-function renderReady({ context, status, sources, coreEvidence, providerEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ context, status, lane, sources, coreEvidence, providerEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+  // Measured per profile by the lane query, including explicit zeros. A legacy
+  // failure returns its job to Queued, so a stored `failed` state never exists.
+  const health = new Map(lane.profiles.map((row) => [row.profileId, row]));
   return (<main style={page}>{providerEvidence?.map((item) => <section key={item.profileId}><h2>Profile {item.profileId}</h2><ProviderEvidencePanel evidence={item.evidence} consumer="sync-status" /></section>)}
     <Shell context={context} current="sync">
       <h1 style={heading}>Sync status</h1>
@@ -47,7 +51,12 @@ function renderReady({ context, status, sources, coreEvidence, providerEvidence 
       </p>
 
       {status.freshness.some((row) => row.latestFactDate === null) ? <ScreenState variant="not-measured" title="Facts not measured" body="Some profiles have no synchronized fact date yet. Their freshness is shown as never." /> : null}
+      <ReportLaneBanner lane={lane} factDates={status.freshness.map((row) => row.latestFactDate)} />
       <h2 style={subheading}>Profiles</h2>
+      <p style={muted}>
+        Retrying and Dead count this profile&apos;s jobs of every type. A failed job that will retry
+        waits in Queued; a dead job exhausted its retries or failed permanently.
+      </p>
       <TableFrame><table style={table}>
         <thead>
           <tr>
@@ -57,7 +66,8 @@ function renderReady({ context, status, sources, coreEvidence, providerEvidence 
             <th style={th}>Newest facts</th>
             <th style={th}>Queued</th>
             <th style={th}>Running</th>
-            <th style={th}>Failed</th>
+            <th style={th}>Retrying (this profile)</th>
+            <th style={th}>Dead (this profile)</th>
           </tr>
         </thead>
         <tbody>
@@ -71,8 +81,12 @@ function renderReady({ context, status, sources, coreEvidence, providerEvidence 
               <td style={td}>{row.latestFactDate === null ? 'never' : formatShellDate(row.latestFactDate)}</td>
               <td style={td}>{row.queued}</td>
               <td style={td}>{row.running}</td>
-              <td style={{ ...td, color: row.failed > 0 ? colors.bad : undefined }}>
-                {row.failed}
+              <td style={td} data-testid="profile-retrying">{health.get(row.profileId)?.retrying ?? 'not measured'}</td>
+              <td
+                style={{ ...td, color: (health.get(row.profileId)?.dead ?? 0) > 0 ? colors.bad : undefined }}
+                data-testid="profile-dead"
+              >
+                {health.get(row.profileId)?.dead ?? 'not measured'}
               </td>
             </tr>
           ))}

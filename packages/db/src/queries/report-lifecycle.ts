@@ -1,3 +1,12 @@
+import {
+  ReportLaneStage,
+  ReportLaneStatus,
+  classifyReportLaneFailure,
+  reportLaneBlockingStage,
+  type ReportLaneErrorClass,
+  type ReportLaneJobType,
+  type ReportLaneStageStatus,
+} from '@wizard-ads/shared';
 import type { QueryHandle } from '../client.js';
 
 export interface ReportHealth {
@@ -73,4 +82,113 @@ export async function loadReportLifecycle(handle: QueryHandle, orgId: string, pr
     group by r.report_type order by r.report_type
   `;
   return { deadLetters, lifecycle };
+}
+
+/** `release()` stamps this on jobs it returns to the queue; it is not a failure. */
+const RELEASED_ON_SHUTDOWN = 'released during graceful shutdown';
+
+function isoOrNull(value: Date | string | null): string | null {
+  return value === null ? null : new Date(value).toISOString();
+}
+
+/**
+ * WP-323 sync-status evidence for the Reporting v3 lane. Failures are read
+ * from the queue ledger and reduced to bounded classes; raw provider and SQL
+ * text never leaves this function. A legacy failure returns a job to `queued`
+ * with its error recorded (no job rests in `failed`), so "retrying" is derived
+ * from that, and every count is measured, including explicit zeros.
+ *
+ * Stage and profile counts follow `profileId` when one is selected; the dead
+ * summary always covers the whole organisation.
+ */
+export async function loadReportLaneStatus(
+  handle: QueryHandle,
+  orgId: string,
+  profileId: string | null = null,
+): Promise<ReportLaneStatus> {
+  const failures = await handle.sql<{
+    jobType: ReportLaneJobType; state: 'dead' | 'retrying'; lastError: string | null;
+    jobs: string | number; lastAt: Date | string; inScope: boolean; resolution: 're-requested' | 'resolved' | null;
+  }[]>`
+    select j.job_type::text as "jobType",
+           case when j.status = 'dead' then 'dead' else 'retrying' end as state,
+           j.last_error as "lastError",
+           count(*) as jobs,
+           max(coalesce(j.finished_at, j.updated_at)) as "lastAt",
+           (${profileId}::uuid is null or j.profile_id = ${profileId}::uuid) as "inScope",
+           case when j.status <> 'dead' then null
+                when j.result -> 'recovery' ->> 'state' in ('re-requested', 'joined') then 're-requested'
+                when exists (select 1 from public.report_requests r
+                  where r.id = j.id and r.org_id = j.org_id and r.profile_id = j.profile_id
+                    and r.reconciliation ->> 'state' in ('abandoned', 'adopted')) then 'resolved'
+           end as resolution
+      from public.sync_jobs j
+     where j.org_id = ${orgId}
+       and j.job_type in ('report.request', 'report.poll', 'report.fetch')
+       and (j.status in ('failed', 'dead')
+         or (j.status = 'queued' and j.attempts > 0 and j.last_error is not null
+           and j.last_error <> ${RELEASED_ON_SHUTDOWN}))
+     group by 1, 2, 3, 6, 7
+  `;
+  const successes = await handle.sql<{ jobType: ReportLaneJobType; lastAt: Date | string }[]>`
+    select j.job_type::text as "jobType", max(coalesce(j.finished_at, j.updated_at)) as "lastAt"
+      from public.sync_jobs j
+     where j.org_id = ${orgId}
+       and (${profileId}::uuid is null or j.profile_id = ${profileId}::uuid)
+       and j.job_type in ('report.request', 'report.poll', 'report.fetch')
+       and j.status = 'succeeded'
+       -- A fetch that re-requested its report downloaded nothing.
+       and coalesce(j.result ->> 'downloadExpired', 'false') <> 'true'
+     group by 1
+  `;
+  const profiles = await handle.sql<{ profileId: string; retrying: string | number; dead: string | number }[]>`
+    select p.id as "profileId",
+           count(j.id) filter (where j.status = 'failed' or (j.status = 'queued' and j.attempts > 0
+             and j.last_error is not null and j.last_error <> ${RELEASED_ON_SHUTDOWN})) as retrying,
+           count(j.id) filter (where j.status = 'dead') as dead
+      from public.ad_profiles p
+      left join public.sync_jobs j on j.org_id = p.org_id and j.profile_id = p.id
+     where p.org_id = ${orgId}
+       and (${profileId}::uuid is null or p.id = ${profileId}::uuid)
+     group by p.id
+     order by p.id
+  `;
+
+  const stages = new Map<ReportLaneStage, ReportLaneStageStatus>(ReportLaneStage.options.map((stage) => [stage, {
+    stage, lastSucceededAt: null, lastFailedAt: null, lastErrorClass: null, retrying: 0, dead: 0,
+  }]));
+  const successStages: Record<ReportLaneJobType, readonly ReportLaneStage[]> = {
+    'report.request': ['request'], 'report.poll': ['poll'], 'report.fetch': ['fetch', 'load'],
+  };
+  for (const row of successes) {
+    for (const stage of successStages[row.jobType]) stages.get(stage)!.lastSucceededAt = isoOrNull(row.lastAt);
+  }
+  const dead = { total: 0, byStage: { request: 0, poll: 0, fetch: 0, load: 0 }, reRequested: 0, resolved: 0 };
+  for (const row of failures) {
+    const jobs = Number(row.jobs);
+    const failure = classifyReportLaneFailure(row.jobType, row.lastError);
+    if (row.state === 'dead') {
+      dead.total += jobs;
+      dead.byStage[failure.stage] += jobs;
+      if (row.resolution === 're-requested') dead.reRequested += jobs;
+      if (row.resolution === 'resolved') dead.resolved += jobs;
+    }
+    if (!row.inScope) continue;
+    const stage = stages.get(failure.stage)!;
+    if (row.state === 'dead') stage.dead += jobs;
+    else stage.retrying += jobs;
+    const lastAt = isoOrNull(row.lastAt)!;
+    if (stage.lastFailedAt === null || Date.parse(lastAt) > Date.parse(stage.lastFailedAt)) {
+      stage.lastFailedAt = lastAt;
+      stage.lastErrorClass = failure.errorClass satisfies ReportLaneErrorClass;
+    }
+  }
+  const ordered = ReportLaneStage.options.map((stage) => stages.get(stage)!);
+  return ReportLaneStatus.parse({
+    scope: profileId === null ? 'organisation' : 'profile',
+    stages: ordered,
+    blocking: reportLaneBlockingStage(ordered),
+    organisationDead: dead,
+    profiles: profiles.map((row) => ({ profileId: row.profileId, retrying: Number(row.retrying), dead: Number(row.dead) })),
+  });
 }
