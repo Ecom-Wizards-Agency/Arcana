@@ -17,6 +17,9 @@ export const CampaignCreationBatchRequest = z.discriminatedUnion('action', [
     nodeIds: z.array(Uuid).min(1).refine((ids) => new Set(ids).size === ids.length, 'Duplicate retry node') }).strict(),
 ]);
 export type CampaignCreationBatchRequest = z.infer<typeof CampaignCreationBatchRequest>;
+/** Refreshes the evidence displayed before a separate retry or recovery confirmation. It admits nothing. */
+export const CampaignCreationRetryReviewRequest = z.object({ ...binding, parentBatchId: Uuid }).strict();
+export type CampaignCreationRetryReviewRequest = z.infer<typeof CampaignCreationRetryReviewRequest>;
 export const CampaignCreationRefusalCode = z.enum([
   'stale_fingerprint', 'stale_revision', 'draft_not_validated', 'blocking_check', 'freshness_not_current',
   'environment_gate_off', 'profile_not_allowlisted', 'executor_unavailable', 'plan_not_sponsored_products',
@@ -192,6 +195,20 @@ export function campaignCreationRetrySelection(batch: CampaignCreationBatch) {
   return { available, nodeIds, uncertainNodeIds: rows.filter((row) => row.observation?.observation === 'uncertain').map((row) => row.nodeId),
     keywordOnly: nodeIds.length > 0 && nodeIds.every((id) => batch.plan.nodes.some((node) => node.nodeId === id
       && node.kind === 'target.create' && node.payload.targetType === 'keyword')) };
+}
+
+/**
+ * Exact final controls for a child batch. A keyword-only child keeps the specified keyword retry
+ * wording. Any other child recovers resources whose outcome is uncertain or that were never
+ * attempted: it is a separate approval with its own label and is never described as keyword creation.
+ */
+export function campaignCreationRetryControl(selection: Pick<ReturnType<typeof campaignCreationRetrySelection>, 'nodeIds' | 'keywordOnly'>) {
+  const count = selection.nodeIds.length;
+  return selection.keywordOnly
+    ? { kind: 'keyword_retry' as const, count, review: 'Review keyword retry',
+      confirm: `Yes, retry ${count} ${count === 1 ? 'keyword' : 'keywords'} in Amazon` }
+    : { kind: 'resource_recovery' as const, count, review: 'Review resource recovery',
+      confirm: `Yes, recover ${count} ${count === 1 ? 'resource' : 'resources'} in Amazon` };
 }
 
 /** Server-owned facts only. A client capability flag never admits a write. */

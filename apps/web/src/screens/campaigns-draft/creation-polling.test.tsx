@@ -2,18 +2,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { DraftReady } from './view';
-import { builderContext, validatedDraft, fixtureReview, measuredCreationChecks, creationBatchFixture } from '../campaigns/render-fixture';
+import { builderContext, validatedDraft, fixtureReview, creationBatchFixture } from '../campaigns/render-fixture';
 import type { DraftScreenData } from './load';
 
-const client = vi.hoisted(() => ({ approve: vi.fn(), read: vi.fn(), refresh: vi.fn(), draft: vi.fn() }));
-vi.mock('../../campaigns/creation-client', () => ({ approveCampaignCreation: client.approve, fetchCampaignCreation: client.read, refreshCampaignCreationReview: client.refresh }));
+const client = vi.hoisted(() => ({ approve: vi.fn(), read: vi.fn(), refresh: vi.fn(), draft: vi.fn(), review: vi.fn() }));
+vi.mock('../../campaigns/creation-client', () => ({ approveCampaignCreation: client.approve, fetchCampaignCreation: client.read,
+  refreshCampaignCreationReview: client.refresh, recordCampaignCreationRetryReview: client.review }));
 vi.mock('../../campaigns/client', () => ({ draftRequest: client.draft, downloadDraft: vi.fn() }));
 function data(step = 'result'): Extract<DraftScreenData, { view: 'ready' }> {
   const batch = creationBatchFixture('admitted');
   const draft = { ...validatedDraft, id: batch.draftId, plan: batch.plan,
     validation: { ...validatedDraft.validation!, planFingerprint: batch.plan.fingerprint } };
   return { view: 'ready', context: builderContext, draft, review: fixtureReview, executorAvailable: true,
-    creationBatch: batch, creationValidation: { ...draft.validation, checks: measuredCreationChecks }, step };
+    creationBatch: batch, step };
 }
 afterEach(() => { vi.useRealTimers(); vi.resetAllMocks(); });
 describe('recorded creation status polling', () => {
@@ -28,10 +29,31 @@ describe('recorded creation status polling', () => {
   });
   it('reloads current retry review before showing the terminal control', async () => {
     const source = {...data(),creationBatch:creationBatchFixture('partial')};
+    client.review.mockResolvedValue({ ...source.draft, revision: source.draft.revision + 1 });
     render(<DraftReady data={source} />);
-    fireEvent.click(screen.getByRole('button', { name:'Review keyword retry' }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name:'Review keyword retry' })); });
+    // Fresh evidence is recorded for the exact draft and parent batch before the retry confirmation loads.
+    expect(client.review).toHaveBeenCalledExactlyOnceWith({ profileId: source.draft.profileId, draftId: source.draft.id,
+      expectedRevision: source.draft.revision, planFingerprint: source.draft.plan.fingerprint, parentBatchId: source.creationBatch.id });
     expect(client.refresh).toHaveBeenCalledExactlyOnceWith('retry');
     expect(client.approve).not.toHaveBeenCalled();
+  });
+  it('records fresh evidence before presenting the creation confirmation', async () => {
+    const source = data('review');
+    client.draft.mockResolvedValue({ ...source.draft, revision: source.draft.revision + 1 });
+    render(<DraftReady data={source} />);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Continue to confirmation' })); });
+    expect(client.draft).toHaveBeenCalledExactlyOnceWith({action:'validate',profileId:source.draft.profileId,id:source.draft.id,expectedRevision:source.draft.revision});
+    expect(client.refresh).toHaveBeenCalledExactlyOnceWith('confirm');
+    expect(client.approve).not.toHaveBeenCalled();
+  });
+  it('shows a retry review refusal without reloading or approving', async () => {
+    const source = {...data(),creationBatch:creationBatchFixture('partial')};
+    client.review.mockRejectedValue(new Error('Retry review refused: stale_revision. Reload the recorded batch.'));
+    render(<DraftReady data={source} />);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name:'Review keyword retry' })); });
+    expect(screen.getByText('Retry review refused: stale_revision. Reload the recorded batch.')).toBeTruthy();
+    expect(client.refresh).not.toHaveBeenCalled(); expect(client.approve).not.toHaveBeenCalled();
   });
   it('polls after two seconds, renders completion and stops at the terminal batch', async () => {
     vi.useFakeTimers(); client.read.mockResolvedValue(creationBatchFixture('complete'));

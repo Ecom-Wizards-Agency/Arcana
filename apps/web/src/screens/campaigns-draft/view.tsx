@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { CampaignBuilderRecipe, CampaignCreationAdmissionValidation, campaignCreationBatchSummary, campaignCreationRetrySelection, type CampaignCreationBatch, type CampaignBuilderKeyword } from '@wizard-ads/shared';
 import type { DraftScreenData } from './load';
 import { draftRequest, downloadDraft } from '../../campaigns/client';
-import { approveCampaignCreation, fetchCampaignCreation, refreshCampaignCreationReview } from '../../campaigns/creation-client';
+import { approveCampaignCreation, fetchCampaignCreation, recordCampaignCreationRetryReview, refreshCampaignCreationReview } from '../../campaigns/creation-client';
 import { builderBidEvidence, builderBounds } from '../../campaigns/model';
 import { unavailableCampaignReview } from '../../campaigns/review';
 import { buildCampaignRecipe } from '@wizard-ads/campaigns';
@@ -55,6 +55,17 @@ export function DraftReady({ data, initiallyEditing = false, executor }: { data:
     } catch (error) { setError(error instanceof Error ? error.message : 'Creation is unavailable.'); }
     finally { setBusy(false); }
   }
+  /** Fresh retry evidence is recorded before the separate retry or recovery confirmation is shown. */
+  async function reviewRetry() {
+    if (busy || !batch) return;
+    setBusy(true); setError('');
+    try {
+      await recordCampaignCreationRetryReview({ profileId: draft.profileId, draftId: draft.id, expectedRevision: draft.revision,
+        planFingerprint: draft.plan.fingerprint, parentBatchId: batch.id });
+      refreshCampaignCreationReview('retry');
+    } catch (error) { setError(error instanceof Error ? error.message : 'Retry review is unavailable.'); }
+    finally { setBusy(false); }
+  }
   const activeExecutor: CreationExecutor = executor ?? (data.executorAvailable && !busy
     ? { available: true, create: () => void submitCreation(false), retry: () => void submitCreation(true) }
     : { available: false });
@@ -66,9 +77,10 @@ export function DraftReady({ data, initiallyEditing = false, executor }: { data:
     catch (error) { setError(error instanceof Error ? error.message : 'Save unavailable'); }
     finally { setBusy(false); }
   }
-  async function validate() {
+  /** Records fresh evidence at a new revision; confirmation is presented only from that recorded evidence. */
+  async function validate(next: 'review' | 'confirm' = 'review') {
     setBusy(true); setError('');
-    try { const saved = await draftRequest({ action: 'validate', profileId: draft.profileId, id: draft.id, expectedRevision: draft.revision }); setDraft(saved); navigate(saved.status === 'blocked' ? 'validation' : 'review'); if (data.executorAvailable && saved.status === 'validated') refreshCampaignCreationReview('review'); }
+    try { const saved = await draftRequest({ action: 'validate', profileId: draft.profileId, id: draft.id, expectedRevision: draft.revision }); setDraft(saved); navigate(saved.status === 'blocked' ? 'validation' : next); if (data.executorAvailable && saved.status === 'validated') refreshCampaignCreationReview(next); }
     catch (error) { setError(error instanceof Error ? error.message : 'Validation unavailable'); }
     finally { setBusy(false); }
   }
@@ -77,9 +89,11 @@ export function DraftReady({ data, initiallyEditing = false, executor }: { data:
   if (step === 'bid') return <><BidEditor keyword={draft.recipe.keywords[keywordIndex]!} evidence={builderBidEvidence(data.context, draft.recipe.keywords[keywordIndex]!.text)}
     match={draft.recipe.play === 'discovery' || draft.recipe.play === 'shield' ? 'Phrase' : 'Exact'} bounds={builderBounds(data.context, draft.recipe.groupId)} currency={currency} topOfSearch={draft.recipe.topOfSearch} audienceAdjustment={draft.recipe.audienceAdjustment}
     frozenRationale={draft.rationale[keywordIndex]?.sentence} sqpMeasured={data.context.sqpMeasured} onUse={useBid} onCancel={() => navigate('review')} />{error && <Notice kind="bad">{error}</Notice>}</>;
-  if (step === 'confirm') return <><CreationConfirm review={data.review.plan.fingerprint === draft.plan.fingerprint ? data.review : unavailableCampaignReview(draft, data.context.profile.label, draft.updatedAt)} checks={data.creationValidation?.planFingerprint === draft.plan.fingerprint ? data.creationValidation.checks : draft.validation?.checks ?? []} executor={data.executorAvailable && draft.status === 'validated' ? activeExecutor : { available: false }} onExport={() => void exportSheet()} marketplaceLabel={data.context.profile.countryCode} onBack={() => navigate('review')} />{error && <Notice kind="bad">{error}</Notice>}</>;
-  if (step === 'result' && (result || batch)) return <><CreationResult {...(result ? { result } : {})} {...(batch ? { batch } : {})} onRetry={() => { if (batch && data.fixtureExecutor !== 'inert') { refreshCampaignCreationReview('retry'); } else navigate('retry'); }} onBack={() => navigate('review')} />{error && <Notice kind="bad">{error}</Notice>}</>;
-  if (step === 'retry' && (result || batch)) return <><KeywordRetry plan={draft.plan} {...(result ? { result } : {})} {...(batch ? { batch } : {})} executor={executor ?? (data.review.freshness.status === 'current' && CampaignCreationAdmissionValidation.safeParse(data.creationValidation ?? draft.validation).success ? activeExecutor : { available: false })} onBack={() => navigate('result')} />{error && <Notice kind="bad">{error}</Notice>}</>;
+  const reviewed = data.review.plan.fingerprint === draft.plan.fingerprint && data.draft.revision === draft.revision;
+  const refreshable = data.executorAvailable && data.fixtureExecutor !== 'inert';
+  if (step === 'confirm') return <><CreationConfirm review={reviewed ? data.review : unavailableCampaignReview(draft, data.context.profile.label, draft.updatedAt)} checks={draft.validation?.checks ?? []} executor={data.executorAvailable && draft.status === 'validated' ? activeExecutor : { available: false }} onExport={() => void exportSheet()} marketplaceLabel={data.context.profile.countryCode} onBack={() => navigate('review')} {...(refreshable && draft.status === 'validated' ? { onRefresh: () => void validate('confirm') } : {})} />{error && <Notice kind="bad">{error}</Notice>}</>;
+  if (step === 'result' && (result || batch)) return <><CreationResult {...(result ? { result } : {})} {...(batch ? { batch } : {})} onRetry={() => { if (batch && refreshable) void reviewRetry(); else navigate('retry'); }} onBack={() => navigate('review')} />{error && <Notice kind="bad">{error}</Notice>}</>;
+  if (step === 'retry' && (result || batch)) return <><KeywordRetry plan={draft.plan} {...(result ? { result } : {})} {...(batch ? { batch, review: reviewed ? data.review : unavailableCampaignReview(draft, data.context.profile.label, draft.updatedAt) } : {})} {...(batch && refreshable ? { onRefresh: () => void reviewRetry() } : {})} executor={executor ?? (reviewed && data.review.freshness.status === 'current' && CampaignCreationAdmissionValidation.safeParse(draft.validation).success ? activeExecutor : { available: false })} onBack={() => navigate('result')} />{error && <Notice kind="bad">{error}</Notice>}</>;
   if (step === 'result' || step === 'retry') return <CampaignPage layout="review" title={step === 'result' ? 'Campaign result' : 'Review keyword retry'}><Notice>No creation result has been recorded. Creation in Amazon is not available yet.</Notice><Button onClick={() => navigate('review')}>Return to draft</Button></CampaignPage>;
   const issues = draft.validation?.checks.filter((check) => check.blocking) ?? [];
   const blocked = step === 'validation' || draft.status === 'blocked';
@@ -101,7 +115,7 @@ export function DraftReady({ data, initiallyEditing = false, executor }: { data:
     ]} />}
     <details><summary>Rationale, frozen when saved</summary>{draft.rationale.map((item) => <p key={item.keyword}>{item.sentence}</p>)}<p className="wa-hint">Stored with the draft. Later changes to the method or defaults cannot rewrite it.</p></details>
     <div className="wa-actions"><Button variant={blocked ? 'primary' : 'default'} onClick={() => { setEdits(draft.recipe); setEditing(true); }}>Edit draft</Button>{draft.recipe.keywords.map((keyword, index) => <Button key={keyword.text} onClick={() => { setKeywordIndex(index); navigate('bid'); }}>Edit starting bid{draft.recipe.keywords.length > 1 ? ` · ${keyword.text}` : ''}</Button>)}
-      <Button variant={draft.status === 'validated' || blocked ? 'default' : 'primary'} disabled={busy} onClick={() => void validate()}>Validate draft</Button><Button variant="primary" disabled={draft.status !== 'validated' || busy || editing} onClick={() => navigate('confirm')}>Continue to confirmation</Button><Button onClick={() => void exportSheet()}>Export bulk sheet</Button></div>
+      <Button variant={draft.status === 'validated' || blocked ? 'default' : 'primary'} disabled={busy} onClick={() => void validate()}>Validate draft</Button><Button variant="primary" disabled={draft.status !== 'validated' || busy || editing} onClick={() => { if (refreshable) void validate('confirm'); else navigate('confirm'); }}>Continue to confirmation</Button><Button onClick={() => void exportSheet()}>Export bulk sheet</Button></div>
     {editing && <dialog open aria-label="Edit campaign draft" style={{ position: 'fixed', inset: '15% auto auto 35%', zIndex: 20, background: 'var(--wa-surface-2)', color: 'var(--wa-text)', border: '1px solid var(--wa-border)', borderRadius: 'var(--wa-radius)', padding: 24, maxWidth: 560 }}><h2>Edit campaign draft</h2><div className="wa-stack">
       <label>Daily budget<MoneyInput currency={currency} aria-label="Draft daily budget" type="number" value={edits.dailyBudget} onChange={(event) => setEdits({ ...edits, dailyBudget: Number(event.target.value) })} /></label>
       <label>Top-of-search adjustment · %<Input style={{ width: 200, height: 44 }} aria-label="Draft top-of-search adjustment" type="number" value={edits.topOfSearch} onChange={(event) => setEdits({ ...edits, topOfSearch: Number(event.target.value) })} /></label>

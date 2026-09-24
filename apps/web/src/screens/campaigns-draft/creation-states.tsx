@@ -2,18 +2,22 @@
 import { orderCampaignCreationNodes, CAMPAIGN_CREATION_UNAVAILABLE, CampaignBuilderCheck, type CampaignCreationBatch, type CampaignBuilderResult, type CampaignCreationPlan } from '@wizard-ads/shared';
 import type { CampaignCreationApprovalView } from '@wizard-ads/shared/campaign-creation-approval';
 import { Button, CampaignPage, DetailsTable, Notice, quantity } from '../campaigns/ui';
-import { BatchCreationResult, BatchCreationRetry } from './batch-creation-states';
+import { BatchCreationResult, BatchCreationRetry, useReviewExpired } from './batch-creation-states';
 
 export type CreationExecutor = { available: false } | { available: true; create: () => void; retry: () => void };
-export function CreationConfirm({ review, checks, executor, onExport, onBack, marketplaceLabel }: {
+/** The displayed checks are the persisted evidence admission binds; they expire while displayed. */
+export function CreationConfirm({ review, checks, executor, onExport, onBack, onRefresh, marketplaceLabel }: {
   marketplaceLabel?: string; review: CampaignCreationApprovalView; checks: CampaignBuilderCheck[]; executor: CreationExecutor; onExport: () => void; onBack: () => void;
+  /** Records fresh evidence at a new revision before this confirmation is shown again. */
+  onRefresh?: () => void;
 }) {
   const nodes = orderCampaignCreationNodes(review.plan.nodes).filter((node) => node.effect === 'irreversible_create');
   const count = review.plan.counts.byKind['campaign.create'];
   const currency = review.plan.nodes.find((node) => node.kind === 'campaign.create')?.payload.budget.currencyCode ?? '';
   const completeChecks = checks.length === CampaignBuilderCheck.shape.id.options.length
     && CampaignBuilderCheck.shape.id.options.every((id) => checks.filter((check) => check.id === id).length === 1);
-  const available = executor.available && completeChecks && !checks.some((check) => check.blocking || check.status === 'blocked') && review.freshness.status === 'current';
+  const expired = useReviewExpired(review);
+  const available = executor.available && completeChecks && !checks.some((check) => check.blocking || check.status === 'blocked') && review.freshness.status === 'current' && !expired;
   const labels = { 'campaign.create': 'Campaign', 'ad_group.create': 'Ad group', 'ad.create': 'Product ad', 'target.create': 'Keyword', 'creative.create': 'Creative' };
   return <CampaignPage layout="review" title="Confirm campaign creation"><section className="campaign-rationale"><h2>Create {quantity(count, 'campaign')} in Amazon</h2><p className="wa-hint">{review.profile.label} · {marketplaceLabel ?? 'Marketplace label unavailable'} · {currency} · Campaign starts paused</p></section>
     <DetailsTable columnWidths={['34%', '18%', '48%']} headings={['Resource', 'Count', 'After creation']} rows={nodes.map((node) => [labels[node.kind as keyof typeof labels] ?? node.kind, 1, node.kind === 'campaign.create' ? 'Paused' : node.kind === 'target.create' ? 'Using the reviewed bid' : node.kind === 'ad.create' ? 'In the new ad group' : 'In the new campaign'])} />
@@ -21,7 +25,9 @@ export function CreationConfirm({ review, checks, executor, onExport, onBack, ma
     <Notice kind="warn"><strong>Created resources cannot be deleted through rollback.</strong><p>Pausing or archiving them requires a separate reviewed action.</p></Notice>
     {checks.some((check) => check.status === 'not_measured') && <Notice><strong>Checks not measured</strong><ul>{checks.filter((check) => check.status === 'not_measured').map((check) => <li key={check.id}>{check.label} · {check.source}: Arcana has no measured evidence for this check. Review this condition in Amazon.</li>)}</ul><p>These checks have not passed or failed. They do not block this explicit creation approval.</p></Notice>}
     {!executor.available && <Notice>{CAMPAIGN_CREATION_UNAVAILABLE}</Notice>}
-    {executor.available && !available && <Notice kind="warn">The current approval evidence is unavailable or stale. Review this draft again.</Notice>}
+    {executor.available && !available && <Notice kind="warn">The current approval evidence is unavailable or stale. Review this draft again.
+      {expired && <p>Review checks are valid for five minutes. Expired evidence cannot be approved.</p>}
+      {onRefresh && <Button onClick={onRefresh}>Refresh review evidence</Button>}</Notice>}
     <div className="wa-actions"><Button onClick={onBack}>Back to draft</Button><Button variant="primary" disabled={!available} onClick={() => { if (available && executor.available) executor.create(); }}>Yes, create {count} {count === 1 ? 'campaign' : 'campaigns'} in Amazon</Button><Button onClick={onExport}>Export bulk sheet</Button></div>
   </CampaignPage>;
 }
@@ -59,8 +65,9 @@ export function CreationResult({ result, batch, onRetry, onBack }: { result?: Ca
     <div className="wa-actions">{!complete && <Button variant="primary" disabled={!retryable} onClick={onRetry}>Review keyword retry</Button>}<Button onClick={onBack}>{complete ? 'Return to campaign draft' : 'Return to draft'}</Button></div>
   </CampaignPage>;
 }
-export function KeywordRetry({ result, plan, batch, executor, onBack }: { result?: CampaignBuilderResult; batch?: CampaignCreationBatch; plan: CampaignCreationPlan; executor: CreationExecutor; onBack: () => void }) {
-  if (batch) return <BatchCreationRetry batch={batch} executor={executor} onBack={onBack} />;
+export function KeywordRetry({ result, plan, batch, executor, onBack, review, onRefresh }: { result?: CampaignBuilderResult; batch?: CampaignCreationBatch; plan: CampaignCreationPlan; executor: CreationExecutor; onBack: () => void;
+  review?: CampaignCreationApprovalView; onRefresh?: () => void }) {
+  if (batch) return <BatchCreationRetry batch={batch} executor={executor} onBack={onBack} {...(review ? { review } : {})} {...(onRefresh ? { onRefresh } : {})} />;
   if (!result) return <Notice>Retry result unavailable.</Notice>;
   const count = keywordRetryCount(result);
   const namesResolved = result.resources.filter((row) => row.kind === 'keyword' && row.status === 'failed').every((row) => plan.nodes.some((node) => node.nodeId === row.nodeId && node.kind === 'target.create' && node.payload.targetType === 'keyword'));

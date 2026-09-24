@@ -56,7 +56,7 @@ add('campaigns-draft', 'batch-retry', 'Yes, retry 1 keyword in Amazon', () => <K
 add('campaigns-draft', 'confirm-not-measured-executor-fixture', 'Checks not measured', () => <CreationConfirm review={fixtureReview} checks={validationChecks} executor={available} onExport={noop} onBack={noop} />);
 add('campaigns-draft', 'needs-attention', 'Campaign creation needs attention', () => <CreationResult batch={creationBatchFixture('uncertain')} onRetry={noop} onBack={noop} />);
 add('campaigns-draft', 'ambiguous-readback', 'ambiguous_readback', () => <CreationResult batch={creationBatchFixture('ambiguous')} onRetry={noop} onBack={noop} />, 'refused');
-add('campaigns-draft', 'resource-retry', 'Yes, retry 4 resources in Amazon', () => <KeywordRetry batch={creationBatchFixture('uncertain')} plan={fixtureReview.plan} executor={unavailable} onBack={noop} />);
+add('campaigns-draft', 'resource-retry', 'Yes, recover 4 resources in Amazon', () => <KeywordRetry batch={creationBatchFixture('uncertain')} plan={fixtureReview.plan} executor={unavailable} onBack={noop} />);
 add('campaigns-draft', 'adopted', 'Existing resources adopted 1', () => <CreationResult batch={creationBatchFixture('adopted')} onRetry={noop} onBack={noop} />);
 add('campaigns-draft', 'partial', 'Campaign partially created', () => <CreationResult result={creationResult(false)} onRetry={noop} onBack={noop} />);
 add('campaigns-draft', 'retry-unavailable', 'Yes, retry 1 keyword in Amazon', () => <KeywordRetry plan={fixtureReview.plan} result={creationResult(false)} executor={unavailable} onBack={noop} />);

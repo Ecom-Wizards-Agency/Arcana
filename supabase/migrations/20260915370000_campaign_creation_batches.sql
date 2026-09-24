@@ -138,6 +138,9 @@ begin
     return jsonb_build_object('reason','draft_not_validated'); end if;
   if exists(select 1 from jsonb_array_elements(p_validation->'checks') c where (c->>'blocking')::boolean or c->>'status'='blocked') then
     return jsonb_build_object('reason','blocking_check'); end if;
+  -- Admission binds the persisted evidence displayed for this exact revision. It never
+  -- substitutes newer evidence, so an expired confirmation cannot be refreshed here.
+  if p_validation is distinct from d.validation then return jsonb_build_object('reason','freshness_not_current'); end if;
   if (d.plan->>'expiresAt')::timestamptz<=v_now or (d.validation->>'checkedAt')::timestamptz>v_now
     or (p_validation->>'checkedAt')::timestamptz>v_now or (p_validation->>'checkedAt')::timestamptz<v_now-interval '5 minutes'
     or jsonb_array_length(p_validation->'checks')<>(select count(distinct c->>'id') from jsonb_array_elements(p_validation->'checks') c)
@@ -217,6 +220,42 @@ end;
 $$;
 revoke all on function app.admit_campaign_creation(uuid,jsonb,jsonb) from public,anon;
 grant execute on function app.admit_campaign_creation(uuid,jsonb,jsonb) to authenticated;
+
+/** Record fresh evidence on an approved draft before a separate retry or recovery confirmation is
+ * shown. The revision advances so admission binds exactly this evidence. Nothing is queued. */
+create function app.record_campaign_creation_review(p_org uuid,p_request jsonb,p_validation jsonb)
+returns jsonb language plpgsql security definer set search_path=pg_catalog,public,app,pg_temp as $$
+declare d public.campaign_drafts%rowtype; v_now timestamptz:=clock_timestamp();
+begin
+  if auth.uid() is null or not app.has_org_role(p_org,array['owner','admin']) then
+    return jsonb_build_object('reason','authorization_refused');
+  end if;
+  perform 1 from public.org_members where org_id=p_org and user_id=auth.uid() and role in ('owner','admin') for share;
+  select * into d from public.campaign_drafts where org_id=p_org and profile_id=(p_request->>'profileId')::uuid
+    and id=(p_request->>'draftId')::uuid and created_by=auth.uid() for update;
+  if not found then return jsonb_build_object('reason','not_found'); end if;
+  if d.plan->>'fingerprint' is distinct from p_request->>'planFingerprint' then return jsonb_build_object('reason','stale_fingerprint'); end if;
+  if d.revision is distinct from (p_request->>'expectedRevision')::integer then return jsonb_build_object('reason','stale_revision'); end if;
+  if d.status<>'approved' or d.validation is null then return jsonb_build_object('reason','draft_not_validated'); end if;
+  if not exists(select 1 from public.campaign_creation_batches b where b.org_id=d.org_id and b.profile_id=d.profile_id
+    and b.id=(p_request->>'parentBatchId')::uuid and b.draft_id=d.id and b.artifact->'plan'->>'fingerprint'=d.plan->>'fingerprint') then
+    return jsonb_build_object('reason','retry_not_allowed');
+  end if;
+  if p_validation is null or jsonb_typeof(p_validation)<>'object' or jsonb_typeof(p_validation->'checks')<>'array'
+    or p_validation->>'planFingerprint' is distinct from d.plan->>'fingerprint'
+    or p_validation->>'recipeFingerprint' is distinct from d.validation->>'recipeFingerprint' then
+    return jsonb_build_object('reason','draft_not_validated');
+  end if;
+  -- Only evidence checked in this request may be displayed as current (a few seconds of web/database clock skew allowed).
+  if (p_validation->>'checkedAt')::timestamptz>v_now+interval '5 seconds' or (p_validation->>'checkedAt')::timestamptz<v_now-interval '1 minute' then
+    return jsonb_build_object('reason','freshness_not_current');
+  end if;
+  update public.campaign_drafts set validation=p_validation,revision=revision+1 where id=d.id and org_id=d.org_id;
+  return jsonb_build_object('revision',d.revision+1);
+end;
+$$;
+revoke all on function app.record_campaign_creation_review(uuid,jsonb,jsonb) from public,anon;
+grant execute on function app.record_campaign_creation_review(uuid,jsonb,jsonb) to authenticated;
 
 /** Custody may be retried; the durable provider intent may not. */
 create function app.claim_campaign_creation(p_claimant uuid,p_profiles uuid[])

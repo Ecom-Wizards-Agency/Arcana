@@ -207,6 +207,17 @@ approval warns that a delayed original resource could appear after an empty read
 Creation has no delete rollback. Terminal attention releases dispatch capacity but
 retains the unresolved evidence.
 
+A child batch of keywords only is a keyword retry; its control reads exactly "Yes, retry
+N keyword(s) in Amazon". A child that includes a campaign, ad group or product ad is
+resource recovery. Recovery is its own approval with its own control, "Yes, recover N
+resource(s) in Amazon", and is never described as a keyword retry.
+
+Admission binds the review evidence the operator saw: the persisted validation of the
+approved draft revision. Evidence older than five minutes is refused with
+`freshness_not_current`; admission never replaces it with newer evidence. Fresh evidence
+is recorded at a new draft revision before a creation, retry or recovery confirmation is
+shown, and the confirmation disables itself when its evidence window closes.
+
 The builder reports stock, buy-box, suppression and moderation as unmeasured and
 lists their missing evidence at confirmation. These checks do not block approval.
 Every check must be present exactly once; measured blocking checks and stale evidence

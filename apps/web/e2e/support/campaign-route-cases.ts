@@ -3,7 +3,7 @@ import { CAMPAIGN_UNAVAILABLE_COPY } from '../../src/screens/campaigns/unavailab
 import { randomUUID, createHash } from 'node:crypto';
 import { CampaignCreationPlanV2, serializeCampaignCreationPlanFingerprint } from '@wizard-ads/shared';
 import { campaignCreationReviewFreshness } from '@wizard-ads/shared/campaign-creation-approval';
-import { fixtureCpcRationale, fixtureNaming, builderContext, builderRecipe, savedDraft, validatedDraft, blockedDraft, fixtureReview, fixtureId, measuredCreationChecks, creationBatchFixture, assetSnapshot, creationResult } from '../../src/screens/campaigns/render-fixture';
+import { fixtureCpcRationale, fixtureNaming, builderContext, builderRecipe, savedDraft, validatedDraft, blockedDraft, fixtureReview, fixtureId, creationBatchFixture, assetSnapshot, creationResult } from '../../src/screens/campaigns/render-fixture';
 import type { E2EState } from './fixture';
 import { USERS } from './fixture';
 export interface CampaignRouteCase {
@@ -44,9 +44,10 @@ export function campaignRouteCases(fixture: E2EState, profileLabel = builderCont
     add('campaigns-draft', `bid-${key}`, { ...draftData, context: nextContext, draft: nextDraft, step: 'bid' }, key === 'exceeded' ? 'Top-of-search exposure exceeds the limit' : key === 'reconcile-warning' ? 'Source totals do not reconcile' : key === 'rationale' ? 'Source reconciled' : key === 'sqp-unmeasured' ? 'SQP value: not measured' : 'Allowed base bid', key === 'rationale' ? 'rationale' : ['calculation', 'reconcile-warning'].includes(key) ? 'calculation' : undefined, 'bid');
   }
   add('campaigns-draft', 'validation', { ...draftData, draft: blocked, step: 'validation' }, 'Fix draft issues', undefined, 'validation');
-  for (const available of [false, true]) add('campaigns-draft', available ? 'confirm-executor-fixture' : 'confirm-unavailable', { ...draftData, draft: validated, review, step: 'confirm', executorAvailable: available, ...(available ? { fixtureExecutor: 'inert', creationValidation: { ...validated.validation, checks: measuredCreationChecks } } : {}) }, 'Yes, create 1 campaign in Amazon', undefined, 'confirm');
+  // Confirmation displays the draft's persisted checks: the exact evidence admission binds.
+  for (const available of [false, true]) add('campaigns-draft', available ? 'confirm-executor-fixture' : 'confirm-unavailable', { ...draftData, draft: validated, review, step: 'confirm', executorAvailable: available, ...(available ? { fixtureExecutor: 'inert' } : {}) }, 'Yes, create 1 campaign in Amazon', undefined, 'confirm');
   const staleReview = { ...review, checkedAt: review.plan.expiresAt };
-  add('campaigns-draft', 'confirm-stale', { ...draftData, draft: validated, review: { ...staleReview, freshness: campaignCreationReviewFreshness(staleReview) }, step: 'confirm', executorAvailable: true, fixtureExecutor: 'inert', creationValidation: { ...validated.validation, checks: measuredCreationChecks } }, 'The current approval evidence is unavailable or stale', undefined, 'confirm');
+  add('campaigns-draft', 'confirm-stale', { ...draftData, draft: validated, review: { ...staleReview, freshness: campaignCreationReviewFreshness(staleReview) }, step: 'confirm', executorAvailable: true, fixtureExecutor: 'inert' }, 'The current approval evidence is unavailable or stale', undefined, 'confirm');
   add('campaigns-draft', 'confirm-blocked', { ...draftData, draft: blocked, step: 'confirm' }, 'Yes, create 1 campaign in Amazon', undefined, 'confirm');
   const recordedBatch = (state: Parameters<typeof creationBatchFixture>[0]) => ({ ...creationBatchFixture(state, CampaignCreationPlanV2.parse(validated.plan)), draftId: validated.id, actorId: validated.createdBy, draftRevision: validated.revision });
   add('campaigns-draft', 'in-progress', { ...draftData, draft: validated, step: 'result', creationBatch: recordedBatch('admitted') }, 'Campaign creation in progress', undefined, 'result');
@@ -59,7 +60,7 @@ export function campaignRouteCases(fixture: E2EState, profileLabel = builderCont
   add('campaigns-draft', 'confirm-not-measured-executor-fixture', {...draftData,draft:validated,review,step:'confirm',executorAvailable:true,fixtureExecutor:'inert'}, 'Checks not measured', undefined, 'confirm');
   add('campaigns-draft', 'needs-attention', {...draftData,draft:validated,step:'result',creationBatch:recordedBatch('uncertain')}, 'Campaign creation needs attention', undefined, 'result');
   add('campaigns-draft', 'ambiguous-readback', {...draftData,draft:validated,step:'result',creationBatch:recordedBatch('ambiguous')}, 'ambiguous_readback', undefined, 'result');
-  add('campaigns-draft', 'resource-retry', {...draftData,draft:validated,step:'retry',creationBatch:recordedBatch('uncertain')}, 'Yes, retry 4 resources in Amazon', undefined, 'retry');
+  add('campaigns-draft', 'resource-retry', {...draftData,draft:validated,step:'retry',creationBatch:recordedBatch('uncertain')}, 'Yes, recover 4 resources in Amazon', undefined, 'retry');
   add('campaigns-draft', 'adopted', {...draftData,draft:validated,step:'result',creationBatch:recordedBatch('adopted')}, 'Existing resources adopted 1', undefined, 'result');
   add('campaigns-draft', 'result-not-recorded', { ...draftData, step: 'result' }, 'No creation result has been recorded', undefined, 'result');
   for (const tab of ['library', 'used', 'upload']) add('campaigns-assets', tab, { ...assetsData, initialTab: tab === 'upload' ? 'upload' : 'library' }, tab === 'used' ? 'Synthetic mirrored creative' : 'Pick a creative you already have', tab === 'used' ? 'used' : undefined);

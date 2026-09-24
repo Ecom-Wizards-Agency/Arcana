@@ -107,11 +107,13 @@ export async function captureCampaignStates(page: Page, testInfo: TestInfo) {
       if (item.key === 'batch-retry') await expect(page.getByRole('table').getByRole('row')).toHaveCount(2);
       if (item.key === 'resource-retry') {
         await expect(page.getByRole('table').getByRole('row')).toHaveCount(5);
-        await expect(page.getByRole('button',{name:'Yes, retry 4 resources in Amazon'})).toBeDisabled();
+        await expect(page.getByRole('button',{name:'Yes, recover 4 resources in Amazon'})).toBeDisabled();
+        await expect(page.getByText('Resource recovery is a separate approval.')).toBeVisible();
+        await expect(page.getByRole('button',{name:/^Yes, retry \d+ keywords? in Amazon$/})).toHaveCount(0);
         await expect(page.getByText(/A delayed original resource could appear later and cause a duplicate/)).toBeVisible();
       }
       if (item.key === 'needs-attention') await expect(page.getByText(/two complete observations at least 60 seconds apart/).first()).toBeVisible();
-      if (item.key === 'ambiguous-readback') await expect(page.getByRole('button',{name:'Review resource retry'})).toBeDisabled();
+      if (item.key === 'ambiguous-readback') await expect(page.getByRole('button',{name:'Review resource recovery'})).toBeDisabled();
       if (item.key === 'adopted') await expect(page.getByText(/Attempted 3 · Succeeded 4/)).toBeVisible();
       await page.evaluate(async () => { await document.fonts.ready; }); await page.mouse.move(0, 0);
       const path = join(directory, `${item.screen}--${item.key}.png`);

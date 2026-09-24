@@ -1,8 +1,6 @@
 import { readCampaignRouteFixture } from '../../campaigns/route-fixtures';
 import { readCampaignDraft, readCampaignCreationGate, readCampaignCreationBatch, readCampaignCreationProviderScope } from '@wizard-ads/db';
 import { Uuid, CampaignCreationDraftRouteData } from '@wizard-ads/shared';
-import { revalidateCreationDraft } from '../../campaigns/creation-approval';
-import { CampaignCreationAdmissionValidation } from '@wizard-ads/shared';
 import { savedCampaignCreationReview } from '../../campaigns/review';
 import type { ScreenActor } from '../../server/page-read';
 import type { ScreenParams } from '../types';
@@ -26,13 +24,10 @@ export async function load(access: ScreenActor, input: ScreenParams): Promise<Dr
       const gate = await readCampaignCreationGate(snapshot, draft.plan);
       const batchId = Uuid.safeParse(input.searchParams['batch']);
       const batch = batchId.success ? await readCampaignCreationBatch(snapshot, profile.id, batchId.data) : null;
-      const currentValidation = draft.status === 'approved' && batch?.draftId === draft.id
-        ? await revalidateCreationDraft(snapshot, draft, context, batch) : null;
-      const creationValidation = currentValidation ? CampaignCreationAdmissionValidation.safeParse(currentValidation) : null;
-      const reviewDraft = currentValidation ? { ...draft, validation: currentValidation } : draft;
-      const review = savedCampaignCreationReview(reviewDraft, context.profile.label, new Date().toISOString(), await readCampaignCreationProviderScope(snapshot, profile.id));
+      // Display the persisted evidence of this revision: exactly what admission binds. Fresh evidence
+      // is recorded before a confirmation is presented, never computed silently on page load.
+      const review = savedCampaignCreationReview(draft, context.profile.label, new Date().toISOString(), await readCampaignCreationProviderScope(snapshot, profile.id));
       return { view: 'ready', context, draft, review, executorAvailable: gate.available,
-        ...(creationValidation?.success ? { creationValidation: creationValidation.data } : {}),
         ...(batch?.draftId === draft.id ? { creationBatch: batch } : {}),
         step: typeof input.searchParams['step'] === 'string' ? input.searchParams['step'] : 'review' };
     });

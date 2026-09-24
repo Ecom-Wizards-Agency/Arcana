@@ -59,7 +59,9 @@ describe('executor presentation boundary and resource results', () => {
         labelled++;
         expect(control.tagName, item.key).toBe('BUTTON');
         expect((control as HTMLButtonElement).disabled, item.key).toBe(true);
-        expect(control.textContent).toMatch(/^Yes, (create \d+ campaigns?|retry \d+ (keywords?|resources?)) in Amazon$/);
+        // Resource recovery is its own approval with its own exact control; every other control keeps the specified wording.
+        if (item.key === 'resource-retry') expect(control.textContent).toBe('Yes, recover 4 resources in Amazon');
+        else expect(control.textContent).toMatch(/^Yes, (create \d+ campaigns?|retry \d+ keywords?) in Amazon$/);
         expect(host.textContent).toContain('Export bulk sheet');
       }
     }

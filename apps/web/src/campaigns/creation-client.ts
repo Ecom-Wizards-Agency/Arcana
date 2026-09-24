@@ -1,5 +1,5 @@
 'use client';
-import { CampaignCreationBatch, type CampaignCreationBatchRequest } from '@wizard-ads/shared';
+import { CampaignCreationBatch, CampaignDraft, type CampaignCreationBatchRequest, type CampaignCreationRetryReviewRequest } from '@wizard-ads/shared';
 
 async function responseBatch(response: Response) {
   const value: unknown = await response.json();
@@ -24,8 +24,21 @@ export async function fetchCampaignCreation(profileId: string, batchId: string, 
   return batch;
 }
 
-/** Reload server-owned gate and review evidence after validation or before retry. */
-export function refreshCampaignCreationReview(step: 'review' | 'retry') {
+/** Record fresh retry evidence before the separate retry or recovery confirmation is shown. */
+export async function recordCampaignCreationRetryReview(request: CampaignCreationRetryReviewRequest) {
+  const response = await fetch('/api/campaigns/creation/review', { method: 'POST', credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) });
+  const value: unknown = await response.json();
+  if (!response.ok) throw new Error(typeof value === 'object' && value !== null && 'code' in value
+    ? `Retry review refused: ${String(value.code)}. Reload the recorded batch.` : 'Retry review is unavailable. Reload the recorded batch.');
+  const draft = CampaignDraft.parse(value);
+  if (draft.id !== request.draftId || draft.profileId !== request.profileId || draft.revision <= request.expectedRevision
+    || draft.plan.fingerprint !== request.planFingerprint) throw new Error('Retry review does not match the recorded draft. Reload the recorded batch.');
+  return draft;
+}
+
+/** Reload server-owned gate and review evidence after validation or a retry review. */
+export function refreshCampaignCreationReview(step: 'review' | 'confirm' | 'retry') {
   const url = new URL(window.location.href); url.searchParams.set('step', step);
   window.location.assign(url);
 }

@@ -18,3 +18,16 @@ export const CAMPAIGN_CREATION_REVIEW_TTL_MS = 300_000;
 export function campaignCreationReviewExpiresAt(planExpiresAt: string, checkedAt: string): string {
   return new Date(Math.min(Date.parse(planExpiresAt), Date.parse(checkedAt) + CAMPAIGN_CREATION_REVIEW_TTL_MS)).toISOString();
 }
+
+/** Admission binds the review evidence the operator saw. Expired evidence is refused, never refreshed. */
+export function campaignCreationReviewExpired(planExpiresAt: string, checkedAt: string, now: number): boolean {
+  const deadline = Math.min(Date.parse(planExpiresAt), Date.parse(checkedAt) + CAMPAIGN_CREATION_REVIEW_TTL_MS);
+  return !Number.isFinite(deadline) || now >= deadline;
+}
+
+/** Current state still supports the displayed evidence only when every check has the same outcome. */
+export function campaignCreationCheckOutcomesAgree(displayed: readonly CampaignBuilderCheck[], current: readonly CampaignBuilderCheck[]): boolean {
+  const outcomes = (checks: readonly CampaignBuilderCheck[]) => JSON.stringify(checks.map((check) => [check.id, check.status, check.blocking])
+    .sort(([left], [right]) => String(left).localeCompare(String(right))));
+  return displayed.length === current.length && outcomes(displayed) === outcomes(current);
+}

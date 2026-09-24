@@ -8,7 +8,7 @@ import { createTestDatabase, type TestDatabase } from '../testing/harness.js';
 import { asUser } from '../testing/rls.js';
 import { withAuthenticatedOrgEditor, withAuthenticatedReadSnapshot } from './authenticated-actor.js';
 import { saveCampaignDraft, recordCampaignDraftValidation, readCampaignDraft } from './campaign-drafts.js';
-import { admitCampaignCreation, readCampaignCreationBatch, readCampaignCreationGate, findCampaignCreationAdmission } from './campaign-creation-batches.js';
+import { admitCampaignCreation, readCampaignCreationBatch, readCampaignCreationGate, findCampaignCreationAdmission, recordCampaignCreationRetryReview } from './campaign-creation-batches.js';
 import { createCampaignCreationLedger } from './campaign-creation-worker.js';
 import { countChangeQueue, listChangeQueue } from './time-machine.js';
 
@@ -36,7 +36,7 @@ describe('creation batch SQL authority and accounting', () => {
   }, 120_000);
   afterEach(async () => { await db?.drop(); });
 
-  async function draft(validated = true) {
+  async function draft(validated = true, checkedAt = new Date().toISOString()) {
     const now = Date.now();
     const recipe = CampaignBuilderRecipe.parse({ adType: 'SP', productKeys: ['synthetic-product'], play: 'rank', groupId: randomUUID(), dailyBudget: 20,
       keywords: [{ text: 'synthetic keyword', bid: 1.25, basis: 'manual' }], structure: 'keyword-product', topOfSearch: 25, audienceAdjustment: 0,
@@ -46,10 +46,11 @@ describe('creation batch SQL authority and accounting', () => {
     const checks = CampaignBuilderCheck.shape.id.options.map((id) => ({ id, label: id, source: 'Synthetic measured fixture', status: 'passed' as const,
       blocking: false, currentValue: 'Synthetic value', requiredAction: '' }));
     const measured: CampaignCreationAdmissionValidation = { planFingerprint: frozen.fingerprint, recipeFingerprint: sha(JSON.stringify(saved.recipe)),
-      checkedAt: new Date().toISOString(), checks };
+      checkedAt, checks };
     if (validated) saved = await withAuthenticatedOrgEditor(db, actor, (tx) => recordCampaignDraftValidation(tx, saved, { ...measured,
       checks: checks.map((check) => ['stock','buy-box','suppression','moderation'].includes(check.id) ? { ...check, status: 'not_measured' } : check) }));
-    return { saved, measured };
+    // Admission binds the persisted evidence displayed for this revision, never newer evidence.
+    return { saved, measured: validated ? saved.validation as CampaignCreationAdmissionValidation : measured };
   }
   const request = (saved: CampaignDraft): CampaignCreationBatchRequest => ({ action: 'create', profileId, draftId: saved.id,
     expectedRevision: saved.revision, planFingerprint: saved.plan.fingerprint });
@@ -195,6 +196,48 @@ describe('creation batch SQL authority and accounting', () => {
     expect(campaignCreationBatchSummary(current)).toMatchObject({ accounting: { parsed: 4, loaded: 4, attempted: 1, succeeded: 1, observed: 1, blocked: 3 } });
   });
 
+  it('refuses an expired displayed confirmation without enqueueing a batch or refreshing its evidence', async () => {
+    const { saved, measured } = await draft(true, new Date(Date.now() - 600_000).toISOString());
+    expect(saved.status).toBe('validated'); expect(Date.parse(measured.checkedAt)).toBeLessThan(Date.now() - 300_000);
+    await expect(approve(saved, measured)).rejects.toMatchObject({ code: 'freshness_not_current' });
+    // Newer evidence cannot stand in for the expired evidence the operator saw.
+    await expect(approve(saved, { ...measured, checkedAt: new Date().toISOString() })).rejects.toMatchObject({ code: 'freshness_not_current' });
+    const [count] = await db.sql`select (select count(*)::int from public.campaign_creation_batches where draft_id=${saved.id}) as batches,
+      (select count(*)::int from public.campaign_creation_outbox o join public.campaign_creation_batches b on b.id=o.batch_id where b.draft_id=${saved.id}) as wakes,
+      (select status from public.campaign_drafts where id=${saved.id}) as status`;
+    expect(count).toEqual({ batches: 0, wakes: 0, status: 'validated' });
+  });
+  it('records retry evidence only for the approved revision and refuses it once expired', async () => {
+    const { saved, measured } = await draft(); const parent = await approve(saved, measured);
+    const binding = { profileId, draftId: saved.id, expectedRevision: saved.revision, planFingerprint: saved.plan.fingerprint, parentBatchId: parent.id };
+    const review = (changes: Record<string, unknown>, checkedAt = new Date().toISOString()) => withAuthenticatedOrgEditor(db, actor,
+      (tx) => recordCampaignCreationRetryReview(tx, { ...binding, ...changes } as typeof binding, { ...measured, checkedAt }));
+    await expect(review({ expectedRevision: saved.revision + 1 })).rejects.toMatchObject({ code: 'stale_revision' });
+    await expect(review({ planFingerprint: 'f'.repeat(64) })).rejects.toMatchObject({ code: 'stale_fingerprint' });
+    await expect(review({ parentBatchId: randomUUID() })).rejects.toMatchObject({ code: 'retry_not_allowed' });
+    await expect(review({}, new Date(Date.now() - 600_000).toISOString())).rejects.toMatchObject({ code: 'freshness_not_current' });
+    const unapproved = await draft();
+    await expect(review({ draftId: unapproved.saved.id, expectedRevision: unapproved.saved.revision, planFingerprint: unapproved.saved.plan.fingerprint }))
+      .rejects.toMatchObject({ code: 'draft_not_validated' });
+    const reviewed = await review({});
+    expect(reviewed).toMatchObject({ status: 'approved', revision: saved.revision + 1 });
+    expect(Date.parse(reviewed.validation!.checkedAt)).toBeGreaterThan(Date.parse(measured.checkedAt) - 1);
+    const retry = { action: 'retry' as const, profileId, draftId: saved.id, expectedRevision: reviewed.revision,
+      planFingerprint: saved.plan.fingerprint, parentBatchId: parent.id, nodeIds: [parent.nodes[0]!.nodeId] };
+    // The earlier evidence belongs to the earlier revision; it cannot admit the reviewed one.
+    await expect(withAuthenticatedOrgEditor(db, actor, (tx) => admitCampaignCreation(tx, retry, measured))).rejects.toMatchObject({ code: 'freshness_not_current' });
+    await expect(withAuthenticatedOrgEditor(db, actor, (tx) => admitCampaignCreation(tx, { ...retry, expectedRevision: saved.revision },
+      reviewed.validation as CampaignCreationAdmissionValidation))).rejects.toMatchObject({ code: 'stale_revision' });
+    // Age the displayed retry evidence past its window without sleeping in the suite.
+    await db.sql`update public.campaign_drafts set validation=jsonb_set(validation,'{checkedAt}',to_jsonb(app.sp_write_instant(clock_timestamp()-interval '10 minutes')))
+      where id=${saved.id}`;
+    const aged = await withAuthenticatedReadSnapshot(db, actor, (tx) => readCampaignDraft(tx, profileId, saved.id));
+    await expect(withAuthenticatedOrgEditor(db, actor, (tx) => admitCampaignCreation(tx, retry, aged!.validation as CampaignCreationAdmissionValidation)))
+      .rejects.toMatchObject({ code: 'freshness_not_current' });
+    const [count] = await db.sql`select count(*)::int as children from public.campaign_creation_batches where parent_batch_id=${parent.id}`;
+    expect(count?.children).toBe(0);
+  });
+
   it('retains the four unmeasured checks in an admitted batch', async () => {
     const { saved } = await draft();
     const batch = await approve(saved, saved.validation!);
@@ -250,10 +293,14 @@ describe('creation batch SQL authority and accounting', () => {
     expect(parent.nodes[0]!.observation).toMatchObject({observation:'uncertain',reason:expect.stringContaining('60 seconds apart')});
     expect(campaignCreationBatchSummary(parent)).toMatchObject({state:'needs_attention',terminal:true,accounting:{attempted:1,blocked:3}});
     const selection = campaignCreationRetrySelection(parent); expect(selection.nodeIds).toHaveLength(4);
-    const input = {...request(run.saved),action:'retry' as const,parentBatchId:parent.id,nodeIds:selection.nodeIds};
-    await expect(withAuthenticatedOrgEditor(db,actor,(tx)=>admitCampaignCreation(tx,{...input,nodeIds:[run.nodeId]},run.measured))).rejects.toMatchObject({code:'retry_not_allowed'});
-    const child = await withAuthenticatedOrgEditor(db,actor,(tx)=>admitCampaignCreation(tx,input,run.measured));
-    expect((await withAuthenticatedOrgEditor(db,actor,(tx)=>admitCampaignCreation(tx,input,run.measured))).id).toBe(child.id);
+    // The recovery confirmation is shown only after its own evidence is recorded for a new revision.
+    const reviewed = await withAuthenticatedOrgEditor(db,actor,(tx)=>recordCampaignCreationRetryReview(tx,{profileId,draftId:run.saved.id,
+      expectedRevision:run.saved.revision,planFingerprint:run.saved.plan.fingerprint,parentBatchId:parent.id},{...run.measured,checkedAt:new Date().toISOString()}));
+    const displayed = reviewed.validation as CampaignCreationAdmissionValidation;
+    const input = {...request(reviewed),action:'retry' as const,parentBatchId:parent.id,nodeIds:selection.nodeIds};
+    await expect(withAuthenticatedOrgEditor(db,actor,(tx)=>admitCampaignCreation(tx,{...input,nodeIds:[run.nodeId]},displayed))).rejects.toMatchObject({code:'retry_not_allowed'});
+    const child = await withAuthenticatedOrgEditor(db,actor,(tx)=>admitCampaignCreation(tx,input,displayed));
+    expect((await withAuthenticatedOrgEditor(db,actor,(tx)=>admitCampaignCreation(tx,input,displayed))).id).toBe(child.id);
     expect(child.lineage?.inheritedResources).toHaveLength(0);
     const childClaim = await run.ledger.claim(randomUUID(),[profileId]); expect(childClaim?.batchId).toBe(child.id);
     const digest = sha(JSON.stringify([child.id,run.nodeId]));

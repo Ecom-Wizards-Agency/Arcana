@@ -2,17 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CampaignCreationAdmissionError } from '@wizard-ads/db';
 import { CampaignCreationRefusalCode } from '@wizard-ads/shared';
 
-const boundary = vi.hoisted(() => ({ approve: vi.fn(), read: vi.fn(), editor: vi.fn(), snapshot: vi.fn(), actor: vi.fn(), close: vi.fn() }));
+const boundary = vi.hoisted(() => ({ approve: vi.fn(), review: vi.fn(), read: vi.fn(), editor: vi.fn(), snapshot: vi.fn(), actor: vi.fn(), close: vi.fn() }));
 vi.mock('@wizard-ads/db', async (original) => ({ ...await original<object>(),
   withAuthenticatedOrgEditor: boundary.editor, withAuthenticatedReadSnapshot: boundary.snapshot,
   readCampaignCreationBatch: boundary.read,
 }));
-vi.mock('./creation-approval', () => ({ approveSavedCampaignCreation: boundary.approve }));
+vi.mock('./creation-approval', () => ({ approveSavedCampaignCreation: boundary.approve, reviewSavedCampaignCreationRetry: boundary.review }));
 vi.mock('../server/request-context', async (original) => ({ ...await original<object>(),
   requestActor: boundary.actor, openWebDatabase: () => ({ close: boundary.close }),
 }));
 import { POST } from '../../app/api/campaigns/creation/route';
 import { GET } from '../../app/api/campaigns/creation/status/route';
+import { POST as REVIEW } from '../../app/api/campaigns/creation/review/route';
 
 const profileId = '00000000-0000-4000-8000-000000000002';
 const draftId = '00000000-0000-4000-8000-000000000003';
@@ -46,6 +47,23 @@ describe('campaign creation HTTP boundary', () => {
     const response = await POST(request(binding));
     expect(response.status).toBe(code === 'not_found' ? 404 : 409);
     expect(await response.json()).toMatchObject({ code }); expect(boundary.approve).toHaveBeenCalledTimes(1);
+  });
+  it('records retry review evidence for the exact approved draft and parent without admitting', async () => {
+    const review = { profileId, draftId, expectedRevision: 2, planFingerprint: 'a'.repeat(64), parentBatchId: batchId };
+    boundary.review.mockResolvedValue({ id: draftId, revision: 3 });
+    const response = await REVIEW(new Request('http://localhost/api/campaigns/creation/review', { method: 'POST', body: JSON.stringify(review) }));
+    expect(response.status).toBe(200); expect(await response.json()).toEqual({ id: draftId, revision: 3 });
+    expect(boundary.review).toHaveBeenCalledExactlyOnceWith({ actor }, review);
+    expect(boundary.approve).not.toHaveBeenCalled(); expect(boundary.editor).toHaveBeenCalledTimes(1); expect(boundary.close).toHaveBeenCalledTimes(1);
+    for (const field of ['draftId', 'expectedRevision', 'planFingerprint', 'parentBatchId']) {
+      const body = { ...review } as Record<string, unknown>; delete body[field];
+      const refused = await REVIEW(new Request('http://localhost/api/campaigns/creation/review', { method: 'POST', body: JSON.stringify(body) }));
+      expect(refused.status).toBe(400); expect(await refused.json()).toMatchObject({ code: 'invalid_request' });
+    }
+    boundary.review.mockRejectedValue(new CampaignCreationAdmissionError('stale_revision'));
+    const stale = await REVIEW(new Request('http://localhost/api/campaigns/creation/review', { method: 'POST', body: JSON.stringify(review) }));
+    expect(stale.status).toBe(409); expect(await stale.json()).toMatchObject({ code: 'stale_revision' });
+    expect(boundary.review).toHaveBeenCalledTimes(2); expect(boundary.approve).not.toHaveBeenCalled();
   });
   it('returns 404 when the authenticated snapshot cannot see another organization’s batch', async () => {
     boundary.read.mockResolvedValue(null);

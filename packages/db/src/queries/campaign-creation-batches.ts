@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import {
   CampaignCreationBatch, CampaignCreationBatchRequest, CampaignCreationRefusalCode, CampaignCreationProviderScope,
-  CampaignCreationAdmissionValidation, CampaignBuilderCheck, spMarketplaceScopeForCountry, Uuid, Region,
-  verifyCampaignCreationPlanFingerprints, type CampaignCreationPlan,
+  CampaignCreationAdmissionValidation, CampaignBuilderCheck, CampaignBuilderValidation, CampaignCreationRetryReviewRequest,
+  spMarketplaceScopeForCountry, Uuid, Region, verifyCampaignCreationPlanFingerprints, type CampaignCreationPlan, type CampaignDraft,
 } from '@wizard-ads/shared';
 import type { QuerySql } from '../client.js';
 import type { AuthenticatedEditorTransaction, AuthenticatedReadSnapshot } from './authenticated-actor.js';
+import { readCampaignDraft } from './campaign-drafts.js';
 
 type Context = AuthenticatedEditorTransaction | AuthenticatedReadSnapshot;
 const hasher = { algorithm: 'sha256' as const, digest: (text: string) => createHash('sha256').update(text).digest('hex') };
@@ -96,12 +97,36 @@ export async function readCampaignCreationGate(context: Context, plan: CampaignC
   return { available: reason === null, reason };
 }
 
-/** Call after fresh server validation in the same authenticated transaction. */
+/**
+ * Record fresh evidence on an approved draft before a separate retry or recovery confirmation is
+ * shown. The revision advances, so admission can bind exactly the evidence displayed. Nothing is queued.
+ */
+export async function recordCampaignCreationRetryReview(context: AuthenticatedEditorTransaction, raw: CampaignCreationRetryReviewRequest,
+  rawValidation: CampaignBuilderValidation): Promise<CampaignDraft> {
+  const request = CampaignCreationRetryReviewRequest.parse(raw);
+  const validation = CampaignBuilderValidation.parse(rawValidation);
+  const rows = await context.sql<{ result: { reason?: unknown; revision?: unknown } }[]>`select app.record_campaign_creation_review(
+    ${context.actor.orgId}::uuid,${JSON.stringify(request)}::jsonb,${JSON.stringify(validation)}::jsonb) as result`;
+  if (rows.length !== 1) throw new Error('Creation review count mismatch');
+  const result = rows[0]!.result;
+  if (result.reason !== undefined) throw new CampaignCreationAdmissionError(CampaignCreationRefusalCode.parse(result.reason));
+  const draft = await readCampaignDraft(context, request.profileId, request.draftId);
+  if (!draft || draft.revision !== result.revision || draft.validation === null
+    || JSON.stringify(CampaignBuilderValidation.parse(draft.validation)) !== JSON.stringify(validation)) {
+    throw new Error('Recorded creation review unavailable');
+  }
+  return draft;
+}
+
+/**
+ * Call with the persisted review evidence displayed for the requested revision. SQL refuses any
+ * other evidence and any evidence older than its five-minute window; it never refreshes it.
+ */
 export async function admitCampaignCreation(context: AuthenticatedEditorTransaction, raw: CampaignCreationBatchRequest,
-  freshValidation: CampaignCreationAdmissionValidation): Promise<CampaignCreationBatch> {
+  displayedValidation: CampaignCreationAdmissionValidation): Promise<CampaignCreationBatch> {
   const request = CampaignCreationBatchRequest.parse(raw);
-  if (freshValidation.checks.some((check) => check.blocking)) throw new CampaignCreationAdmissionError('blocking_check');
-  const parsed = CampaignCreationAdmissionValidation.safeParse(freshValidation);
+  if (displayedValidation.checks.some((check) => check.blocking)) throw new CampaignCreationAdmissionError('blocking_check');
+  const parsed = CampaignCreationAdmissionValidation.safeParse(displayedValidation);
   if (!parsed.success) throw new CampaignCreationAdmissionError('freshness_not_current');
   const validation = parsed.data;
   if (!CampaignBuilderCheck.shape.id.options.every((id) => validation.checks.filter((check) => check.id === id).length === 1)) {

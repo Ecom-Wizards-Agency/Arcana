@@ -1,7 +1,30 @@
 'use client';
-import { campaignCreationBatchSummary, campaignCreationRetrySelection, type CampaignCreationBatch } from '@wizard-ads/shared';
+import { useEffect, useState } from 'react';
+import { campaignCreationBatchSummary, campaignCreationRetrySelection, campaignCreationRetryControl, type CampaignCreationBatch } from '@wizard-ads/shared';
+import type { CampaignCreationApprovalView } from '@wizard-ads/shared/campaign-creation-approval';
 import { Button, CampaignPage, DetailsTable, Notice, quantity } from '../campaigns/ui';
 import type { CreationExecutor } from './creation-states';
+
+/** Longest single browser timer; review windows are minutes, frozen plans at most a day. */
+const MAX_TIMER_MS = 2_147_483_647;
+/**
+ * Review evidence expires on a server-anchored clock: the server's check time plus the time elapsed
+ * since this screen rendered. A browser clock that is ahead or behind cannot extend the window, and
+ * the server refuses expired evidence regardless.
+ */
+export function useReviewExpired(review: CampaignCreationApprovalView | undefined): boolean {
+  const remaining = review === undefined ? null : Math.min(Date.parse(review.plan.expiresAt),
+    ...review.current.checks.flatMap((check) => check.validUntil === null ? [] : [Date.parse(check.validUntil)])) - Date.parse(review.checkedAt);
+  const [expired, setExpired] = useState(remaining !== null && !(remaining > 0));
+  useEffect(() => {
+    if (remaining === null) { setExpired(false); return; }
+    if (!(remaining > 0)) { setExpired(true); return; }
+    setExpired(false);
+    const timer = setTimeout(() => setExpired(true), Math.min(remaining, MAX_TIMER_MS));
+    return () => clearTimeout(timer);
+  }, [remaining]);
+  return expired;
+}
 
 function resourceName(batch: CampaignCreationBatch, id: string): string {
   const node = batch.plan.nodes.find((node) => node.nodeId === id);
@@ -54,17 +77,29 @@ export function BatchCreationResult({ batch, onRetry, onBack }: { batch: Campaig
       <ul>{batch.nodes.flatMap((row) => row.observations.map((read) => <li key={read.id}>{resourceName(batch,row.nodeId)} · {read.observedAt} · {read.observation.replaceAll('_',' ')} · {read.accounting.parsed}/{read.accounting.loaded} rows parsed · {read.accounting.matched} matches{read.reason ? ` · ${read.reason}` : ''}</li>))}</ul>
     </details>
     {campaigns.map((node) => { const amazonId = identityFor(node.nodeId); return amazonId ? <p key={node.nodeId}><a href={`/grid?${new URLSearchParams({profile:batch.plan.profileId,entity:'campaigns',campaign:amazonId})}`}>View {node.payload.name} in the campaign grid</a></p> : null; })}
-    <div className="wa-actions">{!complete && <Button variant="primary" disabled={!selection.available} onClick={onRetry}>Review {selection.keywordOnly ? 'keyword' : 'resource'} retry</Button>}
+    <div className="wa-actions">{!complete && <Button variant="primary" disabled={!selection.available} onClick={onRetry}>{campaignCreationRetryControl(selection).review}</Button>}
       <Button onClick={onBack}>Return to campaign draft</Button></div>
   </CampaignPage>;
 }
 
-export function BatchCreationRetry({ batch, executor, onBack }: { batch: CampaignCreationBatch; executor: CreationExecutor; onBack(): void }) {
+/**
+ * A keyword-only child is a keyword retry with the specified control. Any other child is resource
+ * recovery: a separate approval with its own control, never presented as keyword creation.
+ */
+export function BatchCreationRetry({ batch, executor, onBack, review, onRefresh }: {
+  batch: CampaignCreationBatch; executor: CreationExecutor; onBack(): void;
+  /** Displayed evidence this approval binds; absent only in presentation fixtures. */
+  review?: CampaignCreationApprovalView; onRefresh?: () => void;
+}) {
   const selection = campaignCreationRetrySelection(batch); const count = selection.nodeIds.length;
-  const unit = selection.keywordOnly ? 'keyword' : 'resource';
+  const control = campaignCreationRetryControl(selection); const recovery = control.kind === 'resource_recovery';
+  const expired = useReviewExpired(review);
+  const stale = review !== undefined && (expired || review.freshness.status !== 'current');
   const inheritedIds = new Set([...(batch.lineage?.inheritedResources.map((row) => row.nodeId) ?? []),
     ...batch.nodes.filter((row) => row.observation?.observation === 'observed').map((row) => row.nodeId)]);
-  return <CampaignPage layout="review" title={`Review ${unit} retry`} subtitle={`${inheritedIds.size} resources already observed`}>
+  return <CampaignPage layout="review" title={control.review} subtitle={`${inheritedIds.size} resources already observed`}>
+    {recovery && <Notice><strong>Resource recovery is a separate approval.</strong>
+      <p>It covers every remaining resource whose original outcome is uncertain or that was never attempted. It is not a keyword retry.</p></Notice>}
     <Notice>The worker reads each exact identity before creating. One matching resource is reused; multiple matches refuse creation.</Notice>
     {selection.uncertainNodeIds.length > 0 && <Notice kind="warn"><strong>The original request may have created a resource that is not visible yet.</strong>
       <p>If the fresh read still finds none, this approval permits a new create. A delayed original resource could appear later and cause a duplicate.</p></Notice>}
@@ -74,10 +109,13 @@ export function BatchCreationRetry({ batch, executor, onBack }: { batch: Campaig
       const row = batch.nodes.find((row) => row.nodeId === id)!;
       return [resourceName(batch,id), row.observation?.observation === 'uncertain' ? 'Uncertain' : row.intent ? 'Failed' : 'Not attempted', 'Read exact identity; create only if none exists'];
     })} />
-    {!selection.available && <Notice kind="warn">Retry is unavailable while resources are in progress, ambiguous, conflicting, or outside this approval.</Notice>}
-    {!executor.available && <Notice>Retry in Amazon is unavailable for this profile or while another request is submitting.</Notice>}
-    <p>This separate approval covers exactly {quantity(count,unit)}. Observed parents will not be created again.</p>
-    <div className="wa-actions"><Button variant="primary" disabled={!executor.available || !selection.available} onClick={() => { if (executor.available && selection.available) executor.retry(); }}>Yes, retry {count} {count === 1 ? unit : `${unit}s`} in Amazon</Button>
+    {!selection.available && <Notice kind="warn">{recovery ? 'Recovery' : 'Retry'} is unavailable while resources are in progress, ambiguous, conflicting, or outside this approval.</Notice>}
+    {!executor.available && <Notice>{recovery ? 'Recovery' : 'Retry'} in Amazon is unavailable for this profile or while another request is submitting.</Notice>}
+    {stale && <Notice kind="warn"><strong>The review evidence for this approval is stale.</strong>
+      <p>Review checks are valid for five minutes. Stale evidence cannot be approved; refresh it to review current checks.</p>
+      {onRefresh && <Button onClick={onRefresh}>Refresh review evidence</Button>}</Notice>}
+    <p>{recovery ? `This separate recovery approval covers exactly ${quantity(count, 'resource')}.` : `This separate approval covers exactly ${quantity(count, 'keyword')}.`} Observed parents will not be created again.</p>
+    <div className="wa-actions"><Button variant="primary" disabled={!executor.available || !selection.available || stale} onClick={() => { if (executor.available && selection.available && !stale) executor.retry(); }}>{control.confirm}</Button>
       <Button onClick={onBack}>Back to results</Button><Button disabled>Export bulk sheet</Button></div>
   </CampaignPage>;
 }

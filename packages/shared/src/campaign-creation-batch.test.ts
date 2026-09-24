@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { CampaignCreationBatchRequest, CampaignCreationRefusalCode, CampaignCreationBatchState,
-  CampaignCreationBatch, CampaignCreationBatchObservation, campaignCreationRetrySelection, campaignCreationBatchSummary, campaignCreationBatchCapability } from './campaign-creation-batch.js';
-import { CampaignCreationAdmissionValidation, campaignCreationReviewExpiresAt } from './campaign-creation-admission.js';
+  CampaignCreationBatch, CampaignCreationBatchObservation, campaignCreationRetrySelection, campaignCreationBatchSummary, campaignCreationBatchCapability,
+  CampaignCreationRetryReviewRequest, campaignCreationRetryControl } from './campaign-creation-batch.js';
+import { CampaignCreationAdmissionValidation, campaignCreationReviewExpiresAt, campaignCreationReviewExpired, campaignCreationCheckOutcomesAgree } from './campaign-creation-admission.js';
 import { CampaignBuilderCheck } from './campaign-builder.js';
 import { CampaignCreationNodeKind, CampaignCreationProviderResult, type CampaignCreationPlan } from './campaign-creation.js';
 
@@ -144,4 +145,48 @@ describe('explicit recovery and unknown listing checks', () => {
 it('bounds queued creation authority by the current check window and frozen plan expiry',()=>{
   expect(campaignCreationReviewExpiresAt('2026-09-15T13:00:00.000Z','2026-09-15T12:00:00.000Z')).toBe('2026-09-15T12:05:00.000Z');
   expect(campaignCreationReviewExpiresAt('2026-09-15T12:01:00.000Z','2026-09-15T12:00:00.000Z')).toBe('2026-09-15T12:01:00.000Z');
+});
+
+describe('displayed review evidence binding', () => {
+  it('expires displayed evidence at its five-minute deadline or the frozen plan expiry, whichever is first', () => {
+    const checkedAt = '2026-09-15T12:00:00.000Z';
+    const planExpiresAt = '2026-09-15T13:00:00.000Z';
+    expect(campaignCreationReviewExpired(planExpiresAt, checkedAt, Date.parse('2026-09-15T12:04:59.999Z'))).toBe(false);
+    expect(campaignCreationReviewExpired(planExpiresAt, checkedAt, Date.parse('2026-09-15T12:05:00.000Z'))).toBe(true);
+    expect(campaignCreationReviewExpired(planExpiresAt, checkedAt, Date.parse('2026-09-15T12:10:00.000Z'))).toBe(true);
+    expect(campaignCreationReviewExpired('2026-09-15T12:01:00.000Z', checkedAt, Date.parse('2026-09-15T12:01:00.000Z'))).toBe(true);
+    expect(campaignCreationReviewExpired(planExpiresAt, 'not a time', Date.parse(checkedAt))).toBe(true);
+  });
+  it('treats the displayed evidence as current only while every check keeps its outcome', () => {
+    const checks = admittedCampaign().validation.checks;
+    expect(campaignCreationCheckOutcomesAgree(checks, [...checks].reverse())).toBe(true);
+    expect(campaignCreationCheckOutcomesAgree(checks, checks.map((check) => ({ ...check, currentValue: 'Later value' })))).toBe(true);
+    expect(campaignCreationCheckOutcomesAgree(checks, checks.map((check, index) => index ? check : { ...check, status: 'blocked', blocking: true }))).toBe(false);
+    expect(campaignCreationCheckOutcomesAgree(checks, checks.slice(1))).toBe(false);
+  });
+  it('binds a retry review refresh to the exact draft revision, fingerprint and parent batch', () => {
+    const review = { profileId: id, draftId: id, expectedRevision: 3, planFingerprint: 'a'.repeat(64), parentBatchId: id };
+    expect(CampaignCreationRetryReviewRequest.parse(review)).toEqual(review);
+    for (const field of ['draftId', 'expectedRevision', 'planFingerprint', 'parentBatchId']) {
+      const incomplete = { ...review }; delete incomplete[field as keyof typeof incomplete];
+      expect(CampaignCreationRetryReviewRequest.safeParse(incomplete).success).toBe(false);
+    }
+    expect(CampaignCreationRetryReviewRequest.safeParse({ ...review, nodeIds: [id] }).success).toBe(false);
+  });
+  it('keeps the exact keyword retry label and gives resource recovery its own separate control', () => {
+    const keyword = '00000000-0000-4000-8000-000000000003';
+    expect(campaignCreationRetryControl({ nodeIds: [keyword], keywordOnly: true })).toEqual({ kind: 'keyword_retry', count: 1,
+      review: 'Review keyword retry', confirm: 'Yes, retry 1 keyword in Amazon' });
+    expect(campaignCreationRetryControl({ nodeIds: [keyword, id], keywordOnly: true }).confirm).toBe('Yes, retry 2 keywords in Amazon');
+    const recovery = campaignCreationRetryControl({ nodeIds: [id, keyword, '00000000-0000-4000-8000-000000000004', '00000000-0000-4000-8000-000000000005'], keywordOnly: false });
+    expect(recovery).toEqual({ kind: 'resource_recovery', count: 4, review: 'Review resource recovery', confirm: 'Yes, recover 4 resources in Amazon' });
+    expect(recovery.confirm).not.toMatch(/keyword|retry/);
+    expect(campaignCreationRetryControl({ nodeIds: [id], keywordOnly: false }).confirm).toBe('Yes, recover 1 resource in Amazon');
+    const batch = admittedCampaign(); const row = batch.nodes[0]!;
+    row.intent = { id, requestDigest: 'b'.repeat(64), nodeRequestDigest: 'c'.repeat(64), reservedAt: batch.admittedAt, deadline: batch.expiresAt };
+    row.observation = { ...readEvidence(batch), providerEntityId: null, observation: 'uncertain',
+      accounting: { pages: 1, loaded: 0, parsed: 0, matched: 0 }, reason: 'No match in two complete observations at least 60 seconds apart.' };
+    expect(campaignCreationRetryControl(campaignCreationRetrySelection(CampaignCreationBatch.parse(batch)))).toMatchObject({
+      kind: 'resource_recovery', confirm: 'Yes, recover 1 resource in Amazon' });
+  });
 });
