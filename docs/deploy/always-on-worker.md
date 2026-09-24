@@ -191,9 +191,8 @@ The existing Sponsored Products outbox poller also drives approved campaign-crea
 batches after pending update work. Its existing enable switch remains off by default.
 Creation uses the same environment gate, profile allowlist and dispatch/reconcile
 switches. No new timer, cadence or automatic approval is installed. Open the
-environment write gate only on a deployment where the worker dispatch switch
-(`OPENSPELL_SP_WRITE_DISPATCH_ENABLED`) is on; otherwise admitted batches wait
-unclaimed until their authority expires.
+environment write gate only on a deployment where the worker's dispatch switch is
+on; otherwise admitted batches wait unclaimed until their authority expires.
 
 Queued creation authority expires with its five-minute review checks or the frozen
 plan, whichever expires first. Reservation rechecks selected products and observed
