@@ -4,6 +4,7 @@ import { signIn } from './support/auth';
 import { applyRequestedCpuThrottle } from './support/cpu-throttle';
 import { expectDateRangePresets } from './support/date-range';
 import { readState } from './support/fixture';
+import { strategyWarmRoutes, warmRoutes } from './support/route-warmup';
 
 interface ExpectedPreset {
   label: string;
@@ -130,18 +131,26 @@ test('creative exposes all date presets and preserves canonical account scope', 
   });
 });
 
-test('legacy strategy links land on the method catalogue without the retired operating status block', async ({ page }) => {
-  const { fixtureProfileId } = await readState();
-  await page.goto(`/strategy?profile=${fixtureProfileId}`);
+test.describe(() => {
+  // The redirect target's document loads inside the shell title's 15 s wait.
+  // Compile it before this test starts, not only earlier in the suite.
+  test.beforeAll(async () => {
+    await warmRoutes(strategyWarmRoutes((await readState()).fixtureProfileId));
+  });
 
-  await expect(page.getByTestId('shell-title')).toBeVisible();
-  await page.waitForURL((url) => (
-    url.pathname === '/settings/strategy'
-      && url.searchParams.get('profile') === fixtureProfileId
-      && url.hash === ''
-  ));
-  await expect(page.locator('#operating-status')).toHaveCount(0);
-  const destination = page.getByRole('heading', { name: 'Optimization methods', exact: true });
-  await expect(destination).toBeVisible();
-  await expect(destination).toBeInViewport();
+  test('legacy strategy links land on the method catalogue without the retired operating status block', async ({ page }) => {
+    const { fixtureProfileId } = await readState();
+    await page.goto(`/strategy?profile=${fixtureProfileId}`);
+
+    await expect(page.getByTestId('shell-title')).toBeVisible();
+    await page.waitForURL((url) => (
+      url.pathname === '/settings/strategy'
+        && url.searchParams.get('profile') === fixtureProfileId
+        && url.hash === ''
+    ));
+    await expect(page.locator('#operating-status')).toHaveCount(0);
+    const destination = page.getByRole('heading', { name: 'Optimization methods', exact: true });
+    await expect(destination).toBeVisible();
+    await expect(destination).toBeInViewport();
+  });
 });
