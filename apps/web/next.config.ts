@@ -81,6 +81,12 @@ const nextConfig: NextConfig = {
         outputPath: isServer ? (dev ? '../' : '../../') : undefined,
       },
     });
+    // An E2E dev process keeps its webpack cache in memory. Next's filesystem
+    // cache writes 260 to 510 MB of gzipped packs per suite, starting about
+    // 60 s after a compile. On four busy cores that write blocked the event
+    // loop for up to 10 s and held requests inside tests for up to 14 s.
+    // A later suite that restored the packs was not faster.
+    if (dev && process.env['WIZARD_ADS_E2E_AUTH'] === '1') config.cache = { type: 'memory' };
     return config;
   },
   /**
