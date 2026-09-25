@@ -1771,6 +1771,75 @@ describe.skipIf(!available)('worker + real Postgres', () => {
     expect({ count: Number(restated?.n), cost: Number(restated?.cost) }).toEqual({ count: 1, cost: 30 });
   }, 60_000);
 
+  it('records the day a reconciled load returned as verified coverage, once (WP-324)', async () => {
+    await database.sql`delete from public.report_coverage where profile_id = ${profileId}`;
+    const api = new FakeAdsApi();
+    api.reportRows = [reportRow(today, 'c-1', 4), reportRow(today, 'c-2', 6)];
+    const worker = makeWorker('coverage', new PostgresWorkerStore(database), api);
+    const read = async () => {
+      const [ledger] = await database.sql<{ rows_parsed: string; rows_loaded: string; counts_match: boolean }[]>`
+        select rows_parsed, rows_loaded, counts_match from public.report_requests
+         where profile_id = ${profileId} order by requested_at desc limit 1
+      `;
+      const coverage = await database.sql<{
+        earliest_returned_date: string | null; latest_loaded_date: string; missing_dates: string[]; loaded_rows: string;
+      }[]>`
+        select earliest_returned_date::text, latest_loaded_date::text, missing_dates::text[], loaded_rows
+          from public.report_coverage
+         where profile_id = ${profileId} and report_type = 'spCampaigns' and source = 'amazon_reporting_v3'
+      `;
+      return { ledger, coverage };
+    };
+
+    for (const key of ['coverage-cycle-1', 'coverage-cycle-2']) {
+      await queueReport(database, orgId, profileId, today, key);
+      expect(await worker.drainOnce()).toBe(1);
+      await runQueuedPipeline(worker, database);
+      await expectAllSucceeded(database, orgId);
+      const { ledger, coverage } = await read();
+      // Parsed against loaded first: only a reconciled load may claim its day.
+      expect({ parsed: Number(ledger?.rows_parsed), loaded: Number(ledger?.rows_loaded), match: ledger?.counts_match })
+        .toEqual({ parsed: 1, loaded: 1, match: true });
+      expect(coverage).toEqual([{ earliest_returned_date: today, latest_loaded_date: today, missing_dates: [], loaded_rows: '1' }]);
+    }
+  }, 60_000);
+
+  it('lets a superseded completion claim its own days without refreshing the newer observation (WP-324)', async () => {
+    await database.sql`delete from public.report_coverage where profile_id = ${profileId}`;
+    await database.sql`delete from public.report_promotion_watermarks where profile_id = ${profileId} and report_type = 'spTargeting'`;
+    const store = new PostgresWorkerStore(database);
+    const requested = async (start: string, requestedAt: string, day: string) => {
+      const [row] = await database.sql<{ id: string }[]>`
+        insert into public.report_requests (org_id, profile_id, report_type, start_date, end_date, status, requested_at)
+        values (${orgId}, ${profileId}, 'spTargeting', ${start}, '2026-07-02', 'processing', ${requestedAt}) returning id
+      `;
+      await database.sql`
+        insert into public.report_promotion_watermarks
+          (org_id, profile_id, report_type, report_date, source, report_request_id, requested_at,
+           source_rows, parsed_rows, refused_rows, promoted_rows, canonical_rows)
+        values (${orgId}, ${profileId}, 'spTargeting', ${day}, 'amazon_reporting_v3', ${row!.id}, ${requestedAt}, 1, 1, 0, 1, 1)
+      `;
+      return row!.id;
+    };
+    const newer = await requested('2026-07-02', '2026-07-03T02:00:00.000Z', '2026-07-02');
+    const older = await requested('2026-07-01', '2026-07-03T01:00:00.000Z', '2026-07-01');
+    await store.completeReport(newer, { parsed: 1, loaded: 1, bytesDownloaded: 10, coverage: {
+      sourceRows: 1, parsedRows: 1, refusedRows: 0, observedAt: '2026-07-03T03:00:00.000Z', settledThrough: null } });
+    // The worker passes null coverage when a newer report superseded some of the request's dates.
+    await store.completeReport(older, { parsed: 1, loaded: 1, bytesDownloaded: 10, coverage: null });
+    const [coverage] = await database.sql<{ earliest_returned_date: string; latest_loaded_date: string;
+      missing_dates: string[]; observed_at: Date | string }[]>`
+      select earliest_returned_date::text, latest_loaded_date::text, missing_dates::text[], observed_at
+        from public.report_coverage where profile_id = ${profileId} and report_type = 'spTargeting'
+    `;
+    expect({ ...coverage, observed_at: new Date(coverage!.observed_at).toISOString() }).toEqual({
+      earliest_returned_date: '2026-07-01', latest_loaded_date: '2026-07-02', missing_dates: [],
+      observed_at: '2026-07-03T03:00:00.000Z',
+    });
+    expect(await database.sql`select status from public.report_requests where id in (${newer}, ${older})`)
+      .toEqual([{ status: 'completed' }, { status: 'completed' }]);
+  });
+
   it('keeps v3 successful when Unified admission contends with a binding update', async () => {
     await database.sql`
       update public.unified_reporting_bindings

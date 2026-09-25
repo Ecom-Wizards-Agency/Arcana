@@ -23,3 +23,8 @@ it('uses the WP-250 store with separate signer, agency and namespace keys',async
   expect(queueViewStore(storage,{...actor,orgId:'00000000-0000-4000-8000-000000000004'}).cachedLayout('targets')).toBeNull();
   expect([...values.keys()]).toEqual([`changeQueue:wizard-ads:layout:v2:${actor.orgId}:${actor.userId}`]);
 });
+
+it.each(['campaign_creation','campaign_creation_retry'])('round-trips the %s source and attention state',source=>{
+  const filters={source,state:'needs_attention',density:'compact'};
+  expect(restoreQueueView({},saveQueueView(filters))).toMatchObject(filters);
+});

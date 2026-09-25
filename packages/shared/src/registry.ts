@@ -11,6 +11,7 @@ interface RegistryEntry {
   exports: readonly { barrel: string; order: number; clause: string; after: string }[];
 }
 export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
+  { domain: 'product-assignment', contract: 'product-assignment.ts', schema: null, queries: null, migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 120, clause: '*', after: '' }] },
   {domain: 'report-families', contract: 'report-families.ts', schema: null, queries: null, migrationPrefix: null, exports: [{barrel: 'index.ts', order: 100, clause: '*', after: ''}]},
   {"domain": "spapi-reports", "contract": "spapi-reports.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 110, "clause": "*", "after": ""}]},
   {"domain": "spapi-fulfillment", "contract": "spapi-fulfillment.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 111, "clause": "*", "after": ""}]},
@@ -23,6 +24,9 @@ export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
   {"domain":"extension-report-support","contract":"extension-report-support.ts","schema":null,"queries":null,"migrationPrefix":null,"exports":[{"barrel":"index.ts","order":105,"clause":"*","after":""}]},
   {"domain":"provider-graph","contract":"provider-graph.ts","schema":null,"queries":null,"migrationPrefix":null,"exports":[{"barrel":"index.ts","order":104,"clause":"*","after":""}]},
   {"domain":"marketing-stream-extensions","contract":"marketing-stream-extensions.ts","schema":null,"queries":null,"migrationPrefix":null,"exports":[{"barrel":"index.ts","order":103,"clause":"*","after":""}]},
+  { domain: 'campaign-creation-screen', contract: 'campaign-creation-screen.ts', schema: null, queries: null, migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 222, clause: '*', after: '' }] },
+  { domain: 'campaign-creation-admission', contract: 'campaign-creation-admission.ts', schema: null, queries: null, migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 221, clause: '*', after: '' }] },
+  { domain: 'campaign-creation-batch', contract: 'campaign-creation-batch.ts', schema: null, queries: null, migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 220, clause: '*', after: '' }] },
   {"domain": "sponsored-prompts", "contract": "sponsored-prompts.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 102, "clause": "*", "after": ""}]},
   {"domain":"campaign-builder","contract":"campaign-builder.ts","schema":null,"queries":null,"migrationPrefix":null,"exports":[{"barrel":"index.ts","order":102,"clause":"*","after":""}]},
   {domain: "brand-lens", contract: "brand-lens.ts", schema: null, queries: null, migrationPrefix: null, exports: [{barrel: "index.ts", order: 102, clause: "*", after: ""}]},

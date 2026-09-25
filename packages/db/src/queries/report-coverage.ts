@@ -2,6 +2,19 @@ import { ReportCoverageAccounting, ReportCoverageObservation } from '@wizard-ads
 import type { DbHandle, QueryHandle } from '../client.js';
 import type postgres from 'postgres';
 
+type CoverageReceipt = { offered: number; written: number; unchanged: number };
+
+interface ReportCoverageWriteOptions {
+  accounting?: 'verified_budget_run';
+  /**
+   * WP-324: the completed Amazon Ads report request whose own durable evidence
+   * (per-day watermarks, identified fact rows) supplies the days to hold. The
+   * verified span grows by the union of those days; a requested range alone
+   * never claims a day, and gaps between requests stay in `missing_dates`.
+   */
+  loadedBy?: string;
+}
+
 /** Verify the persisted observation inside the same transaction as its upsert.
  * Budget callers must verify the latest immutable run under its source lock before
  * replacing accounting. Provider time remains the observation time, even when
@@ -11,13 +24,26 @@ export async function upsertReportCoverage(
   handle: QueryHandle,
   raw: ReportCoverageObservation,
   verifiedLoadedRows: number | null,
-  options?: { accounting: 'verified_budget_run' },
-): Promise<{ offered: number; written: number; unchanged: number }> {
+  options?: ReportCoverageWriteOptions,
+): Promise<CoverageReceipt> {
+  return writeReportCoverage(handle, raw, verifiedLoadedRows, options ?? {}, 'always');
+}
+
+async function writeReportCoverage(
+  handle: QueryHandle,
+  raw: ReportCoverageObservation,
+  verifiedLoadedRows: number | null,
+  options: ReportCoverageWriteOptions,
+  offer: 'always' | 'when-absent',
+): Promise<CoverageReceipt> {
   const input = ReportCoverageObservation.parse(raw);
-  const replaceAccounting = options?.accounting === 'verified_budget_run';
+  const replaceAccounting = options.accounting === 'verified_budget_run';
   if (replaceAccounting && (input.reportType !== 'campaign_budget_usage' || input.grain !== 'campaign_budget_usage'
     || !['amazon_ads_api', 'amazon_marketing_stream'].includes(input.source) || !input.sourceRunId || !input.countsMatch)) {
     throw new Error('verified budget accounting requires a scoped budget source run');
+  }
+  if (replaceAccounting && options.loadedBy !== undefined) {
+    throw new Error('budget accounting does not claim report days');
   }
   if (input.loadedRows !== verifiedLoadedRows) throw new Error('coverage loaded count differs from verified load');
   if (input.sourceRows !== null && input.parsedRows !== null && input.refusedRows !== null &&
@@ -88,7 +114,68 @@ export async function upsertReportCoverage(
     }
     return { offered: 1, written: written.length, unchanged: 1 - written.length };
   };
-  return 'savepoint' in handle.sql ? handle.sql.savepoint(write) : handle.sql.begin(write);
+  const loadedBy = options.loadedBy;
+  const run = loadedBy === undefined ? write
+    : (sql: postgres.TransactionSql) => claimLoadedDays(sql, input, loadedBy, offer === 'always' ? write : null, write);
+  return 'savepoint' in handle.sql ? handle.sql.savepoint(run) : handle.sql.begin(run);
+}
+
+type CoverageKey = Pick<ReportCoverageObservation, 'orgId' | 'profileId' | 'reportType' | 'grain' | 'source'>;
+
+/**
+ * Capture the held days before the observation moves `latest_loaded_date`, offer
+ * the observation, then store the prior days plus this request's loaded days.
+ * Days the observation's range adds without evidence become missing dates.
+ * `always` is null when a newer report owns the observation: the request then
+ * offers it only for a key that has no row yet.
+ */
+async function claimLoadedDays(
+  sql: postgres.TransactionSql,
+  key: CoverageKey,
+  reportRequestId: string,
+  always: ((sql: postgres.TransactionSql) => Promise<CoverageReceipt>) | null,
+  whenAbsent: (sql: postgres.TransactionSql) => Promise<CoverageReceipt>,
+): Promise<CoverageReceipt> {
+  await sql`select pg_advisory_xact_lock(hashtextextended(${
+    ['wizard-ads:report-coverage', key.profileId, key.reportType, key.grain, key.source].join('|')}, 0))`;
+  const requests = await sql<{ org_id: string; profile_id: string; report_type: string }[]>`
+    select org_id, profile_id, report_type::text from public.report_requests where id = ${reportRequestId}
+  `;
+  const request = requests[0];
+  if (requests.length !== 1 || request?.org_id !== key.orgId || request.profile_id !== key.profileId
+    || request.report_type !== key.reportType) {
+    throw new Error('coverage days belong to another report request scope');
+  }
+  const prior = await sql<{ id: string; held: string[] }[]>`
+    select id, app.report_coverage_held_days(id)::text[] as held from public.report_coverage
+     where profile_id = ${key.profileId} and report_type = ${key.reportType}
+       and grain = ${key.grain} and source = ${key.source}
+       for update
+  `;
+  const receipt = always !== null ? await always(sql)
+    : prior.length === 0 ? await whenAbsent(sql) : { offered: 0, written: 0, unchanged: 0 };
+  const loaded = await sql<{ day: string }[]>`
+    select loaded.day::text as day from app.report_request_loaded_days(${reportRequestId}) as loaded(day)
+  `;
+  const rows = await sql<{ id: string; org_id: string }[]>`
+    select id, org_id from public.report_coverage
+     where profile_id = ${key.profileId} and report_type = ${key.reportType}
+       and grain = ${key.grain} and source = ${key.source}
+  `;
+  if (rows.length !== 1 || rows[0]?.org_id !== key.orgId) {
+    throw new Error(`coverage days expected 1 row for the observation, read ${rows.length}`);
+  }
+  const held = [...new Set([...(prior[0]?.held ?? []), ...loaded.map((row) => row.day)])].sort();
+  if (held.length === 0) return receipt;
+  const coverageId = rows[0].id;
+  await sql`select app.set_report_coverage_held_days(${coverageId}, ${sql.array(held)}::date[])`;
+  const [after] = await sql<{ held: string[] }[]>`
+    select app.report_coverage_held_days(${coverageId})::text[] as held
+  `;
+  if (after?.held.length !== held.length || after.held.some((day, index) => day !== held[index])) {
+    throw new Error(`coverage holds ${after?.held.length ?? 0} days after claiming ${held.length}`);
+  }
+  return receipt;
 }
 
 const grains: Readonly<Record<string, string>> = {
@@ -123,9 +210,14 @@ function fromLedger(row: LedgerCoverageRow, accounting?: ReportCoverageAccountin
   };
 }
 
-/** Called only after the ledger's existing completion/count assertion succeeds. */
+/**
+ * Called only after the ledger's existing completion/count assertion succeeds.
+ * The request claims the days it loaded. `accounting: null` marks a request a
+ * newer report superseded on some dates: it still claims the days it owns but
+ * never refreshes the newer observation.
+ */
 export async function recordReportCoverage(
-  handle: QueryHandle, reportRequestId: string, accounting?: ReportCoverageAccounting,
+  handle: QueryHandle, reportRequestId: string, accounting?: ReportCoverageAccounting | null,
 ) {
   const rows = await handle.sql<LedgerCoverageRow[]>`
     select id, org_id, profile_id, report_type::text, source, start_date::text, end_date::text, completed_at,
@@ -135,7 +227,8 @@ export async function recordReportCoverage(
   `;
   if (rows.length !== 1) throw new Error(`coverage expected 1 completed request, read ${rows.length}`);
   const row = rows[0]!;
-  return upsertReportCoverage(handle, fromLedger(row, accounting), numberOrNull(row.rows_loaded));
+  return writeReportCoverage(handle, fromLedger(row, accounting ?? undefined), numberOrNull(row.rows_loaded),
+    { loadedBy: reportRequestId }, accounting === null ? 'when-absent' : 'always');
 }
 
 /** Select one successful observation per ledger group, retaining its furthest covered date. */
@@ -159,10 +252,12 @@ export async function backfillReportCoverage(handle: Pick<DbHandle, 'sql'>) {
   let written = 0;
   let unchanged = 0;
   for (const row of rows) {
-    const result = await upsertReportCoverage(handle, fromLedger(row), numberOrNull(row.rows_loaded));
+    const result = await upsertReportCoverage(handle, fromLedger(row), numberOrNull(row.rows_loaded), { loadedBy: row.id });
     written += result.written;
     unchanged += result.unchanged;
   }
   if (rows.length !== written + unchanged) throw new Error('coverage backfill groups do not reconcile');
+  // WP-324: every completed, reconciled request's loaded days, not only the newest request's.
+  await handle.sql`select * from app.backfill_report_coverage_days()`;
   return { groups: rows.length, written, unchanged };
 }

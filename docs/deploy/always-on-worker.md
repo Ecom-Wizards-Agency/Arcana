@@ -184,3 +184,47 @@ twice. `list`, `adopt` and `abandon` are unchanged.
 `/sync-status` names the blocking stage (request, poll, fetch or load) with the bounded
 class of its last error, shows per-profile retrying and dead counts, and labels the
 organisation-wide dead count separately.
+
+## Campaign creation batches
+
+The existing Sponsored Products outbox poller also drives approved campaign-creation
+batches after pending update work. Its existing enable switch remains off by default.
+Creation uses the same environment gate, profile allowlist and dispatch/reconcile
+switches. No new timer, cadence or automatic approval is installed. Open the
+environment write gate only on a deployment where the worker's dispatch switch is
+on; otherwise admitted batches wait unclaimed until their authority expires.
+
+Queued creation authority expires with its five-minute review checks or the frozen
+plan, whichever expires first. Reservation rechecks selected products and observed
+parents against the mirror. Each creation node has one durable reservation before
+its only create POST. Readback
+uses a returned Amazon ID when available, otherwise the exact profile-scoped name or
+parent-scoped product/keyword identity. A complete read with one match adopts that
+resource; multiple matches refuse creation. Two complete empty reads at least 60
+seconds apart stop the batch as needing attention. Every read is recorded.
+
+Retry requires a separate operator approval. It reads each remaining identity before
+reserving a new POST, reuses observed parents, and refuses ambiguous matches. The
+approval warns that a delayed original resource could appear after an empty read.
+Creation has no delete rollback. Terminal attention releases dispatch capacity but
+retains the unresolved evidence.
+
+A child batch of keywords only is a keyword retry; its control reads exactly "Yes, retry
+N keyword(s) in Amazon". A child that includes a campaign, ad group or product ad is
+resource recovery. Recovery is its own approval with its own control, "Yes, recover N
+resource(s) in Amazon", and is never described as a keyword retry.
+
+Admission binds the review evidence the operator saw: the persisted validation of the
+approved draft revision. Evidence older than five minutes, or without a check time, is
+refused with `freshness_not_current`; admission never replaces it with newer evidence.
+Fresh evidence is recorded at a new draft revision only when the operator acts.
+Continue to confirmation revalidates the draft. For a retry or recovery, the result
+screen's Review keyword retry or Review resource recovery action records the evidence,
+as does Refresh review evidence. Opening or reloading the retry screen does not refresh
+it; the screen shows the recorded evidence and disables its Amazon control when that
+evidence is stale. Every confirmation disables itself when its evidence window closes.
+
+The builder reports stock, buy-box, suppression and moderation as unmeasured and
+lists their missing evidence at confirmation. These checks do not block approval.
+Every check must be present exactly once; measured blocking checks and stale evidence
+still refuse admission. Opening the gates never creates a campaign automatically.

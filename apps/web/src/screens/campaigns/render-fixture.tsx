@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { generateCampaignName, buildCampaignRecipe, campaignRecipeCreationPlan, namingSettingsFromStrategy, parseCampaignName } from '@wizard-ads/campaigns';
 import { campaignBidRationale, campaignBuilderEligibility, spCoordinatedCapabilities } from '@wizard-ads/core';
-import { CampaignBuilderContext, CampaignBuilderRecipe, CampaignDraft, CampaignBuilderResult, CampaignCreationPlanV2, CampaignCreationNodeV2, serializeCampaignCreationNodeFingerprint, serializeCampaignCreationPlanFingerprint, spMarketplaceScopeForCountry, spMarketplaceBudgetCapability } from '@wizard-ads/shared';
+import { CampaignBuilderContext, CampaignBuilderRecipe, CampaignDraft, CampaignBuilderResult, CampaignCreationBatch, CampaignCreationProviderResult, CampaignCreationPlanV2, CampaignCreationNodeV2, serializeCampaignCreationNodeFingerprint, serializeCampaignCreationPlanFingerprint, spMarketplaceScopeForCountry, spMarketplaceBudgetCapability } from '@wizard-ads/shared';
 import { CampaignCreationApprovalView, campaignCreationReviewFreshness } from '@wizard-ads/shared/campaign-creation-approval';
 import { AssetLibrarySnapshot } from '@wizard-ads/shared/asset-library';
 
@@ -33,6 +33,7 @@ export const savedDraft = CampaignDraft.parse({ id: fixtureId(3), orgId: fixture
   rationale: builderRecipe.keywords.map((keyword) => ({ keyword: keyword.text, frozenAt: fixtureTime, sentence: campaignBidRationale({ keyword: keyword.text, basis: keyword.basis, bid: keyword.bid, currency: 'USD', topOfSearch: 140, audienceAdjustment: 0, evidence: builderContext.bidEvidence[0]! }) })),
 });
 export const validationChecks = [...fixtureChecks, ...(['product', 'permission', 'count'] as const).map((id) => ({ id, label: id, source: 'Synthetic review evidence', status: 'passed' as const, blocking: false, currentValue: 'Verified', requiredAction: '' }))];
+export const measuredCreationChecks = validationChecks.map((check) => ({ ...check, status: 'passed' as const, blocking: false, source: 'Synthetic measured creation evidence' }));
 export const validatedDraft = CampaignDraft.parse({ ...savedDraft, status: 'validated', validation: { planFingerprint: fixturePlan.fingerprint, recipeFingerprint: digest(JSON.stringify(builderRecipe)), checkedAt: fixtureTime, checks: validationChecks } });
 const blockedRecipe = { ...builderRecipe, dailyBudget: 0.3 };
 const blockedPlan = campaignRecipeCreationPlan(buildCampaignRecipe(blockedRecipe, builderContext), {
@@ -61,6 +62,48 @@ function currentReview() {
     recordedContext: { guardrails: 'not_recorded', provenance: 'not_recorded', frozenProfileLabel: 'not_recorded' }, admission: { kind: 'none' } });
 }
 export const fixtureReview = currentReview();
+export function creationBatchFixture(state: 'admitted' | 'partial' | 'complete' | 'uncertain' | 'ambiguous' | 'adopted', source = CampaignCreationPlanV2.parse(fixtureReview.plan)): CampaignCreationBatch {
+  if (state === 'uncertain' || state === 'ambiguous') {
+    const batch = creationBatchFixture('admitted',source); const row = batch.nodes[0]!;
+    row.intent = creationBatchFixture('complete',source).nodes[0]!.intent;
+    const firstAt = new Date(Date.parse(source.frozenAt)+36_000).toISOString();
+    const at = new Date(Date.parse(source.frozenAt)+96_000).toISOString();
+    row.observation = { id:fixtureId(390),mode:'identity',identityFingerprint:'a'.repeat(64),requestDigest:row.intent!.requestDigest,
+      responseDigest:'b'.repeat(64),providerEntityId:null,complete:true,observation:state==='uncertain'?'uncertain':'ambiguous_readback',
+      startedAt:at,observedAt:at,accounting:{pages:1,loaded:state==='uncertain'?0:2,parsed:state==='uncertain'?0:2,matched:state==='uncertain'?0:2},
+      reason:state==='uncertain'?'No resource matched the exact identity in two complete observations at least 60 seconds apart. The original create outcome remains uncertain.'
+        :'More than one resource matched the exact identity. Creation is refused.' };
+    row.observations = state==='uncertain' ? [{...row.observation,id:fixtureId(389),observation:'not_found',startedAt:firstAt,observedAt:firstAt,reason:'No exact identity matched.'},row.observation] : [row.observation];
+    for (const child of batch.nodes.slice(1)) child.refusal='dependency_failed';
+    return CampaignCreationBatch.parse(batch);
+  }
+  if (state === 'adopted') {
+    const batch = creationBatchFixture('complete',source); const parentBatchId=batch.id; batch.id=fixtureId(391);
+    batch.lineage={parentBatchId,planFingerprint:source.fingerprint,nodeIds:batch.nodes.map((row)=>row.nodeId),inheritedResources:[]};
+    for (const row of batch.nodes) if(row.result) row.result={...row.result,executionId:batch.id};
+    const first=batch.nodes[0]!;first.intent=null;first.result=null;first.observation={...first.observation!,mode:'identity'};first.observations=[first.observation];
+    return CampaignCreationBatch.parse(batch);
+  }
+  const batchId = fixtureId(290); const at = source.frozenAt; const hash = 'a'.repeat(64);
+  return CampaignCreationBatch.parse({ id: batchId, draftId: savedDraft.id, draftRevision: 1, actorId: savedDraft.createdBy,
+    plan: source, admittedAt: at, expiresAt: source.expiresAt, environmentGateVersion: fixtureId(291), profileGrantVersion: fixtureId(292),
+    validation: { planFingerprint: source.fingerprint, recipeFingerprint: digest(JSON.stringify(builderRecipe)), checkedAt: at, checks: measuredCreationChecks },
+    lineage: null, productChecks: source.nodes.flatMap((node) => node.kind === 'eligibility.require_product'
+      ? [{ nodeId: node.nodeId, providerEntityId: node.payload.asin, observedAt: at }] : []),
+    nodes: source.nodes.filter((node) => node.effect === 'irreversible_create').map((node,index) => {
+      const failed = state === 'partial' && node.kind === 'target.create'; const providerEntityId = failed ? null : String(29000+index);
+      const intent = { id: fixtureId(300+index), requestDigest: hash, nodeRequestDigest: hash, reservedAt: at,
+        deadline: new Date(Date.parse(at)+35_000).toISOString() };
+      return { nodeId: node.nodeId, nodeFingerprint: node.fingerprint, refusal: null, intent: state === 'admitted' ? null : intent,
+        result: state === 'admitted' ? null : CampaignCreationProviderResult.parse({ effect: 'irreversible_create',planId:source.id,nodeId:node.nodeId,
+          executionId:batchId,attemptId:intent.id,providerCallId:intent.id,nodeFingerprint:node.fingerprint,requestIndex:0,requestDigest:hash,nodeRequestDigest:hash,
+          outcome:failed?'authoritative_rejected':'succeeded',providerEntityId,providerEntityVersion:null,providerCode:failed?'INVALID_ARGUMENT':null,
+          sanitizedMessage:failed?'The keyword was refused. Review its separate retry.':null,providerRequestId:null,responseDigest:hash,startedAt:at,completedAt:at }),
+        observation: state==='admitted'||failed?null:{id:fixtureId(350+index),mode:'provider_id',identityFingerprint:hash,
+          providerEntityId,requestDigest:hash,responseDigest:hash,observation:'observed',complete:true,reason:null,
+          accounting:{pages:1,loaded:1,parsed:1,matched:1},startedAt:at,observedAt:at} };
+    }).map((row)=>({...row,observations:row.observation?[row.observation]:[]})) });
+}
 export function creationResult(complete: boolean) {
   const resources = fixturePlan.nodes.filter((node) => node.effect === 'irreversible_create').map((node) => ({ nodeId: node.nodeId,
     kind: node.kind === 'campaign.create' ? 'campaign' : node.kind === 'ad_group.create' ? 'ad_group' : node.kind === 'ad.create' ? 'product_ad' : 'keyword',

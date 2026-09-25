@@ -2,9 +2,11 @@ import { expect, type Page, type TestInfo } from '@playwright/test';
 import { createDb, withAuthenticatedReadSnapshot } from '@wizard-ads/db';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { captureCreationQueue } from './campaign-creation-queue';
 import { campaignRouteCases } from './campaign-route-cases';
 import { readState, USERS } from './fixture';
 import { signIn } from './auth';
+import { CampaignCreationBatch } from '@wizard-ads/shared';
 import { fixtureReverseName } from '../../src/screens/campaigns/render-fixture';
 
 export async function captureCampaignStates(page: Page, testInfo: TestInfo) {
@@ -12,8 +14,8 @@ export async function captureCampaignStates(page: Page, testInfo: TestInfo) {
   const [profile] = await db.sql<{ label: string }[]>`select coalesce(account_name,amazon_profile_id) as label from public.ad_profiles where org_id=${fixture.orgId} and id=${fixture.fixtureProfileId}`;
   expect(profile).toBeTruthy();
   const cases = campaignRouteCases(fixture, profile!.label);
-  expect(cases).toHaveLength(72); expect(new Set(cases.map((item) => `${item.screen}--${item.key}`)).size).toBe(72);
-  const directory = resolve(testInfo.project.outputDir, '..', 'wp270-round3', 'screenshots'); await mkdir(directory, { recursive: true });
+  expect(cases).toHaveLength(83); expect(new Set(cases.map((item) => `${item.screen}--${item.key}`)).size).toBe(83);
+  const directory = resolve(testInfo.outputDir, 'campaign-states'); await mkdir(directory, { recursive: true });
   try {
     // Created only in the disposable browser database; production has no fixture table.
     await db.sql`create table public.campaign_screen_fixtures (id uuid primary key, org_id uuid not null references public.orgs(id), profile_id uuid not null references public.ad_profiles(id), created_by uuid not null, screen_id text not null, mode text not null, payload jsonb not null)`;
@@ -21,13 +23,23 @@ export async function captureCampaignStates(page: Page, testInfo: TestInfo) {
     await db.sql`create policy campaign_fixture_actor on public.campaign_screen_fixtures as restrictive for select to authenticated using(created_by=auth.uid())`;
     for (const item of cases) await db.sql`insert into public.campaign_screen_fixtures values(${item.id},${fixture.orgId},${fixture.fixtureProfileId},${USERS.admin},${item.screen === 'campaigns-new' ? 'campaigns' : item.screen},${item.mode},${JSON.stringify(item.payload)}::text::jsonb)`;
     const [persisted] = await db.sql<{ count: number }[]>`select count(*)::int as count from public.campaign_screen_fixtures where org_id=${fixture.orgId} and created_by=${USERS.admin}`;
-    expect(persisted?.count).toBe(72);
+    expect(persisted?.count).toBe(83);
     const otherActorRows = await withAuthenticatedReadSnapshot(db, { orgId: fixture.orgId, userId: USERS.viewer }, (snapshot) => snapshot.sql`select id from public.campaign_screen_fixtures`);
     expect(otherActorRows).toHaveLength(0);
     const [before] = await db.sql`select (select count(*) from public.sync_jobs where org_id=${fixture.orgId}) as jobs,(select count(*) from public.campaign_drafts where org_id=${fixture.orgId} and status='approved') as approvals`;
     await signIn(page, 'admin'); await page.setViewportSize({ width: 1440, height: 1024 });
     const captures: Array<Record<string, unknown>> = [];
     for (const item of cases) {
+      const rawBatch = (item.payload as { creationBatch?: unknown }).creationBatch;
+      const batch = rawBatch ? CampaignCreationBatch.parse(rawBatch) : null;
+      let statusReads = 0;
+      if (batch) await page.route('**/api/campaigns/creation/status?**', async (route) => {
+        statusReads++;
+        const url = new URL(route.request().url());
+        expect(url.searchParams.get('profileId')).toBe(fixture.fixtureProfileId);
+        expect(url.searchParams.get('batchId')).toBe(batch.id);
+        await route.fulfill({ json: batch });
+      });
       const query = new URLSearchParams({ profile: fixture.fixtureProfileId, fixture: item.id }); if (item.step) query.set('step', item.step);
       const route = `${item.path}?${query}`;
       await page.goto(route, { waitUntil: item.mode === 'loading' ? 'commit' : 'domcontentloaded' });
@@ -84,16 +96,37 @@ export async function captureCampaignStates(page: Page, testInfo: TestInfo) {
       if (item.key.startsWith('confirm-')) { await expect(page.getByText('Created resources cannot be deleted through rollback.')).toBeVisible(); }
       if (item.key === 'partial') await expect(page.getByRole('cell', { name: 'Failed · 429', exact: true })).toBeVisible();
       if (item.key === 'nine-checks') { await expect(page.locator('.campaign-check-chip[data-runnable="true"]')).toHaveCount(5); await expect(page.locator('.campaign-check-chip[data-runnable="false"]')).toHaveCount(4); }
+      if (item.key === 'in-progress') {
+        await expect.poll(() => statusReads, { timeout: 6000 }).toBe(1);
+        await expect(page.getByRole('status', { name: '' }).filter({ hasText: 'Waiting for the worker' })).toBeVisible();
+      }
+      if (item.key === 'batch-partial' || item.key === 'batch-complete') {
+        await expect(page.getByRole('link', { name: /in the campaign grid/ })).toHaveCount(1);
+        await expect(page.getByText(/Parsed 4 · Loaded 4/)).toBeVisible();
+      }
+      if (item.key === 'batch-retry') await expect(page.getByRole('table').getByRole('row')).toHaveCount(2);
+      if (item.key === 'resource-retry') {
+        await expect(page.getByRole('table').getByRole('row')).toHaveCount(5);
+        await expect(page.getByRole('button',{name:'Yes, recover 4 resources in Amazon'})).toBeDisabled();
+        await expect(page.getByText('Resource recovery is a separate approval.')).toBeVisible();
+        await expect(page.getByRole('button',{name:/^Yes, retry \d+ keywords? in Amazon$/})).toHaveCount(0);
+        await expect(page.getByText(/A delayed original resource could appear later and cause a duplicate/)).toBeVisible();
+      }
+      if (item.key === 'needs-attention') await expect(page.getByText(/two complete observations at least 60 seconds apart/).first()).toBeVisible();
+      if (item.key === 'ambiguous-readback') await expect(page.getByRole('button',{name:'Review resource recovery'})).toBeDisabled();
+      if (item.key === 'adopted') await expect(page.getByText(/Attempted 3 · Succeeded 4/)).toBeVisible();
       await page.evaluate(async () => { await document.fonts.ready; }); await page.mouse.move(0, 0);
       const path = join(directory, `${item.screen}--${item.key}.png`);
       await page.screenshot({ path, animations: 'disabled', style: 'nextjs-portal { display:none; }' });
       const bytes = (await stat(path)).size; expect(bytes).toBeGreaterThan(0);
       await testInfo.attach(`${item.screen}--${item.key}`, { path, contentType: 'image/png' });
+      if (batch) await page.unroute('**/api/campaigns/creation/status?**');
       captures.push({ state: `${item.screen}--${item.key}`, route, resolvedRoute: new URL(page.url()).pathname, fixtureId: item.id, profileId: fixture.fixtureProfileId, expected: item.expected, viewport: { width: 1440, height: 1024 }, path, bytes, evidence: item.screen === 'campaigns-new' ? 'Canonical boundary through the query-preserving alias' : 'Persisted actor-bound route data; registered screen and operator shell' });
       await writeFile(join(directory, 'manifest.json'), JSON.stringify({ expected: cases.length, captured: captures.length, captures }, null, 2));
     }
-    expect(captures).toHaveLength(72);
+    expect(captures).toHaveLength(83);
     const [after] = await db.sql`select (select count(*) from public.sync_jobs where org_id=${fixture.orgId}) as jobs,(select count(*) from public.campaign_drafts where org_id=${fixture.orgId} and status='approved') as approvals`;
     expect(after).toEqual(before);
+    await captureCreationQueue(page, testInfo, db, cases);
   } finally { await db.close(); }
 }

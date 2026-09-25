@@ -16,7 +16,7 @@ describe('persisted campaign route fixtures', () => {
   it('persists schema-valid data for every visual case and maps every state to a real route', () => {
     const cases = campaignRouteCases({ orgId: '27000000-0000-4000-8000-000000000001', fixtureProfileId: '27000000-0000-4000-8000-000000000002', otherOrgId: '27000000-0000-4000-8000-000000000009', connectionString: '' });
     const names = (values: readonly { screen: string; key: string }[]) => values.map((value) => `${value.screen}--${value.key}`).sort();
-    expect(names(cases)).toEqual(names(campaignVisualCases)); expect(cases).toHaveLength(72);
+    expect(names(cases)).toEqual(names(campaignVisualCases)); expect(cases).toHaveLength(83);
     const schemas = { campaigns: BuilderRouteData, 'campaigns-new': BuilderRouteData, 'campaigns-eligibility': BuilderRouteData, 'campaigns-draft': DraftRouteData, 'campaigns-assets': AssetsRouteData, 'campaigns-naming': NamingRouteData, 'campaigns-update': UpdateRouteData };
     for (const item of cases) {
       expect(schemas[item.screen as keyof typeof schemas].safeParse(item.payload).success, `${item.screen}--${item.key}`).toBe(true);

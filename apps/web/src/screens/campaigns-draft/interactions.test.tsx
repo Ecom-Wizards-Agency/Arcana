@@ -7,7 +7,7 @@ import { CreationConfirm, CreationResult, KeywordRetry } from './creation-states
 import { DraftReady } from './view';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { campaignVisualCases } from '../campaigns/visual-cases';
-import { builderContext, builderRecipe, savedDraft, validatedDraft, blockedDraft, fixtureReview, validationChecks, creationResult } from '../campaigns/render-fixture';
+import { builderContext, builderRecipe, savedDraft, validatedDraft, blockedDraft, fixtureReview, validationChecks, measuredCreationChecks, creationResult } from '../campaigns/render-fixture';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const noop = () => {};
 describe('bid and immutable draft interactions', () => {
@@ -59,11 +59,13 @@ describe('executor presentation boundary and resource results', () => {
         labelled++;
         expect(control.tagName, item.key).toBe('BUTTON');
         expect((control as HTMLButtonElement).disabled, item.key).toBe(true);
-        expect(control.textContent).toMatch(/^Yes, (create \d+ campaigns?|retry \d+ keywords?) in Amazon$/);
+        // Resource recovery is its own approval with its own exact control; every other control keeps the specified wording.
+        if (item.key === 'resource-retry') expect(control.textContent).toBe('Yes, recover 4 resources in Amazon');
+        else expect(control.textContent).toMatch(/^Yes, (create \d+ campaigns?|retry \d+ keywords?) in Amazon$/);
         expect(host.textContent).toContain('Export bulk sheet');
       }
     }
-    expect(labelled).toBe(2);
+    expect(labelled).toBe(6);
   });
   it('shows the exact disabled creation label, reason and export without recording approval', () => {
     render(<CreationConfirm review={fixtureReview} checks={validationChecks} executor={{ available: false }} onExport={noop} onBack={noop} />);
@@ -72,7 +74,7 @@ describe('executor presentation boundary and resource results', () => {
     expect(screen.getByText(/Creation in Amazon is not available yet/)).toBeTruthy(); expect(screen.getByRole('button', { name: 'Export bulk sheet' })).toBeTruthy();
   });
   it('enables a registered fixture executor only with complete current checks', () => {
-    const create = vi.fn(); const { rerender } = render(<CreationConfirm review={fixtureReview} checks={validationChecks} executor={{ available: true, create, retry: noop }} onExport={noop} onBack={noop} />);
+    const create = vi.fn(); const { rerender } = render(<CreationConfirm review={fixtureReview} checks={measuredCreationChecks} executor={{ available: true, create, retry: noop }} onExport={noop} onBack={noop} />);
     fireEvent.click(screen.getByRole('button', { name: 'Yes, create 1 campaign in Amazon' })); expect(create).toHaveBeenCalledOnce();
     rerender(<CreationConfirm review={fixtureReview} checks={[]} executor={{ available: true, create, retry: noop }} onExport={noop} onBack={noop} />);
     expect((screen.getByRole('button', { name: 'Yes, create 1 campaign in Amazon' }) as HTMLButtonElement).disabled).toBe(true);

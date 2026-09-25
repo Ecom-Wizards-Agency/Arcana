@@ -56,6 +56,9 @@ declare
   v_wp313_binding jsonb;
   v_wp313_asset jsonb;
   v_wp313_graph_scope jsonb;
+  v_creation_draft uuid;
+  v_creation_batch uuid := gen_random_uuid();
+  v_creation_node uuid := gen_random_uuid();
   v_unified_binding uuid;
   v_unified_run uuid := gen_random_uuid();
   v_unified_operation uuid := gen_random_uuid();
@@ -1113,6 +1116,20 @@ begin
           'outcome','rejected','reason','disabled','counts',jsonb_build_object('received',1,'undecodable',0,'decoded',1,'accepted',0,
             'deduplicated',0,'stored',0,'rejected',1,'deadLettered',0,'verifiedStored',0)),
         v_wp313_at::timestamptz+interval '95 days',v_org,v_profile,'ads-campaign-management-campaigns');
+  end if;
+
+  -- Inert creation rows exercise every RLS policy without a valid plan, gate or outbox entry.
+  if to_regclass('public.campaign_creation_batches') is not null then
+    select id into v_creation_draft from public.campaign_drafts
+      where org_id=v_org and profile_id=v_profile limit 1;
+    insert into public.campaign_creation_batches(id,org_id,profile_id,draft_id,actor_id,admission_key,artifact,node_count)
+      values(v_creation_batch,v_org,v_profile,v_creation_draft,p_user_id,v_creation_batch::text,
+        jsonb_build_object('id',v_creation_batch,'actorId',p_user_id,'plan',jsonb_build_object('orgId',v_org,'profileId',v_profile)),1);
+    insert into public.campaign_creation_batch_nodes(org_id,profile_id,batch_id,node_id,ordinal,node_fingerprint,refusal)
+      values(v_org,v_profile,v_creation_batch,v_creation_node,0,repeat('0',64),'gate_closed');
+    insert into public.campaign_creation_observations(org_id,profile_id,batch_id,node_id,artifact)
+      values(v_org,v_profile,v_creation_batch,v_creation_node,'{"synthetic":true}');
+
   end if;
 
   return v_org;

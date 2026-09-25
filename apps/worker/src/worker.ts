@@ -15,7 +15,7 @@ import { type RecommendationsRun, type RecommendationScheduleStore } from './rec
 import { DEFAULT_REPORT_DOWNLOAD_LIMITS, mergeParsedFactBatches, ReportDownloadLimitError, ReportPayloadFormatError, ReportPayloadShapeError, type ParsedFactBatch, type ReportDownloadLimits, SKIP_FAILURE_RATIO, gunzipJson, parseReportRows } from './parsers.js';
 import { UnsafeSponsoredProductsReport, prepareSponsoredProductsReportDatesFromCounts, sponsoredProductsSourceRowDate, type prepareSponsoredProductsReportDates, type ReportDateSourceCounts } from './report-promotion.js';
 import { defaultRegionTokenBuckets, type RegionTokenBuckets } from './region-token-buckets.js';
-import { ClaimOwnershipLost, MAX_REPORT_RE_REQUESTS, type ReportRequestState, type WorkerStore } from './store.js';
+import { ClaimOwnershipLost, MAX_REPORT_RE_REQUESTS, type EntitySyncCounts, type ReportRequestState, type WorkerStore } from './store.js';
 import type { SbVideoIngestionRuntime } from './sb-video-ingestion.js';
 import { SqpWorkflowPendingError, type SqpQueuedJobContext } from './sqp.js';
 import type { WeeklySqpScheduleProducer } from './sqp-scheduler.js';
@@ -683,6 +683,7 @@ export class SyncWorker {
     }
 
     const totals = { listed: 0, upserted: 0, duplicates: 0, changes: 0, tombstoned: 0 };
+    let productAssignments: EntitySyncCounts['productAssignments'];
     let keywordMirror: KeywordMirrorMergeCounts | undefined;
     const controlMirrors: Partial<Record<'campaign' | 'target', ControlMirrorMergeCounts>> = {};
     for (const product of succeeded) {
@@ -712,6 +713,7 @@ export class SyncWorker {
       totals.duplicates += counts.duplicates;
       totals.changes += counts.changes;
       totals.tombstoned += counts.tombstoned;
+      if (counts.productAssignments !== undefined) productAssignments = counts.productAssignments;
       for (const kind of ['campaign', 'target'] as const) {
         const controlCounts = counts.controlMirrors?.[kind];
         if (controlCounts === undefined) continue;
@@ -740,13 +742,15 @@ export class SyncWorker {
         succeeded,
         failed: failureSummary,
         ...totals,
+        ...(productAssignments === undefined ? {} : { productAssignments }),
       });
       // Committed above, thrown here: the products that listed are in the
       // mirror, and the job goes back on the queue because one is not.
       throw partialSyncError(succeeded, failures);
     }
-    this.logger.info('entity sync', { profileId: profile.id, succeeded, ...totals });
-    return { ...totals, succeeded, failures: failureSummary, ...(keywordMirror === undefined ? {} : { keywordMirror }),
+    this.logger.info('entity sync', { profileId: profile.id, succeeded, ...totals, ...(productAssignments === undefined ? {} : { productAssignments }) });
+    return { ...totals, succeeded, failures: failureSummary, ...(productAssignments === undefined ? {} : { productAssignments }),
+      ...(keywordMirror === undefined ? {} : { keywordMirror }),
       ...(Object.keys(controlMirrors).length === 0 ? {} : { controlMirrors }) };
   }
 

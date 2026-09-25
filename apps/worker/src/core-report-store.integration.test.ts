@@ -41,6 +41,11 @@ it('commits verified facts, ledger and coverage together and preserves the repla
   const evidence = await readCoreReportEvidence(db, { orgId, profileId, families: ['spAdvertisedProduct'], startDate: p.startDate, endDate: p.endDate });
   expect(evidence[0]).toMatchObject({ status: 'measured', rowCount: 1, observedAt: p.observedAt });
 });
+it('claims the daily period its promotion verified as a held day (WP-324)', async () => {
+  const rows = await db.sql`select earliest_returned_date::text as "from", latest_loaded_date::text as through, missing_dates::text[] as missing
+    from public.report_coverage where org_id=${orgId} and profile_id=${profileId} and report_type='spAdvertisedProduct'`;
+  expect(rows.map((row) => ({ ...row }))).toEqual([{ from: '2026-09-01', through: '2026-09-01', missing: [] }]);
+});
 it('keeps a stale attempt counted without replacing facts or refreshing coverage', async () => {
   const p = await report('2026-09-02T00:00:00.000Z', [{ ...raw, cost: 99 }]);
   await expect(finish(p)).rejects.toThrow('superseded');

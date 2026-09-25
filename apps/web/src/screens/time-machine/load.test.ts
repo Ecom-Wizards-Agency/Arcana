@@ -9,7 +9,7 @@ vi.mock('@wizard-ads/db',()=>({
 vi.mock('../../recommendations/data',()=>({listOrgProfiles:mocks.profiles}));
 vi.mock('../../server/org-role',()=>({requireOrgRole:mocks.role}));
 vi.mock('../../server/request-context',()=>({authenticationDestination:()=>null}));
-import { load } from './load';
+import { load, queueCursor } from './load';
 
 it.each([false,true])('loads every physical row and propagates active-reversion eligibility (%s)',async(activeReversion)=>{
   const id='10000000-0000-4000-8000-000000000001';
@@ -32,4 +32,11 @@ it.each([false,true])('loads every physical row and propagates active-reversion 
   expect(data.props.preview?.blockedReason).toBe(activeReversion?'This batch already has an active restore batch.':null);
   for(const result of data.props.preview!.rows) expect(result).toMatchObject({state:'unsupported',why:COORDINATED_RESTORE_UNAVAILABLE,now:null});
   expect(read).toHaveBeenCalledTimes(1);
+});
+
+it('preserves microsecond creation cursors and rejects malformed boundaries',()=>{
+  const value={before_at:'2026-09-16T00:00:00.123456Z',before_id:'creation:10000000-0000-4000-8000-000000000001'};
+  expect(queueCursor(value)).toEqual({observedAt:value.before_at,id:value.before_id});
+  expect(queueCursor({...value,before_id:'creation:invalid'})).toBeNull();
+  expect(queueCursor({...value,before_at:'2026-02-30T00:00:00Z'})).toBeNull();
 });

@@ -1,5 +1,9 @@
-/** Freshness comes from coverage observations or the legacy request ledger, never fact timestamps. */
-import type { FreshnessCoverage, FreshnessLedgerEntry } from '@wizard-ads/shared';
+/**
+ * Freshness comes from coverage observations or the legacy request ledger, never fact timestamps.
+ * WP-324: where a coverage row records the days completed loads returned, coverage reaches the
+ * newest held day, and a source with no held day is not measured.
+ */
+import type { FreshnessCoverage, FreshnessLedgerEntry, VerifiedCoverageSpan } from '@wizard-ads/shared';
 import { formatInteger } from '../format.js';
 
 export type FreshnessTone = 'good' | 'warn' | 'bad' | 'muted';
@@ -15,9 +19,15 @@ export interface FreshnessAssessment {
   staleTypes: string[];
   /** Report types whose last load parsed more rows than it wrote. */
   lossyTypes: string[];
-  /** Newest end date across every completed report. */
+  /**
+   * Newest day held across every completed report: the verified span's last day where the
+   * source records one, otherwise the load's end date.
+   */
   coversThrough: string | null;
 }
+
+/** Undefined: no verified span recorded. Null: recorded, with no day held. */
+type AssessedEntry = ReportLedgerEntry & { verified?: VerifiedCoverageSpan | null };
 
 export interface FreshnessOptions {
   /** Evaluation instant. Injected so the assessment is testable. */
@@ -50,9 +60,9 @@ export function assessFreshness(
   }
 
   const staleAfter = (options.staleAfterHours ?? 30) * HOUR_MS;
-  const byType = new Map<string, ReportLedgerEntry[]>();
+  const byType = new Map<string, AssessedEntry[]>();
   for (const input of entries) {
-    const entry: ReportLedgerEntry = 'coveredThrough' in input ? {
+    const entry: AssessedEntry = 'coveredThrough' in input ? {
       reportType: `${input.source}/${input.reportType}`,
       status: input.status === 'complete' && input.coveredThrough !== null ? 'completed' : input.status,
       endDate: input.coveredThrough ?? '',
@@ -62,6 +72,7 @@ export function assessFreshness(
       rowsLoaded: input.loadedRows,
       countsMatch: input.countsMatch,
       error: null,
+      ...(input.verified === undefined ? {} : { verified: input.verified }),
     } : input.source === undefined ? input : { ...input, reportType: `${input.source}/${input.reportType}` };
     const bucket = byType.get(entry.reportType);
     if (bucket === undefined) byType.set(entry.reportType, [entry]);
@@ -72,6 +83,7 @@ export function assessFreshness(
   const staleTypes: string[] = [];
   const lossyTypes: string[] = [];
   const failedTypes: string[] = [];
+  const unmeasuredTypes: string[] = [];
   let coversThrough: string | null = null;
 
   for (const [reportType, rows] of [...byType].sort(([a], [b]) => a.localeCompare(b))) {
@@ -91,11 +103,17 @@ export function assessFreshness(
 
     // Coverage is the furthest day ANY completed load reached, not the end
     // date of the newest completion: a backfill that finishes an old window
-    // last must not drag "covers through" backwards.
-    const coveredThrough = rows
-      .filter((row) => row.status === 'completed')
-      .reduce((acc, row) => (row.endDate > acc ? row.endDate : acc), lastGood.endDate);
-    if (coversThrough === null || coveredThrough > coversThrough) coversThrough = coveredThrough;
+    // last must not drag "covers through" backwards. A recorded verified span
+    // reaches only its newest held day; a requested range alone reaches nothing.
+    const completed = rows.filter((row) => row.status === 'completed');
+    // The span that reaches furthest describes the type; spans of sibling grains are not summed.
+    const span = completed.flatMap((row) => row.verified ? [row.verified] : [])
+      .sort((a, b) => b.through.localeCompare(a.through) || b.daysHeld - a.daysHeld)[0];
+    const coveredThrough = completed
+      .map((row) => row.verified === undefined ? row.endDate : row.verified?.through ?? null)
+      .reduce<string | null>((acc, through) => through !== null && (acc === null || through > acc) ? through : acc, null);
+    if (coveredThrough === null) unmeasuredTypes.push(reportType);
+    else if (coversThrough === null || coveredThrough > coversThrough) coversThrough = coveredThrough;
 
     const ageMs = options.now.getTime() - new Date(lastGood.completedAt as string).getTime();
     const stale = ageMs > staleAfter;
@@ -107,7 +125,10 @@ export function assessFreshness(
     if (lastGood.countsMatch === false) lossyTypes.push(reportType);
 
     details.push(
-      `${reportType}: loaded ${formatAge(ageMs)} ago, covers through ${coveredThrough}` +
+      `${reportType}: loaded ${formatAge(ageMs)} ago, ` +
+        (coveredThrough === null ? 'not measured: no returned day held yet' : `covers through ${coveredThrough}`) +
+        (span === undefined ? '' : `, ${formatInteger(span.daysHeld)} ${span.daysHeld === 1 ? 'day' : 'days'} held since ${span.from}` +
+          (span.gapDays === 0 ? '' : ` (${formatInteger(span.gapDays)} not loaded)`)) +
         (lastGood.rowsLoaded === null ? '' : `, ${formatInteger(lastGood.rowsLoaded)} rows`) +
         (lastGood.countsMatch === false
           ? ` — parsed ${count(lastGood.rowsParsed)}, wrote ${count(lastGood.rowsLoaded)}`
@@ -140,6 +161,16 @@ export function assessFreshness(
     return {
       tone: 'warn',
       headline: `Stale: ${staleTypes.join(', ')} has not loaded successfully in over ${options.staleAfterHours ?? 30} hours.`,
+      details,
+      staleTypes,
+      lossyTypes,
+      coversThrough,
+    };
+  }
+  if (coversThrough === null) {
+    return {
+      tone: 'muted',
+      headline: `Not measured: completed loads for ${unmeasuredTypes.join(', ')} have returned no day to hold.`,
       details,
       staleTypes,
       lossyTypes,

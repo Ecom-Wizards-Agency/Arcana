@@ -18,7 +18,9 @@
  * 3. **`c_days = 0` means no comparison row, not a zero one.** An entity that
  *    did not serve last month did not spend nothing; it has no figure. The
  *    difference is what makes a delta honest, and it survives all the way to
- *    the cell, which renders `—`.
+ *    the cell, which renders `—`. `p_days = 0` is the same fact for the selected
+ *    window: the row is marked `unreported`, so its cells stay `—` and a window
+ *    total skips it instead of reading it as a partial report (WP-321).
  *
  * Read-only. Every write in this product happens in the worker.
  */
@@ -41,6 +43,8 @@ interface AggregateRow {
   sales: string | number | null;
   orders: string | number | null;
   units: string | number | null;
+  /** Fact rows in the selected window; zero when the entity is listed only for its comparison or catalogue entry. */
+  p_days: string | number | null;
   c_days: string | number | null;
   c_impressions: string | number | null;
   c_clicks: string | number | null;
@@ -59,9 +63,12 @@ const num = (value: string | number | null | undefined): number => {
 /** Keep absent facts distinct from a measured zero through grouping and CSV. */
 function measurementOf(row: AggregateRow): { measurement?: GridMeasurement } {
   const keys = ['impressions', 'clicks', 'spend', 'sales', 'orders', 'units'] as const;
-  const missing = keys.filter((key) => row[key] === null || row[key] === undefined);
+  const unreported = num(row.p_days) === 0;
+  const missing = unreported ? [...keys] : keys.filter((key) => row[key] === null || row[key] === undefined);
   const comparisonMissing = num(row.c_days) === 0 ? [] : keys.filter((key) => row[`c_${key}`] === null || row[`c_${key}`] === undefined);
-  return missing.length || comparisonMissing.length ? { measurement: { missing, comparisonMissing } } : {};
+  return missing.length || comparisonMissing.length
+    ? { measurement: { missing, comparisonMissing, ...(unreported ? { unreported: true as const } : {}) } }
+    : {};
 }
 
 function totalsOf(row: AggregateRow): GridRow['totals'] {
@@ -132,7 +139,7 @@ export async function loadGridRows(
   // server/client boundary.
   const queryLimit = limit + 1;
   const rankDays: GridPerformanceEvidence['rankDays'] = {};
-  const performanceRead = readGridPerformance(handle, options.orgId, options.profileId, options.period.start, options.period.end, level);
+  const performanceRead = readGridPerformance(handle, options.orgId, options.profileId, options.period.start, options.period.end, level, options.comparison);
   const loaders: Record<EntityLevel, () => Promise<GridRow[]>> = {
     campaigns: () => loadCampaigns(handle, options, queryLimit),
     ad_groups: () => loadAdGroups(handle, options, queryLimit),
@@ -364,8 +371,14 @@ async function loadTargets(
       join public.ad_profiles p on p.org_id=${orgId} and p.id=${profileId}
       left join public.campaign_optimization_assignments ca on ca.org_id=${orgId} and ca.profile_id=${profileId} and ca.campaign_id=f.campaign_id
       left join public.optimization_groups og on og.org_id=${orgId} and og.profile_id=${profileId} and og.id=ca.group_id
-      left join lateral (select case when count(distinct asin)=1 then min(asin) end as asin from public.product_ads
-        where org_id=${orgId} and profile_id=${profileId} and campaign_id=f.campaign_id and ad_group_id=f.ad_group_id and deleted_at is null) products on true
+      -- The effective assignment, whatever its source (derived, derived parent,
+      -- proposed or manual). Only an ad group the worker has not derived yet
+      -- falls back to its single advertised product.
+      left join public.ad_group_product_assignments assignment
+        on assignment.org_id=${orgId} and assignment.profile_id=${profileId} and assignment.ad_group_id=f.ad_group_id
+      left join lateral (select case when assignment.ad_group_id is not null then assignment.asin
+          else (select case when count(distinct asin)=1 then min(asin) end from public.product_ads
+            where org_id=${orgId} and profile_id=${profileId} and campaign_id=f.campaign_id and ad_group_id=f.ad_group_id and deleted_at is null) end as asin) products on true
      limit ${limit}
   `;
 
@@ -536,8 +549,16 @@ async function loadProducts(handle: GridDataHandle, options: LoadGridOptions, li
     catalogue_observed_at: string | null; catalogue_title: string | null; catalogue_availability: string | null;
     catalogue_price: number | null; catalogue_bsr: number | null })[]>`
     with products as (
-      select asin,max(name) as product_name from public.product_ads
-      where org_id=${orgId} and profile_id=${profileId} and asin is not null and deleted_at is null group by asin
+      select asin,max(product_name) as product_name from (
+        select asin,name as product_name from public.product_ads
+        where org_id=${orgId} and profile_id=${profileId} and asin is not null and deleted_at is null
+        union all
+        -- Every live ad group's effective assignment lists its product, whatever the
+        -- source, so a derived parent gets a row and a Market position gap of its own.
+        select a.asin,null from public.ad_group_product_assignments a
+        join public.ad_groups g on g.org_id=a.org_id and g.profile_id=a.profile_id and g.amazon_id=a.ad_group_id and g.deleted_at is null
+        where a.org_id=${orgId} and a.profile_id=${profileId} and a.asin is not null
+      ) listed group by asin
     ), measured as (
       select date, dimensions->>'advertisedAsin' as asin,
         (row_data->'metrics'->>'impressions')::numeric as impressions,
@@ -557,7 +578,7 @@ async function loadProducts(handle: GridDataHandle, options: LoadGridOptions, li
       case when m.snapshot->'availability'->>'state'='returned' then m.snapshot->'availability'->>'value' end as catalogue_availability,
       case when m.snapshot->'price'->>'state'='returned' then (m.snapshot#>>'{price,value,amount}')::float8 end as catalogue_price,
       case when m.snapshot->'bestSellerRank'->>'state'='returned' then (m.snapshot#>>'{bestSellerRank,value}')::float8 end as catalogue_bsr,
-      f.impressions,f.clicks,f.spend,f.sales,f.orders,f.units,f.c_days,f.c_impressions,f.c_clicks,f.c_spend,f.c_sales,f.c_orders,f.c_units
+      f.impressions,f.clicks,f.spend,f.sales,f.orders,f.units,f.p_days,f.c_days,f.c_impressions,f.c_clicks,f.c_spend,f.c_sales,f.c_orders,f.c_units
       from products p full join facts f on f.asin=p.asin
       left join lateral(select marketplace_id,acquired_at,snapshot from public.ads_product_metadata_snapshots
         where org_id=${orgId} and profile_id=${profileId} and asin=coalesce(p.asin,f.asin) and ad_product='SP' and public.ads_catalogue_receipt_is_sealed(receipt_id)
@@ -700,6 +721,7 @@ async function loadPlacements(
              sum(sales_7d)    filter (where date between ${period.start} and ${period.end}) as sales,
              sum(purchases_7d) filter (where date between ${period.start} and ${period.end}) as orders,
              null::numeric as units,
+             count(*)         filter (where date between ${period.start} and ${period.end}) as p_days,
              count(*)         filter (where date between ${comparison.start} and ${comparison.end}) as c_days,
              sum(impressions) filter (where date between ${comparison.start} and ${comparison.end}) as c_impressions,
              sum(clicks)      filter (where date between ${comparison.start} and ${comparison.end}) as c_clicks,
@@ -745,9 +767,9 @@ async function loadPlacements(
 /**
  * The two-window sum block shared by every target-grain query.
  *
- * `count(*) filter (...)` on the comparison window is what distinguishes "spent
- * nothing" from "has no comparison row": zero days means no row, and the caller
- * turns that into a null comparison rather than a zeroed one.
+ * `count(*) filter (...)` on each window is what distinguishes "spent nothing"
+ * from "has no row": zero comparison days become a null comparison, and zero
+ * selected-window days an `unreported` measurement, never a zeroed one.
  */
 function windowSums(handle: GridDataHandle, period: Period, comparison: Period) {
   const { sql } = handle;
@@ -758,6 +780,7 @@ function windowSums(handle: GridDataHandle, period: Period, comparison: Period) 
     case when bool_or(sales_7d is null) filter (where date between ${period.start} and ${period.end}) then null else sum(sales_7d)    filter (where date between ${period.start} and ${period.end}) end as sales,
     case when bool_or(purchases_7d is null) filter (where date between ${period.start} and ${period.end}) then null else sum(purchases_7d) filter (where date between ${period.start} and ${period.end}) end as orders,
     case when bool_or(units_sold_7d is null) filter (where date between ${period.start} and ${period.end}) then null else sum(units_sold_7d) filter (where date between ${period.start} and ${period.end}) end as units,
+    count(*)         filter (where date between ${period.start} and ${period.end}) as p_days,
     count(*)         filter (where date between ${comparison.start} and ${comparison.end}) as c_days,
     case when bool_or(impressions is null) filter (where date between ${comparison.start} and ${comparison.end}) then null else sum(impressions) filter (where date between ${comparison.start} and ${comparison.end}) end as c_impressions,
     case when bool_or(clicks is null) filter (where date between ${comparison.start} and ${comparison.end}) then null else sum(clicks)      filter (where date between ${comparison.start} and ${comparison.end}) end as c_clicks,

@@ -1,6 +1,6 @@
 import type { QueryHandle } from '../client.js';
 import { readCoreReportEvidence } from './report-families.js';
-import type { GridFeedCoverage, GridPerformanceEvidence } from '@wizard-ads/shared';
+import type { GridFeedCoverage, GridPerformanceEvidence, GridSummaryEvidence, GridSummarySource } from '@wizard-ads/shared';
 
 export interface CoverageRow {
   report_type: string; earliest_returned_date: string | null; latest_loaded_date: string | null;
@@ -35,7 +35,45 @@ export function coverageFor(feed: GridFeedCoverage['feed'], rows: readonly Cover
   return { feed, daysHeld: held.size, daysRequested, notScraped: missed.size, status, reason };
 }
 
-export async function readGridPerformance(handle: QueryHandle, orgId: string, profileId: string, start: string, end: string, level = 'targets'): Promise<GridPerformanceEvidence> {
+/** The fact table each grid preset sums its base metrics from. */
+export const GRID_SUMMARY_SOURCES: Readonly<Record<string, GridSummarySource>> = {
+  campaigns: 'sp_target', ad_groups: 'sp_target', targets: 'sp_target',
+  search_terms: 'search_term', placements: 'placement', products: 'advertised_product',
+};
+
+/**
+ * First and last fact dates the profile holds in one preset source. The summary
+ * strip uses them to say a window is unmeasured only when the source genuinely
+ * holds nothing for it, and since when it does.
+ */
+export async function readGridSummaryEvidence(handle: QueryHandle, input: {
+  orgId: string; profileId: string; level: string; period: { start: string; end: string }; comparison: { start: string; end: string };
+}): Promise<GridSummaryEvidence | undefined> {
+  const source = GRID_SUMMARY_SOURCES[input.level];
+  if (source === undefined) return undefined;
+  const { orgId, profileId } = input;
+  type Span = { held_from: string | null; held_through: string | null };
+  const [span] = source === 'sp_target'
+    ? await handle.sql<Span[]>`select min(date)::text as held_from, max(date)::text as held_through from public.fact_sp_target_daily where org_id=${orgId} and profile_id=${profileId}`
+    : source === 'search_term'
+      ? await handle.sql<Span[]>`select min(date)::text as held_from, max(date)::text as held_through from public.fact_search_term_daily where org_id=${orgId} and profile_id=${profileId}`
+      : source === 'placement'
+        ? await handle.sql<Span[]>`select min(date)::text as held_from, max(date)::text as held_through from public.fact_placement_daily where org_id=${orgId} and profile_id=${profileId}`
+        : await handle.sql<Span[]>`select min(date)::text as held_from, max(date)::text as held_through from public.fact_advertised_product_daily
+            where org_id=${orgId} and profile_id=${profileId} and family='spAdvertisedProduct' and variant='DAILY:legacy:v1'`;
+  return { source, heldFrom: span?.held_from ?? null, heldThrough: span?.held_through ?? null,
+    period: { start: input.period.start, end: input.period.end }, comparison: { start: input.comparison.start, end: input.comparison.end } };
+}
+
+export async function readGridPerformance(handle: QueryHandle, orgId: string, profileId: string, start: string, end: string, level = 'targets', comparison?: { start: string; end: string }): Promise<GridPerformanceEvidence> {
+  const summaryRead = comparison === undefined ? Promise.resolve(undefined)
+    : readGridSummaryEvidence(handle, { orgId, profileId, level, period: { start, end }, comparison });
+  // Observed here as well as below: a failing coverage read must not leave this rejection unhandled.
+  void summaryRead.catch(() => undefined);
+  const withSummary = async (evidence: GridPerformanceEvidence): Promise<GridPerformanceEvidence> => {
+    const summary = await summaryRead;
+    return summary === undefined ? evidence : { ...evidence, summary };
+  };
   const rows = await handle.sql<CoverageRow[]>`select report_type, earliest_returned_date::text, latest_loaded_date::text,
     availability_start_date::text, missing_dates, status::text, counts_match from public.report_coverage where org_id=${orgId} and profile_id=${profileId}`;
   if (level !== 'products') {
@@ -49,8 +87,8 @@ export async function readGridPerformance(handle: QueryHandle, orgId: string, pr
         where f.org_id=${orgId} and f.profile_id=${profileId} and f.date between ${start} and ${end}
         group by f.campaign_id,f.ad_group_id having sum(f.cost)>0
       ) select count(*)::int as ad_groups,sum(spend)::text as spend,(${end}::date-${start}::date+1)::int as days from costs`;
-    return { feeds: (['PPC', 'RANK', 'SQP'] as const).map((feed) => coverageFor(feed, rows, start, end)),
-      unattributed: banner && banner.ad_groups > 0 && banner.spend !== null ? { adGroups: banner.ad_groups, spend: Number(banner.spend), days: banner.days } : null, rankDays: {} };
+    return withSummary({ feeds: (['PPC', 'RANK', 'SQP'] as const).map((feed) => coverageFor(feed, rows, start, end)),
+      unattributed: banner && banner.ad_groups > 0 && banner.spend !== null ? { adGroups: banner.ad_groups, spend: Number(banner.spend), days: banner.days } : null, rankDays: {} });
   }
   const [sd] = await handle.sql<{ present: boolean }[]>`select exists(
     select 1 from public.product_ads where org_id=${orgId} and profile_id=${profileId} and ad_product='SD' and deleted_at is null
@@ -108,7 +146,7 @@ export async function readGridPerformance(handle: QueryHandle, orgId: string, pr
       group by c.product,c.campaign_id,c.ad_group_id having sum(greatest(c.spend-coalesce(p.spend,0),0))>0
     ) select count(*)::int as ad_groups,sum(spend)::text as spend,(${end}::date-${start}::date+1)::int as days from residual`;
   const banner = unattributed[0];
-  return { feeds: [ppc, ...(['RANK', 'SQP'] as const).map((feed) => coverageFor(feed, rows, start, end))],
+  return withSummary({ feeds: [ppc, ...(['RANK', 'SQP'] as const).map((feed) => coverageFor(feed, rows, start, end))],
     unattributed: banner && banner.ad_groups > 0 && banner.spend !== null ? { adGroups: banner.ad_groups, spend: Number(banner.spend), days: banner.days } : null,
-    rankDays: {} };
+    rankDays: {} });
 }
