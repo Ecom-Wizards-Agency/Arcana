@@ -33,9 +33,7 @@ export type AggregateWindow = 'current' | 'comparison';
  * of its whole group.
  */
 export function reportedIn(row: GridRow, window: AggregateWindow): boolean {
-  if (window === 'comparison') return row.comparison !== null;
-  const measurement: object | undefined = row.measurement;
-  return !(measurement !== undefined && 'unreported' in measurement && measurement.unreported === true);
+  return window === 'comparison' ? row.comparison !== null : row.measurement?.unreported !== true;
 }
 
 /** Per-window bookkeeping for one aggregate while its rows are folded in. */

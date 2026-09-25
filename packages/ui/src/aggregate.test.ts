@@ -97,9 +97,7 @@ describe('groupRows', () => {
   });
 
   it('skips a member that did not report in the selected window (WP-321 `unreported`)', () => {
-    // WP-321 adds `unreported` to the shared measurement contract; until it
-    // lands this is the shape its loader sends, asserted rather than declared.
-    const unreported = { missing: [...BASE_METRICS], comparisonMissing: [], unreported: true } as GridMeasurement;
+    const unreported: GridMeasurement = { missing: [...BASE_METRICS], comparisonMissing: [], unreported: true };
     const rows = [
       row('a', 'Campaign', { spend: 10, sales: 40 }),
       { ...row('b', 'Campaign', {}, { spend: 6, sales: 12 }), measurement: unreported },
