@@ -7,7 +7,10 @@
  * to 9.2 s) and `/grid/views` (2.1 to 4.8 s) compiled while the layout test
  * waited for `grid-data-ready`; `/api/brand-lens/overrides` compiled for 3.8 to
  * 13.2 s and `/api/brand-lens` for 3.2 to 4.5 s while the Brand lens test
- * waited for its saved override.
+ * waited for its saved override. A later CI run found two more: the page that
+ * the legacy `/strategy` link redirects to answered in 15.8 s behind the shell
+ * title's 15 s wait, and the queued-change review page compiled for 12.0 s
+ * behind its heading's.
  *
  * Compiling in global setup does not survive until these tests run. The dev
  * server disposes an entry that has been idle for 60 s outside its five most
@@ -29,8 +32,12 @@ import { BASE_URL, EMAILS, USERS } from './fixture';
 
 export interface WarmRoute {
   readonly path: string;
-  /** The status the route answers once its module has compiled and run. */
-  readonly status: 200 | 405;
+  /**
+   * The status the route answers once its module has compiled and run. A page
+   * asked for a record that does not exist renders its not-found state: 404, or
+   * 200 when the layout had already streamed.
+   */
+  readonly status: 200 | 405 | 'not-found';
 }
 
 /** A safety net per request; the calling hook's timeout is the real budget. */
@@ -56,6 +63,20 @@ export function brandLensWarmRoutes(profileId: string, window: { from: string; t
   ];
 }
 
+/** The method catalogue that the legacy `/strategy` link redirects to in the page body. */
+export function strategyWarmRoutes(profileId: string): readonly WarmRoute[] {
+  return [{ path: `/settings/strategy?${new URLSearchParams({ profile: profileId })}`, status: 200 }];
+}
+
+/**
+ * The queued-change review page, compiled with a change id that does not exist,
+ * so nothing is read or written for a real change.
+ */
+export function targetReviewWarmRoutes(profileId: string, targetId: string): readonly WarmRoute[] {
+  const missingChange = '00000000-0000-4000-8000-000000000000';
+  return [{ path: `/targets/${encodeURIComponent(targetId)}/queue/${missingChange}?${new URLSearchParams({ profile: profileId })}`, status: 'not-found' }];
+}
+
 /**
  * Request each route in order as the signed-in admin and read the whole body,
  * so streamed server components finish rendering too.
@@ -70,7 +91,8 @@ export async function warmRoutes(routes: readonly WarmRoute[]): Promise<void> {
       signal: AbortSignal.timeout(ROUTE_WARMUP_TIMEOUT_MS),
     });
     await response.arrayBuffer();
-    if (response.status !== route.status) {
+    const expected = route.status === 'not-found' ? [404, 200] : [route.status];
+    if (!expected.includes(response.status)) {
       throw new Error(`Route warm-up expected ${route.status} from ${route.path}, received ${response.status}`);
     }
     console.log(`[e2e warm-up] ${route.path.split('?')[0]} ${response.status} in ${((performance.now() - started) / 1000).toFixed(1)}s`);
