@@ -34,6 +34,7 @@ export * from './views.js';
 export * from './virtual.js';
 export * from './density.js';
 export * from './grouping.js';
+export * from './value-labels.js';
 export * from './theme.js';
 export * from './tokens.generated.js';
 export { entitySearchColumn, readEntitySearch, writeEntitySearch } from './toolbar/entity-search.js';

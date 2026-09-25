@@ -11,10 +11,12 @@ import {
   assertSingleCurrency,
   grandTotal,
   groupRows,
+  reportedIn,
   uniqueGroupLevels,
 } from './aggregate.js';
+import type { GridMeasurement } from '@wizard-ads/shared';
 import { syntheticSearchTermRows } from './fixtures.js';
-import { deriveMetric } from './metrics.js';
+import { BASE_METRICS, deriveMetric } from './metrics.js';
 import type { GridRow } from './rows.js';
 import { resolveField } from './rows.js';
 
@@ -76,7 +78,10 @@ describe('groupRows', () => {
     },
   );
 
-  it('retains reported comparison sums but marks the incomplete aggregate unknown', () => {
+  // WP-316 (item 7): group subtotals follow the summary strip's reporting-rows
+  // rule. A member with no comparison facts adds nothing to the comparison
+  // window; it no longer makes the whole group's comparison unknown.
+  it('sums the comparison over the members that reported in the comparison window', () => {
     const rows = [
       row('a', 'Campaign', { spend: 10, sales: 40 }, { spend: 8, sales: 32 }),
       row('b', 'Campaign', { spend: 5, sales: 10 }, null),
@@ -85,9 +90,42 @@ describe('groupRows', () => {
     expect(group?.comparison).toEqual(
       expect.objectContaining({ spend: 8, sales: 32 }),
     );
-    // Internal accumulators retain evidence; neither the comparison nor its delta is complete.
-    expect(resolveField(group as GridRow, 'acos_comparison')).toBeNull();
-    expect(resolveField(group as GridRow, 'acos_delta_percent')).toBeNull();
+    expect(group?.measurement).toBeUndefined();
+    expect(resolveField(group as GridRow, 'spend')).toBe(15);
+    expect(resolveField(group as GridRow, 'acos_comparison')).toBe(0.25);
+    expect(resolveField(group as GridRow, 'acos_delta_absolute')).toBeCloseTo(0.3 - 0.25, 12);
+  });
+
+  it('skips a member that did not report in the selected window (WP-321 `unreported`)', () => {
+    const unreported: GridMeasurement = { missing: [...BASE_METRICS], comparisonMissing: [], unreported: true };
+    const rows = [
+      row('a', 'Campaign', { spend: 10, sales: 40 }),
+      { ...row('b', 'Campaign', {}, { spend: 6, sales: 12 }), measurement: unreported },
+      { ...row('c', 'Other', {}, { spend: 3, sales: 6 }), measurement: unreported },
+    ];
+    const [campaign, other] = groupRows(rows, ['campaign_name']);
+    expect(reportedIn(rows[1]!, 'current')).toBe(false);
+    expect(reportedIn(rows[1]!, 'comparison')).toBe(true);
+    expect(campaign?.measurement).toBeUndefined();
+    expect([resolveField(campaign!, 'spend'), resolveField(campaign!, 'acos'), resolveField(campaign!, 'spend_comparison')]).toEqual([10, 0.25, 6]);
+    // A group none of whose members reported has no current figure at all.
+    expect(other?.measurement?.missing).toEqual([...BASE_METRICS]);
+    expect([resolveField(other!, 'spend'), resolveField(other!, 'spend_comparison')]).toEqual([null, 3]);
+    const total = grandTotal(rows)!;
+    expect([resolveField(total, 'spend'), resolveField(total, 'spend_comparison')]).toEqual([10, 9]);
+  });
+
+  it('still marks a base unknown when a member that reported lacks it', () => {
+    const rows = [
+      row('a', 'Campaign', { spend: 10, sales: 40 }, { spend: 8, sales: 32 }),
+      { ...row('b', 'Campaign', { spend: 5, sales: 10 }, { spend: 2, sales: 4 }), measurement: { missing: ['sales' as const], comparisonMissing: ['spend' as const] } },
+    ];
+    const [group] = groupRows(rows, ['campaign_name']);
+    expect(group?.measurement).toEqual({ missing: ['sales'], comparisonMissing: ['spend'] });
+    for (const key of ['sales', 'acos', 'spend_comparison', 'acos_comparison', 'acos_delta_percent']) {
+      expect(resolveField(group as GridRow, key)).toBeNull();
+    }
+    expect(resolveField(group as GridRow, 'spend')).toBe(15);
   });
 
   it('leaves the comparison null when no member had one, so deltas are null not zero', () => {

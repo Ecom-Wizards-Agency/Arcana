@@ -27,6 +27,8 @@ describe('performance evidence cells', () => {
     expect(screen.getByTitle('Brand Analytics ingestion unavailable').textContent).toBe('—');
     expect(screen.getByTitle('no threshold configured').textContent).toBe('Insufficient evidence');
     expect(screen.getByText('-2.4 pts')).toBeTruthy();
-    expect(screen.getByText('not the query')).toBeTruthy();
+    // WP-316 (V19): the caveat reads as what the target does, not as jargon.
+    expect(screen.getByText('Many searches').title).toContain('not evidence for one literal wording');
+    expect(screen.queryByText('not the query')).toBeNull();
   });
 });

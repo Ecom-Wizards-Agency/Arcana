@@ -1,5 +1,5 @@
 import { buildGridModelSafely, resolveField, type FilterSet, type GridModelResult, type GridQuery, type GridRow } from '@wizard-ads/ui';
-import { PerformanceVerdict } from '@wizard-ads/shared';
+import { PerformanceVerdict, describeTargeting } from '@wizard-ads/shared';
 import { shareOfSpend } from '@wizard-ads/core';
 import { windowTotal } from './summary-model';
 
@@ -12,8 +12,34 @@ export function verdictFilter(filter: FilterSet, diagnosis: string): FilterSet {
   })) };
 }
 
+/**
+ * The screen's working population: the ASIN scope, with the phrase each target
+ * row carries for the Phrase column (WP-316, V19). The phrase is read from the
+ * stored targeting text and kind through the shared targeting labels, so it
+ * sorts, filters and exports like any other dimension; an automatic or product
+ * target has none, and its cell stays empty rather than showing a code. Rows
+ * that are not targets, or already carry a phrase, pass through untouched.
+ */
 export function scopeRows(rows: readonly GridRow[], asin: string | null): readonly GridRow[] {
-  return asin === null ? rows : rows.filter((row) => row.dimensions['asin'] === asin);
+  return withTargetPhrases(asin === null ? rows : rows.filter((row) => row.dimensions['asin'] === asin));
+}
+
+function needsPhrase(row: GridRow): boolean {
+  return 'target_kind' in row.dimensions && 'targeting' in row.dimensions && !('target_phrase' in row.dimensions);
+}
+
+function withTargetPhrases(rows: readonly GridRow[]): readonly GridRow[] {
+  if (!rows.some(needsPhrase)) return rows;
+  return rows.map((row) => {
+    if (!needsPhrase(row)) return row;
+    const { targeting, target_kind: kind, match_type: matchType } = row.dimensions;
+    const phrase = describeTargeting({
+      targeting: typeof targeting === 'string' ? targeting : null,
+      targetKind: typeof kind === 'string' ? kind : null,
+      matchType: typeof matchType === 'string' ? matchType : null,
+    }).phrase;
+    return { ...row, dimensions: { ...row.dimensions, target_phrase: phrase } };
+  });
 }
 
 function hasSpendShareFilter(filter: FilterSet | undefined): boolean {

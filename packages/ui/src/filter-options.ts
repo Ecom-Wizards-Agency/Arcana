@@ -18,6 +18,8 @@ export interface FilterOption {
 export function buildCategoricalOptions(
   rows: readonly GridRow[],
   columnId: string,
+  /** Words for a stored code (`value-labels.ts`); the option value stays the code. */
+  labelFor?: (value: string) => string,
 ): FilterOption[] {
   const read = fieldAccessor(columnId);
   const byNormalized = new Map<string, FilterOption>();
@@ -30,7 +32,7 @@ export function buildCategoricalOptions(
     if (byNormalized.has(normalized)) continue;
     byNormalized.set(normalized, {
       value,
-      label: actual === true ? 'Yes' : actual === false ? 'No' : value,
+      label: actual === true ? 'Yes' : actual === false ? 'No' : labelFor?.(value) ?? value,
     });
   }
   const compare = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' }).compare;

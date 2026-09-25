@@ -22,6 +22,7 @@
  */
 import { SIGNALS_TOOLTIP } from './cells/signals.js';
 import type { MetricScale } from './metrics.js';
+import type { ValueVocabulary } from './value-labels.js';
 import { METRIC_SPECS, metricSpec } from './metrics.js';
 import {
   COMPARISON_SUFFIX,
@@ -55,13 +56,31 @@ export function isSortableColumn(column: GridColumn): boolean {
   return column.kind !== 'control';
 }
 
-export type GridCellKind = 'suggested_bid' | 'text' | 'numeric' | 'status';
+/** `selection` is a row-selection checkbox column: centred, unpadded, never clipped. */
+export type GridCellKind = 'suggested_bid' | 'text' | 'numeric' | 'status' | 'selection';
 
 export const NUMERIC_MIN_WIDTH = 96;
+/** A selection checkbox and its focus ring, with no padding to clip it. */
+export const CONTROL_MIN_WIDTH = 36;
+/**
+ * The narrowest a numeric column may be drawn at the body's type size while an
+ * ordinary figure (`$12,345.67`, `123,456`, `100.0%`) still fits whole. A
+ * reference layout may start a column narrower than `NUMERIC_MIN_WIDTH`, never
+ * narrower than this: a clipped figure reads as a different number. Figures
+ * beyond it still clip, with the disclosure `NumericValue` draws.
+ */
+export const SCALE_MIN_WIDTH: Readonly<Record<MetricScale, number>> = { money: 88, integer: 72, percent: 72, ratio: 64, decimal: 72 };
+/** A row-selection checkbox column, which draws its box centred and unclipped. */
+export function isSelectionColumn(column: GridColumn | undefined): boolean {
+  return column?.kind === 'control' && column.cell === 'selection';
+}
 export function minimumColumnWidth(column: GridColumn): number {
-  if (column.subject !== undefined && column.minWidth !== undefined) return column.minWidth;
-  return column.scale !== 'text' || column.cell === 'numeric'
-    ? Math.max(NUMERIC_MIN_WIDTH, column.minWidth ?? 0) : column.minWidth ?? 20;
+  if (isSelectionColumn(column)) return Math.max(CONTROL_MIN_WIDTH, column.minWidth ?? 0);
+  const numeric = column.scale !== 'text' || column.cell === 'numeric';
+  if (column.subject !== undefined && column.minWidth !== undefined) {
+    return numeric ? Math.max(column.minWidth, SCALE_MIN_WIDTH[column.scale === 'text' ? 'integer' : column.scale]) : column.minWidth;
+  }
+  return numeric ? Math.max(NUMERIC_MIN_WIDTH, column.minWidth ?? 0) : column.minWidth ?? 20;
 }
 
 export type ColumnSubject = 'Identity' | 'RANK & ORGANIC' | 'SPONSORED PRODUCTS' | 'SQP' | 'BRAND ANALYTICS';
@@ -85,6 +104,11 @@ export interface GridColumn {
   description?: string;
   /** The rare cell whose visual hierarchy carries more than its sort value. */
   cell?: GridCellKind;
+  /**
+   * The shared vocabulary this column's stored codes belong to. The cell, group
+   * header, filter options and chips draw its words; the value stays the code.
+   */
+  labels?: ValueVocabulary;
   /**
    * How an operator filters this field. Omitted values resolve to numeric for
    * metrics/money/percent/integer columns and free text otherwise.
@@ -188,19 +212,24 @@ const DIMENSIONS: Record<EntityLevel, GridColumn[]> = {
     dimension('campaign_id', 'Campaign ID', { width: 160 }),
   ],
   targets: [
-    dimension('targeting', 'Target', { width: 280, pinned: true }),
+    dimension('targeting', 'Target', { width: 280, pinned: true, labels: 'targeting' }),
+    dimension('target_phrase', 'Phrase', {
+      width: 220,
+      description: 'The words a keyword target matches. Automatic and product targets have no phrase, so the cell stays empty.',
+    }),
     dimension('target_state', 'State', { width: 96, filterKind: 'categorical' }),
     dimension('target_kind', 'Kind', {
-      width: 96,
+      width: 120,
       filterKind: 'categorical',
-      description: 'Keyword or product target. One name, on every entity level.',
+      labels: 'target_kind',
+      description: 'Keyword, product or automatic target. One name, on every entity level.',
     }),
     dimension('match_type', 'Match', {
-      width: 96,
+      width: 112,
       filterKind: 'categorical',
-      description:
-        'Singular everywhere. AdLabs spells this `match_types` on targets and `match_type` on ' +
-        'negatives; one concept gets one name here.',
+      labels: 'match_type',
+      // One concept, one name on every level (AdLabs spells it two ways).
+      description: 'How a keyword matches searches (exact, phrase or broad), or the kind of automatic or product targeting.',
     }),
     dimension('bid', 'Bid', { scale: 'money', align: 'right', width: 96 }),
     dimension('suggested_bid', 'Sugg. bid', {
@@ -242,8 +271,8 @@ const DIMENSIONS: Record<EntityLevel, GridColumn[]> = {
   ],
   search_terms: [
     dimension('search_term', 'Search term', { width: 320, pinned: true }),
-    dimension('targeting', 'Matched target', { width: 240 }),
-    dimension('match_type', 'Match', { width: 96, filterKind: 'categorical' }),
+    dimension('targeting', 'Matched target', { width: 240, labels: 'targeting' }),
+    dimension('match_type', 'Match', { width: 112, filterKind: 'categorical', labels: 'match_type' }),
     dimension('ad_group_name', 'Ad group', { width: 220, filterKind: 'categorical' }),
     dimension('campaign_name', 'Campaign', { width: 280, filterKind: 'categorical' }),
     dimension('harvested', 'Harvested', {
@@ -257,7 +286,7 @@ const DIMENSIONS: Record<EntityLevel, GridColumn[]> = {
   ],
   products: [dimension('asin', 'Product', { pinned: true, width: 220 }), dimension('product_name', 'Product name'), dimension('gap', 'Gap', { scale: 'integer', align: 'right', description: 'Signed distance to the best-ranked tracked competitor on this day; not measured when comparable ranks are missing.' })],
   placements: [
-    dimension('placement', 'Placement', { width: 200, pinned: true, filterKind: 'categorical' }),
+    dimension('placement', 'Placement', { width: 200, pinned: true, filterKind: 'categorical', labels: 'placement' }),
     dimension('campaign_name', 'Campaign', { width: 320, filterKind: 'categorical' }),
     dimension('placement_modifier', 'Current modifier', {
       scale: 'percent',

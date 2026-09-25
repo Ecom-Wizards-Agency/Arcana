@@ -1,4 +1,4 @@
-import { PerformanceVerdict } from '@wizard-ads/shared';
+import { PerformanceVerdict, parseGridView } from '@wizard-ads/shared';
 import { columnsFor } from '@wizard-ads/ui';
 import { expect, test } from '@playwright/test';
 import { signIn } from './support/auth';
@@ -152,13 +152,15 @@ test('performance frame preserves measured strips across density, theme and attr
   const catalog = columnsFor('targets');
   await expect(manager.locator('input[type=checkbox]')).toHaveCount(catalog.length);
   await capture('columns');
-  for (const [subject, label] of [['SQP', 'SQP'], ['BRAND ANALYTICS', 'Brand Analytics']] as const) {
-    await manager.getByRole('button', { name: new RegExp(`^${label} `) }).click();
-    const expected = catalog.filter((column) => column.subject === subject).length;
-    await expect(manager.getByText('needs ingestion', { exact: true })).toHaveCount(expected);
-    for (const tag of await manager.getByText('needs ingestion', { exact: true }).all()) await expect(tag).toBeVisible();
-    await capture(`columns-${subject === 'SQP' ? 'sqp' : 'brand-analytics'}`);
-  }
+  // WP-316 (V20): SQP and Brand Analytics are one subject in the grouped chooser.
+  await manager.getByRole('button', { name: /^SQP & Brand Analytics / }).click();
+  const expected = catalog.filter((column) => column.subject === 'SQP' || column.subject === 'BRAND ANALYTICS').length;
+  await expect(manager.getByText('needs ingestion', { exact: true })).toHaveCount(expected);
+  for (const tag of await manager.getByText('needs ingestion', { exact: true }).all()) await expect(tag).toBeVisible();
+  await capture('columns-sqp-brand-analytics');
+  await manager.getByRole('button', { name: /^Efficiency / }).click();
+  await expect(manager.getByRole('group', { name: 'ACOS comparison columns' }).getByRole('checkbox')).toHaveCount(3);
+  await capture('columns-efficiency-nested');
   await manager.getByRole('button', { name: /^All / }).click();
   const chosenBid = manager.locator('[data-chosen-column="bid"]');
   const transfer = await page.evaluateHandle(() => new DataTransfer());
@@ -282,3 +284,68 @@ for (const source of ['derived', 'derived_parent', 'proposed', 'manual', 'unassi
     await testInfo.attach(`product-assignment-${source}`, { path, contentType: 'image/png' });
   });
 }
+
+test('table readability: codes read as words, a partial selection shows, the legend stays compact and a dragged edge persists', async ({ page }, info) => {
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  await signIn(page, 'admin');
+  const { fixtureProfileId } = await readState();
+  const totals = { impressions: 100, clicks: 5, spend: 10, sales: 40, orders: 1, units: 1 };
+  const target = (index: number, targeting: string, kind: string, matchType: string) => ({ id: `target:readable-${index}`, currencyCode: 'USD', totals, comparison: null,
+    dimensions: { target_id: `readable-${index}`, targeting, target_kind: kind, match_type: matchType, target_state: 'enabled', campaign_name: 'Synthetic campaign', verdict: 'Insufficient evidence', not_the_query: kind !== 'keyword' } });
+  const rows = [target(0, 'synthetic readable phrase', 'keyword', 'exact'), target(1, 'QUERY_HIGH_REL_MATCHES', 'target', 'close_match'), target(2, 'ASIN_SAME_AS="B000SYN009"', 'target', 'asin_same_as')];
+  await page.route('**/api/grid/rows?*', (route) => route.fulfill({ json: { rows, rowCount: rows.length, truncated: false } }));
+  await page.goto(`/grid?entity=targets&profile=${fixtureProfileId}`);
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  const grid = page.getByTestId('grid-scroller');
+  const capture = async (state: string) => { const path = info.outputPath(`readability-${state}.png`); await page.screenshot({ path, fullPage: true }); await info.attach(state, { path, contentType: 'image/png' }); };
+
+  // Codes read as words (V19, D3, D6).
+  await expect(grid.getByRole('link', { name: 'Close match', exact: true })).toBeVisible();
+  await expect(grid.getByRole('link', { name: 'Product: B000SYN009', exact: true })).toBeVisible();
+  for (const code of ['QUERY_HIGH_REL_MATCHES', 'ASIN_SAME_AS', 'close_match', 'asin_same_as', 'not the query']) await expect(grid).not.toContainText(code);
+  await expect(grid.getByText('Many searches', { exact: true })).toHaveCount(2);
+
+  // Select-all shows none, some and all, whole inside its column (J4).
+  const all = grid.getByRole('checkbox', { name: 'Select all 3 matching rows', exact: true });
+  await expect(all).toHaveAttribute('data-selection-state', 'none');
+  const column = (await page.getByRole('columnheader', { name: 'Select', exact: true }).boundingBox())!;
+  const box = (await all.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(column.x);
+  expect(box.x + box.width).toBeLessThanOrEqual(column.x + column.width);
+  await grid.getByRole('checkbox', { name: 'Select Close match in Synthetic campaign', exact: true }).check();
+  await expect(all).toHaveAttribute('aria-checked', 'mixed');
+  expect(await all.evaluate((input) => (input as HTMLInputElement).indeterminate)).toBe(true);
+  await capture('partial-selection');
+  await all.click();
+  await expect(all).toHaveAttribute('data-selection-state', 'all');
+
+  // The legend opens on request only, compact, and a press outside dismisses it (V23).
+  const legend = page.getByRole('button', { name: 'SIGNALS legend', exact: true });
+  await legend.hover();
+  await expect(page.getByRole('dialog', { name: 'SIGNALS legend' })).toHaveCount(0);
+  await legend.click();
+  const popover = page.getByRole('dialog', { name: 'SIGNALS legend' });
+  await expect(popover).toBeVisible();
+  expect((await popover.boundingBox())!.width).toBeLessThanOrEqual(320);
+  await capture('compact-legend');
+  await page.getByTestId('grid-scroll-disclosure').click({ position: { x: 4, y: 4 } });
+  await expect(popover).toHaveCount(0);
+
+  // A real pointer drag on the visible edge resizes; it never becomes a header drag (V4).
+  await page.evaluate(() => { (window as unknown as { headerDrags: number }).headerDrags = 0; document.addEventListener('dragstart', () => { (window as unknown as { headerDrags: number }).headerDrags += 1; }, true); });
+  const spend = page.getByRole('columnheader', { name: 'Spend', exact: true });
+  const before = Math.round((await spend.boundingBox())!.width);
+  const edge = (await spend.getByRole('separator', { name: 'Resize Spend', exact: true }).boundingBox())!;
+  await page.mouse.move(edge.x + edge.width / 2, edge.y + edge.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(edge.x + edge.width / 2 + 30, edge.y + edge.height / 2, { steps: 6 });
+  await page.mouse.move(edge.x + edge.width / 2 + 60, edge.y + edge.height / 2, { steps: 6 });
+  await capture('resizing');
+  await page.mouse.up();
+  expect(await page.evaluate(() => (window as unknown as { headerDrags: number }).headerDrags)).toBe(0);
+  await expect.poll(async () => Math.round((await spend.boundingBox())!.width)).toBe(before + 60);
+  await expect.poll(() => parseGridView(new URL(page.url()).searchParams.get('view'))?.widths['spend']).toBe(before + 60);
+  await page.reload();
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
+  await expect.poll(async () => Math.round((await page.getByRole('columnheader', { name: 'Spend', exact: true }).boundingBox())!.width)).toBe(before + 60);
+});

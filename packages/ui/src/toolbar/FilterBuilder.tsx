@@ -29,6 +29,7 @@ import {
   toggleFilterOption,
 } from '../filter-options.js';
 import type { GridRow } from '../rows.js';
+import { valueLabeller } from '../value-labels.js';
 import { OPERATOR_LABELS, describeFilter, operatorsFor } from './operators.js';
 import {
   button,
@@ -90,7 +91,7 @@ export function FilterBuilder({
   const categoricalOptions = useMemo(
     () =>
       draftKind === 'categorical' && draftColumn !== undefined
-        ? buildCategoricalOptions(optionRows, draftColumn.id)
+        ? buildCategoricalOptions(optionRows, draftColumn.id, valueLabeller(draftColumn))
         : [],
     [draftColumn, draftKind, optionRows],
   );
