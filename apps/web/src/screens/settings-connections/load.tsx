@@ -23,6 +23,7 @@ interface Props {
     oauth_error?: string;
     spapi_operation?: string;
     spapi_error?: string;
+    spapi_detail?: string;
   }>;
 }
 
