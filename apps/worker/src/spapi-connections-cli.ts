@@ -9,6 +9,7 @@
  */
 import { pathToFileURL } from 'node:url';
 import { createDb } from '@wizard-ads/db';
+import type { FetchLike } from '@wizard-ads/sp-api';
 import { configFromEnv } from './config.js';
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
 import { spApiConnectionPass, type SpApiConnectionSettings } from './spapi-connections.js';
@@ -23,8 +24,11 @@ export const SPAPI_CONNECTIONS_REQUIRED_ENV = [
   'SP_API_OAUTH_ALLOWED_REDIRECT_URIS',
 ] as const;
 
-/** Job-runtime selectors; their presence means the operator expected a worker. */
-export const SPAPI_CONNECTIONS_REFUSED_ENV = ['WORKER_JOB_TYPES', 'WORKER_DEPLOYMENT_ROLE'] as const;
+/** Job-runtime settings; their presence means a worker environment was copied over. */
+export const SPAPI_CONNECTIONS_REFUSED_PREFIX = 'WORKER_';
+
+/** At a one-second poll an idle day would otherwise log 86,400 lines. */
+export const SPAPI_CONNECTIONS_HEARTBEAT_MS = 5 * 60_000;
 
 const USAGE = 'usage: spapi-connections:start [--once]';
 
@@ -35,6 +39,9 @@ export interface SpApiConnectionsCliConfig {
   databaseUrl: string;
   settings: SpApiConnectionSettings;
 }
+
+type LogFields = Record<string, string | number | null>;
+type PassResult = Awaited<ReturnType<ReturnType<typeof spApiConnectionPass>>>;
 
 function configMessage(error: unknown): string {
   // Worker configuration errors name variables; anything else (a schema
@@ -49,9 +56,10 @@ function configMessage(error: unknown): string {
  * the second applies the parser's full connection policy.
  */
 export function spApiConnectionsConfigFromEnv(env: NodeJS.ProcessEnv): SpApiConnectionsCliConfig {
-  const refused = SPAPI_CONNECTIONS_REFUSED_ENV.filter((name) => env[name] !== undefined);
+  const refused = Object.keys(env)
+    .filter((name) => name.startsWith(SPAPI_CONNECTIONS_REFUSED_PREFIX) && env[name] !== undefined).sort();
   if (refused.length > 0) {
-    throw new SpApiConnectionsCliError(`${refused.join(' and ')} must be unset: this command runs no jobs`);
+    throw new SpApiConnectionsCliError(`${refused.join(', ')} must be unset: this command runs no jobs`);
   }
   const missing = SPAPI_CONNECTIONS_REQUIRED_ENV.filter((name) => !env[name]?.trim());
   if (missing.length > 0) {
@@ -87,6 +95,54 @@ export function parseSpApiConnectionsArgs(args: readonly string[]): { once: bool
   throw new SpApiConnectionsCliError(USAGE);
 }
 
+/** Non-secret deployment identity for the startup line. */
+export function startupFields(settings: SpApiConnectionSettings): LogFields {
+  return {
+    applicationId: settings.spApiApplicationId ?? null,
+    region: settings.spApiConsentRegion ?? null,
+    redirectUris: settings.spApiConnectionRedirects.length,
+    clientIdSuffix: settings.spApiClientId?.slice(-4) ?? null,
+  };
+}
+
+function passFields(result: PassResult): LogFields {
+  return {
+    outcome: result.outcome,
+    ...(result.operation === null ? {} : { state: result.operation.state, reason: result.operation.reason }),
+  };
+}
+
+/**
+ * Chooses which passes reach the log: every non-idle pass, any change of
+ * outcome, and a heartbeat with the pass count at most every five minutes.
+ */
+export class SpApiConnectionPassReporter {
+  private previous: PassResult['outcome'] | null = null;
+  private passes = 0;
+  private lastHeartbeat: number;
+
+  constructor(
+    private readonly record: (event: string, fields?: LogFields) => void,
+    private readonly now: () => Date,
+  ) {
+    this.lastHeartbeat = now().getTime();
+  }
+
+  report(result: PassResult, always = false): void {
+    this.passes += 1;
+    if (always || result.outcome !== 'idle' || result.outcome !== this.previous) {
+      this.record('spapi_connection_pass', passFields(result));
+    }
+    this.previous = result.outcome;
+    const at = this.now().getTime();
+    if (at - this.lastHeartbeat >= SPAPI_CONNECTIONS_HEARTBEAT_MS) {
+      this.record('spapi_connection_heartbeat', { passes: this.passes });
+      this.passes = 0;
+      this.lastHeartbeat = at;
+    }
+  }
+}
+
 export interface SpApiConnectionsCliOptions {
   env?: NodeJS.ProcessEnv;
   log?: (line: string) => void;
@@ -94,6 +150,8 @@ export interface SpApiConnectionsCliOptions {
   /** Aborted on SIGINT or SIGTERM; the loop stops and waits for custody. */
   stop?: AbortSignal;
   now?: () => Date;
+  /** Test transport for the token exchange. The command's entry point never sets it. */
+  fetch?: FetchLike;
 }
 
 /** Returns the process exit code. */
@@ -115,45 +173,61 @@ export async function runSpApiConnectionsCli(
     return 1;
   }
 
-  const record = (event: string, fields: Record<string, string> = {}): void =>
+  const record = (event: string, fields: LogFields = {}): void =>
     log(JSON.stringify({ at: now().toISOString(), event, ...fields }));
+  const reporter = new SpApiConnectionPassReporter(record, now);
   const handle = createDb({ connectionString: config.databaseUrl, max: 2 });
-  const pass = spApiConnectionPass(handle, config.settings, env);
-  const loggedPass = async (signal: AbortSignal) => {
-    const result = await pass(signal);
-    record('spapi_connection_pass', { outcome: result.outcome });
-    return result;
-  };
+  const pass = spApiConnectionPass(handle, config.settings, env, options.fetch);
 
   try {
+    record('spapi_connection_command_started', { mode: mode.once ? 'once' : 'loop', ...startupFields(config.settings) });
     if (mode.once) {
       const controller = new AbortController();
       const abort = (): void => controller.abort();
       stop.addEventListener('abort', abort, { once: true });
       if (stop.aborted) abort();
       try {
-        const { outcome } = await loggedPass(controller.signal);
-        return outcome === 'idle' || outcome === 'observed' ? 0 : 1;
+        const result = await pass(controller.signal);
+        reporter.report(result, true);
+        return result.outcome === 'idle' || result.outcome === 'observed' ? 0 : 1;
       } finally {
         stop.removeEventListener('abort', abort);
       }
     }
-    const loop = new ProviderConnectionLoop(loggedPass);
+
+    // A first pass that cannot reach custody means the command cannot work;
+    // exiting lets a supervisor restart it. Later uncertain passes only log.
+    let firstPass = true;
+    let firstPassUncertain = false;
+    let failed: () => void = () => {};
+    const failure = new Promise<void>((resolve) => { failed = resolve; });
+    const loop = new ProviderConnectionLoop(async (signal) => {
+      const result = await pass(signal);
+      reporter.report(result);
+      if (firstPass) {
+        firstPass = false;
+        if (result.outcome === 'uncertain') { firstPassUncertain = true; failed(); }
+      }
+      return result;
+    });
     // The loop's timer is unreferenced; this keeps the process alive between passes.
     const keepAlive = setInterval(() => {}, 60_000);
     try {
-      record('spapi_connection_command_started');
       loop.start();
-      await new Promise<void>((resolve) => {
+      await Promise.race([failure, new Promise<void>((resolve) => {
         if (stop.aborted) resolve();
         else stop.addEventListener('abort', () => resolve(), { once: true });
-      });
+      })]);
       await loop.stop();
-      record('spapi_connection_command_stopped');
-      return 0;
     } finally {
       clearInterval(keepAlive);
     }
+    if (firstPassUncertain && !stop.aborted) {
+      record('spapi_connection_command_failed', { reason: 'first_pass_uncertain' });
+      return 1;
+    }
+    record('spapi_connection_command_stopped');
+    return 0;
   } catch {
     error('SP-API connection command failed');
     return 1;
@@ -162,10 +236,25 @@ export async function runSpApiConnectionsCli(
   }
 }
 
+/**
+ * Persistent handlers: the first SIGINT or SIGTERM starts the stop, and later
+ * ones are logged and ignored so they cannot kill a pass holding custody.
+ */
+export function installSpApiConnectionsSignalHandlers(
+  controller: AbortController, log: (line: string) => void = (line) => console.info(line),
+): void {
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(signal, () => {
+      const event = controller.signal.aborted ? 'signal_repeated' : 'stop_requested';
+      log(JSON.stringify({ at: new Date().toISOString(), event, signal }));
+      controller.abort();
+    });
+  }
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const controller = new AbortController();
-  process.once('SIGINT', () => controller.abort());
-  process.once('SIGTERM', () => controller.abort());
+  installSpApiConnectionsSignalHandlers(controller);
   runSpApiConnectionsCli(process.argv.slice(2), { stop: controller.signal })
     .then((code) => { process.exitCode = code; })
     .catch(() => {

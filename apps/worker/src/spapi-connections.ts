@@ -70,6 +70,8 @@ export type SpApiConnectionSettings = Pick<WorkerConfig, 'spApiClientId' | 'spAp
  */
 export function spApiConnectionPass(
   handle: Pick<DbHandle, 'sql'>, config: SpApiConnectionSettings, env: NodeJS.ProcessEnv = process.env,
+  /** Test transport only; production callers never pass it. */
+  fetch?: FetchLike,
 ): (signal: AbortSignal) => ReturnType<typeof runSpApiConnectionPass> {
   const { spApiClientId: clientId, spApiClientSecret: clientSecret } = config;
   return (signal) => runSpApiConnectionPass({
@@ -79,6 +81,6 @@ export function spApiConnectionPass(
       && installation.applicationId === config.spApiApplicationId && installation.region === config.spApiConsentRegion
       && config.spApiConnectionRedirects.includes(installation.redirectUri),
     exchange: (installation, code, abort) => exchangeSpApiAuthorizationCode(installation, code, abort,
-      clientId && clientSecret ? { clientId, clientSecret } : undefined),
+      clientId && clientSecret ? { clientId, clientSecret, ...(fetch === undefined ? {} : { fetch }) } : undefined),
   }, signal);
 }

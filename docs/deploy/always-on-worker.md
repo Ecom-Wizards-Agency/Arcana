@@ -136,14 +136,32 @@ worker.
 
 It requires `DATABASE_URL`, `OPENSPELL_SPAPI_CONNECTIONS_ENABLED=1`,
 `SP_API_LWA_CLIENT_ID`, `SP_API_LWA_CLIENT_SECRET`, `SP_API_APPLICATION_ID`,
-`SP_API_OAUTH_REGION` and `SP_API_OAUTH_ALLOWED_REDIRECT_URIS`, validated by the
-worker config parser. A missing or malformed variable stops it with a message
-that names the variable and never its value. It refuses to start when
-`WORKER_JOB_TYPES` or `WORKER_DEPLOYMENT_ROLE` is set, because it runs no jobs.
-Each pass logs one JSON line with a timestamp and its outcome (`idle`, `observed`,
-`unavailable` or `uncertain`). SIGINT or SIGTERM stops the loop, waits for
-consent custody, closes the database handle and exits 0. Add `--once` for a
-runbook check: one pass, exit 0 when it is `idle` or `observed`, 1 otherwise.
+`SP_API_OAUTH_REGION` and `SP_API_OAUTH_ALLOWED_REDIRECT_URIS`. Give it a
+purpose-built environment with only these: the command runs the whole worker config
+parser, so other worker settings copied from a general-worker environment are
+parsed too and a bad one stops it (for example `PORT`,
+`OPENSPELL_WORKER_REVISION`, `SP_API_REPORT_MIN_INTERVAL_MS`, the unified-reporting
+flag or the SP write flags). It refuses to start when any variable whose name
+starts with `WORKER_` is set, because it runs no jobs.
+
+Startup errors never print a value. A missing variable, a gate other than `1`, a
+region other than `NA`, `EU` or `FE`, and an empty callback list are named. A bad
+`SP_API_LWA_CLIENT_ID`, `SP_API_APPLICATION_ID` or callback URI is reported as
+`Invalid environment: SP-API connection callback policy is invalid`, without the
+variable name.
+
+Output is one JSON line per event with a timestamp. The startup line carries the
+application id, region, the number of allowed callback URIs and the last four
+characters of the client id; never the secret, a token, a consent code or the
+database URL. A pass line (`idle`, `observed` or `uncertain`, plus the operation's
+settled state and reason when there is one) is written for every non-idle pass and
+whenever the outcome changes; a heartbeat line with the pass count is written at
+most every five minutes. In loop mode an `uncertain` first pass exits 1 so a
+supervisor restarts the command; later `uncertain` passes are only logged. The
+first SIGINT or SIGTERM stops the loop, waits for consent custody, closes the
+database handle and exits 0; further signals are logged as `signal_repeated` and
+ignored. Add `--once` for a runbook check: one pass, logged with its state and
+reason, exit 0 when it is `idle` or `observed`, 1 otherwise.
 
 ## Report fetch reliability (WP-323)
 
