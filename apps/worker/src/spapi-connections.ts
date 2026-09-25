@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createSpApiConnectionLifecycle, settleSpApiConnection, type DbHandle } from '@wizard-ads/db';
 import { NotConfigured, type SpApiConnectionInstallation, type SpApiConnectionOperation } from '@wizard-ads/shared';
 import { exchangeLwaAuthorizationCode, SpApiCodeExchangeError, type FetchLike } from '@wizard-ads/sp-api';
+import type { WorkerConfig } from './config.js';
 
 /** Worker-owned credentials; the application tier never constructs this capability. */
 export async function exchangeSpApiAuthorizationCode(
@@ -57,4 +58,27 @@ export async function runSpApiConnectionPass(
   } catch {
     return { outcome: 'uncertain', operation: null };
   }
+}
+
+export type SpApiConnectionSettings = Pick<WorkerConfig, 'spApiClientId' | 'spApiClientSecret'
+  | 'spApiApplicationId' | 'spApiConsentRegion' | 'spApiConnectionRedirects'>;
+
+/**
+ * The deployment wiring of one SP-API connection pass. The general worker and
+ * the connection-only command both build their loop from this, so the gate,
+ * installation check and exchange credentials cannot drift between them.
+ */
+export function spApiConnectionPass(
+  handle: Pick<DbHandle, 'sql'>, config: SpApiConnectionSettings, env: NodeJS.ProcessEnv = process.env,
+): (signal: AbortSignal) => ReturnType<typeof runSpApiConnectionPass> {
+  const { spApiClientId: clientId, spApiClientSecret: clientSecret } = config;
+  return (signal) => runSpApiConnectionPass({
+    handle,
+    enabled: () => env['OPENSPELL_SPAPI_CONNECTIONS_ENABLED'] === '1',
+    accepts: (installation) => installation.clientId === clientId
+      && installation.applicationId === config.spApiApplicationId && installation.region === config.spApiConsentRegion
+      && config.spApiConnectionRedirects.includes(installation.redirectUri),
+    exchange: (installation, code, abort) => exchangeSpApiAuthorizationCode(installation, code, abort,
+      clientId && clientSecret ? { clientId, clientSecret } : undefined),
+  }, signal);
 }

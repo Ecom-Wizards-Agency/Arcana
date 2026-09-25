@@ -11,7 +11,7 @@ import { registerBudgetUsageSources } from './budget-usage/register.js';
 import { createBudgetUsageStore } from './budget-usage/composition.js';
 import { createBudgetUsageProvider } from './budget-usage/provider.js';
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
-import { exchangeSpApiAuthorizationCode, runSpApiConnectionPass } from './spapi-connections.js';
+import { spApiConnectionPass } from './spapi-connections.js';
 import { registerIntegrationSources } from './integration-sources.js';
 import { CatalogueSourceRunner, registerCatalogueSources } from './catalogue-sources.js';
 import { createKeywordMirrorCapability, createSpWriteWorker } from './sp-write-outbox/composition.js';
@@ -103,17 +103,8 @@ const adsApi = runsAmazonJobs ? createAdsApiClientFromEnv(handle) : undefined;
 const amazonConnections = config.amazonConnectionsEnabled
   ? new AmazonConnectionLoop(createAmazonConnectionStore(handle), createAmazonConnectionProvider(handle))
   : undefined;
-const { spApiClientSecret: clientSecret } = config;
 const spApiConnections = config.spApiConnectionsEnabled
-  ? new ProviderConnectionLoop((signal) => runSpApiConnectionPass({
-      handle,
-      enabled: () => process.env['OPENSPELL_SPAPI_CONNECTIONS_ENABLED'] === '1',
-      accepts: (installation) => installation.clientId === config.spApiClientId
-        && installation.applicationId === config.spApiApplicationId && installation.region === config.spApiConsentRegion
-        && config.spApiConnectionRedirects.includes(installation.redirectUri),
-      exchange: (installation, code, signal) => exchangeSpApiAuthorizationCode(installation, code, signal,
-        config.spApiClientId && clientSecret ? { clientId: config.spApiClientId, clientSecret } : undefined),
-    }, signal))
+  ? new ProviderConnectionLoop(spApiConnectionPass(handle, config))
   : undefined;
 const unifiedReporting = adsApi && config.unifiedReporting.enabled
   ? new WorkerUnifiedDualRun({

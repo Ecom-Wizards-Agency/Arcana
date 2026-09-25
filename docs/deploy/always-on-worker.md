@@ -122,6 +122,29 @@ Ads and participates in shutdown. Leave the gate off while the exchange is
 unconfigured. Operator revocation closes credential reads immediately; service
 custody then clears the exact revoked SP-API Vault pointer.
 
+### Connection-only SP-API exchange (WP-326)
+
+`pnpm --filter @wizard-ads/worker run spapi-connections:start` runs the SP-API
+connection loop and nothing else. It builds the same pass as the general worker
+(gate, installation check, exchange credentials and poll interval) from the shared
+`spApiConnectionPass` wiring. It does not start the queue worker, the health
+server, the stale-claim reaper, schedule provisioning, recommendation observation,
+bid-series sync, the auth health monitor, creative sync, the marketing stream
+consumer, the Amazon Ads connection loop, SP write polling or unified reporting.
+This command is the only supported way to run the exchange outside the general
+worker.
+
+It requires `DATABASE_URL`, `OPENSPELL_SPAPI_CONNECTIONS_ENABLED=1`,
+`SP_API_LWA_CLIENT_ID`, `SP_API_LWA_CLIENT_SECRET`, `SP_API_APPLICATION_ID`,
+`SP_API_OAUTH_REGION` and `SP_API_OAUTH_ALLOWED_REDIRECT_URIS`, validated by the
+worker config parser. A missing or malformed variable stops it with a message
+that names the variable and never its value. It refuses to start when
+`WORKER_JOB_TYPES` or `WORKER_DEPLOYMENT_ROLE` is set, because it runs no jobs.
+Each pass logs one JSON line with a timestamp and its outcome (`idle`, `observed`,
+`unavailable` or `uncertain`). SIGINT or SIGTERM stops the loop, waits for
+consent custody, closes the database handle and exits 0. Add `--once` for a
+runbook check: one pass, exit 0 when it is `idle` or `observed`, 1 otherwise.
+
 ## Report fetch reliability (WP-323)
 
 Until WP-323 every report fetch on the Vercel cron lane died with `report download
