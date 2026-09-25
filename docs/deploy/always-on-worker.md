@@ -163,6 +163,83 @@ database handle and exits 0; further signals are logged as `signal_repeated` and
 ignored. Add `--once` for a runbook check: one pass, logged with its state and
 reason, exit 0 when it is `idle` or `observed`, 1 otherwise.
 
+## Evo general worker package (WP-326)
+
+The Evo host's general worker (`wizard-ads-worker.service`) is the legacy
+integration service described above. WP-326 replaces its hand-copied runtime with
+a versioned release and adds the SP-API seller-authorization exchange.
+
+A release is built without privileges from a clean checkout of the approved
+revision with `docs/deploy/build-evo-general-worker-artifact.sh --revision <sha>
+--output <new-directory>`. It contains `REVISION`, `ARTIFACT_SHA256`,
+`credential_runtime.py` (from `wizard-ads-credential-runtime.py`), both unit files,
+the configuration template, and `app/`, a `pnpm deploy` of `@wizard-ads/worker`
+with the pinned `tsx` runtime, normalized by
+`normalize-report-worker-evo-artifact.mjs`. Releases live in
+`/usr/local/lib/wizard-ads-runtime/worker-releases/<sha>`, and the unit runs
+`/usr/local/lib/wizard-ads-runtime/worker-current/credential_runtime.py worker`
+through the `worker-current` link. The runtime resolves that link at start, runs
+its own release's `app/` with `/usr/local/bin/node`, and sets
+`OPENSPELL_WORKER_REVISION` from `REVISION`, so `/healthz` reports the revision.
+`ARTIFACT_LINKS` records every symlink target and is itself checksummed.
+It prints one start line with the mode, the revision and whether the SP-API
+connection loop is enabled. The MCP bridge keeps its own unit and the earlier
+runtime.
+
+Each systemd credential populates exactly one variable:
+
+| Credential | Variable |
+|---|---|
+| `database-url` | `DATABASE_URL` |
+| `spapi-lwa-client-id` | `SP_API_LWA_CLIENT_ID` |
+| `spapi-lwa-client-secret-value` | `SP_API_LWA_CLIENT_SECRET` |
+
+The secret's ID ends in `-value` because `pnpm hygiene` reads a unit line whose
+credential ID ends in `secret` followed by `:<path>` as a credential assignment.
+The two LWA credentials are supplied together or not at all. The public
+configuration `/etc/wizard-ads/worker.json` (template
+`wizard-ads-worker.TEMPLATE.json`) accepts only the runtime's allowlisted keys and
+can never name a credential variable or the revision. It adds
+`OPENSPELL_SPAPI_CONNECTIONS_ENABLED`, `SP_API_APPLICATION_ID`,
+`SP_API_OAUTH_REGION` and `SP_API_OAUTH_ALLOWED_REDIRECT_URIS`; the last must list
+the web deployment's `SP_API_OAUTH_REDIRECT_URI`, and the client id and
+application id must equal the web deployment's. The runtime refuses a gate other
+than `0` or `1`, a region other than `NA`, `EU` or `FE`, a template placeholder,
+and an enabled gate without every setting and both credentials.
+
+`wizard-ads-spapi-connections.service` is a template for the connection-only
+command. It is not installed by the WP-326 upgrade. Its runtime mode passes only
+`DATABASE_URL`, the LWA credentials and the SP-API settings, and refuses to start
+while `worker.json` gives the loop to the general worker.
+
+Lanes after the upgrade:
+
+- The Evo general worker keeps `keepa.sync`, `rank.sync`, `economics.sync`,
+  `sqp.categorize` and `recommendations.run` and additionally runs the SP-API
+  connection loop. None of its claimed job types is an Amazon Ads job, so it
+  builds no Ads client and makes no Amazon Ads call. `sqp.categorize` remains
+  declared but unimplemented.
+- The Vercel cron tick keeps `entity.sync`, `creative.sync`, `report.request`,
+  `report.poll` and `report.fetch`, and `recommendations.run` unless the
+  recommendation lane is enabled. `OPENSPELL_EVO_REPORT_LANE_READY` stays unset.
+- The Amazon Ads connection loop runs only in a general worker with
+  `OPENSPELL_AMAZON_CONNECTIONS_ENABLED=1` whose allowlist contains `entity.sync`.
+  The Evo general worker has neither, the Vercel cron route does not compose the
+  loop, and the report and recommendation lanes cannot own it, so it does not run
+  on Evo and this upgrade leaves it where it is.
+
+Switch `worker-current` only after the production database has the release
+revision's migrations; the worker exits at startup otherwise, and a rollback
+restores the previous unit and `worker.json` rather than touching the database.
+
+`bash docs/deploy/test-evo-general-worker-deployment.sh` is the static proof: the
+credential mapping tests, the units' exact shape (only the command and
+credentials may differ from the host unit) and credential names against the
+runtime mapping, the configuration template, the build's revision pinning, and a
+staged release whose checksums and link manifest verify, whose import graph
+resolves inside `app/`, and whose runtime launches its own `app/` at its recorded
+revision.
+
 ## Report fetch reliability (WP-323)
 
 Until WP-323 every report fetch on the Vercel cron lane died with `report download
