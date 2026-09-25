@@ -3,8 +3,19 @@ import { columnsFor } from '@wizard-ads/ui';
 import { expect, test } from '@playwright/test';
 import { signIn } from './support/auth';
 import { readState } from './support/fixture';
+import { gridWarmRoutes, warmRoutes } from './support/route-warmup';
+
+// Compile /grid and the two reads its workspace makes before either test's clock starts.
+test.beforeAll(async () => {
+  await warmRoutes(gridWarmRoutes((await readState()).fixtureProfileId));
+});
 
 test('performance frame preserves measured strips across density, theme and attribution states', async ({ page }, info) => {
+  // Fourteen page loads and 24 full-page captures took 55 to 60 s on four
+  // contended cores. The dev server writes its compile cache about 60 s after
+  // the beforeAll compile, and that stall landed inside this test in three of
+  // five runs: 84 to 87 s measured against the suite's 90 s.
+  test.setTimeout(120_000);
   await page.setViewportSize({ width: 1440, height: 1024 });
   await signIn(page, 'admin');
   const { fixtureProfileId } = await readState();
@@ -195,12 +206,20 @@ test('performance frame preserves measured strips across density, theme and attr
 
 test('ASIN scope follows removal, same-value reselection and browser back and forward', async ({ page }) => {
   await signIn(page, 'admin');
+  const { fixtureProfileId } = await readState();
   const rows = ['B000SYN001', 'B000SYN002'].map((asin, index) => ({ id: `target:scope-${index}`, currencyCode: 'USD',
     dimensions: { asin, target_id: `scope-${index}`, targeting: `Synthetic scope ${index}`, target_state: 'enabled', match_type: 'exact', verdict: 'Insufficient evidence' },
     totals: { spend: 10, sales: 20, impressions: 100, clicks: 5, orders: 1, units: 1 }, comparison: null,
   }));
   await page.route('**/api/grid/rows?*', (route) => route.fulfill({ json: { rows, rowCount: rows.length, truncated: false } }));
-  await page.goto('/grid?entity=targets&asin=B000SYN001');
+  // Open the canonical URL like the layout test; profile-context owns the redirect.
+  // Without a profile the redirect streams from the page body: goto settled on the
+  // first document while the second was still loading. The workspace is ready only
+  // after its saved-view read, so wait for that read before the 15 s expectations.
+  const views = page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/grid/views');
+  await page.goto(`/grid?${new URLSearchParams({ entity: 'targets', profile: fixtureProfileId, asin: 'B000SYN001' })}`);
+  expect((await views).status()).toBe(200);
+  await expect(page.getByTestId('grid-data-ready')).toHaveAttribute('data-ready', 'true');
   const scope = page.getByRole('button', { name: 'Remove product scope', exact: true });
   const assertScope = async (scoped: boolean) => {
     await expect(scope).toHaveCount(scoped ? 1 : 0);
