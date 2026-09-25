@@ -72,6 +72,9 @@ jobs:
       - name: Verify recommendation-worker deployment
         run: node docs/deploy/test-recommendation-worker-deployment.mjs
 
+      - name: Verify Evo general-worker deployment
+        run: bash docs/deploy/test-evo-general-worker-deployment.sh
+
       - name: Typecheck
         run: pnpm run typecheck
 
