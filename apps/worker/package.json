@@ -19,6 +19,7 @@
     "stream:recover": "tsx src/marketing-stream-recovery-cli.ts",
     "market-signals:import": "tsx src/market-signals-import-cli.ts",
     "market-signals:map": "tsx src/market-signals-map-cli.ts",
+    "sqp:requeue": "tsx src/sqp-requeue-cli.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "backfill-coverage": "tsx src/backfill-coverage.ts"
