@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { web } from './support.mjs';
 
-export const browserChecks = 10;
+export const browserChecks = 12;
 const expect = web('@playwright/test').expect.configure({ timeout: 45_000 });
 const memberCount = (stack) => stack.value('select count(*) from public.org_members');
 const auditCount = (stack) => stack.value("select count(*) from public.audit_log where action = 'agency.owner_accepted'");
+const linkAuditCount = (stack) => stack.value("select count(*) from public.audit_log where action = 'agency.invitation_link_issued'");
+const verifications = async (stack) => (await stack.events()).filter((row) => row.path === '/verify').length;
 
 export async function browserSuite(stack, application, evidence) {
   const check = (name, run) => evidence.check('browser', name, run);
@@ -121,15 +123,78 @@ export async function browserSuite(stack, application, evidence) {
     assert.equal(memberCount(stack), 1);
     return { freshPasswordLogin: true, correctHomeUrl: true, visibleOwnedAgency: true };
   });
+  let third;
+  await check('operator link delivery activates a new owner with no email', async () => {
+    third = await application.provision('third', { link: true });
+    assert.equal((await stack.messages()).length, 2); assert.equal(linkAuditCount(stack), 1);
+    const linkContext = await application.context({ javaScriptEnabled: false });
+    linkContext.setDefaultTimeout(45_000); linkContext.setDefaultNavigationTimeout(90_000);
+    const linkPage = await linkContext.newPage(); application.page = linkPage;
+    const before = await verifications(stack);
+    await linkPage.goto(third.result.invitationUrl);
+    await expect(linkPage.getByRole('button', { name: 'Continue with email invitation' })).toBeVisible();
+    assert.equal(await verifications(stack), before);
+    await linkPage.getByRole('button', { name: 'Continue with email invitation' }).click();
+    await expect(linkPage).toHaveURL(/\/recover-password\?.*setup=1/);
+    assert.equal(await verifications(stack) - before, 1); assert.ok((await stack.user(third.user.id)).email_confirmed_at);
+    await linkPage.getByLabel('New password', { exact: true }).fill(stack.passphrase);
+    await linkPage.getByLabel('Confirm password', { exact: true }).fill(stack.passphrase);
+    await linkPage.getByRole('button', { name: 'Set password', exact: true }).click();
+    await expect(linkPage.getByRole('status').filter({ hasText: 'Password saved.' })).toBeVisible();
+    await linkPage.getByRole('link', { name: 'Continue', exact: true }).click();
+    const plain = new globalThis.URL(third.result.invitationUrl); plain.search = '';
+    await expect(linkPage).toHaveURL(plain.toString());
+    await linkPage.getByRole('button', { name: 'Accept invitation', exact: true }).click();
+    await expect(linkPage).toHaveURL(application.origin + '/');
+    const owners = stack.value(`select count(*) from public.org_members where org_id = '${third.result.receipt.orgId}' and user_id = '${third.user.id}' and role = 'owner'`);
+    assert.equal(owners, 1); assert.equal(memberCount(stack), 2); assert.equal(auditCount(stack), 2);
+    await linkContext.close();
+    return { emails: 0, linkAudits: 1, verificationPosts: 1, memberships: 2, acceptanceAudits: 2 };
+  });
+  await check('owner-issued reset link replaces a password only after an explicit POST', async () => {
+    const generated = await stack.admin.auth.admin.generateLink({ type: 'recovery', email: first.address, options: { redirectTo: application.origin + '/auth/recovery/callback?next=%2Fdashboard' } });
+    assert.equal(generated.error, null);
+    for (const value of [generated.data.properties.hashed_token, generated.data.properties.email_otp, generated.data.properties.action_link]) evidence.secret(value);
+    // The same URL the Members screen shows once.
+    const link = new globalThis.URL('/auth/recovery/callback', application.origin);
+    link.searchParams.set('next', '/dashboard'); link.searchParams.set('token_hash', generated.data.properties.hashed_token);
+    const resetContext = await application.context({ javaScriptEnabled: false });
+    resetContext.setDefaultTimeout(45_000); resetContext.setDefaultNavigationTimeout(90_000);
+    const resetPage = await resetContext.newPage(); application.page = resetPage;
+    const before = await verifications(stack);
+    await resetPage.goto(link.toString());
+    await expect(resetPage.getByRole('button', { name: 'Continue to set a new password' })).toBeVisible();
+    await resetPage.reload();
+    assert.equal(await verifications(stack), before);
+    await resetPage.getByRole('button', { name: 'Continue to set a new password' }).click();
+    await expect(resetPage).toHaveURL(application.origin + '/recover-password?next=%2Fdashboard');
+    assert.equal(await verifications(stack) - before, 1);
+    const replacement = evidence.secret(stack.passphrase + '-reset');
+    await resetPage.getByLabel('New password', { exact: true }).fill(replacement);
+    await resetPage.getByLabel('Confirm password', { exact: true }).fill(replacement);
+    await resetPage.getByRole('button', { name: 'Replace password', exact: true }).click();
+    await expect(resetPage.getByRole('status').filter({ hasText: 'Password saved.' })).toBeVisible();
+    const signIn = (candidate) => stack.client().auth.signInWithPassword({ email: first.address, password: candidate });
+    assert.equal((await signIn(replacement)).error, null);
+    assert.equal((await signIn(stack.passphrase)).error?.code, 'invalid_credentials');
+    const replay = await resetContext.request.post(application.origin + '/auth/recovery/callback', {
+      form: { token_hash: generated.data.properties.hashed_token, next: '/dashboard' }, headers: { Origin: application.origin }, maxRedirects: 0,
+    });
+    assert.equal(replay.status(), 303); assert.equal(new globalThis.URL(replay.headers().location).pathname, '/forgot-password');
+    assert.equal((await stack.messages()).length, 2); assert.equal(memberCount(stack), 2);
+    await resetContext.close();
+    return { landingGets: 2, verificationPosts: 1, passwordReplaced: true, replayRefused: true, emails: 0 };
+  });
   await check('application, Auth, mail and membership counts reconcile', async () => {
-    assert.equal(stack.value('select count(*) from public.orgs'), 2);
-    assert.equal((await stack.users()).length, 2); assert.equal((await stack.messages()).length, 2);
-    assert.equal(stack.mailArtifacts.size, 2); assert.equal(memberCount(stack), 1); assert.equal(auditCount(stack), 1);
-    assert.equal(stack.value('select count(*) from app.agency_bootstrap_invitations where accepted_at is not null'), 1);
+    assert.equal(stack.value('select count(*) from public.orgs'), 3);
+    assert.equal((await stack.users()).length, 3); assert.equal((await stack.messages()).length, 2);
+    assert.equal(stack.mailArtifacts.size, 2); assert.equal(memberCount(stack), 2); assert.equal(auditCount(stack), 2);
+    assert.equal(linkAuditCount(stack), 1);
+    assert.equal(stack.value('select count(*) from app.agency_bootstrap_invitations where accepted_at is not null'), 2);
     assert.equal(stack.value('select count(*) from app.agency_bootstrap_invitations where accepted_at is null'), 1);
     assert.equal(application.externalRequests, 0); assert.equal(stack.outsideRequests, 0);
     assert.equal(application.browserErrors.length, 0);
-    return { agencies: 2, users: 2, emails: 2, memberships: 1, acceptedInvitations: 1, pendingInvitations: 1, acceptanceAudits: 1, externalRequests: 0 };
+    return { agencies: 3, users: 3, emails: 2, memberships: 2, acceptedInvitations: 2, pendingInvitations: 1, acceptanceAudits: 2, linkAudits: 1, externalRequests: 0 };
   });
   evidence.count('browser', browserChecks);
 }

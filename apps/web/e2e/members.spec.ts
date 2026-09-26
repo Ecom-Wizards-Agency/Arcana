@@ -21,6 +21,7 @@ test('viewer and analyst see a refusal and stale controls cannot bypass the acti
     await expect(page.getByTestId('member-role')).toHaveCount(0);
     await expect(page.getByTestId('remove-member')).toHaveCount(0);
     await expect(page.getByTestId('revoke-invite')).toHaveCount(0);
+    await expect(page.getByTestId('create-reset-link')).toHaveCount(0);
 
     // Load a real action while authorised, then replace only the session
     // cookies. The hydrated admin controls remain in the DOM, which models a
@@ -59,6 +60,17 @@ test('admin creates shown-once invitations and revokes the second one', async ({
   outsiderInviteUrl = (await firstUrl.textContent())?.trim() ?? '';
   expect(outsiderInviteUrl.startsWith(`${BASE_URL}/invite/`)).toBe(true);
   await expect(page.getByTestId('invite-url')).toHaveCount(1);
+  // Link delivery is the default. This installation has no Auth
+  // administration, so the plain link serves existing accounts only.
+  await expect(page.getByTestId('invite-delivery-status')).toHaveText('Link ready for existing accounts');
+  await expect(page.getByTestId('invite-url-instruction')).toHaveText(
+    `Send this link to ${EMAILS.outsider} yourself. It works only if they already have an account, because account links are not configured here. It is shown only now.`,
+  );
+  await page.getByRole('button', { name: 'Also send by email' }).click();
+  await expect(page.getByTestId('invite-email-status')).toHaveText(
+    'Email not sent. Email invitations are not configured. Existing users can accept the link; an installation operator must arrange activation for new users.',
+  );
+  await expect(page.getByTestId('invite-url')).toHaveCount(1);
   await expect(page.getByTestId('invite-row').filter({ hasText: EMAILS.outsider })).toHaveCount(1);
 
   await page.reload();
@@ -76,6 +88,33 @@ test('admin creates shown-once invitations and revokes the second one', async ({
 
   await page.goto(revokedUrl);
   await expect(page.getByText('This invitation is no longer open.')).toBeVisible();
+});
+
+test('reset links are offered to managers for other members and refuse without Auth administration', async ({ page }) => {
+  await signIn(page, 'admin');
+  await page.goto('/settings/members');
+  const own = page.getByTestId('member-row').filter({ hasText: EMAILS.admin });
+  await expect(own).toHaveCount(1);
+  await expect(own.getByTestId('create-reset-link')).toHaveCount(0);
+  const viewer = page.getByTestId('member-row').filter({ hasText: EMAILS.viewer });
+  await expect(viewer.getByTestId('create-reset-link')).toHaveCount(1);
+  await viewer.getByTestId('create-reset-link').click();
+  await expect(viewer.getByTestId('reset-link-error')).toHaveText('Reset links are not configured for this installation.');
+  await expect(page.getByTestId('reset-url')).toHaveCount(0);
+
+  const state = await readState();
+  const handle = createDb({ connectionString: state.connectionString, max: 1 });
+  try {
+    const audits = await handle.sql<{ action: string; count: number }[]>`
+      select action, count(*)::int as count from public.audit_log
+       where org_id = ${state.orgId} and action in ('auth.recovery_link_issued', 'team.invitation_link_issued')
+       group by action order by action
+    `;
+    // Two team links from the preceding test; no reset link was issued.
+    expect(audits).toEqual([{ action: 'team.invitation_link_issued', count: 2 }]);
+  } finally {
+    await handle.close();
+  }
 });
 
 test('an existing fixture user accepts and the accepted org becomes active', async ({ page }) => {
