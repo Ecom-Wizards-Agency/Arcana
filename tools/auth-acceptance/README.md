@@ -91,3 +91,21 @@ tag. GoTrue v2.196.0 and Mailpit v1.30.2 already use `public.ecr.aws/supabase`
 with their existing digest pins. The official Postgres mirror preserves the plain
 Postgres fixture environment; the Supabase Postgres image includes additional
 platform initialization and has a different version scheme.
+
+### Image cache and pull retry
+
+Anonymous pulls from ECR Public are rate limited, and a refused pull used to
+fail the CI job. The workflow now caches the four pinned images in the GitHub
+Actions cache under a key derived from the pins in [stack.mjs](stack.mjs), so
+changing a pin invalidates it. A plain `docker save`/`docker load` round trip
+drops the digest references the harness inspects, so the job switches Docker to
+the containerd image store and moves the images with `ctr images export` and
+`ctr images import` in Docker's `moby` namespace, which keep them. On a warm
+cache the harness finds all four images and pulls nothing. On a miss the job
+pulls once through the harness, exports the images and saves the cache. A
+failed cache load or export leaves the harness to pull as usual.
+
+When a pull fails with `toomanyrequests` or `Rate exceeded`, `prepareImages()`
+waits 20, 40 and 80 seconds and tries again, logging each attempt. The pull
+fails after the third retry, and any other pull error fails at once.
+[stack.test.mjs](stack.test.mjs) covers this with a fake Docker runner.
