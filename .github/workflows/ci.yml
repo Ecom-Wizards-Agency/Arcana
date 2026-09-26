@@ -207,25 +207,45 @@ jobs:
           echo "key=auth-acceptance-images-${{ runner.os }}-$(printf '%s' "$list" | sha256sum | cut -c1-64)" >> "$GITHUB_OUTPUT"
           printf 'tarball=%s/auth-acceptance-images.tar\n' "$RUNNER_TEMP" >> "$GITHUB_OUTPUT"
 
+      # Why the switch exists: docker save/load drops the digest references the
+      # harness inspects, so a cache restored that way would still pull. The
+      # containerd image store lets ctr export/import keep them. Without it (the
+      # switch fails or Docker stays on the classic store), the step restores the
+      # original daemon configuration, reports store=classic, the cache steps
+      # skip, and the harness pulls on the classic store with its rate-limit
+      # retry. The switch never fails the job.
       - name: Use the containerd image store
-        # docker save/load drops digest references, so a loaded image would not
-        # satisfy the harness's inspect-by-digest check. containerd export and
-        # import keep them; that needs Docker's containerd image store.
+        id: docker-store
+        continue-on-error: true
         run: |
-          (sudo cat /etc/docker/daemon.json 2>/dev/null || echo '{}') | jq '.features["containerd-snapshotter"] = true' > "$RUNNER_TEMP/daemon.json"
-          sudo cp "$RUNNER_TEMP/daemon.json" /etc/docker/daemon.json
-          sudo systemctl restart docker
-          docker info --format '{{json .DriverStatus}}' | grep -q io.containerd.snapshotter.v1
+          config=/etc/docker/daemon.json
+          backup="$RUNNER_TEMP/daemon.original.json"
+          had_config=false
+          if sudo test -f "$config"; then sudo cp "$config" "$backup"; had_config=true; fi
+          if (sudo cat "$config" 2>/dev/null || echo '{}') | jq '.features["containerd-snapshotter"] = true' > "$RUNNER_TEMP/daemon.json" \
+            && sudo cp "$RUNNER_TEMP/daemon.json" "$config" \
+            && sudo systemctl restart docker \
+            && docker info --format '{{json .DriverStatus}}' | grep -q io.containerd.snapshotter.v1; then
+            echo "store=containerd" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Containerd image store unavailable; restoring the Docker configuration and pulling without the image cache"
+            if [ "$had_config" = true ]; then sudo cp "$backup" "$config"; else sudo rm -f "$config"; fi
+            sudo systemctl restart docker || sudo systemctl start docker
+            docker info > /dev/null
+            echo "store=classic" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
       - name: Restore Auth harness images
         id: auth-images-cache
+        if: steps.docker-store.outputs.store == 'containerd'
         uses: actions/cache/restore@v4
         with:
           path: ${{ steps.auth-images.outputs.tarball }}
           key: ${{ steps.auth-images.outputs.key }}
 
       - name: Load cached Auth harness images
-        if: steps.auth-images-cache.outputs.cache-hit == 'true'
+        if: steps.docker-store.outputs.store == 'containerd' && steps.auth-images-cache.outputs.cache-hit == 'true'
         # A failed load leaves the harness to pull, with its rate-limit retry.
         continue-on-error: true
         run: |
@@ -234,7 +254,7 @@ jobs:
 
       - name: Pull and export Auth harness images
         id: auth-images-pull
-        if: steps.auth-images-cache.outputs.cache-hit != 'true'
+        if: steps.docker-store.outputs.store == 'containerd' && steps.auth-images-cache.outputs.cache-hit != 'true'
         # Pulls through the harness, including its rate-limit retry. If this
         # fails, the harness step below pulls again and reports the failure.
         continue-on-error: true
