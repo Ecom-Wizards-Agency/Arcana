@@ -171,6 +171,7 @@ describe('rank watch', () => {
   const ranks: HomeReady['home']['ranks'] = Array.from({ length: 7 }, (_, index) => ({
     asin: `B0TEST000${index + 1}`, keyword: `keyword ${index + 1}`, currentRank: 10 + index,
     previousRank: 20 + index * 2, movement: 10 + index, spend: null, currentDate: '2026-06-14', previousDate: '2026-06-07',
+    productTitle: index === 6 ? null : `Synthetic product ${index + 1}`,
   }));
 
   it('shows the top five by movement, expands to the full list and links each row to its product', () => {
@@ -185,11 +186,28 @@ describe('rank watch', () => {
     expect(within(list()).getAllByRole('listitem')).toHaveLength(7);
     const links = within(list()).getAllByRole('link');
     expect(links).toHaveLength(7);
-    expect(links[6]?.getAttribute('aria-label')).toBe('Open product B0TEST0007');
+    expect(links.map((link) => link.textContent)).toEqual([
+      'Synthetic product 1', 'Synthetic product 2', 'Synthetic product 3', 'Synthetic product 4',
+      'Synthetic product 5', 'Synthetic product 6', 'B0TEST0007',
+    ]);
     const href = new URL(links[6]!.getAttribute('href')!, 'https://example.test');
     expect(Object.fromEntries(href.searchParams)).toEqual({ profile: profileId, entity: 'products', asin: 'B0TEST0007' });
     fireEvent.click(screen.getByRole('button', { name: 'Show top 5' }));
     expect(within(list()).getAllByRole('listitem')).toHaveLength(5);
+  });
+
+  it('names the product by its catalogue title with the ASIN as secondary text, and falls back to the ASIN', () => {
+    render(<HomeContent {...withoutBudget} home={{ ...withoutBudget.home, ranks: [ranks[0]!, ranks[6]!] }} />);
+    const rows = within(screen.getByRole('list', { name: 'Rank movements' })).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    const titled = within(rows[0]!).getByRole('link');
+    expect(titled.textContent).toBe('Synthetic product 1');
+    expect(rows[0]!.querySelector('.wa-home-rank-asin')?.textContent).toBe(' · B0TEST0001');
+    expect(new URL(titled.getAttribute('href')!, 'https://example.test').searchParams.get('asin')).toBe('B0TEST0001');
+    const untitled = within(rows[1]!).getByRole('link');
+    expect(untitled.textContent).toBe('B0TEST0007');
+    expect(rows[1]!.querySelector('.wa-home-rank-asin')).toBeNull();
+    expect(rows[1]!.textContent?.match(/B0TEST0007/g)).toHaveLength(1);
   });
 
   it('offers no expansion when five or fewer rows exist', () => {

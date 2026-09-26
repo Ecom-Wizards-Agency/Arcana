@@ -8,6 +8,8 @@ export interface HomeRankRow {
   previousRank: number | null;
   movement: number | null;
   spend: number | null;
+  /** Newest catalogue title; null when the catalogue has none. */
+  productTitle: string | null;
 }
 
 export const RANK_WATCH_TOP = 5;
@@ -27,7 +29,8 @@ export function RankWatchList({ ranks, profileId, currencyCode }: {
   return <>
     <ul className="wa-home-ranks" aria-label="Rank movements">{shown.map((row) => <li key={`${row.asin}-${row.keyword}`} data-tone={row.movement === null || row.movement === 0 ? 'neutral' : row.movement > 0 ? 'good' : 'warn'}>
       <div><strong>{row.keyword}</strong>
-        <p><a className="wa-home-rank-product" href={productHref(row.asin, profileId)} aria-label={`Open product ${row.asin}`}>{row.asin}</a>
+        <p><a className="wa-home-rank-product" href={productHref(row.asin, profileId)}>{row.productTitle ?? row.asin}</a>
+          {row.productTitle === null ? null : <span className="wa-home-rank-asin"> · {row.asin}</span>}
           {' · '}{row.movement === null ? 'Weekly change not measured' : row.movement === 0 ? 'Unchanged this week' : `${row.movement > 0 ? 'Climbing' : 'Slipping'} · ${row.movement > 0 ? 'Up' : 'Down'} ${Math.abs(row.movement)} places`}</p></div>
       <strong className="wa-home-rank-value">{row.currentRank === null ? '—' : `#${row.currentRank}`}{row.previousRank === null ? '' : ` ← #${row.previousRank}`}</strong>
       <span className="wa-home-rank-spend" title="Ad spend attributable to this product and keyword" aria-label="Keyword spend">{money(row.spend)}</span>

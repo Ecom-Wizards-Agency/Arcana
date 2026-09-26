@@ -20,6 +20,7 @@ import {
   evaluate,
   pacingFlag,
   resolveGoalLens,
+  windowEvidence,
 } from '@wizard-ads/core';
 import type { DailyRow, Flag, PacingResult } from '@wizard-ads/core';
 import type { QueryHandle } from '@wizard-ads/db';
@@ -36,6 +37,11 @@ export interface FlagsResult {
   active: Flag[];
   /** Noted, not flagged. Never silently dropped: a suppressed flag is evidence too. */
   suppressed: Flag[];
+  /**
+   * Signals held back by the evidence floor: too few impressions or days of
+   * data in the evaluation window to raise. Counted so none vanish silently.
+   */
+  floored: number;
   daysWithData: number;
   notes: string[];
 }
@@ -64,6 +70,21 @@ async function latestFactDay(
 
 function accountLabel(profile: ProfileRecord): string {
   return profile.accountName ?? `${profile.countryCode} ${profile.amazonProfileId}`;
+}
+
+/**
+ * The engine call behind `get_flags`, with the evidence floor on: the window
+ * evidence is counted from the same rows the analysis is built from.
+ */
+export function evaluateFlags(
+  label: string,
+  asOf: string,
+  account: DailyRow[],
+  campaigns: DailyRow[],
+  goalLens: string | null,
+) {
+  const analysis = analyzeAccount(label, asOf, account, campaigns);
+  return evaluate(analysis, null, goalLens, windowEvidence(asOf, account, campaigns));
 }
 
 export async function buildFlags(
@@ -107,8 +128,7 @@ export async function buildFlags(
     budget: row.budget ?? null,
   }));
 
-  const analysis = analyzeAccount(label, asOf, account, campaigns);
-  const { active, suppressed } = evaluate(analysis, null, profile.goalLens);
+  const { active, suppressed, floored } = evaluateFlags(label, asOf, account, campaigns, profile.goalLens);
   const lens = resolveGoalLens(profile.goalLens);
 
   const notes: string[] = [];
@@ -127,6 +147,7 @@ export async function buildFlags(
     goalLens: { key: profile.goalLens ?? 'neutral', label: lens.label, description: lens.description },
     active,
     suppressed,
+    floored: floored.length,
     daysWithData: account.length,
     notes,
   };

@@ -2,8 +2,8 @@
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { createDb, persistBudgetUsageRun } from '@wizard-ads/db';
-import { BudgetUsageConfig, type AdProduct, type BudgetUsageObservation } from '@wizard-ads/shared';
+import { createDb, persistBudgetUsageRun, persistCatalogueCollection } from '@wizard-ads/db';
+import { BudgetUsageConfig, ProductMetadataSnapshot, type AdProduct, type BudgetUsageObservation } from '@wizard-ads/shared';
 import { expect, test } from '@playwright/test';
 import { signIn } from './support/auth';
 import { expectDateRangePresets } from './support/date-range';
@@ -89,8 +89,23 @@ test('Home renders five KPIs and the two-column decision cards in both budget st
       await writeFile(resolve(screenshotDirectory, `${name}-geometry.json`), JSON.stringify(geometry, null, 2));
     }
     // Rank rows link to their product; sections collapse per user and stay collapsed across a reload.
-    await expect(page.getByLabel('Rank watch', { exact: true }).getByRole('link', { name: 'Open product B0HOME0001' }))
-      .toHaveAttribute('href', `/grid?${new URLSearchParams({ profile: fixtureProfileId, entity: 'products', asin: 'B0HOME0001' })}`);
+    const productHref = `/grid?${new URLSearchParams({ profile: fixtureProfileId, entity: 'products', asin: 'B0HOME0001' })}`;
+    const rankWatch = page.getByLabel('Rank watch', { exact: true });
+    // No catalogue title yet: the row names the product by its ASIN.
+    await expect(rankWatch.getByRole('link', { name: 'B0HOME0001', exact: true })).toHaveAttribute('href', productHref);
+    const acquiredAt = new Date().toISOString();
+    const absent = { state: 'absent' as const, reason: null };
+    const title = ProductMetadataSnapshot.parse({ scope: { orgId: state.orgId, profileId: fixtureProfileId, marketplaceId: 'A1SYNTHETIC' },
+      asin: 'B0HOME0001', sku: null, adProduct: 'SP',
+      provenance: { family: 'product_metadata', contractVersion: 'product-metadata-v1-synthetic', providerObservedAt: null, acquiredAt, retrievedAt: acquiredAt },
+      title: { state: 'returned', value: 'Synthetic home product', sourceField: 'synthetic' }, imageUrl: absent, category: absent,
+      variationAsins: absent, price: absent, basisPrice: absent, availability: absent, inventoryQuantity: absent, bestSellerRank: absent });
+    const persisted = await persistCatalogueCollection(database, { scope: title.scope, family: 'product_metadata', selectorKey: 'home-rank-title-synthetic',
+      windowStart: acquiredAt, windowEnd: acquiredAt, acquiredAt, pages: 1, finalCursor: null, sourceRows: 1, parsedRows: 1, refusedRows: 0, duplicates: 0, rows: [title] });
+    expect(persisted.counts.verifiedRows).toBe(1);
+    await page.reload();
+    await expect(rankWatch.getByRole('link', { name: 'Synthetic home product', exact: true })).toHaveAttribute('href', productHref);
+    await expect(rankWatch.locator('.wa-home-rank-asin')).toHaveText(' · B0HOME0001');
     await expect(page.getByTestId('home-count-ranks')).toHaveText('1 keyword');
     await expect(page.getByLabel('Events this week', { exact: true }).getByTestId('home-count-events')).toHaveText(/^\d+ events?$/);
     const flagsCard = page.getByLabel('Flags', { exact: true });

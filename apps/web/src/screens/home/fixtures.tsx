@@ -56,7 +56,7 @@ export const withoutBudget: HomeReady = {
       { id: 'event-one', date: '2026-06-14', kind: 'competitor_deal', title: 'Tracked competitor started a deal', body: 'A deal was observed for a tracked product.', source: 'keepa' },
       { id: 'event-two', date: '2026-06-13', kind: 'analysis', title: 'Weekly analysis published', body: 'Discovery campaigns received fewer clicks.', source: 'headless_analyst' },
     ],
-    ranks: [{ asin: 'B0TEST0001', keyword: 'sample keyword', currentRank: 12, previousRank: 16, movement: 4, spend: null, currentDate: '2026-06-14', previousDate: '2026-06-07' }],
+    ranks: [{ asin: 'B0TEST0001', keyword: 'sample keyword', currentRank: 12, previousRank: 16, movement: 4, spend: null, currentDate: '2026-06-14', previousDate: '2026-06-07', productTitle: 'Sample product title' }],
     market: [], flags: { ...flagContexts, flooredCount: 2 }, preferenceKey: 'synthetic-user',
     weekStart: '2026-06-08', weekEnd: '2026-06-14',
   },
