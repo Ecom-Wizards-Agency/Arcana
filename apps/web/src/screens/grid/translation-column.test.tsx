@@ -7,6 +7,15 @@ import type { GridRow } from '@wizard-ads/ui';
 import { TranslationFailureNotice, useTranslationColumn } from './translation-column';
 import { TARGET_EXPRESSION_TYPES } from '@wizard-ads/shared';
 import StatusScreen from '../translation-status/view';
+import { MemoryViewStore, columnsFor, type FreshnessAssessment } from '@wizard-ads/ui';
+import { GridWorkspace } from '../../../app/grid/grid-client';
+
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }), useSearchParams: () => new URLSearchParams(window.location.search) }));
+// jsdom has no layout; give the virtualized grid one viewport, as grid-tables.test.tsx does.
+class StubResizeObserver { observe(): void {} unobserve(): void {} disconnect(): void {} }
+(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = StubResizeObserver;
+Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, get: () => 4000 });
+Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => 4000 });
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const waiting: TargetTranslation = { id: uuid(1), orgId: uuid(2), profileId: uuid(3), originalText: 'Synthetic original', language: 'en', providerId: 'not-configured', result: { status: 'waiting', text: null, reason: null }, provenance: { requestId: uuid(4), requestedBy: uuid(5), requestedAt: '2026-09-14T00:00:00Z', completedAt: null } };
 const terminal: TargetTranslation = { ...waiting, result: { status: 'unavailable', text: null, reason: 'provider not configured' }, provenance: { ...waiting.provenance, completedAt: '2026-09-14T00:00:01Z' } };
@@ -161,5 +170,49 @@ describe('translation scope', () => {
       expect(cellOf(host, row.id).textContent, row.id).toBe('Keywords only');
     }
     expect(host.textContent).not.toContain('invented translation');
+  });
+});
+
+describe('translation failure banner on the grid workspace', () => {
+  const freshness: FreshnessAssessment = { tone: 'good', headline: 'Fresh', details: [], staleTypes: [], lossyTypes: [], coversThrough: '2026-08-29' };
+  const targetRows: GridRow[] = ['synthetic trail shoes', 'synthetic running socks'].map((targeting, index) => ({ ...rows[0]!, id: `target:kw-${index}`,
+    dimensions: { target_id: `kw-${index}`, targeting, target_kind: 'keyword', match_type: 'exact', target_state: 'enabled', campaign_name: 'Synthetic campaign' } }));
+  async function workspace(translationStatus: () => Response) {
+    const store = new MemoryViewStore();
+    await store.rememberLayout({ id: 'default', name: 'Default', entity: 'targets', columns: ['targeting', 'translation', 'spend'], pinned: [columnsFor('targets').find((column) => column.pinned)!.id],
+      widths: {}, filter: { groups: [] }, sort: [], groupBy: [], dateRange: null, updatedAt: '2026-08-29T00:00:00.000Z', translation: { language: 'en' } });
+    const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/grid/rows')) return Response.json({ rows: targetRows, rowCount: targetRows.length, truncated: false });
+      if (url.startsWith('/api/translation?')) return translationStatus();
+      return Response.json({ error: 'not in this test' }, { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const { host } = await mount(createElement(GridWorkspace, {
+      actor: { userId: '76767676-7676-4676-8676-767676767676', orgId: '77777777-7777-4777-8777-777777777777' },
+      entity: 'targets', currencyCode: 'USD', profileId: waiting.profileId, period: { start: '2026-08-01', end: '2026-08-29' },
+      comparisonPeriod: { start: '2026-07-03', end: '2026-07-31' }, freshness, campaignId: null, viewStore: store,
+    }));
+    for (let turn = 0; turn < 8; turn += 1) await act(async () => { await Promise.resolve(); });
+    expect(host.querySelector('[data-testid="grid-data-ready"]')?.getAttribute('data-ready')).toBe('true');
+    const toolbar = host.querySelector<HTMLElement>('[data-testid="grid-toolbar-readiness"]')!;
+    expect([...toolbar.querySelectorAll('a')].filter((link) => link.textContent === 'Translation status')).toHaveLength(1);
+    return { host, toolbar, fetch };
+  }
+  it('shows the failure summary once, beside the Translation status link, when the status read fails', async () => {
+    const { host, toolbar, fetch } = await workspace(() => new Response(null, { status: 503 }));
+    const banners = host.querySelectorAll('[data-testid="translation-failure"]');
+    expect(banners).toHaveLength(1);
+    expect(toolbar.contains(banners[0]!)).toBe(true);
+    expect(banners[0]!.getAttribute('role')).toBe('alert');
+    expect(banners[0]!.textContent).toBe('Translations stopped: Translation status could not be loaded');
+    expect(fetch.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(0);
+  });
+  it('shows no banner when every translation is available', async () => {
+    const available = targetRows.map((row, index): TargetTranslation => ({ ...terminal, id: uuid(300 + index), originalText: row.dimensions['targeting'] as string,
+      result: { status: 'available', text: `synthetic translation ${index}`, reason: null } }));
+    const { host } = await workspace(() => Response.json({ rows: available, count: available.length }));
+    expect(host.querySelectorAll('[data-testid="translation-failure"]')).toHaveLength(0);
+    expect(host.textContent).toContain('synthetic translation 0');
   });
 });
