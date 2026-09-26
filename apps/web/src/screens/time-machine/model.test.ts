@@ -14,5 +14,5 @@ it('does not turn unknown values into zero or guess an ambiguous batch identity'
   expect(displayValue(null,'bid','USD')).toBe('—');
   expect(displayValue(0,'bid','USD')).toBe('$0.00');
   expect(attribution({...entries[2]!,candidateCount:3,batchLabel:null})).toBe('3 rows could explain it');
-  expect(attribution({...entries[1]!,batchCount:null})).toBe('not ours');
+  expect(attribution({...entries[1]!,batchCount:null})).toBe('Unknown');
 });

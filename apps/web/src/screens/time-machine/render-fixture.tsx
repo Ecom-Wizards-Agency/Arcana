@@ -15,5 +15,5 @@ export const restoreRows: RestorePreviewRow[] = ['ready','ready','conflict','alr
   restoreTo:index===5?180:1,state:state as RestorePreviewRow['state'],readAt:index===6?null:'2026-09-05T09:20:00Z',
   why:['Untouched since we set it','Untouched since we set it','Someone changed it after us','Already back at the old value','Budget raised at Amazon','No adapter for this field','Not read back from Amazon yet'][index]!,
 }));
-export const ready = { view:'ready',props:{profileId:id(50),currencyCode:'USD',role:'owner',viewActor:{orgId:id(60),userId:id(61)},entries,hasOlder:false,cursor:null,query:{},partial:false,proposal:null,preview:null} } satisfies ScreenData;
+export const ready = { view:'ready',props:{profileId:id(50),currencyCode:'USD',role:'owner',viewActor:{orgId:id(60),userId:id(61)}, entries, filterOptions: { types: ['keyword'], fields: ['bid'] }, hasOlder:false,cursor:null,query:{},partial:false,proposal:null,preview:null} } satisfies ScreenData;
 export const restore = { view:'ready',props:{...ready.props,preview:{batchId:id(1),label:'1042',blockedReason:null,rows:restoreRows}} } satisfies ScreenData;
