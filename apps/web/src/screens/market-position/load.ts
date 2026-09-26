@@ -2,7 +2,7 @@ import type { ProviderEvidenceReadResult } from '@wizard-ads/shared';
 import { readProviderEvidence } from '@wizard-ads/db';
 import { listMarketPositionLinks, listMarketPositionProducts, readMarketPositionSettings, readMarketRankSeries } from '@wizard-ads/db';
 import type { MarketPositionLink, MarketPositionProduct, MarketPositionSettings, MarketRankSeries } from '@wizard-ads/shared';
-import { addDays, periodFromParams, todayIso } from '../../../app/_lib/periods';
+import { addDays, screenPeriod, todayIso } from '../../../app/_lib/periods';
 import { listProfiles } from '../../../app/_lib/profiles';
 import type { ScreenActor } from '../../server/page-read';
 import type { ScreenParams } from '../types';
@@ -18,7 +18,7 @@ export async function load(access: ScreenActor, input: ScreenParams): Promise<Ma
   const role = access.entry.context.active?.role;
   const from = typeof input.searchParams['from'] === 'string' ? input.searchParams['from'] : undefined;
   const to = typeof input.searchParams['to'] === 'string' ? input.searchParams['to'] : undefined;
-  const period = periodFromParams({ from, to }, todayIso());
+  const period = screenPeriod('market-position', { from, to }, todayIso());
   return access.snapshot(async (snapshot) => {
     const orgId = snapshot.actor.orgId;
     const handle = { sql: snapshot.sql };

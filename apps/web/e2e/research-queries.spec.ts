@@ -8,7 +8,7 @@ test('Queries keeps missing SQP explicit and persists reviewed vocabulary', asyn
   await signIn(page, 'admin');
   await page.goto(`/queries?${new URLSearchParams({profile:fixtureProfileId,from:'2026-08-01',to:'2026-08-28'})}`);
   await expect(page.getByRole('heading', {
-    name: 'Query Intelligence',
+    name: 'Search query performance (SQP)',
     exact: true
   })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Demand split' })).toContainText('Not measured');

@@ -134,3 +134,82 @@ export function todayIsoInTimeZone(timezone: string, now: Date = new Date()): st
     parts.find((candidate) => candidate.type === type)?.value ?? '';
   return `${part('year')}-${part('month')}-${part('day')}`;
 }
+
+/**
+ * The one default-date rule every screen follows.
+ *
+ * A screen opened without a valid `from`/`to` shows the last
+ * DEFAULT_WINDOW_DAYS complete days: through yesterday, on the server's UTC
+ * calendar. A screen may differ only by being listed in SCREEN_DATE_EXCEPTIONS
+ * with its reason. A valid explicit `from`/`to` is always kept as given.
+ */
+export interface ScreenDateRule {
+  windowDays: number;
+  /** Include the current day, or stop at yesterday. */
+  throughToday: boolean;
+  /** Whose calendar decides "today": the server's UTC date or the profile's timezone. */
+  calendar: 'utc' | 'profile';
+  /** Why a screen departs from the standard rule; null for the standard rule itself. */
+  reason: string | null;
+}
+
+/** Registered screens whose load reads a date window; a test pins this list to the registry and the loads. */
+export const DATE_WINDOW_SCREEN_IDS = [
+  'brand-lens', 'cockpit', 'creative', 'dayparting', 'grid', 'market-position', 'ngrams',
+  'optimizer', 'optimizer-group', 'query-intelligence', 'targets', 'timeline',
+] as const;
+export type DateWindowScreenId = (typeof DATE_WINDOW_SCREEN_IDS)[number];
+
+export const STANDARD_SCREEN_DATE_RULE: ScreenDateRule = {
+  windowDays: DEFAULT_WINDOW_DAYS,
+  throughToday: false,
+  calendar: 'utc',
+  reason: null,
+};
+
+/** Screens with a documented reason to open on a different window, keyed by screen id. */
+export const SCREEN_DATE_EXCEPTIONS = {
+  creative: {
+    windowDays: DEFAULT_WINDOW_DAYS,
+    throughToday: true,
+    calendar: 'profile',
+    reason: 'Creative mappings are a current Amazon snapshot, so excluding the profile\'s current day can hide the only defensible mapping and fact pair right after a sync.',
+  },
+  dayparting: {
+    windowDays: 56,
+    throughToday: true,
+    calendar: 'utc',
+    reason: 'Dayparting reads hourly facts in UTC hours; 56 days is eight of every weekday, so each weekday-hour cell covers the same number of days, and hours already reported today are included.',
+  },
+} as const satisfies Partial<Readonly<Record<DateWindowScreenId, ScreenDateRule>>>;
+
+/** The rule for a screen id: its documented exception, or the standard rule. */
+export function screenDateRule(screenId: DateWindowScreenId): ScreenDateRule {
+  return (SCREEN_DATE_EXCEPTIONS as Partial<Readonly<Record<DateWindowScreenId, ScreenDateRule>>>)[screenId] ?? STANDARD_SCREEN_DATE_RULE;
+}
+
+/** "Today" on the calendar the screen's rule names. */
+export function screenToday(screenId: DateWindowScreenId, profileTimezone: string | null, now: Date = new Date()): string {
+  return screenDateRule(screenId).calendar === 'profile' && profileTimezone !== null
+    ? todayIsoInTimeZone(profileTimezone, now)
+    : todayIso(now);
+}
+
+/**
+ * The period a screen shows: a valid explicit `from`/`to` unchanged, otherwise
+ * the screen's default window from `screenDateRule`.
+ */
+export function screenPeriod(
+  screenId: DateWindowScreenId,
+  params: { from?: string | undefined; to?: string | undefined },
+  today: string,
+): Period {
+  const rule = screenDateRule(screenId);
+  const input = {
+    ...(params.from === undefined ? {} : { from: params.from }),
+    ...(params.to === undefined ? {} : { to: params.to }),
+  };
+  return rule.throughToday
+    ? periodFromParamsThroughToday(input, today, rule.windowDays)
+    : periodFromParams(input, today, rule.windowDays);
+}

@@ -52,7 +52,7 @@ import { readDashboardOperatingStatus } from '../../dashboard/operating-status';
 
 import { loadCampaignDailyRows, loadProfileDailyRows } from '../../../app/_lib/dashboard-data';
 
-import { addDays, periodFromParams, settledComparisonWindows, todayIso } from '../../../app/_lib/periods';
+import { addDays, screenPeriod, settledComparisonWindows, todayIso } from '../../../app/_lib/periods';
 
 import { listProfiles } from '../../../app/_lib/profiles';
 
@@ -73,7 +73,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   const params = await searchParams;
   const profileId = await Promise.resolve(access.requestedProfile);
   const today = todayIso();
-  const period = periodFromParams(params, today);
+  const period = screenPeriod('cockpit', params, today);
   const settled = settledComparisonWindows(period, today);
   const analysisWindow = { start: addDays(period.start, -8), end: period.end };
 
