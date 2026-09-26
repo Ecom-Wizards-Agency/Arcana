@@ -6,6 +6,9 @@ import {
   type AmazonConnectionOperation, type AmazonConnectionRegionProgress, type Region,
 } from '@wizard-ads/shared';
 import { AdsApiHttpError, AdsApiParseError, AdsAuthError, AdsAuthorizationCodeError } from '@wizard-ads/ads-api';
+import type { DbHandle } from '@wizard-ads/db';
+import { createAmazonConnectionProvider, createAmazonConnectionStore } from './amazon-connection-adapters.js';
+import type { WorkerConfig } from './config.js';
 
 type RegionFailure = NonNullable<AmazonConnectionRegionProgress['reason']>;
 type ExchangeFailure = 'exchange_refused' | 'exchange_uncertain' | 'installation_changed';
@@ -154,4 +157,24 @@ export class AmazonConnectionLoop extends ProviderConnectionLoop {
   constructor(store: AmazonConnectionStore, provider: AmazonConnectionProvider, pollIntervalMs = 1_000) {
     super((signal) => runAmazonConnectionPass(store, provider, signal), pollIntervalMs);
   }
+}
+
+export type AmazonConnectionSettings = Pick<WorkerConfig, 'amazonConnectionsEnabled'>;
+
+/**
+ * The deployment wiring of one Amazon Ads connection pass. The general worker
+ * and the connection-only command both build their loop from this, so the
+ * store, the installation check and the exchange credentials cannot drift
+ * between them. The provider is built here, so a missing or invalid
+ * application setting stops the caller before its first pass.
+ */
+export function amazonConnectionPass(
+  handle: Pick<DbHandle, 'sql'>, config: AmazonConnectionSettings, env: NodeJS.ProcessEnv = process.env,
+  /** Test transport only; production callers never pass it. */
+  effects?: Parameters<typeof createAmazonConnectionProvider>[2],
+): (signal: AbortSignal) => Promise<AmazonConnectionPassResult> {
+  const store = createAmazonConnectionStore(handle);
+  const provider = createAmazonConnectionProvider(handle, env, effects);
+  return async (signal) => config.amazonConnectionsEnabled
+    ? runAmazonConnectionPass(store, provider, signal) : { outcome: 'idle', operation: null };
 }

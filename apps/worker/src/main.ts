@@ -19,8 +19,7 @@ import { startSpWritePolling } from './sp-write-outbox/polling.js';
 import { spWritePolicyFromEnv } from './sp-write-outbox/policy.js';
 import { createDb, loadReportHealth } from '@wizard-ads/db';
 import { createAdsApiClientFromEnv } from './ads-api.js';
-import { AmazonConnectionLoop } from './amazon-connections.js';
-import { createAmazonConnectionProvider, createAmazonConnectionStore } from './amazon-connection-adapters.js';
+import { amazonConnectionPass } from './amazon-connections.js';
 import { configFromEnv } from './config.js';
 import { createCrosscheckIngest } from './crosscheck.js';
 import { createDataDiveRankSyncHandler } from './datadive.js';
@@ -103,7 +102,7 @@ const runsAmazonJobs = config.jobTypes === undefined
 // One client instance serves both the queue worker and bid-corridor sync.
 const adsApi = runsAmazonJobs ? createAdsApiClientFromEnv(handle) : undefined;
 const amazonConnections = config.amazonConnectionsEnabled
-  ? new AmazonConnectionLoop(createAmazonConnectionStore(handle), createAmazonConnectionProvider(handle))
+  ? new ProviderConnectionLoop(amazonConnectionPass(handle, config))
   : undefined;
 const spApiConnections = config.spApiConnectionsEnabled
   ? new ProviderConnectionLoop(spApiConnectionPass(handle, config))
