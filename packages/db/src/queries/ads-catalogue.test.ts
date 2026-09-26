@@ -77,7 +77,7 @@ describe.skipIf(!available)('catalogue snapshots and Amazon event ledger',()=>{
     expect(changes).toHaveLength(2);expect(changes.every((row)=>row.identityConflict&&row.occurredAt===at(10)&&row.retrievedAt===at(15))).toBe(true);
     expect(await resolveAmazonChangeEvents(database,{orgId,profileId})).toMatchObject({offered:2,written:2});
     changes=await readAmazonObservedChanges(database,{orgId,profileId,marketplaceId});expect(changes.every((row)=>row.resolvedAmazonId===campaign[0]!.amazon_id)).toBe(true);
-    const queue=await listChangeQueue(database,{orgId,profileId,source:'amazon'});expect(queue).toHaveLength(3);expect(queue.every((row)=>row.source==='amazon'&&row.state==='observed'&&row.batchId===null&&row.reviewHref===null)).toBe(true);
+    const queue=await listChangeQueue(database,{orgId,profileId,source:'amazon'});expect(queue).toHaveLength(3);expect(queue.every((row)=>row.source==='amazon'&&row.state==='observed'&&row.batchId===null&&row.reviewHref===null)).toBe(true);expect(queue.filter((row)=>row.actor.kind==='unknown'&&row.actor.name===null)).toHaveLength(3);
     const timeline=await readTimeline(database,orgId,profileId);
     const providerEvents=timeline.events.filter((row)=>row.kind==='amazon_change');
     expect(providerEvents).toHaveLength(3);

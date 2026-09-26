@@ -5,6 +5,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { gridLink, OWNER_DEFINITION, restorable, sourceWords } from './model';
 import { entries, ready, restore } from './render-fixture';
+import { amazonEntryFixtures } from '../grid/catalogue-fixtures';
 import Screen from './view';
 
 const router = vi.hoisted(() => ({ push: vi.fn(), refresh: vi.fn(), replace: vi.fn() }));
@@ -112,7 +113,24 @@ describe('change queue columns', () => {
     expect(owner.getAttribute('title')).toBe(OWNER_DEFINITION);
     expect(owner.getAttribute('title')).toBe(screen.getByTestId('owner-definition').textContent);
     expect(screen.queryByRole('columnheader', { name: 'ATTRIBUTED TO' })).toBeNull();
-    expect(screen.getByTestId('owner-definition').textContent).toBe('Owner is the person or system that made the change: the Arcana batch, approval or creation behind it, Amazon provider history when that is all Amazon reports, otherwise Unknown.');
+    expect(screen.getByTestId('owner-definition').textContent).toBe('Owner is the person or system that made the change: an Arcana operator by name, Arcana automation, an Ads console user when known, otherwise Unknown.');
+  });
+
+  it('shows the owner name, or the owner kind in words, in every Owner cell', () => {
+    render(<Screen data={ready} />);
+    const owners = screen.getAllByTestId('entry-owner');
+    expect(owners).toHaveLength(6);
+    expect(owners.map((cell) => cell.textContent)).toEqual(['Synthetic operator', 'Ads console user', 'Ads console user', 'Arcana automation', 'Arcana operator', 'Arcana operator']);
+    expect(owners[0]!.parentElement!.textContent).toBe('Synthetic operator · Batch 1000 · 7 changes');
+    expect(owners[0]!.parentElement!.getAttribute('title')).toBe('Synthetic operator · Batch 1000 · 7 changes');
+    expect(owners[1]!.parentElement!.textContent).toBe('Ads console user');
+  });
+
+  it('shows Unknown for provider history with its evidence after it', () => {
+    const provider = amazonEntryFixtures()[0]!;
+    render(<Screen data={withData({ entries: [provider] })} />);
+    expect(screen.getAllByTestId('entry-owner').map((cell) => cell.textContent)).toEqual(['Unknown']);
+    expect(screen.getByTestId('entry-owner').parentElement!.textContent).toMatch(/^Unknown · Provider history · no local actor · /);
   });
 
   it('shows the source in words on every row', () => {

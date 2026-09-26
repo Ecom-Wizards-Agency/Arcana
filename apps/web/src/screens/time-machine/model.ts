@@ -1,4 +1,4 @@
-import type { ChangeQueueEntry, ChangeQueueSource } from '@wizard-ads/shared';
+import type { ChangeQueueActorKind, ChangeQueueEntry, ChangeQueueSource } from '@wizard-ads/shared';
 import { buildGridModel, ZERO_TOTALS, type GridColumn } from '@wizard-ads/ui';
 /** Where each change came from, in the words every row and the source filter use. */
 export const SOURCE_LABEL = { apply: 'Arcana', sync: 'Ads console', amazon: 'Other', queued: 'Arcana', restore: 'Arcana',
@@ -10,7 +10,15 @@ export function sourceWords(source: ChangeQueueSource): string {
   const detail = SOURCE_DETAIL[source];
   return detail === null ? SOURCE_LABEL[source] : `${SOURCE_LABEL[source]} · ${detail}`;
 }
-export const OWNER_DEFINITION = 'Owner is the person or system that made the change: the Arcana batch, approval or creation behind it, Amazon provider history when that is all Amazon reports, otherwise Unknown.';
+export const OWNER_DEFINITION = 'Owner is the person or system that made the change: an Arcana operator by name, Arcana automation, an Ads console user when known, otherwise Unknown.';
+/** The owner kind in words, shown when no member name is recorded or readable. */
+export const ACTOR_WORDS = { operator: 'Arcana operator', automation: 'Arcana automation', ads_console: 'Ads console user', unknown: 'Unknown' } as const satisfies Record<ChangeQueueActorKind,string>;
+export function owner(row: ChangeQueueEntry): string { return row.actor.name ?? ACTOR_WORDS[row.actor.kind]; }
+/** The Owner cell: the owner, then the batch, review or provider evidence behind the change when there is one. */
+export function ownerLine(row: ChangeQueueEntry): string {
+  const detail = attribution(row);
+  return detail === null ? owner(row) : `${owner(row)} · ${detail}`;
+}
 /** Words for the state, entity type and field values shown in rows, filters and chips. */
 export function words(value: string): string { return value.replaceAll('_',' '); }
 const GRID_ENTITY: Readonly<Record<string, string>> = { campaign: 'campaigns', ad_group: 'ad_groups', keyword: 'targets', target: 'targets',
@@ -31,7 +39,8 @@ export function gridLink(row: ChangeQueueEntry, profileId: string): { href: stri
 export function restorable(row: ChangeQueueEntry): boolean {
   return row.batchId !== null && row.candidateCount <= 1 && (row.source === 'apply' || row.source === 'sync');
 }
-export function attribution(row: ChangeQueueEntry): string {
+/** The batch, review or provider evidence behind a change, or null when there is none. */
+export function attribution(row: ChangeQueueEntry): string | null {
   if (row.source === 'campaign_creation') return `Approved creation · ${row.batchCount ?? 0} resources`;
   if (row.source === 'campaign_creation_retry') return row.batchLabel ?? 'Approved resource retry';
   const batch = row.batchLabel === null ? null : (/^Batch\s/i.test(row.batchLabel) ? row.batchLabel : `Batch ${row.batchLabel}`);
@@ -41,7 +50,7 @@ export function attribution(row: ChangeQueueEntry): string {
     const evidence=row.amazonObservation;
     return `Provider history · no local actor · ${evidence?.marketplaceId??'marketplace unavailable'} · ${evidence?.resolution??'unresolved'}${evidence?.resolvedAmazonId?` ${evidence.resolvedEntityType} ${evidence.resolvedAmazonId}`:''} · derived identity (provider ID unavailable)${evidence?.identityConflict?' · identity conflict':''}`;
   }
-  if (batch === null) return row.source === 'apply' ? 'Approved application' : 'Unknown';
+  if (batch === null) return row.source === 'apply' ? 'Approved application' : null;
   return `${batch} · ${row.experimentStart ? 'experiment start' : row.batchCount === null ? '— changes' : `${row.batchCount} changes`}`;
 }
 export const QUEUE_COLUMNS: GridColumn[] = [
@@ -52,7 +61,7 @@ export function queueModel(entries: readonly ChangeQueueEntry[], currencyCode: s
   return buildGridModel(entries.map((row) => ({ id: row.id, currencyCode, totals: ZERO_TOTALS, comparison: null,
     dimensions: { when: row.when, entity: row.entity, field: row.field,
       was: rawValue(row.oldValue), became: rawValue(row.newValue), source: sourceWords(row.source),
-      attribution: attribution(row), state: row.state } })), { totals: 'none' });
+      attribution: ownerLine(row), state: row.state } })), { totals: 'none' });
 }
 function rawValue(value: unknown): string | number | boolean | null {
   if (value === null || value === undefined) return null;

@@ -7,7 +7,7 @@ import { ChangeQueueSource, ChangeQueueState, parseGridView, serializeGridView }
 import type { ChangeQueueEntry } from '@wizard-ads/shared';
 import { GRID_DENSITIES, DENSITY_LABELS, isGridDensity, rowHeightFor, toCsv } from '@wizard-ads/ui';
 import { restoreCounts } from '../../../../../packages/core/src/restore-preview';
-import { attribution, displayValue, gridLink, OWNER_DEFINITION, queueModel, QUEUE_COLUMNS, restorable, SOURCE_DETAIL, SOURCE_LABEL, sourceWords, words } from './model';
+import { attribution, displayValue, gridLink, owner, OWNER_DEFINITION, ownerLine, queueModel, QUEUE_COLUMNS, restorable, SOURCE_DETAIL, SOURCE_LABEL, sourceWords, words } from './model';
 import { restoreQueueView, saveQueueView, queueViewStore } from './saved-view';
 import type { load } from './load';
 import { optimizerBatchHref } from '../optimizer/navigation';
@@ -202,7 +202,7 @@ function Queue({ data }: { data: Extract<ScreenData,{view:'ready'}>['props'] }) 
         <td data-testid="entry-source" title={sourceWords(row.source)}><Chip tone={row.source==='sync'?'warn':'indigo'}>{SOURCE_LABEL[row.source]}</Chip>{detail?<span className="cq-source-detail"> · {detail}</span>:null}
           {row.source==='amazon'?<small style={{display:'block',whiteSpace:'normal',lineHeight:1.4}}>Derived identity · provider ID unavailable</small>:null}
         </td>
-        <td title={attribution(row)}>{attribution(row)}</td>
+        <td title={ownerLine(row)}><span data-testid="entry-owner">{owner(row)}</span>{attribution(row)===null?null:<span className="cq-source-detail"> · {attribution(row)}</span>}</td>
         <td>{row.source==='amazon'?null:<RowMenu label={`Actions for ${row.entity}`} disabled={!hydrated} items={menuItems(row)} />}
           <Chip tone={['observed','unattributed'].includes(row.state)?'warn':'indigo'}>{words(row.state)}</Chip></td>
       </tr>;

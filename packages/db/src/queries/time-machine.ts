@@ -26,6 +26,7 @@ import { createHash } from 'node:crypto';
 import {
   ChangeQueueRestoreBatchPreview,
   COORDINATED_RESTORE_UNAVAILABLE,
+  ChangeQueueActor,
   ChangeQueueEntry,
   serializeApplyRows,
 } from '@wizard-ads/shared';
@@ -836,6 +837,20 @@ async function inTransaction<T>(handle: QueryHandle, operation: (sql: QuerySql) 
   return result.value;
 }
 
+/**
+ * Member identities for the change queue's Owner column, through the same membership read the
+ * members screen uses. It returns rows only to an owner or admin of the org; any other reader,
+ * or a role without the function, gets no names and the queue shows the actor kind instead.
+ */
+async function readActorNames(handle: TimeMachineReadHandle, orgId: string, userIds: readonly string[]): Promise<Map<string, string>> {
+  if (userIds.length === 0) return new Map();
+  const [grant] = await handle.sql<{ allowed: boolean }[]>`select has_function_privilege('app.list_org_members(uuid)', 'execute') as allowed`;
+  if (grant?.allowed !== true) return new Map();
+  const rows = await handle.sql<{ user_id: string; email: string | null }[]>`
+    select user_id::text, email from app.list_org_members(${orgId}::uuid) where user_id = any(${[...userIds]}::uuid[])`;
+  return new Map(rows.flatMap((row) => row.email ? [[row.user_id, row.email]] : []));
+}
+
 /** The ACT queue keeps observation receipts separate from immutable exports. */
 export async function listChangeQueue(
   handle: TimeMachineReadHandle,
@@ -845,7 +860,7 @@ export async function listChangeQueue(
     before?: { observedAt: string; id: string } | null },
 ): Promise<ChangeQueueEntry[]> {
   const limit = Math.min(2000, Math.max(1, input.limit ?? 51));
-  const result = await handle.sql<{ artifact: unknown }[]>`
+  const result = await handle.sql<{ artifact: Record<string, unknown>; actor_kind: string; actor_user: string | null }[]>`
     with native_roots as (${nativeTimelineRoots(handle.sql, input)}), visible_native_roots as (
       select * from native_roots n where (${input.from ?? null}::timestamptz is null or n.approved_at>=${input.from ?? null}::timestamptz)
         and (${input.to ?? null}::timestamptz is null or n.approved_at<=${input.to ?? null}::timestamptz)
@@ -860,7 +875,7 @@ export async function listChangeQueue(
         case when candidates.count>1 then candidates.label else b.tag end as batch_label,
         case when candidates.count>1 then null else b.reversible_rows+b.unsupported_rows end as batch_count,
         (candidates.count<=1 and b.experiment_id is not null) as experiment_start, candidates.count as candidate_count,
-        ec.acknowledged_at,ec.acknowledged_by,null::text as review_href
+        ec.acknowledged_at,ec.acknowledged_by,null::text as review_href,'ads_console'::text as actor_kind,null::uuid as actor_user
       from public.entity_changes ec
       left join public.apply_batches b on b.org_id=ec.org_id and b.profile_id=ec.profile_id and b.id=ec.apply_batch_id
       cross join lateral (
@@ -881,7 +896,8 @@ export async function listChangeQueue(
       select 'apply:'||ar.id::text,b.exported_at,ar.entity_type::text,ar.entity_id,coalesce(ar.entity_name,ar.entity_id),ar.field,
         ar.old_value,ar.new_value,'apply',case when exists(select 1 from public.entity_changes ec
           where ec.org_id=ar.org_id and ec.profile_id=ar.profile_id and ec.apply_row_id=ar.id) then 'confirmed' else 'exported' end,
-        b.id,b.tag,b.reversible_rows+b.unsupported_rows,b.experiment_id is not null,0,null::timestamptz,null::uuid,null::text
+        b.id,b.tag,b.reversible_rows+b.unsupported_rows,b.experiment_id is not null,0,null::timestamptz,null::uuid,null::text,
+        case when b.created_by is null then 'automation' else 'operator' end,b.created_by
       from public.apply_rows ar join public.apply_batches b on b.org_id=ar.org_id and b.profile_id=ar.profile_id and b.id=ar.batch_id
       where ar.org_id=${input.orgId}::uuid and ar.profile_id=${input.profileId}::uuid and b.source_kind='legacy_export'
         and not exists(select 1 from visible_native_roots n where n.direction='forward'
@@ -891,7 +907,7 @@ export async function listChangeQueue(
       select 'queued:'||q.id::text,q.created_at,'target',q.target_id,coalesce(q.context->>'targetLabel',q.target_id),'bid',
         q.request#>'{expectedBid,amount}',q.request#>'{newBid,amount}','queued',
         case when a.change_id is null then 'awaiting review' else 'approved' end,null::uuid,null::text,null::integer,false,0,
-        null::timestamptz,null::uuid,q.id::text
+        null::timestamptz,null::uuid,q.id::text,'operator',coalesce(a.approved_by,q.created_by)
       from public.queued_changes q left join public.queued_change_approvals a on a.org_id=q.org_id and a.profile_id=q.profile_id and a.change_id=q.id
       where q.org_id=${input.orgId}::uuid and q.profile_id=${input.profileId}::uuid
       union all
@@ -905,7 +921,8 @@ export async function listChangeQueue(
           when review.plan_id is null then 'awaiting review' else 'approved' end,
         p.source_batch_id,b.tag,plan.provider_rows,false,0,null::timestamptz,null::uuid,
         case when cycle.execution_id is null then '/optimizer/confirm/' else '/optimizer/run/' end||p.source_batch_id::text||'?profile='||p.profile_id::text||'&plan='||p.plan_id::text
-          ||case when cycle.execution_id is null then '' else '&execution='||cycle.execution_id::text end
+          ||case when cycle.execution_id is null then '' else '&execution='||cycle.execution_id::text end,
+        'operator',coalesce(review.reviewed_by,p.created_by)
       from public.sp_write_restore_proposals p
       join public.sp_write_plans plan on plan.org_id=p.org_id and plan.profile_id=p.profile_id and plan.plan_id=p.plan_id
       left join public.apply_batches b on b.org_id=p.org_id and b.profile_id=p.profile_id and b.id=p.source_batch_id
@@ -918,7 +935,7 @@ export async function listChangeQueue(
       union all
       select 'amazon:'||e.id::text,e.occurred_at,lower(e.entity_type),e.entity_id,e.entity_id,e.change_type,
         e.sanitized_payload->'previousValue',e.sanitized_payload->'newValue','amazon','observed',
-        null::uuid,null::text,null::integer,false,0,null::timestamptz,null::uuid,null::text
+        null::uuid,null::text,null::integer,false,0,null::timestamptz,null::uuid,null::text,'unknown',null::uuid
       from public.amazon_change_events e
       where e.org_id=${input.orgId}::uuid and e.profile_id=${input.profileId}::uuid
       union all
@@ -930,7 +947,8 @@ export async function listChangeQueue(
         app.campaign_creation_batch_state(b.id),b.id,
         case when b.parent_batch_id is null then 'Campaign creation' else 'Retry of '||b.parent_batch_id::text end,
         b.node_count,false,0,null::timestamptz,null::uuid,
-        '/campaigns/draft?profile='||b.profile_id::text||'&draft='||b.draft_id::text||'&batch='||b.id::text||'&step=result'
+        '/campaigns/draft?profile='||b.profile_id::text||'&draft='||b.draft_id::text||'&batch='||b.id::text||'&step=result',
+        'operator',b.actor_id
       from public.campaign_creation_batches b where b.org_id=${input.orgId}::uuid and b.profile_id=${input.profileId}::uuid
         and b.artifact->'plan'->>'schemaVersion'='openspell.campaign-creation-plan.v2'
     ) select jsonb_build_object('id',id,'when',to_char(at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
@@ -946,7 +964,7 @@ export async function listChangeQueue(
           'resolvedEntityType',resolved.resolved_entity_type,'resolvedAmazonId',resolved.resolved_amazon_id)
         from public.amazon_change_events e left join lateral(select event_id,resolved_entity_type,resolved_amazon_id from public.amazon_change_event_resolutions where org_id=e.org_id and profile_id=e.profile_id and event_id=e.id order by resolved_at desc,id desc limit 1) resolved on true
         where 'amazon:'||e.id::text=entries.id and e.org_id=${input.orgId}::uuid and e.profile_id=${input.profileId}::uuid
-      ) else null end) as artifact
+      ) else null end) as artifact, actor_kind, actor_user::text as actor_user
     from entries where (${input.source ?? null}::text is null or source=${input.source ?? null})
       and (${input.state ?? null}::text is null or state=${input.state ?? null})
       and (${input.field ?? null}::text is null or field=${input.field ?? null})
@@ -956,11 +974,15 @@ export async function listChangeQueue(
       and (${input.before?.observedAt ?? null}::timestamptz is null or (at,id collate "C")<(${input.before?.observedAt ?? null}::timestamptz,${input.before?.id ?? null}::text collate "C"))
     order by at desc,id collate "C" desc limit ${limit}
   `;
-  const entries = result.map(({ artifact }) => ChangeQueueEntry.parse(artifact));
-  for (const row of entries) {
+  // Names are resolved once below, after every row's actor kind and user are known.
+  const entries = result.map(({ artifact, actor_kind }) => ChangeQueueEntry.parse({ ...artifact, actor: { kind: actor_kind, name: null } }));
+  if (entries.length !== result.length || new Set(entries.map((row) => row.id)).size !== entries.length) throw new Error('Change queue count mismatch');
+  const actorUsers = new Map<ChangeQueueEntry, string>();
+  for (const [index,row] of entries.entries()) {
+    const user = result[index]!.actor_user;
+    if (user !== null && row.actor.kind === 'operator') actorUsers.set(row, user);
     if (row.source === 'queued') row.reviewHref = `/targets/${encodeURIComponent(row.entityId)}/queue/${row.reviewHref}?${new URLSearchParams({profile:input.profileId})}`;
   }
-  if (entries.length !== result.length || new Set(entries.map((row) => row.id)).size !== entries.length) throw new Error('Change queue count mismatch');
   // Native rows retain their independent provider and observation state. Fetch
   // another bounded window when a state filter removes candidates from this one.
   const native: ChangeQueueEntry[] = [];
@@ -983,17 +1005,23 @@ export async function listChangeQueue(
           : write.phase === 'awaiting_result' || write.phase === 'ambiguous' ? 'attempted'
           : write.phase === 'queued' ? (write.execution.admission === 'queued' ? 'admitted' : 'approved') : 'failed';
         if (input.state && input.state !== state) continue;
-        native.push(ChangeQueueEntry.parse({ id: entry.id, when: entry.observedAtExact, entity: entry.entityName ?? entry.amazonId,
+        // A click approval names its operator; a delegated MCP key admits without one, so it is automation.
+        const operator = write.actor.kind === 'operator';
+        const row = ChangeQueueEntry.parse({ id: entry.id, when: entry.observedAtExact, entity: entry.entityName ?? entry.amazonId,
           entityId: entry.amazonId, entityType: entry.entityType, field: entry.field, oldValue: entry.oldValue, newValue: entry.newValue,
           source: 'apply', state, batchId: null, batchLabel: entry.batch?.tag ?? null,
           batchCount: write.execution.receipt.plan.counts.providerRows, experimentStart: false, candidateCount: 0,
-          acknowledgedAt: null, acknowledgedBy: null, reviewHref: null }));
+          acknowledgedAt: null, acknowledgedBy: null, reviewHref: null, actor: { kind: operator ? 'operator' : 'automation', name: null } });
+        if (operator) actorUsers.set(row, write.actor.userId);
+        native.push(row);
       }
       const last = window.at(-1);
       if (native.length >= limit || window.length < limit || !last) break;
       before = { observedAt: last.observedAtExact, id: last.id };
     }
   }
+  const names = await readActorNames(handle, input.orgId, [...new Set(actorUsers.values())]);
+  for (const [row, user] of actorUsers) row.actor = ChangeQueueActor.parse({ kind: 'operator', name: names.get(user) ?? null });
   return [...entries,...native].sort((a,b) => a.when < b.when ? 1 : a.when > b.when ? -1 : a.id < b.id ? 1 : a.id > b.id ? -1 : 0).slice(0,limit);
 }
 

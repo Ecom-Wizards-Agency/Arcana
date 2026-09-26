@@ -24,7 +24,7 @@ it('renders all six source and attribution cases in newest-first order',()=>{
   render(<Screen data={ready}/>);
   const rows=screen.getAllByTestId('timeline-entry'); expect(rows).toHaveLength(6);
   expect(rows.map(row=>row.textContent)).toEqual([
-    expect.stringContaining('Batch 1000 · 7 changes'),expect.stringContaining('Unknown'),
+    expect.stringContaining('Batch 1000 · 7 changes'),expect.stringContaining('Ads console user'),
     expect.stringContaining('Batch 1002 · two rows could explain it'),expect.stringContaining('Batch 1003 · experiment start'),
     expect.stringContaining('awaiting review'),expect.stringContaining('approved'),
   ]);

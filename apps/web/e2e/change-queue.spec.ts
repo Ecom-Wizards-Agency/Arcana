@@ -27,6 +27,7 @@ test('acknowledging an observed change retains a visible receipt',async({page})=
   await expect(badge).not.toHaveText('—');
   const before=Number(await badge.textContent());
   expect(Number.isInteger(before)).toBe(true);
+  await expect(row.getByTestId('entry-owner')).toHaveText('Ads console user');
   const actions=row.getByRole('button',{name:'Actions for Synthetic queue acknowledgement'});
   await actions.click();
   await expect(row.getByRole('menuitem')).toHaveText(['Copy change ID','Open targets grid','Acknowledge']);
