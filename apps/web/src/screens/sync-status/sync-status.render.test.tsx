@@ -28,6 +28,15 @@ function blockedAt(stage: ReportLaneStage, errorClass: ReportLaneErrorClass): Sc
 }
 
 verifyScreen(descriptor, [
+  { state: 'ready', name: 'shows the last Creator Connections import counters per kind, absent files as not measured', render: () => <Screen data={{ ...ready, props: { ...ready.props, creatorImport: {
+    id: '33200000-0000-4000-8000-0000000000b1', startedAt: '2026-09-09T06:13:58.000Z', finishedAt: '2026-09-09T06:14:00.000Z', status: 'succeeded', failure: null, failedFile: null,
+    files: ['registry', 'queue'], queueRunDate: '2026-09-09', source: 'control-runner', counts: { records: { read: 273, valid: 272, invalid: 1, inserted: 0, updated: 3, unchanged: 269, removed: 0 },
+      action_log: { read: 4, valid: 4, invalid: 0, inserted: 1, updated: 0, unchanged: 3, removed: 0 }, queue_items: { read: 34, valid: 34, invalid: 0, inserted: 34, updated: 0, unchanged: 0, removed: 2 },
+      sweep_runs: null, sample_shipments: null } } } }} />, text: 'Sweep runsNot measured: no file for it' },
+  { state: 'ready', name: 'says a failed Creator Connections import wrote nothing', render: () => <Screen data={{ ...ready, props: { ...ready.props, creatorImport: {
+    id: '33200000-0000-4000-8000-0000000000b2', startedAt: '2026-09-09T06:13:58.000Z', finishedAt: '2026-09-09T06:14:00.000Z', status: 'failed', failure: 'file_unreadable', failedFile: 'queue',
+    files: ['queue'], queueRunDate: null, source: 'control-runner', counts: { records: null, action_log: null, queue_items: null, sweep_runs: null, sample_shipments: null } } } }} />, text: 'file_unreadable (queue). Nothing was written.' },
+  { state: 'ready', name: 'never shows missing Creator Connections counters as zero', render: () => <Screen data={ready} />, text: 'Its counters are not measured' },
   { state: 'not-measured', name: 'distinguishes absent facts from a fresh zero', render: () => <Screen data={{ ...ready, props: { ...ready.props, status: { ...ready.props.status, freshness: [{ profileId: 'synthetic-profile', profileLabel: 'Synthetic profile', region: 'NA', syncEnabled: true, latestFactDate: null, queued: 0, running: 0, failed: 0 }] } } }} />, text: 'Facts not measured' },
   { state: 'loading', name: 'renders the route loading boundary', render: () => <Loading />, text: '' },
   { state: 'error', name: 'renders the shared error boundary with its reference', render: () => <SharedError error={Object.assign(new Error('Synthetic failure'), { digest: 'synthetic-reference' })} reset={() => { }} />, text: 'synthetic-reference' },

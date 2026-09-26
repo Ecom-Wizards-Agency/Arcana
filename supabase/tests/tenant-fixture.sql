@@ -902,6 +902,28 @@ begin
     insert into public.timeline_events(org_id,profile_id,name,kind,start_on,scope_text,note,created_by) values(v_org,v_profile,'Synthetic listing note','listing',p_date,'Recorded only','Fixture observation',p_user_id);
   insert into public.timeline_evidence_settings(org_id,profile_id) values(v_org,v_profile);
   end if;
+  -- Creator Connections: one synthetic row per table; fingerprints are placeholders, never contact data.
+  if to_regclass('public.creator_records') is not null then
+    insert into public.creator_records(org_id,creator_record_id,brand,campaign_id,thread_fp,record_state,lock_state,
+      runner_version,created_on,source,source_digest)
+      values(v_org,'CCR-FX-26-0001','Fixture brand','fixture-campaign',repeat('a',64),'Active','Unlocked',1,p_date,
+        'control-runner',repeat('0',64));
+    insert into public.creator_action_log(org_id,event_key,creator_record_id,action,source)
+      values(v_org,'fixture:identity_conflict_locked','CCR-FX-26-0001','identity_conflict_locked','control-runner');
+    insert into public.creator_daily_queue(org_id,run_date,queue_id,occurrence,creator_record_id,brand,campaign_tab,
+      current_status,computed_score,missing_checks,due_date,action_type,gate_result,queue_state,reason,source,source_digest)
+      values(v_org,p_date-30,to_char(p_date-30,'YYYYMMDD')||'-CCR-FX-26-0001',1,'CCR-FX-26-0001','Fixture brand','Fixture tab',
+        'New Inquiry',10,'{}',p_date-30,'BACKGROUND_CHECK','HOLD','Queued','new_inquiry_requires_visible_evidence',
+        'control-runner',repeat('0',64));
+    insert into public.creator_sweep_runs(org_id,run_id,run_date,completed_at,mounted,opened,changed,messages_examined,
+      messages_sent,no_action_acknowledgements,held_or_escalated,archived_spam,unmatched,source,source_digest)
+      values(v_org,'fixture-sweep',p_date-30,(p_date-30)::timestamptz,1,1,0,1,0,1,0,0,0,'control-runner',repeat('0',64));
+    insert into public.creator_sample_shipments(org_id,creator_record_id,asin,reservation_id,lane_state,source,source_digest)
+      values(v_org,'CCR-FX-26-0001','B0FIXTURE1','MCFR-00000000000000F1','Reserved','control-runner',repeat('0',64));
+    insert into public.creator_import_runs(org_id,started_at,finished_at,status,files,counts,source)
+      values(v_org,(p_date-30)::timestamptz,(p_date-30)::timestamptz,'succeeded','{}',
+        '{"records":null,"action_log":null,"queue_items":null,"sweep_runs":null,"sample_shipments":null}'::jsonb,'control-runner');
+  end if;
   if to_regclass('public.queued_changes') is not null then
     insert into public.queued_changes(id,org_id,profile_id,target_id,created_by,context,request,checks)
     values(v_batch,v_org,v_profile,'synthetic-queue-target',p_user_id,

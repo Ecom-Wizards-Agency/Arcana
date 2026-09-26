@@ -2,11 +2,11 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import type { ScreenActor } from '../../server/page-read';
 import { context, profile } from '../synthetic-render-fixtures';
 import { load } from './load';
-const mocks = vi.hoisted(() => ({ profiles: vi.fn(), status: vi.fn(), evidence: vi.fn(), spEvidence: vi.fn(), providerEvidence: vi.fn(), lane: vi.fn(), streams: vi.fn(), marketSignals: vi.fn() }));
+const mocks = vi.hoisted(() => ({ profiles: vi.fn(), status: vi.fn(), evidence: vi.fn(), spEvidence: vi.fn(), providerEvidence: vi.fn(), lane: vi.fn(), streams: vi.fn(), marketSignals: vi.fn(), creatorImport: vi.fn() }));
 vi.mock('../../../app/_lib/profiles', () => ({ listProfiles: mocks.profiles }));
 vi.mock('../../data/sync-status', () => ({ loadSyncStatus: mocks.status }));
-vi.mock('@wizard-ads/db', () => ({ readCoreReportEvidence: mocks.evidence, readSpReportEvidence: mocks.spEvidence, readProviderEvidence: mocks.providerEvidence, loadReportLaneStatus: mocks.lane, readStreamExtensionHealth: mocks.streams, readMarketSignalsImportStatus: mocks.marketSignals }));
-beforeEach(() => { vi.resetAllMocks(); mocks.streams.mockResolvedValue([]); mocks.marketSignals.mockResolvedValue(null); mocks.profiles.mockResolvedValue([profile]); mocks.status.mockResolvedValue({ freshness: [{ profileId: profile.id }] }); mocks.evidence.mockResolvedValue([{ family: 'spAdvertisedProduct', status: 'unmeasured' }]); mocks.spEvidence.mockResolvedValue({ state: 'unavailable', reports: [] }); mocks.providerEvidence.mockResolvedValue({ rows: [], runs: [], totalCount: 0 }); mocks.lane.mockResolvedValue({ scope: 'profile', blocking: null }); });
+vi.mock('@wizard-ads/db', () => ({ readCoreReportEvidence: mocks.evidence, readSpReportEvidence: mocks.spEvidence, readProviderEvidence: mocks.providerEvidence, loadReportLaneStatus: mocks.lane, readStreamExtensionHealth: mocks.streams, readMarketSignalsImportStatus: mocks.marketSignals, readLatestCreatorImport: mocks.creatorImport }));
+beforeEach(() => { vi.resetAllMocks(); mocks.streams.mockResolvedValue([]); mocks.marketSignals.mockResolvedValue(null); mocks.profiles.mockResolvedValue([profile]); mocks.status.mockResolvedValue({ freshness: [{ profileId: profile.id }] }); mocks.evidence.mockResolvedValue([{ family: 'spAdvertisedProduct', status: 'unmeasured' }]); mocks.spEvidence.mockResolvedValue({ state: 'unavailable', reports: [] }); mocks.providerEvidence.mockResolvedValue({ rows: [], runs: [], totalCount: 0 }); mocks.lane.mockResolvedValue({ scope: 'profile', blocking: null }); mocks.creatorImport.mockResolvedValue(null); });
 it('loads family coverage for the standard selected profile without a query parameter', async () => {
   const selectProfile = vi.fn(() => profile);
   const handle = { sql: vi.fn() };
@@ -33,4 +33,6 @@ it('loads family coverage for the standard selected profile without a query para
   // The market signals import is organisation-wide and absent before its first batch.
   expect(mocks.marketSignals).toHaveBeenCalledExactlyOnceWith(handle, context.active!.orgId);
   expect(result?.props).not.toHaveProperty('marketSignals');
+  expect(mocks.creatorImport).toHaveBeenCalledExactlyOnceWith(handle, context.active!.orgId);
+  expect(result?.props).toHaveProperty('creatorImport', null);
 });

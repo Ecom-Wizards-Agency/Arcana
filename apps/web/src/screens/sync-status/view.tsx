@@ -7,6 +7,7 @@ import { CoreReportEvidencePanel } from '../grid/core-report-evidence';
 import { reportAccountingLabel } from '../../data/sync-status';
 import { ReportLifecycleTables } from '../../../app/sync-status/report-lifecycle-tables';
 import { ReportLaneBanner } from './lane-banner';
+import { CreatorImportCounters } from './creator-import';
 import { Shell } from '../settings/frame';
 import { colors, heading, muted, page, subheading, table, td, th } from '../../ui/tokens';
 import type { load } from './load';
@@ -36,7 +37,7 @@ function renderGated({ result }: Extract<ScreenData, { view: 'gated'; }>['props'
   </main>);
 }
 
-function renderReady({ context, status, lane, sources, coreEvidence, providerEvidence, marketSignals }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ context, status, lane, sources, coreEvidence, providerEvidence, marketSignals, creatorImport }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   // Measured per profile by the lane query, including explicit zeros. A legacy
   // failure returns its job to Queued, so a stored `failed` state never exists.
   const health = new Map(lane.profiles.map((row) => [row.profileId, row]));
@@ -199,6 +200,7 @@ function renderReady({ context, status, lane, sources, coreEvidence, providerEvi
         </tbody>
       </table></TableFrame>
       {status.reports.length === 0 ? <ScreenState title="No reports requested yet." body="Choose a connected profile or check again after the next sync." /> : null}
+      <CreatorImportCounters run={creatorImport} />
     </Shell>
   </main>);
 }

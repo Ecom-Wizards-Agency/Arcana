@@ -22,7 +22,8 @@
     "sqp:requeue": "tsx src/sqp-requeue-cli.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "backfill-coverage": "tsx src/backfill-coverage.ts"
+    "backfill-coverage": "tsx src/backfill-coverage.ts",
+    "creators:import": "tsx src/creators-import.ts"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.1120.0",

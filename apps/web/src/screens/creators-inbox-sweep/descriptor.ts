@@ -1,25 +1,19 @@
 import type { ScreenDescriptor } from '../types';
+import type { load } from './load';
+import type ScreenView from './view';
 
 export const descriptor = {
-  "id": "creators-inbox-sweep",
-  "path": "/creators/inbox-sweep",
-  "route": "planned",
-  "nav": {
-    "group": "creators",
-    "label": "Inbox sweep",
-    "icon": "icon/search-terms",
-    "order": 1
-  },
-  "guard": null,
-  "prefetch": "expensive",
-  "rollout": {
-    "enabled": false
-  },
-  "states": [
-    "gated"
-  ],
-  "entry": "redirect",
-  "specs": [],
-  load: () => import('../virtual-screen').then((module) => module.loadPlanned()),
-  client: () => import('../virtual-screen-view').then((module) => module.default),
-} satisfies ScreenDescriptor<never>;
+  id: 'creators-inbox-sweep',
+  title: 'Inbox sweep',
+  path: '/creators/sweep',
+  route: 'page',
+  nav: { group: 'creators', label: 'Inbox sweep', icon: 'icon/search-terms', order: 1 },
+  guard: { kind: 'requested' },
+  prefetch: 'expensive',
+  rollout: { enabled: true },
+  states: ['loading', 'error', 'not-measured', 'refused', 'gated'],
+  entry: 'request-message',
+  specs: [{ file: 'creators-inbox-sweep.spec.ts', suite: 'route-acceptance' }],
+  load: (actor, params) => import('./load').then((module) => module.load(actor, params)),
+  client: (): Promise<typeof ScreenView> => import('./view').then((module) => module.default),
+} satisfies ScreenDescriptor<Awaited<ReturnType<typeof load>>>;
