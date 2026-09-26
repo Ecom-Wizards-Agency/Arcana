@@ -405,6 +405,29 @@ describe('GET /api/cron/sync', () => {
       expect(queue.finish).toHaveBeenCalledExactlyOnceWith(JOB_ID, 'succeeded', expect.anything());
     });
 
+    it.each([
+      ['before the report-lane handoff', undefined],
+      ['after the report-lane handoff', '1'],
+    ])('leaves a queued sqp.request job unclaimed on Vercel %s', async (_lane, ready) => {
+      configureWiredTick();
+      if (ready !== undefined) process.env['OPENSPELL_EVO_REPORT_LANE_READY'] = ready;
+      doubles.drainInTick = true;
+      const queue = queueOne(claimed({
+        type: 'sqp.request', orgId: ORG_ID, profileId: PROFILE_ID,
+        marketplaceId: 'synthetic-marketplace', asins: ['B000000001'],
+        weekStart: '2026-09-13', weekEnd: '2026-09-19',
+      }));
+
+      const response = await GET(request(`Bearer ${SECRET}`));
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ ok: true, drained: 0 });
+      expect(queue.claims).toHaveLength(1);
+      expect(queue.claims[0]?.jobTypes?.length).toBeGreaterThan(0);
+      expect(queue.claims[0]?.jobTypes).not.toContain('sqp.request');
+      expect(queue.finish).not.toHaveBeenCalled();
+      expect(queue.deadLetter).not.toHaveBeenCalled();
+    });
+
     it('leaves creative.sync unclaimed on Vercel once Evo owns the report lane', async () => {
       configureWiredTick();
       process.env['OPENSPELL_EVO_REPORT_LANE_READY'] = '1';
@@ -421,6 +444,25 @@ describe('GET /api/cron/sync', () => {
       expect(syncSnapshot).not.toHaveBeenCalled();
       expect(queue.finish).not.toHaveBeenCalled();
       expect(queue.deadLetter).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('weekly SQP request ownership', () => {
+    it('never includes sqp.request in any Vercel cron claim set', () => {
+      // The Evo general worker is the only sqp.request claimant.
+      const lanes = [
+        {},
+        { OPENSPELL_EVO_REPORT_LANE_READY: '1' },
+        { OPENSPELL_RECOMMENDATION_LANE_READY: '1', OPENSPELL_RECOMMENDATION_LANE_REVISION: REVISION },
+      ];
+      let checked = 0;
+      for (const env of lanes) {
+        const jobTypes = cronSyncJobTypesFromEnv(env);
+        expect(jobTypes.length).toBeGreaterThan(0);
+        expect(jobTypes).not.toContain('sqp.request');
+        checked += 1;
+      }
+      expect(checked).toBe(lanes.length);
     });
   });
 

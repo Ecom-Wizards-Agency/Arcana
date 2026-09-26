@@ -68,7 +68,9 @@ it('builds exactly the two ready rows out of seven, records immutable evidence, 
   expect(preview.plan.actions.map(action=>action.routeKey==='sp.v3.keywords.update' ? action.changes.bid : null)).toEqual(Array(2).fill({expected:{amount:'2',currencyCode:'USD'},requested:{amount:'1',currencyCode:'USD'}}));
   expect(preview.plan.source.kind==='apply_batch' && preview.plan.source.restoreProposal?.sourceRowIds).toEqual(f.request.sourceRowIds);
   const recovered=await withAuthenticatedOrgEditor(db,actor(),tx=>buildRestoreProposal(tx,f.request));expect(recovered).toEqual(preview);
-  const queued=await listChangeQueue(db,{orgId,profileId,source:'restore'});expect(queued).toHaveLength(1);expect(queued[0]).toMatchObject({state:'awaiting review',reviewHref:expect.stringContaining(f.request.requestId)});
+  const queued=await listChangeQueue(db,{orgId,profileId,source:'restore'});expect(queued).toHaveLength(1);
+  expect(queued[0]!.actor).toEqual({ kind: 'operator', name: null });
+  expect(queued[0]).toMatchObject({state:'awaiting review',reviewHref:expect.stringContaining(f.request.requestId)});
   await expect(db.sql`update public.sp_write_plans set artifact_text='{}' where plan_id=${preview.plan.id}`).rejects.toThrow();
   await expect(db.sql`delete from public.sp_write_restore_proposals where plan_id=${preview.plan.id}`).rejects.toThrow();
   await expect(db.sql`update public.sp_write_preview_evidence set artifact_text='{}' where plan_id=${preview.plan.id}`).rejects.toThrow();

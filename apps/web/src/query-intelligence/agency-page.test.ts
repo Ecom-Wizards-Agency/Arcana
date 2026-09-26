@@ -113,7 +113,7 @@ describe.skipIf(!available)('actual Query Intelligence agency page', () => {
   it('preserves no-profile and no-weekly-scope states under authenticated visibility', async () => {
     for (const [table, message] of [
       ['ad_profiles', 'This organisation has no advertising profiles yet.'],
-      ['fact_sqp_weekly', 'No authoritative weekly SQP data'],
+      ['fact_sqp_weekly', 'No weekly SQP data yet'],
     ]) {
       await database.sql.unsafe(`create policy query_page_empty on public.${table} as restrictive for select to authenticated using(false)`);
       try {

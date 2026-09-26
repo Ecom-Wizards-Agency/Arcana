@@ -13,6 +13,7 @@ import type { FetchLike } from '@wizard-ads/sp-api';
 import { configFromEnv } from './config.js';
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
 import { spApiConnectionPass, type SpApiConnectionSettings } from './spapi-connections.js';
+import { installStopSignalHandlers } from './stop-signals.js';
 
 export const SPAPI_CONNECTIONS_REQUIRED_ENV = [
   'DATABASE_URL',
@@ -243,13 +244,7 @@ export async function runSpApiConnectionsCli(
 export function installSpApiConnectionsSignalHandlers(
   controller: AbortController, log: (line: string) => void = (line) => console.info(line),
 ): void {
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-    process.on(signal, () => {
-      const event = controller.signal.aborted ? 'signal_repeated' : 'stop_requested';
-      log(JSON.stringify({ at: new Date().toISOString(), event, signal }));
-      controller.abort();
-    });
-  }
+  installStopSignalHandlers(() => controller.abort(), { log, stopping: () => controller.signal.aborted });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

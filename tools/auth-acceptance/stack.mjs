@@ -30,6 +30,25 @@ export function docker(args, input, timeout = 30_000) {
   }
 }
 
+// Anonymous public-registry pulls are rate limited. Only that refusal is
+// retried, after 20, 40 and 80 seconds; any other pull failure is final.
+export const pullRetryDelays = [20_000, 40_000, 80_000];
+const rateLimited = /toomanyrequests|Rate exceeded/;
+const block = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const line = (text) => process.stdout.write(text + '\n');
+
+export function pullImage(kind, image, { run = docker, wait = block, log = line, delays = pullRetryDelays } = {}) {
+  for (let attempt = 1; ; attempt += 1) {
+    log(`Pulling pinned public ${kind} image (attempt ${attempt} of ${delays.length + 1})`);
+    try { run(['pull', image], undefined, 180_000); return attempt; } catch (error) {
+      const delay = delays[attempt - 1];
+      if (delay === undefined || !rateLimited.test(error.message)) throw error;
+      log(`Pull of ${kind} image was rate limited; retrying in ${delay / 1000} seconds`);
+      wait(delay);
+    }
+  }
+}
+
 export function prepareImages() {
   assert.equal(process.platform, 'linux', 'Use native Linux Docker, including GitHub-hosted Ubuntu');
   assert.ok(!process.env.DOCKER_HOST || process.env.DOCKER_HOST.startsWith('unix://'), 'Remote Docker is not a disposable test target');
@@ -37,10 +56,7 @@ export function prepareImages() {
   assert.equal(docker(['info', '--format', '{{.OSType}}']), 'linux');
   for (const [kind, image] of Object.entries(images)) {
     abort.signal.throwIfAborted();
-    try { docker(['image', 'inspect', image]); } catch {
-      process.stdout.write(`Pulling pinned public ${kind} image\n`);
-      docker(['pull', image], undefined, 180_000);
-    }
+    try { docker(['image', 'inspect', image]); } catch { pullImage(kind, image); }
     assert.ok(JSON.parse(docker(['image', 'inspect', image]))[0].Id);
   }
 }

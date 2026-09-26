@@ -77,3 +77,25 @@
 @media (max-width: 60rem) { .wa-home { margin: calc(-1 * (var(--wa-fs-md) + var(--wa-radius-sm))) calc(-1 * var(--wa-fs-md)) 0; } }
 
 .wa-home-proposals > li { padding-block: calc(var(--wa-radius) + var(--wa-radius-sm) / 2); }
+
+/* WP-318: collapsible sections, issue-grouped flags, rank watch top five. */
+.wa-home-card-head { display: flex; align-items: baseline; gap: var(--wa-radius); }
+.wa-home-card-head h2 { flex: 1; min-width: 0; }
+.wa-home-count { color: var(--wa-text-dim); font-size: var(--wa-fs-2xs); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.wa-home-toggle { border: 0; background: none; padding: 0; color: var(--wa-text-dim); font: inherit; font-size: var(--wa-fs-2xs); cursor: pointer; }
+.wa-home-toggle:hover { text-decoration: underline; }
+.wa-home-toggle:focus-visible { outline: 2px solid var(--wa-ring); outline-offset: var(--wa-radius-sm); }
+.wa-home-card-body { display: contents; }
+.wa-home-card-body[hidden] { display: none; }
+.wa-home-flag-filters, .wa-home-flags > [data-testid='flags-floored'] { grid-column: 1 / -1; }
+.wa-home-flag-filters { display: flex; flex-wrap: wrap; gap: var(--wa-radius); }
+.wa-home-flag-filters label { display: grid; gap: calc(var(--wa-radius-sm) / 2); font-size: var(--wa-fs-2xs); color: var(--wa-text-dim); }
+.wa-home-flag-groups { display: grid; gap: var(--wa-fs-xs); }
+.wa-home-flag-group h4 { margin: 0 0 calc(var(--wa-radius-sm) * 1.5); font-size: var(--wa-fs-2xs); font-weight: var(--wa-fw-section); }
+.wa-home-flag-group h4 span { color: var(--wa-text-dim); font-weight: normal; }
+.wa-home-flag-entity { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--wa-radius-sm); margin-bottom: calc(var(--wa-radius-sm) / 2); }
+.wa-home-flag-entity a { color: var(--wa-text); font-weight: var(--wa-fw-section); overflow-wrap: anywhere; }
+.wa-home-flag-entity span, .wa-home-flag-evidence { color: var(--wa-text-dim); }
+.wa-home-flags .wa-home-flag-evidence { margin-top: var(--wa-radius-sm); font-variant-numeric: tabular-nums; }
+.wa-home-rank-product { color: inherit; }
+.wa-home-more { align-self: flex-start; }

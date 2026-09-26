@@ -13,11 +13,13 @@
  * repository; it arrives at runtime through `config`.
  */
 import { formatFixed, formatMoney } from './num.js';
+import { addDays } from './rows.js';
 import {
   CATEGORY_DISCOVERY,
   CATEGORY_RANK,
   CATEGORY_UNKNOWN,
   type AnalysisResult,
+  type DailyRow,
   type Flag,
   type SeriesAnalysis,
   type Severity,
@@ -49,6 +51,30 @@ export interface Thresholds {
   budget_capped_min_days: number;
   tacos_rise_alert_pct: number;
   margin_drop_alert_pct: number;
+  /*
+   * Evidence floor, one pair per flag family. A signal whose evaluation window
+   * holds fewer impressions or fewer days of data than its family's floor is
+   * not raised; `evaluate` returns it in `floored` so the caller can count it.
+   * Impression floors apply to campaign-scoped signals only: an account total
+   * is the sum of every campaign, and an account-totals feed may carry no
+   * impressions at all. The account-level families therefore have days only.
+   */
+  floor_spend_spike_min_impressions: number;
+  floor_spend_spike_min_days: number;
+  floor_spend_collapse_min_impressions: number;
+  floor_spend_collapse_min_days: number;
+  floor_budget_capped_min_impressions: number;
+  floor_budget_capped_min_days: number;
+  floor_cvr_drop_min_impressions: number;
+  floor_cvr_drop_min_days: number;
+  floor_near_zero_impressions_min_impressions: number;
+  floor_near_zero_impressions_min_days: number;
+  floor_zero_sales_spend_min_impressions: number;
+  floor_zero_sales_spend_min_days: number;
+  floor_acos_swing_min_impressions: number;
+  floor_acos_swing_min_days: number;
+  floor_discovery_share_min_days: number;
+  floor_tacos_margin_min_days: number;
 }
 
 export const DEFAULT_THRESHOLDS: Thresholds = {
@@ -64,6 +90,25 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
   budget_capped_min_days: 1,
   tacos_rise_alert_pct: 0.2,
   margin_drop_alert_pct: -0.15,
+  // Engineering floors, not doctrine: the least evidence on which a
+  // trailing-week comparison says anything. The window is the report day plus
+  // the seven days before it, so eight days is full coverage.
+  floor_spend_spike_min_impressions: 100,
+  floor_spend_spike_min_days: 3,
+  floor_spend_collapse_min_impressions: 100,
+  floor_spend_collapse_min_days: 3,
+  floor_budget_capped_min_impressions: 100,
+  floor_budget_capped_min_days: 1,
+  floor_cvr_drop_min_impressions: 200,
+  floor_cvr_drop_min_days: 3,
+  floor_near_zero_impressions_min_impressions: 100,
+  floor_near_zero_impressions_min_days: 3,
+  floor_zero_sales_spend_min_impressions: 100,
+  floor_zero_sales_spend_min_days: 3,
+  floor_acos_swing_min_impressions: 200,
+  floor_acos_swing_min_days: 3,
+  floor_discovery_share_min_days: 1,
+  floor_tacos_margin_min_days: 3,
 };
 
 export type TacosMarginBehavior = 'expected_high' | 'alert_on_rise' | 'ignore';
@@ -245,7 +290,7 @@ function flag(partial: Omit<Flag, 'suppressed' | 'suppressedReason'> & Partial<P
 
 type CampaignCheck = (series: SeriesAnalysis, thresholds: Thresholds, lens?: GoalLens | null) => Flag | null;
 
-const checkSpendSpikeOrCollapse: CampaignCheck = (series, thresholds, lens) => {
+const checkSpendSpike: CampaignCheck = (series, thresholds, lens) => {
   const d = series.deltas['spend'];
   if (!d || d.trailing7PctChange === null) return null;
   if (d.trailing7PctChange >= thresholds.spend_spike_pct) {
@@ -266,6 +311,15 @@ const checkSpendSpikeOrCollapse: CampaignCheck = (series, thresholds, lens) => {
       category: series.category,
     });
   }
+  return null;
+};
+
+const checkSpendCollapse: CampaignCheck = (series, thresholds) => {
+  const d = series.deltas['spend'];
+  if (!d || d.trailing7PctChange === null) return null;
+  // Spike wins when a lens override makes the two ranges overlap, as the
+  // single combined check did before the split.
+  if (d.trailing7PctChange >= thresholds.spend_spike_pct) return null;
   if (d.trailing7PctChange <= thresholds.spend_collapse_pct) {
     return flag({
       severity: SEVERITY_WARN,
@@ -406,13 +460,14 @@ function acosSwingWouldFire(series: SeriesAnalysis, thresholds: Thresholds): boo
   return Math.abs(d.trailing7PctChange) >= thresholds.acos_swing_pct;
 }
 
-const CAMPAIGN_CHECKS: CampaignCheck[] = [
-  checkSpendSpikeOrCollapse,
-  checkBudgetCapped,
-  checkCvrDropStableClicks,
-  checkNearZeroImpressionsRank,
-  checkZeroSalesSpend,
-  checkAcosSwing,
+const CAMPAIGN_CHECKS: ReadonlyArray<readonly [FlagFamily, CampaignCheck]> = [
+  ['spend_spike', checkSpendSpike],
+  ['spend_collapse', checkSpendCollapse],
+  ['budget_capped', checkBudgetCapped],
+  ['cvr_drop', checkCvrDropStableClicks],
+  ['near_zero_impressions', checkNearZeroImpressionsRank],
+  ['zero_sales_spend', checkZeroSalesSpend],
+  ['acos_swing', checkAcosSwing],
 ];
 
 function checkDiscoveryShare(analysis: AnalysisResult, thresholds: Thresholds): Flag | null {
@@ -511,20 +566,195 @@ function checkGoalAwareTacosMargin(
   ];
 }
 
-function sortFlags(flags: Flag[]): Flag[] {
-  return [...flags].sort((a, b) => {
-    const sa = SEVERITY_ORDER[a.severity] ?? 9;
-    const sb = SEVERITY_ORDER[b.severity] ?? 9;
-    if (sa !== sb) return sa - sb;
-    if (a.scope !== b.scope) return a.scope < b.scope ? -1 : 1;
-    if (a.metric !== b.metric) return a.metric < b.metric ? -1 : 1;
-    return 0;
-  });
+function compareFlags(a: Flag, b: Flag): number {
+  const sa = SEVERITY_ORDER[a.severity] ?? 9;
+  const sb = SEVERITY_ORDER[b.severity] ?? 9;
+  if (sa !== sb) return sa - sb;
+  if (a.scope !== b.scope) return a.scope < b.scope ? -1 : 1;
+  if (a.metric !== b.metric) return a.metric < b.metric ? -1 : 1;
+  return 0;
+}
+
+/**
+ * Which rule raised a flag. The flag contract itself is unchanged (the parity
+ * goldens pin it), so the family travels next to the flag in `FlagContext`.
+ * `pacing` is raised by `pacingFlag` in `pacing.ts`, not by `evaluate`; it is
+ * listed so a caller can place a pacing flag in the same issue taxonomy.
+ */
+export type FlagFamily =
+  | 'spend_spike'
+  | 'spend_collapse'
+  | 'budget_capped'
+  | 'cvr_drop'
+  | 'near_zero_impressions'
+  | 'zero_sales_spend'
+  | 'acos_swing'
+  | 'discovery_share'
+  | 'tacos_margin'
+  | 'pacing';
+
+/** Inclusive calendar-day window a signal was read over. */
+export interface FlagWindow {
+  start: string;
+  end: string;
+}
+
+/** Observed evidence for one series over the evaluation window. */
+export interface SeriesEvidence {
+  /** Summed impressions over the window; null when the feed does not report impressions. */
+  impressions: number | null;
+  /** Days in the window with a row for this series. */
+  days: number;
+}
+
+/** Exact window evidence, built from the same rows the analysis was built from. */
+export interface EvaluateEvidence {
+  account: SeriesEvidence;
+  /** Keyed by campaign id, as `analyzeAccount` keys its campaign series. */
+  campaigns: Record<string, SeriesEvidence>;
+}
+
+export interface FlagEvidence extends SeriesEvidence {
+  window: FlagWindow;
+  /**
+   * `rows` when counted from the input rows; `inferred` when `evaluate` had
+   * only the analysis and assumed a complete trailing week. Inferred evidence
+   * is descriptive only: the floor is applied to row evidence, never to it.
+   */
+  source: 'rows' | 'inferred';
+}
+
+export interface FlagContext {
+  flag: Flag;
+  family: FlagFamily;
+  /** The campaign a flag is about; null for an account-level flag. */
+  campaignId: string | null;
+  evidence: FlagEvidence;
+}
+
+export interface EvidenceFloor {
+  /** Null when the impressions floor does not apply to this signal. */
+  minImpressions: number | null;
+  minDays: number;
+}
+
+export interface FlooredFlag extends FlagContext {
+  floor: EvidenceFloor;
 }
 
 export interface EvaluateResult {
   active: Flag[];
   suppressed: Flag[];
+  /** One entry per `active` flag, in the same order. */
+  activeContext: FlagContext[];
+  /** One entry per `suppressed` flag, in the same order. */
+  suppressedContext: FlagContext[];
+  /**
+   * Signals a rule would have raised or noted, held back because the window
+   * is below the family's evidence floor. Counted, never silently dropped.
+   * Always empty when `evaluate` was given no row evidence.
+   */
+  floored: FlooredFlag[];
+}
+
+/** The window every trailing-week check reads: the report day and the seven days before it. */
+export function evaluationWindow(reportDate: string): FlagWindow {
+  return { start: addDays(reportDate, -7), end: reportDate };
+}
+
+function summarize(rows: readonly DailyRow[], window: FlagWindow): SeriesEvidence {
+  const days = new Set<string>();
+  let impressions = 0;
+  for (const row of rows) {
+    if (row.date < window.start || row.date > window.end) continue;
+    days.add(row.date);
+    impressions += row.impressions;
+  }
+  return { impressions, days: days.size };
+}
+
+/**
+ * Count the evidence behind each series from the rows given to
+ * `analyzeAccount`. Rows outside the evaluation window are ignored.
+ */
+export function windowEvidence(
+  reportDate: string,
+  accountRows: readonly DailyRow[],
+  campaignRows: readonly DailyRow[],
+): EvaluateEvidence {
+  const window = evaluationWindow(reportDate);
+  const byCampaign = new Map<string, DailyRow[]>();
+  for (const row of campaignRows) {
+    const key = row.campaignId ?? '';
+    const bucket = byCampaign.get(key);
+    if (bucket) bucket.push(row);
+    else byCampaign.set(key, [row]);
+  }
+  const campaigns: Record<string, SeriesEvidence> = {};
+  for (const [key, rows] of byCampaign) campaigns[key] = summarize(rows, window);
+  return { account: summarize(accountRows, window), campaigns };
+}
+
+function inferEvidence(series: SeriesAnalysis): SeriesEvidence {
+  const d = series.deltas['impressions'];
+  const trailingPresent = Object.values(series.deltas).some((delta) => delta.trailing7Avg !== null);
+  const days = (series.reportRow === null ? 0 : 1) + (trailingPresent ? 7 : 0);
+  if (!d) return { impressions: null, days };
+  return { impressions: (d.value ?? 0) + 7 * (d.trailing7Avg ?? 0), days };
+}
+
+function evidenceFor(
+  series: SeriesAnalysis,
+  isAccount: boolean,
+  window: FlagWindow,
+  evidence: EvaluateEvidence | null | undefined,
+): FlagEvidence {
+  if (evidence) {
+    const observed = isAccount ? evidence.account : evidence.campaigns[series.campaignId ?? ''];
+    if (observed) return { ...observed, window, source: 'rows' };
+    return { impressions: null, days: 0, window, source: 'rows' };
+  }
+  return { ...inferEvidence(series), window, source: 'inferred' };
+}
+
+/** The floor for one family; impressions apply to campaign-scoped signals only. */
+export function evidenceFloor(family: FlagFamily, thresholds: Thresholds, campaignScoped: boolean): EvidenceFloor | null {
+  const pair = ((): [number | null, number] | null => {
+    switch (family) {
+      case 'spend_spike':
+        return [thresholds.floor_spend_spike_min_impressions, thresholds.floor_spend_spike_min_days];
+      case 'spend_collapse':
+        return [thresholds.floor_spend_collapse_min_impressions, thresholds.floor_spend_collapse_min_days];
+      case 'budget_capped':
+        return [thresholds.floor_budget_capped_min_impressions, thresholds.floor_budget_capped_min_days];
+      case 'cvr_drop':
+        return [thresholds.floor_cvr_drop_min_impressions, thresholds.floor_cvr_drop_min_days];
+      case 'near_zero_impressions':
+        return [thresholds.floor_near_zero_impressions_min_impressions, thresholds.floor_near_zero_impressions_min_days];
+      case 'zero_sales_spend':
+        return [thresholds.floor_zero_sales_spend_min_impressions, thresholds.floor_zero_sales_spend_min_days];
+      case 'acos_swing':
+        return [thresholds.floor_acos_swing_min_impressions, thresholds.floor_acos_swing_min_days];
+      case 'discovery_share':
+        return [null, thresholds.floor_discovery_share_min_days];
+      case 'tacos_margin':
+        return [null, thresholds.floor_tacos_margin_min_days];
+      case 'pacing':
+        return null;
+    }
+  })();
+  if (pair === null) return null;
+  return { minImpressions: campaignScoped ? pair[0] : null, minDays: pair[1] };
+}
+
+/** True when the evidence is below the floor. An unmeasured impression count is not zero. */
+function belowFloor(evidence: FlagEvidence, floor: EvidenceFloor): boolean {
+  if (evidence.days < floor.minDays) return true;
+  return floor.minImpressions !== null && evidence.impressions !== null && evidence.impressions < floor.minImpressions;
+}
+
+function sortContexts<T extends FlagContext>(items: T[]): T[] {
+  return [...items].sort((a, b) => compareFlags(a.flag, b.flag));
 }
 
 /**
@@ -532,23 +762,41 @@ export interface EvaluateResult {
  *
  * `goal` is the brand's stage from its ops profile; unknown or missing resolves
  * to the neutral lens, which leaves every threshold and severity untouched.
+ *
+ * `evidence` (from `windowEvidence`) turns the evidence floor on. A caller
+ * that passes it must surface `floored` (at least its count); a caller that
+ * does not gets exactly the pre-floor output, so no signal can disappear
+ * from a surface that was never taught to count it.
  */
 export function evaluate(
   analysis: AnalysisResult,
   config?: FlagsConfig | null,
   goal?: string | null,
+  evidence?: EvaluateEvidence | null,
 ): EvaluateResult {
   const lens = resolveGoalLens(goal);
   const thresholds = resolveThresholds(config, lens);
-  const active: Flag[] = [];
-  const suppressed: Flag[] = [];
+  const window = evaluationWindow(analysis.reportDate);
+  const active: FlagContext[] = [];
+  const suppressed: FlagContext[] = [];
+  const floored: FlooredFlag[] = [];
 
+  const admit = (target: FlagContext[], context: FlagContext, campaignScoped: boolean) => {
+    const floor = evidence ? evidenceFloor(context.family, thresholds, campaignScoped) : null;
+    if (floor !== null && belowFloor(context.evidence, floor)) floored.push({ ...context, floor });
+    else target.push(context);
+  };
+
+  const accountEvidence = evidenceFor(analysis.accountSeries, true, window, evidence);
   const allSeries = [analysis.accountSeries, ...analysis.campaignSeries];
   for (const series of allSeries) {
     if (series.reportRow === null) continue;
-    for (const check of CAMPAIGN_CHECKS) {
+    const isAccount = series === analysis.accountSeries;
+    const seriesEvidence = isAccount ? accountEvidence : evidenceFor(series, false, window, evidence);
+    const campaignId = isAccount ? null : series.campaignId;
+    for (const [family, check] of CAMPAIGN_CHECKS) {
       const result = check(series, thresholds, lens);
-      if (result !== null) active.push(result);
+      if (result !== null) admit(active, { flag: result, family, campaignId, evidence: seriesEvidence }, !isAccount);
     }
     // A Rank/SKW campaign's ACOS swing is expected under last-click
     // attribution: surfaced as suppressed, never as an active flag, even
@@ -556,8 +804,8 @@ export function evaluate(
     if (series.category === CATEGORY_RANK && acosSwingWouldFire(series, thresholds)) {
       const d = series.deltas['acos'];
       if (d) {
-        suppressed.push(
-          flag({
+        admit(suppressed, {
+          flag: flag({
             severity: SEVERITY_INFO,
             metric: 'acos',
             threshold: `>= +/-${pct(thresholds.acos_swing_pct)} vs trailing-7 avg`,
@@ -570,17 +818,118 @@ export function evaluate(
             suppressedReason:
               'High/volatile ACOS on a Rank/SKW campaign is a known attribution artifact, not a real anomaly, per the rank-first philosophy.',
           }),
-        );
+          family: 'acos_swing',
+          campaignId,
+          evidence: seriesEvidence,
+        }, !isAccount);
       }
     }
   }
 
   const discoveryFlag = checkDiscoveryShare(analysis, thresholds);
-  if (discoveryFlag !== null) active.push(discoveryFlag);
+  if (discoveryFlag !== null) {
+    admit(active, { flag: discoveryFlag, family: 'discovery_share', campaignId: null, evidence: accountEvidence }, false);
+  }
 
   const [tacosMarginActive, tacosMarginSuppressed] = checkGoalAwareTacosMargin(analysis, thresholds, lens);
-  if (tacosMarginActive !== null) active.push(tacosMarginActive);
-  if (tacosMarginSuppressed !== null) suppressed.push(tacosMarginSuppressed);
+  if (tacosMarginActive !== null) {
+    admit(active, { flag: tacosMarginActive, family: 'tacos_margin', campaignId: null, evidence: accountEvidence }, false);
+  }
+  if (tacosMarginSuppressed !== null) {
+    admit(suppressed, { flag: tacosMarginSuppressed, family: 'tacos_margin', campaignId: null, evidence: accountEvidence }, false);
+  }
 
-  return { active: sortFlags(active), suppressed: sortFlags(suppressed) };
+  const activeContext = sortContexts(active);
+  const suppressedContext = sortContexts(suppressed);
+  return {
+    active: activeContext.map((context) => context.flag),
+    suppressed: suppressedContext.map((context) => context.flag),
+    activeContext,
+    suppressedContext,
+    floored: sortContexts(floored),
+  };
+}
+
+/* ------------------------------------------------------------ issues ----- */
+
+/**
+ * What is wrong, in words, for an operator. Listed in priority order: when
+ * two issue groups carry the same top severity, the earlier one leads.
+ */
+export type FlagIssue =
+  | 'impressions_collapsed'
+  | 'spend_without_sales'
+  | 'pacing_off_plan'
+  | 'tacos_margin'
+  | 'spend_rising'
+  | 'budget_capped'
+  | 'conversion_falling'
+  | 'spend_falling'
+  | 'discovery_heavy'
+  | 'acos_swing';
+
+export interface FlagIssueDefinition {
+  id: FlagIssue;
+  label: string;
+  families: readonly FlagFamily[];
+}
+
+export const FLAG_ISSUES: readonly FlagIssueDefinition[] = [
+  { id: 'impressions_collapsed', label: 'Near-zero impressions', families: ['near_zero_impressions'] },
+  { id: 'spend_without_sales', label: 'Spend with no sales', families: ['zero_sales_spend'] },
+  { id: 'pacing_off_plan', label: 'Monthly budget off pace', families: ['pacing'] },
+  { id: 'tacos_margin', label: 'TACOS rising or margin falling', families: ['tacos_margin'] },
+  { id: 'spend_rising', label: 'Spend rising sharply', families: ['spend_spike'] },
+  { id: 'budget_capped', label: 'Capped by daily budget', families: ['budget_capped'] },
+  { id: 'conversion_falling', label: 'Conversion falling while clicks hold', families: ['cvr_drop'] },
+  { id: 'spend_falling', label: 'Spend falling sharply', families: ['spend_collapse'] },
+  { id: 'discovery_heavy', label: 'Discovery taking too much spend', families: ['discovery_share'] },
+  { id: 'acos_swing', label: 'ACOS swinging against the trailing week', families: ['acos_swing'] },
+];
+
+const ISSUE_BY_FAMILY = new Map<FlagFamily, FlagIssueDefinition>(
+  FLAG_ISSUES.flatMap((issue) => issue.families.map((family) => [family, issue] as const)),
+);
+
+export function flagIssue(family: FlagFamily): FlagIssueDefinition {
+  const issue = ISSUE_BY_FAMILY.get(family);
+  if (!issue) throw new Error(`No issue is defined for flag family ${family}`);
+  return issue;
+}
+
+export interface FlagIssueGroup<T extends FlagContext = FlagContext> {
+  issue: FlagIssue;
+  label: string;
+  /** Position in `FLAG_ISSUES`, zero first. */
+  priority: number;
+  /** The most severe flag in the group. */
+  severity: Severity;
+  items: T[];
+}
+
+/**
+ * Group flags by issue. Groups lead with the most severe flag they hold, then
+ * follow the fixed issue priority; rows keep their input order inside a group.
+ */
+export function groupFlagsByIssue<T extends FlagContext>(items: readonly T[]): FlagIssueGroup<T>[] {
+  const groups = new Map<FlagIssue, FlagIssueGroup<T>>();
+  for (const item of items) {
+    const issue = flagIssue(item.family);
+    let group = groups.get(issue.id);
+    if (!group) {
+      group = {
+        issue: issue.id,
+        label: issue.label,
+        priority: FLAG_ISSUES.indexOf(issue),
+        severity: item.flag.severity,
+        items: [],
+      };
+      groups.set(issue.id, group);
+    }
+    if ((SEVERITY_ORDER[item.flag.severity] ?? 9) < (SEVERITY_ORDER[group.severity] ?? 9)) group.severity = item.flag.severity;
+    group.items.push(item);
+  }
+  return [...groups.values()].sort(
+    (a, b) => (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9) || a.priority - b.priority,
+  );
 }

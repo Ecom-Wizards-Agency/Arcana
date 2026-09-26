@@ -1,6 +1,6 @@
 {
   "WORKER_ID": "<worker-id>",
-  "WORKER_JOB_TYPES": "keepa.sync,rank.sync,economics.sync,sqp.categorize,recommendations.run",
+  "WORKER_JOB_TYPES": "keepa.sync,rank.sync,economics.sync,sqp.categorize,sqp.request,recommendations.run",
   "WORKER_MAX_CONCURRENT_JOBS": "4",
   "PORT": "3777",
   "WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS": "1",

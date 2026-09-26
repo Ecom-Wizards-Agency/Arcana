@@ -40,7 +40,8 @@ export function ProposalsInbox({ proposals, canDecide, profileId, capped = false
       setError(`Could not confirm the decision for ${row.entityLabel}. The proposal is back in your inbox. Review it before retrying.`);
     } finally { pending.current.delete(row.id); }
   }
-  return <HomeCard title="Proposals" subtitle="The recommendations queue lives here, with the full review one click away.">
+  return <HomeCard title="Proposals" subtitle="The recommendations queue lives here, with the full review one click away."
+    section={{ id: 'proposals', count: visible.length, noun: ['proposal', 'proposals'] }}>
     {capped ? <p className="wa-home-caption">Showing the first {proposals.length} proposals. Open full review to check run counts.</p> : null}
     {error === null ? null : <p role="alert">{error}</p>}
     {visible.length === 0 ? <EmptyState title="No proposals waiting" body="New proposals will appear here after the next recommendation run." /> :

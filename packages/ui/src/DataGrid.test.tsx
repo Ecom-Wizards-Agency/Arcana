@@ -153,7 +153,7 @@ describe('DataGrid over 50k rows', () => {
 
     expect(
       screen.getByRole('treegrid', {
-        name: 'Results grouped by campaign_name, ad_group_name, match_type',
+        name: 'Results grouped by Campaign, Ad group, Match',
       }),
     ).toBeTruthy();
     const rendered = screen.getAllByTestId('grid-row');

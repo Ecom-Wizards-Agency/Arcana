@@ -58,6 +58,24 @@ export async function exerciseSpApiOnboarding(page: Page): Promise<void> {
     await page.reload();
     expect((await (await page.request.get(`http://127.0.0.1:${MOCK_PORT}/__test/calls`)).json()).spExchanges).toBe(1);
 
+    // Reporting is switched per binding by the manager, audited, and switched back.
+    const binding = section.getByTestId('spapi-binding-row').filter({ hasText: 'Synthetic seller connection' });
+    await expect(binding).toHaveCount(1);
+    await expect(binding.getByTestId('spapi-binding-reporting')).toHaveText('Reporting disabled');
+    await binding.getByRole('button',{ name: 'Enable reporting' }).click();
+    await expect(binding.getByTestId('spapi-binding-reporting')).toHaveText(/^Reporting enabled since \d{4}-\d{2}-\d{2}$/);
+    await expect(row).toContainText('1 profile · 1 binding enabled');
+    await capture('spapi-reporting-enabled');
+    const reporting = async () => handle.sql`select b.enabled,(b.enabled_at is not null) as dated from public.spapi_profile_bindings b
+      join public.spapi_connections c on c.id=b.connection_id where c.org_id=${state.orgId} and c.label='Synthetic seller connection'`;
+    expect(await reporting()).toEqual([{ enabled: true,dated: true }]);
+    await binding.getByRole('button',{ name: 'Disable reporting' }).click();
+    await expect(binding.getByTestId('spapi-binding-reporting')).toHaveText('Reporting disabled');
+    await expect(row).toContainText('1 profile · 0 bindings enabled');
+    expect(await reporting()).toEqual([{ enabled: false,dated: false }]);
+    expect((await handle.sql`select action from public.audit_log where org_id=${state.orgId} and action like 'spapi.binding_reporting_%' order by id`)
+      .map((entry) => entry['action'])).toEqual(['spapi.binding_reporting_enabled','spapi.binding_reporting_disabled']);
+
     await mode('hold'); await start();
     await expect(page.getByTestId('spapi-progress')).toContainText('Connecting seller account');
     await capture('spapi-pending');

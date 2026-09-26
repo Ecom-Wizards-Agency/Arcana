@@ -40,3 +40,25 @@ it('preserves microsecond creation cursors and rejects malformed boundaries',()=
   expect(queueCursor({...value,before_id:'creation:invalid'})).toBeNull();
   expect(queueCursor({...value,before_at:'2026-02-30T00:00:00Z'})).toBeNull();
 });
+
+it('lists entity type and field options from the rows the other filters allow',async()=>{
+  const profile={...baseProfile,id:'10000000-0000-4000-8000-000000000005'};
+  const base={id:'change:1',when:'2026-09-15T00:00:00Z',entity:'Synthetic',entityType:'keyword',entityId:'synthetic',field:'bid',oldValue:1,newValue:2,
+    source:'sync' as const,state:'observed' as const,batchId:null,batchLabel:null,batchCount:null,experimentStart:false,candidateCount:0,batchRestorable:null,acknowledgedAt:null,acknowledgedBy:null,reviewHref:null};
+  const read=vi.fn(async run=>run({sql:vi.fn().mockResolvedValue([{partial:false}])},{orgId:context.active!.orgId,userId:context.user.id}));
+  mocks.profiles.mockResolvedValue([profile]);mocks.role.mockResolvedValue('owner');mocks.entries.mockReset();
+  mocks.entries.mockResolvedValueOnce([{...base,entityType:'campaign',field:'budget'}])
+    .mockResolvedValueOnce([base,{...base,id:'change:2',entityType:'campaign',field:'budget'},{...base,id:'change:3',entityType:'ad_group',field:'bid'}]);
+  const filtered=await load({read,selectProfile:()=>profile} as unknown as ScreenActor,{params:{},searchParams:{profile:profile.id,type:'campaign',source:'sync'}});
+  if(filtered.view!=='ready') throw new Error('Expected the queue');
+  expect(mocks.entries).toHaveBeenCalledTimes(2);
+  expect(mocks.entries.mock.calls[0]![1]).toMatchObject({entityType:'campaign',field:null,source:'sync',limit:51});
+  expect(mocks.entries.mock.calls[1]![1]).toMatchObject({entityType:null,field:null,source:'sync',before:null,limit:50});
+  expect(filtered.props.entries).toHaveLength(1);
+  expect(filtered.props.filterOptions).toEqual({types:['ad_group','campaign','keyword'],fields:['bid','budget']});
+  mocks.entries.mockReset();mocks.entries.mockResolvedValueOnce([base]);
+  const unfiltered=await load({read,selectProfile:()=>profile} as unknown as ScreenActor,{params:{},searchParams:{profile:profile.id}});
+  if(unfiltered.view!=='ready') throw new Error('Expected the queue');
+  expect(mocks.entries).toHaveBeenCalledTimes(1);
+  expect(unfiltered.props.filterOptions).toEqual({types:['keyword'],fields:['bid']});
+});

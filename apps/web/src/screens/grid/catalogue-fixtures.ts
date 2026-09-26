@@ -31,7 +31,7 @@ export function catalogueEvidenceFixtures():ProductEvidence[] {
 export function amazonEntryFixtures():ChangeQueueEntry[] {
   return ['unresolved','resolved','conflict'].map((kind,index)=>({
     id:`amazon:synthetic-${index}`,when:'2026-09-05T10:00:00.000Z',entity:`Imported ${kind} event`,entityType:'campaign',entityId:`campaign-${index}`,field:'BUDGET_AMOUNT',oldValue:'1',newValue:'2',source:'amazon',state:'observed',
-    batchId:null,batchLabel:null,batchCount:null,experimentStart:false,candidateCount:0,acknowledgedAt:null,acknowledgedBy:null,reviewHref:null,
+    batchId:null,batchLabel:null,batchCount:null,experimentStart:false,candidateCount:0,batchRestorable:null,acknowledgedAt:null,acknowledgedBy:null,reviewHref:null,actor:{kind:'unknown',name:null},
     amazonObservation:{marketplaceId:`SYNTHETIC-MARKET-${index}`,retrievedAt:'2026-09-15T00:00:00.000Z',identityQuality:'derived',identityAmbiguity:'provider_id_unavailable',identityConflict:kind==='conflict',resolution:kind==='resolved'?'resolved':'unresolved',resolvedEntityType:kind==='resolved'?'campaign':null,resolvedAmazonId:kind==='resolved'?'campaign-1':null},
   }));
 }

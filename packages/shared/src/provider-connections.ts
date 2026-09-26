@@ -103,6 +103,22 @@ export const SpApiConnectionOperation = z.object({
   createdAt: z.iso.datetime({ offset: true }), updatedAt: z.iso.datetime({ offset: true }),
 }).strict();
 export type SpApiConnectionOperation = z.infer<typeof SpApiConnectionOperation>;
+/** An owner or admin switches weekly SP-API reporting for one profile binding. */
+export const SpApiBindingReportingRequest = z.object({ enabled: z.boolean() }).strict();
+export type SpApiBindingReportingRequest = z.infer<typeof SpApiBindingReportingRequest>;
+/**
+ * One profile binding's saved reporting state. `enabledAt` is null when reporting is
+ * disabled, and also for a binding enabled before its start date was recorded.
+ */
+export const SpApiProfileBindingState = z.object({
+  bindingId: Uuid, connectionId: Uuid, profileId: Uuid,
+  profileName: z.string().min(1).max(512),
+  marketplaceId: SpApiProfileSelection.shape.marketplaceId,
+  enabled: z.boolean(),
+  enabledAt: z.iso.datetime({ offset: true }).nullable(),
+  profileSyncEnabled: z.boolean(),
+}).strict().refine((state) => state.enabled || state.enabledAt === null, 'A disabled binding has no reporting start');
+export type SpApiProfileBindingState = z.infer<typeof SpApiProfileBindingState>;
 export const SpApiConnectionInstallation = SpApiConnectionBegin.omit({ requestId: true, nonceHash: true });
 export type SpApiConnectionInstallation = z.infer<typeof SpApiConnectionInstallation>;
 export const SpApiConnectionClaim = z.object({

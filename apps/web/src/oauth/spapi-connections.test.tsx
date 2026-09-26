@@ -87,4 +87,65 @@ describe('seller connection controls', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch.mock.calls[0]![1]).toMatchObject({ method: 'POST' });
   });
+  describe('per-binding reporting control', () => {
+    const connectionId = '33333333-3333-4333-8333-333333333333';
+    const bindingId = '44444444-4444-4444-8444-444444444444';
+    const connection = { id: connectionId,label: 'Synthetic seller',status: 'active' as const,hasCredential: true,bindingCount: 2,enabledBindings: 1 };
+    const disabled = { bindingId,connectionId,profileId: id,profileName: 'Synthetic profile',marketplaceId: 'ATVPDKIKX0DER',
+      enabled: false,enabledAt: null,profileSyncEnabled: true };
+    const enabled = { ...disabled,bindingId: '55555555-5555-4555-8555-555555555555',profileName: 'Synthetic second profile',
+      enabled: true,enabledAt: '2026-09-21T08:30:00.000000+00:00' };
+    it('points the connection copy to the control', () => {
+      render(<SpApiConnections {...base} initial={{ ...operation,state: 'completed',connectionId,attachedBindings: 2 }} connections={[connection]} bindings={[disabled]} />);
+      const pointer = 'Enable reporting for a profile below to receive the weekly search query performance report.';
+      expect(screen.getAllByText((_, element) => element?.tagName === 'P' && element.textContent?.includes(pointer) === true)).toHaveLength(2);
+      expect(screen.queryByText(/until it is separately enabled/)).toBeNull();
+    });
+    it('renders both saved states with one control each for a manager', () => {
+      render(<SpApiConnections {...base} connections={[connection]} bindings={[disabled,enabled]} />);
+      const rows = screen.getAllByTestId('spapi-binding-row');
+      expect(rows).toHaveLength(2);
+      expect(screen.getAllByTestId('spapi-binding-reporting').map((cell) => cell.textContent)).toEqual(['Reporting disabled','Reporting enabled since 2026-09-21']);
+      expect(rows[0]!.textContent).toContain('Synthetic profile'); expect(rows[0]!.textContent).toContain('ATVPDKIKX0DER');
+      expect(screen.getAllByRole('button',{ name: 'Enable reporting' })).toHaveLength(1);
+      expect(screen.getAllByRole('button',{ name: 'Disable reporting' })).toHaveLength(1);
+    });
+    it('never invents a start date and says why an enabled profile is not scheduled', () => {
+      render(<SpApiConnections {...base} connections={[{ ...connection,status: 'revoked',hasCredential: false }]}
+        bindings={[{ ...enabled,enabledAt: null,profileSyncEnabled: false },disabled]} />);
+      expect(screen.getAllByTestId('spapi-binding-reporting')[0]!.textContent).toBe('Reporting enabled (start date not recorded)');
+      expect(screen.getByText(/Profile sync is off/)).toBeDefined();
+      expect(screen.getByText(/while it is inactive/)).toBeDefined();
+      expect((screen.getByRole('button',{ name: 'Enable reporting' }) as HTMLButtonElement).disabled).toBe(true);
+    });
+    it.each(['viewer','analyst'] as const)('shows the saved state without a control to %s', () => {
+      render(<SpApiConnections {...base} mayManage={false} connections={[connection]} bindings={[disabled,enabled]} />);
+      expect(screen.getAllByTestId('spapi-binding-row')).toHaveLength(2);
+      expect(screen.queryAllByRole('button',{ name: /able reporting/ })).toHaveLength(0);
+      expect(screen.getAllByText('Owner or admin only')).toHaveLength(2);
+    });
+    it('posts the exact switch and shows the saved result', async () => {
+      const saved = { ...disabled,enabled: true,enabledAt: '2026-09-26T10:00:00.000000+00:00' };
+      const fetch = vi.spyOn(globalThis,'fetch').mockResolvedValue(Response.json({ binding: saved }));
+      render(<SpApiConnections {...base} connections={[connection]} bindings={[disabled]} />);
+      fireEvent.click(screen.getByRole('button',{ name: 'Enable reporting' }));
+      await waitFor(() => expect(screen.getByTestId('spapi-binding-reporting').textContent).toBe('Reporting enabled since 2026-09-26'));
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(String(fetch.mock.calls[0]![0])).toBe(`/api/amazon/spapi/connections/${connectionId}/bindings/${bindingId}?org=${orgId}`);
+      expect(fetch.mock.calls[0]![1]).toMatchObject({ method: 'POST',body: JSON.stringify({ enabled: true }) });
+      expect(screen.getByRole('button',{ name: 'Disable reporting' })).toBeDefined();
+    });
+    it('keeps the saved state when the switch is refused or answers for another binding', async () => {
+      const fetch = vi.spyOn(globalThis,'fetch')
+        .mockResolvedValueOnce(Response.json({ error: 'Reconnect' },{ status: 409 }))
+        .mockResolvedValueOnce(Response.json({ binding: { ...enabled,bindingId: '66666666-6666-4666-8666-666666666666' } }));
+      render(<SpApiConnections {...base} connections={[connection]} bindings={[disabled]} />);
+      fireEvent.click(screen.getByRole('button',{ name: 'Enable reporting' }));
+      await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Reconnect the seller account'));
+      fireEvent.click(screen.getByRole('button',{ name: 'Enable reporting' }));
+      await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('could not be confirmed'));
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId('spapi-binding-reporting').textContent).toBe('Reporting disabled');
+    });
+  });
 });

@@ -2,7 +2,7 @@ import { readTimeline, readSpListingHistory, readSpReportEvidence } from '@wizar
 import type { TimelineSnapshot, SpEvidence, SpParsedReport, StreamConsumerEvidence } from '@wizard-ads/shared';
 import { readStreamConsumerEvidence } from '../creative/stream-evidence-load';
 import { parseGridView } from '@wizard-ads/shared';
-import { periodFromParams, todayIso } from '../../../app/_lib/periods';
+import { screenPeriod, todayIso } from '../../../app/_lib/periods';
 import { listProfiles } from '../../../app/_lib/profiles';
 import type { ScreenActor } from '../../server/page-read';
 import type { ScreenParams } from '../types';
@@ -17,7 +17,7 @@ export async function load(access: ScreenActor, input: ScreenParams): Promise<Ti
   const savedView = parseGridView(typeof input.searchParams['view'] === 'string' ? input.searchParams['view'] : null);
   const from = typeof input.searchParams['from'] === 'string' ? input.searchParams['from'] : savedView?.dateRange?.start;
   const to = typeof input.searchParams['to'] === 'string' ? input.searchParams['to'] : savedView?.dateRange?.end;
-  const period = periodFromParams({from,to},todayIso());
+  const period = screenPeriod('timeline', {from,to}, todayIso());
   return access.snapshot(async (snapshot) => {
     const handle = { sql: snapshot.sql };
     const profiles = await listProfiles(handle,snapshot.actor.orgId);

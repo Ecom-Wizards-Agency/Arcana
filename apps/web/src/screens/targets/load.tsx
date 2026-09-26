@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation';
 import { loadTarget360 } from './model';
-import { periodFromParams, todayIso } from '../../../app/_lib/periods';
+import { screenPeriod, todayIso } from '../../../app/_lib/periods';
 import { listProfiles } from '../../../app/_lib/profiles';
 import { gridBackLocation } from '../../server/view-state';
 import type { ScreenActor } from '../../server/page-read';
@@ -9,7 +9,7 @@ import type { ScreenParams } from '../types';
 export async function load(access: ScreenActor, input: ScreenParams) {
   if (access.entry.state !== 'ok') return { view: 'gated' as const, state: access.entry.state };
   const query = input.searchParams;
-  const period = periodFromParams({
+  const period = screenPeriod('targets', {
     from: typeof query['from'] === 'string' ? query['from'] : undefined,
     to: typeof query['to'] === 'string' ? query['to'] : undefined,
   }, todayIso());

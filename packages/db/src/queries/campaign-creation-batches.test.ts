@@ -339,8 +339,10 @@ describe('creation batch SQL authority and accounting', () => {
     expect((await run.ledger.reserve(childClaim!,run.nodeId,intent)).kind).toBe('refused');
     const adopted = await run.ledger.load(childClaim!);
     expect(campaignCreationBatchSummary(adopted).accounting).toMatchObject({attempted:0,adopted:1,observed:1});
+    await db.sql`update auth.users set email='synthetic-creator@example.test' where id=${actor.userId}`;
     const queue = await withAuthenticatedReadSnapshot(db,actor,(tx)=>listChangeQueue(tx,{orgId:actor.orgId,profileId,entityType:'campaign_creation'}));
     expect(queue).toHaveLength(2);
+    expect(queue.map((row)=>row.actor)).toEqual([{kind:'operator',name:'synthetic-creator@example.test'},{kind:'operator',name:'synthetic-creator@example.test'}]);
     expect(queue.map((row)=>row.source).sort()).toEqual(['campaign_creation','campaign_creation_retry']);
     expect(queue.find((row)=>row.batchId===parent.id)?.state).toBe('needs_attention');
     expect(queue.find((row)=>row.batchId===child.id)?.reviewHref).toContain(`batch=${child.id}`);

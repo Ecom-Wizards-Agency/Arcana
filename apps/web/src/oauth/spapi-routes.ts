@@ -1,8 +1,10 @@
 // Exception: provider lifecycle commands own authenticated transactions and manager locks.
 import { randomUUID } from 'node:crypto';
-import { AgencyAccessDenied, createSpApiConnectionLifecycle, SpApiConnectionCommandError } from '@wizard-ads/db';
 import {
-  SpApiConnectionBegin, SpApiConnectionSubmit, SpApiStartDatabaseRefusal, Uuid,
+  AgencyAccessDenied, createSpApiConnectionLifecycle, setSpApiBindingReporting, SpApiBindingReportingError, SpApiConnectionCommandError,
+} from '@wizard-ads/db';
+import {
+  SpApiBindingReportingRequest, SpApiConnectionBegin, SpApiConnectionSubmit, SpApiStartDatabaseRefusal, Uuid,
   type SpApiConsentRefusal, type SpApiConnectionOperation, type SpApiDeployment, type SpApiStartRefusal,
 } from '@wizard-ads/shared';
 import { currentOperatorIdentity, authorizeOperatorRole } from '../auth/security-authorization';
@@ -186,7 +188,7 @@ async function admit(orgId: string, manager: boolean, expectedUser?: string) {
   if (authorization.status !== 'ok') {
     throw new CallbackRefusal('authority_changed', session(authorization.status === 'challenge' ? 'assurance_challenge' : 'assurance_error'));
   }
-  return { actor: { orgId, userId: user.id },
+  return { actor: { orgId, userId: user.id }, handle,
     lifecycle: createSpApiConnectionLifecycle(handle, spApiConnectionsEnabled) };
 }
 
@@ -314,4 +316,31 @@ async function connectionCommand(request: Request, id: string, mutation: boolean
       : await (mutation ? lifecycle.cancel(actor, id) : lifecycle.operation(actor, id));
     return value ? json(200, health ? { health: value } : { operation: value }) : json(404, { error: 'Connection not found' });
   } catch { return json(403, { error: 'Connection access could not be verified. Check account security and agency membership.' }); }
+}
+
+/**
+ * Owner or admin switches weekly reporting for one binding of one connection.
+ * The database relocks the role and writes the audit row; web calls no provider.
+ */
+export async function spApiBindingReportingRoute(request: Request, connectionId: string, bindingId: string): Promise<Response> {
+  try {
+    if (!Uuid.safeParse(connectionId).success || !Uuid.safeParse(bindingId).success) return json(404, { error: 'Profile binding not found' });
+    if (request.headers.get('origin') !== new URL(authOrigin()).origin) return json(403, { error: 'Request origin refused' });
+    const body = await request.text();
+    let parsed: ReturnType<typeof SpApiBindingReportingRequest.safeParse>;
+    try { parsed = SpApiBindingReportingRequest.safeParse(body.length <= 1_024 ? JSON.parse(body) : null); }
+    catch { parsed = SpApiBindingReportingRequest.safeParse(null); }
+    if (!parsed.success) return json(400, { error: 'Send {"enabled": true} or {"enabled": false}.' });
+    const { actor, handle } = await admit(one(new URL(request.url).searchParams, 'org') ?? '', true);
+    const binding = await setSpApiBindingReporting(handle, actor, { connectionId, bindingId, enabled: parsed.data.enabled });
+    return binding ? json(200, { binding }) : json(404, { error: 'Profile binding not found' });
+  } catch (error) {
+    if (error instanceof SpApiBindingReportingError && error.reason === 'connection_inactive') {
+      return json(409, { error: 'Reconnect the seller account before enabling reporting.' });
+    }
+    if (error instanceof SpApiBindingReportingError) {
+      return json(503, { error: 'The reporting change could not be confirmed. Refresh to check the saved state.' });
+    }
+    return json(403, { error: 'Reporting access could not be verified. Check account security and agency membership.' });
+  }
 }

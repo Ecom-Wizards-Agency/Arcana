@@ -51,13 +51,19 @@ monitoring network.
 Both runtimes use the same atomic `FOR UPDATE SKIP LOCKED` claim operation, so a job
 cannot be handed to both. Their allowlists also divide responsibility before a claim:
 
-- the always-on service claims `keepa.sync`, `rank.sync`, `economics.sync`, and
-  `sqp.request`;
-- Vercel cron explicitly claims `entity.sync`, `report.request`, `report.poll`,
-  `report.fetch`, and `recommendations.run`.
+- the always-on service (the Evo general worker) claims `keepa.sync`, `rank.sync`,
+  `economics.sync`, `sqp.categorize`, `sqp.request`, and `recommendations.run`;
+- Vercel cron explicitly claims `entity.sync`, `creative.sync`, `report.request`,
+  `report.poll`, `report.fetch`, and `recommendations.run`. It never claims `sqp.request`.
+
+`recommendations.run` is in both allowlists until the recommendation lane is enabled;
+the shared claim operation still hands each job to one runtime.
 
 Configure the always-on service as `WORKER_DEPLOYMENT_ROLE=general` with
-`WORKER_JOB_TYPES` set to `keepa.sync,rank.sync,economics.sync,sqp.request`.
+`WORKER_JOB_TYPES` set to
+`keepa.sync,rank.sync,economics.sync,sqp.categorize,sqp.request,recommendations.run`.
+The Evo general worker's runtime refuses to start the worker mode with any other set;
+the connection-only mode does not read it.
 `sqp.request` requires both `SP_API_LWA_CLIENT_ID` and `SP_API_LWA_CLIENT_SECRET`,
 an active SP-API connection with a Vault-backed refresh credential, and an exact
 profile/marketplace binding. These SP-API credentials are separate from Ads LWA
@@ -205,7 +211,9 @@ can never name a credential variable or the revision. It adds
 the web deployment's `SP_API_OAUTH_REDIRECT_URI`, and the client id and
 application id must equal the web deployment's. The runtime refuses a gate other
 than `0` or `1`, a region other than `NA`, `EU` or `FE`, a template placeholder,
-and an enabled gate without every setting and both credentials.
+an enabled gate without every setting and both credentials. The worker mode also
+refuses a `WORKER_JOB_TYPES` that is not exactly the six general-worker job types,
+each listed once.
 
 `wizard-ads-spapi-connections.service` is a template for the connection-only
 command. It is not installed by the WP-326 upgrade. Its runtime mode passes only
@@ -214,14 +222,16 @@ while `worker.json` gives the loop to the general worker.
 
 Lanes after the upgrade:
 
-- The Evo general worker keeps `keepa.sync`, `rank.sync`, `economics.sync`,
-  `sqp.categorize` and `recommendations.run` and additionally runs the SP-API
-  connection loop. None of its claimed job types is an Amazon Ads job, so it
-  builds no Ads client and makes no Amazon Ads call. `sqp.categorize` remains
-  declared but unimplemented.
+- The Evo general worker claims six job types: `keepa.sync`, `rank.sync`,
+  `economics.sync`, `sqp.categorize`, `sqp.request` and `recommendations.run`. It
+  also runs the SP-API connection loop and, because it claims `sqp.request` and
+  holds both LWA credentials, the weekly SQP producer. None of its claimed job
+  types is an Amazon Ads job, so it builds no Ads client and makes no Amazon Ads
+  call. `sqp.categorize` remains declared but unimplemented.
 - The Vercel cron tick keeps `entity.sync`, `creative.sync`, `report.request`,
   `report.poll` and `report.fetch`, and `recommendations.run` unless the
-  recommendation lane is enabled. `OPENSPELL_EVO_REPORT_LANE_READY` stays unset.
+  recommendation lane is enabled. It does not run `sqp.request`.
+  `OPENSPELL_EVO_REPORT_LANE_READY` stays unset.
 - The Amazon Ads connection loop runs only in a general worker with
   `OPENSPELL_AMAZON_CONNECTIONS_ENABLED=1` whose allowlist contains `entity.sync`.
   The Evo general worker has neither, the Vercel cron route does not compose the

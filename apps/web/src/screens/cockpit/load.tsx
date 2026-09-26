@@ -26,7 +26,7 @@ import type { ScreenParams } from '../types';
  * by the org the gate resolved.
  */
 
-import { analyzeAccount, classifyCampaignCategory, computePacing, evaluate, pacingFlag } from '@wizard-ads/core';
+import { analyzeAccount, classifyCampaignCategory, computePacing, evaluate, pacingFlag, windowEvidence } from '@wizard-ads/core';
 
 import type { DailyRow, Flag } from '@wizard-ads/core';
 
@@ -52,7 +52,7 @@ import { readDashboardOperatingStatus } from '../../dashboard/operating-status';
 
 import { loadCampaignDailyRows, loadProfileDailyRows } from '../../../app/_lib/dashboard-data';
 
-import { addDays, periodFromParams, settledComparisonWindows, todayIso } from '../../../app/_lib/periods';
+import { addDays, screenPeriod, settledComparisonWindows, todayIso } from '../../../app/_lib/periods';
 
 import { listProfiles } from '../../../app/_lib/profiles';
 
@@ -73,7 +73,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   const params = await searchParams;
   const profileId = await Promise.resolve(access.requestedProfile);
   const today = todayIso();
-  const period = periodFromParams(params, today);
+  const period = screenPeriod('cockpit', params, today);
   const settled = settledComparisonWindows(period, today);
   const analysisWindow = { start: addDays(period.start, -8), end: period.end };
 
@@ -201,7 +201,8 @@ async function DashboardCrosscheck({
   return model === null ? null : <CrosscheckChip chip={model.chip} />;
 }
 
-async function DashboardCampaignInsights({
+/** Exported for its render test; mounted only through `load`'s third slot. */
+export async function DashboardCampaignInsights({
   handle,
   actor,
   orgId,
@@ -236,7 +237,8 @@ async function DashboardCampaignInsights({
     category: classifyCampaignCategory(row.campaignName),
   }));
   const analysis = analyzeAccount(profileLabel, reportDate, analysisRows, categorised);
-  const flags = evaluate(analysis, null, goalLens);
+  // The same window evidence Home passes, so the evidence floor applies here too.
+  const flags = evaluate(analysis, null, goalLens, windowEvidence(reportDate, analysisRows, categorised));
   const activeFlags: Flag[] =
     pacingAlert === null ? flags.active : [pacingAlert, ...flags.active];
 
@@ -273,7 +275,7 @@ async function DashboardCampaignInsights({
 
   return (
     <>
-      <FlagsCard active={activeFlags as FlagView[]} suppressed={flags.suppressed as FlagView[]} />
+      <FlagsCard active={activeFlags as FlagView[]} suppressed={flags.suppressed as FlagView[]} flooredCount={flags.floored.length} />
       <CampaignTable
         rows={campaignSummary}
         currencyCode={currencyCode}

@@ -11,8 +11,8 @@ const url=(params:Record<string,string>={})=>`/time-machine?${new URLSearchParam
 async function open(page:Page,params:Record<string,string>={}) { await page.goto(url(params)); await expect(page.locator('main[data-interactive="true"]')).toBeVisible(); }
 test('the timeline shows both a sync-detected change and an operator apply',async({page})=>{
   await open(page); await expect(page).toHaveURL(/\/change-queue\?/);
-  expect(await page.getByTestId('entry-source').filter({hasText:'changed at Amazon'}).count()).toBeGreaterThan(0);
-  expect(await page.getByTestId('entry-source').filter({hasText:'we sent it'}).count()).toBeGreaterThan(0);
+  expect(await page.getByTestId('entry-source').filter({hasText:'Ads console'}).count()).toBeGreaterThan(0);
+  expect(await page.getByTestId('entry-source').filter({hasText:'Arcana · Batch'}).count()).toBeGreaterThan(0);
   const marker=page.getByTestId('timeline-entry').filter({hasText:MARKER});
   await expect(marker).toHaveCount(1); await expect(marker).toContainText('$10.00');await expect(marker).toContainText('$15.00');
   await expect(page.getByRole('columnheader')).toHaveCount(8);
@@ -71,17 +71,21 @@ test('reviews uniquely synchronized evidence and exports an exact inverse file',
   expect(result.rows).toBe(1);expect(result.amazonUpdated).toBe(false);expect(result.downloads.rows).toMatch(/\/api\/recommendations\/export\/.+\?format=rows/);expect(result.sourceBatchId).toBe(batchId);
 });
 test('filters narrow by source, entity type and field',async({page})=>{
-  await open(page,{source:'apply'});await expect(page.getByText(MARKER)).toHaveCount(0);await expect(page.getByTestId('entry-source').filter({hasText:'changed at Amazon'})).toHaveCount(0);
+  await open(page,{source:'apply'});await expect(page.getByText(MARKER)).toHaveCount(0);await expect(page.getByTestId('entry-source').filter({hasText:'Ads console'})).toHaveCount(0);
   await open(page,{source:'sync'});await expect(page.getByText(MARKER)).toHaveCount(1);
   await open(page,{type:'keyword'});await expect(page.getByText(MARKER)).toHaveCount(0);
   await open(page,{type:'campaign'});await expect(page.getByText(MARKER)).toHaveCount(1);
   await open(page,{field:'bid'});await expect(page.getByText(MARKER)).toHaveCount(0);
   await open(page,{field:'budget'});await expect(page.getByText(MARKER)).toHaveCount(1);
-  await open(page,{from:'2000-01-01',to:'2000-12-31'});await expect(page.getByTestId('timeline-empty-filtered')).toHaveText('No changes recorded in this range');await expect(page.getByTestId('timeline-entry')).toHaveCount(0);
+  // The saved view carries the last field filter into this date-only URL, and the empty message names it.
+  await open(page,{from:'2000-01-01',to:'2000-12-31'});await expect(page.getByTestId('timeline-empty-filtered')).toHaveText('No changes match this filter: Field is budget in this date range. Remove it to see more changes.');await expect(page.getByTestId('timeline-entry')).toHaveCount(0);
 });
 test('the filter form carries the selected values',async({page})=>{
-  await open(page,{source:'apply',type:'keyword',field:'bid'});await page.getByText('Filter',{exact:true}).click();
+  await open(page,{source:'apply',type:'keyword',field:'bid'});
   await expect(page.getByTestId('filter-source')).toHaveValue('apply');await expect(page.getByTestId('filter-type')).toHaveValue('keyword');await expect(page.getByTestId('filter-field')).toHaveValue('bid');await expect(page.getByTestId('filter-clear')).toBeVisible();
+  await expect(page.getByTestId('filter-chip')).toHaveText(['Source: Arcana · Batch ×','Entity type: keyword ×','Field: bid ×']);
+  await page.getByTestId('filter-field').selectOption('');
+  await expect(page).not.toHaveURL(/[?&]field=/);await expect(page.getByTestId('filter-chip')).toHaveCount(2);await expect(page.getByTestId('filter-type')).toHaveValue('keyword');
 });
 test.describe('as another tenant',()=>{
   test.use({extraHTTPHeaders:{'x-wizard-ads-auth-bridge':BRIDGE,'x-wizard-ads-user-id':USER_B,'x-wizard-ads-org-id':ORG_B}});

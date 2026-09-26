@@ -37,6 +37,8 @@ function fixture() {
     if (command.includes('insert into public.spapi_connections')) return [{ id: '44444444-4444-4444-8444-444444444444',
       org_id: operation.orgId,label: installation.label,selling_partner_id: 'synthetic-seller',marketplace_ids: ['ATVPDKIKX0DER'],
       status: 'pending',has_credential: false }];
+    // A first attachment has no binding with reporting on, so the reconnect audit writes nothing.
+    if (command.includes('from public.spapi_profile_bindings') && command.includes('for update')) return [];
     if (command.includes('insert into public.spapi_profile_bindings')) return [{ org_id: operation.orgId,
       profile_id: installation.bindings[0]!.profileId,connection_id: '44444444-4444-4444-8444-444444444444',
       marketplace_id: 'ATVPDKIKX0DER',enabled: false,region: 'NA',timezone: 'UTC' }];

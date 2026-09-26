@@ -862,7 +862,9 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
       description:
         'Goal-aware, severity-tagged flags from the doctrine engine, plus the suppressed list. ' +
         'A suppressed flag is shown, never dropped: an ACOS swing on a Rank campaign is a ' +
-        'last-click attribution artifact, and saying so is more useful than hiding it.',
+        'last-click attribution artifact, and saying so is more useful than hiding it. ' +
+        '`floored` counts signals held back by the evidence floor (too few impressions or days ' +
+        'of data in the window to raise).',
       inputSchema: {
         profile_id: profileIdSchema,
         as_of: IsoDate.optional().describe('Defaults to the latest day with facts'),
@@ -879,7 +881,7 @@ function registerReadTools(server: McpServer, context: ServerContext): void {
             asOf: null,
             note: 'No facts are loaded for this profile, so there is nothing to evaluate.',
           },
-        summary: { active: flags?.active.length ?? 0, suppressed: flags?.suppressed.length ?? 0 },
+        summary: { active: flags?.active.length ?? 0, suppressed: flags?.suppressed.length ?? 0, floored: flags?.floored ?? 0 },
         profileId: profile.id,
       };
     }),

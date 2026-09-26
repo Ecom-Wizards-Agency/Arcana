@@ -556,7 +556,7 @@ export function DataGrid({
         style={fill ? scrollerFill : { ...scroller, height }}
         data-testid="grid-scroller"
         role={model.grouped ? 'treegrid' : 'grid'}
-        aria-label={model.grouped ? `Results grouped by ${model.groupBy.join(', ')}` : 'Results'}
+        aria-label={model.grouped ? `Results grouped by ${model.groupBy.map((id) => columns.find((column) => column.id === id)?.header ?? id).join(', ')}` : 'Results'}
         aria-colcount={columns.length}
         aria-rowcount={model.shown + (totalsRow === null ? 1 : 2)}
         aria-multiselectable={onSelectionChange === undefined ? undefined : true}

@@ -6,7 +6,7 @@ import type { ScreenActor } from '../../server/page-read';
 import type { ScreenParams } from '../types';
 import { producerEligibility, type CreativeLifecycleEvidence } from '../../creative/lifecycle';
 import { creativeSyncPolicyFromEnv } from '../../server/sync-tick';
-import { periodFromParamsThroughToday, todayIsoInTimeZone } from '../../../app/_lib/periods';
+import { screenPeriod, screenToday } from '../../../app/_lib/periods';
 import { listProfiles } from '../../../app/_lib/profiles';
 
 export type CreativeMode = 'list' | 'detail' | 'campaign' | 'eligibility';
@@ -24,9 +24,9 @@ export async function loadCreativeScreen(access: ScreenActor, input: ScreenParam
   const profile = access.selectProfile(profiles);
   if (profile === null) return { view: 'empty' as const, props: {} };
   const providerEvidence = await access.readSql((sql) => readProviderEvidence({ sql }, { orgId, profileId: profile.id, consumer: 'creative' }));
-  const profileToday = todayIsoInTimeZone(profile.timezone);
+  const profileToday = screenToday('creative', profile.timezone);
   const from = one(input.searchParams['from']), to = one(input.searchParams['to']);
-  const period = periodFromParamsThroughToday({ ...(from === undefined ? {} : { from }), ...(to === undefined ? {} : { to }) }, profileToday);
+  const period = screenPeriod('creative', { from, to }, profileToday);
   const selectedPresetId = one(input.searchParams['preset']);
   const [workspace, snapshot, latestJob, listingEvidence, listingReports, coreEvidence, ownListingEvidence] = await access.readSql(async (sql) => Promise.all([
     readCreativeWorkspace({ sql }, { orgId, profileId: profile.id, from: period.start, to: period.end }),

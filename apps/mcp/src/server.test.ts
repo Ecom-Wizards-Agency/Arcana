@@ -520,6 +520,7 @@ describe.skipIf(!available)('the MCP server', () => {
       expect(flags.isError).toBe(false);
       expect(Array.isArray(flags.payload['active'])).toBe(true);
       expect(Array.isArray(flags.payload['suppressed'])).toBe(true);
+      expect(typeof flags.payload['floored']).toBe('number');
       expect((flags.payload['goalLens'] as { key: string }).key).toBe('scale');
 
       const pacing = await call(client, 'get_pacing', { profile_id: profileA });
@@ -533,6 +534,44 @@ describe.skipIf(!available)('the MCP server', () => {
       expect(other.payload['pacing']).toBeNull();
       expect((other.payload['notes'] as string[]).join(' ')).toContain('No monthly budget');
     } finally {
+      await client.close();
+    }
+  });
+
+  it('counts signals below the evidence floor in get_flags instead of dropping them', async () => {
+    const client = await connect(server, tokenA);
+    const campaignId = 'wp318-thin';
+    try {
+      const before = await call(client, 'get_flags', { profile_id: profileA });
+      const baseline = before.payload['floored'] as number;
+      expect(Number.isInteger(baseline)).toBe(true);
+      const asOf = before.payload['asOf'] as string;
+
+      // Eight days of a campaign with one impression a day whose spend triples
+      // on the report day: a spend spike on no evidence.
+      const inserted = await database.sql<{ id: string }[]>`
+        insert into public.fact_sp_target_daily
+          (org_id, profile_id, date, ad_product, campaign_id, ad_group_id, target_id,
+           target_kind, match_type, impressions, clicks, cost, purchases_7d, sales_7d, units_sold_7d)
+        select ${orgAId}, ${profileA}, ${asOf}::date - d, 'SP', ${campaignId}, 'wp318-ag', 'wp318-target',
+               'keyword', 'exact', 1, 1, case when d = 0 then 30 else 10 end, 0, 0, 0
+          from generate_series(0, 7) as d
+        returning campaign_id as id
+      `;
+      expect(inserted).toHaveLength(8);
+
+      const after = await call(client, 'get_flags', { profile_id: profileA });
+      expect(after.isError).toBe(false);
+      expect(after.payload['asOf']).toBe(asOf);
+      expect(after.payload['floored']).toBe(baseline + 1);
+      const scopes = [...(after.payload['active'] as { scope: string }[]), ...(after.payload['suppressed'] as { scope: string }[])]
+        .map((flag) => flag.scope);
+      expect(scopes).not.toContain(campaignId);
+    } finally {
+      await database.sql`
+        delete from public.fact_sp_target_daily
+         where org_id = ${orgAId} and profile_id = ${profileA} and campaign_id = ${campaignId}
+      `;
       await client.close();
     }
   });

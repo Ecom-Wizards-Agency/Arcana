@@ -4,7 +4,7 @@ import type { ScreenParams } from '../types';
 
 /** Agency connections and persisted worker progress. URL parameters never supply result counts. */
 
-import { latestAmazonConnection, readAmazonConnection, latestSpApiConnection, createSpApiConnectionLifecycle } from '@wizard-ads/db';
+import { latestAmazonConnection, readAmazonConnection, latestSpApiConnection, createSpApiConnectionLifecycle, listSpApiProfileBindings } from '@wizard-ads/db';
 
 import { Uuid, type Region } from '@wizard-ads/shared';
 
@@ -55,7 +55,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
     access.readSql(async (sql) => ({
       connections: await listConnections({ sql }, org.orgId),
       roster: await loadRoster({ sql }, org.orgId),
-      spApi: await loadSpApiConnections({ sql }, org.orgId, consentRegion),
+      spApi: { ...await loadSpApiConnections({ sql }, org.orgId, consentRegion), bindings: await listSpApiProfileBindings({ sql }, org.orgId) },
     })),
     enabled ? (query.operation !== undefined
       ? Uuid.safeParse(query.operation).success ? readAmazonConnection(handle, actor, query.operation) : null

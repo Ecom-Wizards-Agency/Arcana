@@ -27,10 +27,17 @@ test('acknowledging an observed change retains a visible receipt',async({page})=
   await expect(badge).not.toHaveText('—');
   const before=Number(await badge.textContent());
   expect(Number.isInteger(before)).toBe(true);
-  await row.getByLabel('Actions for Synthetic queue acknowledgement').click();
-  await row.getByRole('button',{name:'Acknowledge'}).click();
+  await expect(row.getByTestId('entry-owner')).toHaveText('Ads console user');
+  const actions=row.getByRole('button',{name:'Actions for Synthetic queue acknowledgement'});
+  await actions.click();
+  await expect(row.getByRole('menuitem')).toHaveText(['Copy change ID','Open targets grid','Acknowledge']);
+  await row.getByRole('menuitem',{name:'Acknowledge'}).click();
   await expect(row).toContainText('acknowledged');
-  await expect(row.getByLabel('Actions for Synthetic queue acknowledgement')).toHaveCount(0);
+  await actions.click();
+  await expect(row.getByRole('menuitem')).toHaveText(['Copy change ID','Open targets grid']);
+  await page.keyboard.press('Escape');
+  await expect(row.getByRole('menu')).toHaveCount(0);
+  await expect(actions).toBeFocused();
   await expect(badge).toHaveText(String(before-1));
 });
 test('captures both screens at 1440 by 1024 in light and dark themes',async({page},testInfo)=>{
@@ -52,7 +59,7 @@ test('captures both screens at 1440 by 1024 in light and dark themes',async({pag
     expect(Math.abs(frame!.width-1200)).toBeLessThanOrEqual(2);
     await expect(page.getByRole('row')).toHaveCount(screen==='restore-preview'?8:7);
     const widths=await page.locator('main th').evaluateAll(cells=>cells.map(cell=>cell.getBoundingClientRect().width));
-    const expected=screen!=='restore-preview'?[130,300,96,92,92,168,300,118]:[250,82,82,82,96,130];
+    const expected=screen!=='restore-preview'?[130,280,96,140,140,200,228,150]:[250,82,120,120,120,130];
     for(let index=0;index<expected.length;index++) expect(Math.abs(widths[index]!-expected[index]!)).toBeLessThanOrEqual(2);
     const heights=await page.locator('main tbody tr').evaluateAll(rows=>rows.map(row=>row.getBoundingClientRect().height));
     expect(heights.every(height=>Math.abs(height-(screen!=='restore-preview'?40:38))<=2)).toBe(true);
@@ -169,7 +176,7 @@ test('builds only the two ready restore rows and creates execution work only on 
     await page.getByRole('link',{name:'Back to Change queue'}).click();
     const proposal=page.getByTestId('timeline-entry').filter({hasText:'Restore proposal · 2 changes'});
     await expect(proposal).toContainText('awaiting review');
-    await expect(proposal.getByTestId('entry-source')).toHaveText('Restore');
+    await expect(proposal.getByTestId('entry-source')).toHaveText('Arcana · Restore');
     await proposal.getByRole('link').click();
     const [counts]=await db.sql`select (select count(*)::int from public.sp_write_execution_requests where plan_id=${planId}) as outbox,(select count(*)::int from public.sp_write_provider_call_intents where plan_id=${planId}) as calls`;
     expect(counts).toEqual({outbox:0,calls:0});

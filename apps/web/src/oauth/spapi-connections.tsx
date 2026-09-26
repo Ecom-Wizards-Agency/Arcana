@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ProviderConnectionHealth, SpApiConnectionOperation, SpApiConsentRefusal } from '@wizard-ads/shared';
+import { ProviderConnectionHealth, SpApiConnectionOperation, SpApiConsentRefusal, SpApiProfileBindingState } from '@wizard-ads/shared';
 import type { SpApiConnectionSummary, SpApiSelectableProfile } from '../data/connections';
 import { parseSpApiStartRefusal, spApiStartRefusalMessage } from '../screens/settings-connections/spapi-start-refusal';
 import { TableFrame } from '../ui/primitives';
@@ -35,10 +35,20 @@ const callbackMessages: Record<SpApiConsentRefusal, string> = {
   provider_refused: 'Seller authorization was declined. Start again when ready.',
 };
 
+const noBindings: SpApiProfileBindingState[] = [];
+const enableReporting = 'Enable reporting for a profile below to receive the weekly search query performance report.';
+
+/** The saved state in words. A missing start date is said, never replaced by a date. */
+export function reportingStateLabel(binding: SpApiProfileBindingState): string {
+  if (!binding.enabled) return 'Reporting disabled';
+  // The database renders its session offset; the date shown is always UTC.
+  return binding.enabledAt ? `Reporting enabled since ${new Date(binding.enabledAt).toISOString().slice(0, 10)}` : 'Reporting enabled (start date not recorded)';
+}
+
 /** `callbackError` carries a callback or a start refusal code; `startDetail` is the start refusal's fixed detail. */
-export function SpApiConnections({ orgId, mayManage, enabled, connections, profiles, initial, callbackError, startDetail = null }: {
+export function SpApiConnections({ orgId, mayManage, enabled, connections, profiles, bindings = noBindings, initial, callbackError, startDetail = null }: {
   orgId: string; mayManage: boolean; enabled: boolean; connections: SpApiConnectionSummary[];
-  profiles: SpApiSelectableProfile[]; initial: SpApiConnectionOperation | null; callbackError: string | null;
+  profiles: SpApiSelectableProfile[]; bindings?: SpApiProfileBindingState[]; initial: SpApiConnectionOperation | null; callbackError: string | null;
   startDetail?: string | null;
 }) {
   const router = useRouter();
@@ -47,6 +57,10 @@ export function SpApiConnections({ orgId, mayManage, enabled, connections, profi
   const [health, setHealth] = useState<ProviderConnectionHealth | null>(null);
   const [revokeId, setRevokeId] = useState<string | null>(null);
   const [label, setLabel] = useState('');
+  const [savedBindings, setSavedBindings] = useState<Record<string, SpApiProfileBindingState>>({});
+  const [switching, setSwitching] = useState<string | null>(null);
+  // A refreshed server list supersedes switches confirmed before it.
+  useEffect(() => { setSavedBindings((current) => Object.keys(current).length ? {} : current); }, [bindings]);
   const lifetime = useRef<AbortController | null>(null);
   useEffect(() => { const controller = new AbortController(); lifetime.current = controller; return () => controller.abort(); }, []);
   const active = operation !== null && pending.has(operation.state);
@@ -97,6 +111,28 @@ export function SpApiConnections({ orgId, mayManage, enabled, connections, profi
     } catch { if (!signal?.aborted) setError('The action could not be confirmed. Refresh to check the saved connection.'); }
   }
 
+  async function switchReporting(binding: SpApiProfileBindingState, next: boolean): Promise<void> {
+    const signal = lifetime.current?.signal;
+    setError(null); setSwitching(binding.bindingId);
+    try {
+      const response = await fetch(`/api/amazon/spapi/connections/${binding.connectionId}/bindings/${binding.bindingId}?${new URLSearchParams({ org: orgId })}`, {
+        method: 'POST', cache: 'no-store', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: next }),
+      });
+      if (response.status === 409) throw new Error('Inactive');
+      if (!response.ok) throw new Error('Unavailable');
+      const body = await response.json() as { binding?: unknown };
+      const saved = SpApiProfileBindingState.parse(body.binding);
+      if (saved.bindingId !== binding.bindingId || saved.connectionId !== binding.connectionId || saved.enabled !== next) throw new Error('Scope changed');
+      if (signal?.aborted) return;
+      setSavedBindings((current) => ({ ...current, [saved.bindingId]: saved }));
+      router.refresh();
+    } catch (reason) {
+      if (signal?.aborted) return;
+      setError(reason instanceof Error && reason.message === 'Inactive' ? 'Reconnect the seller account before enabling reporting.'
+        : 'The reporting change could not be confirmed. Refresh to check the saved state.');
+    } finally { if (!signal?.aborted) setSwitching(null); }
+  }
+
   const callbackRefusal = SpApiConsentRefusal.safeParse(callbackError);
   const startRefusal = callbackError && !callbackRefusal.success ? parseSpApiStartRefusal(callbackError, startDetail) : null;
   const linked = connections.find((connection) => connection.id === operation?.connectionId);
@@ -108,14 +144,14 @@ export function SpApiConnections({ orgId, mayManage, enabled, connections, profi
 
   return <section data-testid="spapi-connections">
     <h2 style={subheading}>Seller Central</h2>
-    <p style={muted}>Connect a seller account for the selected profiles. Reporting stays disabled until it is separately enabled.</p>
+    <p style={muted}>Connect a seller account for the selected profiles. Reporting starts disabled. {enableReporting}</p>
     {callbackError && !startRefusal ? <p role="alert" style={banner('bad')}>{callbackRefusal.success ? callbackMessages[callbackRefusal.data] : 'Seller authorization could not be verified. Start again from Connections.'}</p> : null}
     {error ? <p role="alert">{error}</p> : null}
     {operation ? <div aria-live="polite" style={banner(operation.state === 'completed' && connected ? 'good' : 'warn')} data-testid="spapi-progress">
       <strong>{operation.state === 'completed' && !connected ? completedLabel : labels[operation.state]}</strong>
       {operation.reason ? <p>{reasons[operation.reason]}</p> : null}
       <p>{operation.attachedBindings} of {operation.requestedBindings} selected profiles attached.</p>
-      {operation.state === 'completed' ? <p>Reporting was left disabled when this connection completed.</p> : null}
+      {operation.state === 'completed' ? <p>Reporting was left disabled when this connection completed. {enableReporting}</p> : null}
       {active && mayManage ? <button className="wa-btn wa-btn--sm" type="button" onClick={() => void command(operation.operationId, 'cancel')}>Cancel seller connection</button> : null}
     </div> : null}
     {connections.length ? <TableFrame><table style={table}>
@@ -133,6 +169,25 @@ export function SpApiConnections({ orgId, mayManage, enabled, connections, profi
       </> : null}
       </div></td>
     </tr>)}</tbody></table></TableFrame> : null}
+    {bindings.length ? <TableFrame><table style={table} data-testid="spapi-bindings">
+      <thead><tr>{['Seller connection','Profile','Marketplace','Weekly search query performance report','Actions'].map((title) => <th key={title} style={th}>{title}</th>)}</tr></thead>
+      <tbody>{bindings.map((listed) => {
+        const binding = savedBindings[listed.bindingId] ?? listed;
+        const connection = connections.find((row) => row.id === binding.connectionId);
+        const usable = connection?.status === 'active' && connection.hasCredential;
+        return <tr key={binding.bindingId} data-testid="spapi-binding-row">
+          <td style={td}>{connection?.label ?? 'Unknown connection'}</td>
+          <td style={td}>{binding.profileName}</td>
+          <td style={td}>{binding.marketplaceId}</td>
+          <td style={td}><span data-testid="spapi-binding-reporting">{reportingStateLabel(binding)}</span>
+            {binding.enabled && !binding.profileSyncEnabled ? <p style={muted}>Profile sync is off, so no weekly request is scheduled for this profile.</p> : null}
+            {binding.enabled && !usable ? <p style={muted}>Reconnect the seller account; no weekly request is scheduled while it is inactive.</p> : null}</td>
+          <td style={td}>{mayManage ? binding.enabled
+            ? <button className="wa-btn wa-btn--sm" type="button" disabled={switching !== null} onClick={() => void switchReporting(binding, false)}>Disable reporting</button>
+            : <button className="wa-btn wa-btn--sm" type="button" disabled={switching !== null || !usable} onClick={() => void switchReporting(binding, true)}>Enable reporting</button>
+            : <span style={muted}>Owner or admin only</span>}</td>
+        </tr>;
+      })}</tbody></table></TableFrame> : null}
     {health ? <p role="status">Saved connection health: {health.state} · {health.hasCredential ? 'Credential stored' : 'No active credential'}</p> : null}
     {startRefusal ? <p role="alert" style={banner('bad')} data-testid="spapi-start-refusal">{spApiStartRefusalMessage(startRefusal)}</p> : null}
     {!mayManage ? <p style={muted}>Connecting Seller Central requires the admin or owner role.</p>
