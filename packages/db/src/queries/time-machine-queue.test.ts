@@ -79,6 +79,32 @@ it('names the owner of each change by kind, with member names only for an owner 
     expect(unauthenticated.filter(row=>row.actor.kind==='operator')).toHaveLength(5);
   } finally { await db.sql`update public.apply_batches set created_by=null where id=${batch}`; }
 });
+it('says on each batch row whether the batch restore preview can open, and null where there is no batch',async()=>{
+  const rows=await withAuthenticatedActor(db,actor,sql=>listChangeQueue({sql},{orgId,profileId}));
+  expect(rows).toHaveLength(8);
+  const shape=(list:typeof rows)=>list.map(row=>`${row.source}:${row.entityId}:${String(row.batchRestorable)}`).sort();
+  // Three rows, three reversible, none unsupported: every batch row can open its preview.
+  expect(shape(rows)).toEqual([
+    'apply:ambiguous:true','apply:ambiguous:true','apply:unique:true',
+    'queued:queued-target:null','queued:queued-target:null',
+    'sync:ambiguous:null','sync:external:null','sync:unique:true',
+  ]);
+  const batch=rows.find(row=>row.source==='apply')!.batchId!;
+  // A create row without a before-value: the preview refuses the batch, so each row says false.
+  await db.sql`update public.apply_batches set exported_proposals=4,unsupported_rows=1 where id=${batch}`;
+  try {
+    const refused=await withAuthenticatedActor(db,actor,sql=>listChangeQueue({sql},{orgId,profileId}));
+    expect(refused).toHaveLength(8);
+    expect(shape(refused).filter(entry=>entry.endsWith(':false'))).toEqual(['apply:ambiguous:false','apply:ambiguous:false','apply:unique:false','sync:unique:false']);
+    expect(refused.filter(row=>row.batchId===null).every(row=>row.batchRestorable===null)).toBe(true);
+  } finally { await db.sql`update public.apply_batches set exported_proposals=3,unsupported_rows=0 where id=${batch}`; }
+  // The ledger expecting more reversible rows than were recorded is refused the same way.
+  await db.sql`update public.apply_batches set exported_proposals=4,reversible_rows=4 where id=${batch}`;
+  try {
+    const short=await listChangeQueue(db,{orgId,profileId,source:'apply'});
+    expect(short.map(row=>row.batchRestorable)).toEqual([false,false,false]);
+  } finally { await db.sql`update public.apply_batches set exported_proposals=3,reversible_rows=3 where id=${batch}`; }
+});
 it('counts pending proposals and observations, records actor and time once, and does not enqueue',async()=>{
   expect(await withAuthenticatedActor(db,actor,sql=>countChangeQueue({sql},{orgId,profileId}))).toBe(4);
   await withAuthenticatedOrgEditor(db,actor,tx=>acknowledgeObservedChange(tx,{profileId,changeId:observedId}));

@@ -1,9 +1,9 @@
 /**
  * Stored codes to words, for the columns whose values are Amazon's vocabulary.
  *
- * The grid keeps the code as the value: filters, saved views, grouping keys,
- * sorting and CSV all carry `close_match`, because that is what the data and a
- * shared link say. Only what is drawn goes through here, and the words come from
+ * The grid keeps the code as the value: filters, saved views, grouping keys
+ * and sorting all carry `close_match`, because that is what the data and a
+ * shared link say. Only what is drawn or exported to CSV goes through here, and the words come from
  * the one mapping in `@wizard-ads/shared`, so a cell, a group header, a filter
  * option and a filter chip can never name the same value differently.
  */

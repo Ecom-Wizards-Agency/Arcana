@@ -6,7 +6,7 @@ export const entries: ChangeQueueEntry[] = ['apply','sync','sync','apply','queue
   entityType:'keyword',entityId:`synthetic-${index}`,field:'bid',oldValue:1,newValue:2,source:source as ChangeQueueEntry['source'],
   state: (['confirmed','observed','unattributed','confirmed','awaiting review','approved'] as const)[index]!,
   batchId: source==='apply'?id(index+1):null,batchLabel:source==='apply'||index===2?String(1000+index):null,
-  batchCount:source==='apply'?7:null,experimentStart:index===3,candidateCount:index===2?2:0,
+  batchCount:source==='apply'?7:null,experimentStart:index===3,candidateCount:index===2?2:0,batchRestorable:source==='apply'?true:null,
   acknowledgedAt:null,acknowledgedBy:null,
   actor:source==='sync'?{kind:'ads_console',name:null}:index===0?{kind:'operator',name:'Synthetic operator'}:index===3?{kind:'automation',name:null}:{kind:'operator',name:null},
   reviewHref:source==='queued'?['/targets',`synthetic-${index}`,'queue',id(index+1)].join('/') + '?' + new URLSearchParams({profile:id(50)}):null,

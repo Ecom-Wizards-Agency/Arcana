@@ -145,7 +145,7 @@ test.describe('recommendations review', () => {
     await page.getByRole('columnheader', { name: 'Queue', exact: true }).dragTo(bar);
     await expect(page.getByRole('list', { name: 'Ordered grouping levels' }).getByRole('listitem'))
       .toHaveCount(1);
-    await expect(page.getByRole('treegrid', { name: 'Results grouped by queue' })).toBeVisible();
+    await expect(page.getByRole('treegrid', { name: 'Results grouped by Queue' })).toBeVisible();
     await expect(page.getByTestId('queue-grouped-note')).toContainText('Remove the grouping levels');
     await expect(proposalRows(page)).toHaveCount(0);
   });

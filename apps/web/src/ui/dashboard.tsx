@@ -343,9 +343,12 @@ export function groupFlags(flags: readonly FlagView[]): FlagGroup[] {
 export function FlagsCard({
   active,
   suppressed,
+  flooredCount = 0,
 }: {
   active: readonly FlagView[];
   suppressed: readonly FlagView[];
+  /** Signals held back by the evidence floor; counted, never shown as raised. */
+  flooredCount?: number;
 }): ReactNode {
   const groups = groupFlags(active);
   const primary = groups.slice(0, 4);
@@ -393,6 +396,11 @@ export function FlagsCard({
           </div>
         </details>
       )}
+      {flooredCount > 0 ? (
+        <p className="wa-hint" data-testid="flags-floored">
+          {flooredCount} signal{flooredCount === 1 ? '' : 's'} below the evidence floor. Too few impressions or days of data in the window to raise; not counted above.
+        </p>
+      ) : null}
     </Card>
   );
 }

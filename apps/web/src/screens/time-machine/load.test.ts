@@ -44,7 +44,7 @@ it('preserves microsecond creation cursors and rejects malformed boundaries',()=
 it('lists entity type and field options from the rows the other filters allow',async()=>{
   const profile={...baseProfile,id:'10000000-0000-4000-8000-000000000005'};
   const base={id:'change:1',when:'2026-09-15T00:00:00Z',entity:'Synthetic',entityType:'keyword',entityId:'synthetic',field:'bid',oldValue:1,newValue:2,
-    source:'sync' as const,state:'observed' as const,batchId:null,batchLabel:null,batchCount:null,experimentStart:false,candidateCount:0,acknowledgedAt:null,acknowledgedBy:null,reviewHref:null};
+    source:'sync' as const,state:'observed' as const,batchId:null,batchLabel:null,batchCount:null,experimentStart:false,candidateCount:0,batchRestorable:null,acknowledgedAt:null,acknowledgedBy:null,reviewHref:null};
   const read=vi.fn(async run=>run({sql:vi.fn().mockResolvedValue([{partial:false}])},{orgId:context.active!.orgId,userId:context.user.id}));
   mocks.profiles.mockResolvedValue([profile]);mocks.role.mockResolvedValue('owner');mocks.entries.mockReset();
   mocks.entries.mockResolvedValueOnce([{...base,entityType:'campaign',field:'budget'}])

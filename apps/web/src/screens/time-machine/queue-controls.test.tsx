@@ -164,6 +164,28 @@ describe('change queue row menu', () => {
     expect(router.push).not.toHaveBeenCalled();
   });
 
+  it('disables restore preview with the reason when the batch has rows without a before-value', () => {
+    const unrestorable = { ...ready, props: { ...ready.props, entries: ready.props.entries.map((entry, index) => index === 0 ? { ...entry, batchRestorable: false } : entry) } };
+    render(<Screen data={unrestorable} />);
+    const rows = screen.getAllByTestId('timeline-entry');
+    fireEvent.click(within(rows[0]!).getByRole('button', { name: 'Actions for Synthetic change 1' }));
+    expect(menuNames()).toEqual(['Start restore preview', 'Copy change ID', 'Open targets grid']);
+    const restore = screen.getByRole('menuitem', { name: 'Start restore preview' });
+    expect(restore.tagName).toBe('BUTTON');
+    expect((restore as HTMLButtonElement).disabled).toBe(true);
+    expect(restore.getAttribute('href')).toBeNull();
+    const reason = document.getElementById(restore.getAttribute('aria-describedby')!);
+    expect(reason?.textContent).toBe('Restore preview unavailable: some rows in this batch have no recorded before-value.');
+    // Focus skips the disabled item and lands on the first one that can run.
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: 'Copy change ID' }));
+    fireEvent.click(restore);
+    expect(router.push).not.toHaveBeenCalled();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    // A fully restorable batch (the fourth row) still opens its preview.
+    fireEvent.click(within(rows[3]!).getByRole('button', { name: 'Actions for Synthetic change 4' }));
+    expect(screen.getByRole('menuitem', { name: 'Start restore preview' }).getAttribute('href')).toContain(`batch=${entries[3]!.batchId}`);
+  });
+
   it('opens the review for a queued proposal and acknowledges an observed change from the menu', () => {
     render(<Screen data={ready} />);
     const rows = screen.getAllByTestId('timeline-entry');

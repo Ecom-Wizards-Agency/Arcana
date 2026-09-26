@@ -9,6 +9,7 @@ import { SCREEN_REGISTRY, SCREEN_GROUPS } from '../screens/registry-metadata';
 import { ShellDateControls, ShellStatusChips, ScreenTopbar, resolveShellPeriod } from './topbar-controls';
 import { ShellEvidenceProvider, ShellFreshnessBanner, useShellEvidence, type ShellEvidence } from './shell-evidence';
 import { NavFallback } from './nav';
+import { keepValidEnds, screenDateRule, screenPeriod } from '../../app/_lib/periods';
 
 const navigation = vi.hoisted(() => ({ query: '', pathname: '/grid', push: vi.fn() }));
 vi.mock('next/navigation', () => ({
@@ -103,6 +104,26 @@ describe('Figma shell', () => {
     expect(resolveShellPeriod('/creative', {}, '2026-08-29')).toEqual({ period: { start: '2026-07-31', end: '2026-08-29' }, includeToday: true });
     expect(resolveShellPeriod('/dayparting', {}, '2026-08-29')).toEqual({ period: { start: '2026-07-05', end: '2026-08-29' }, includeToday: true });
     expect(resolveShellPeriod('/grid', { from: '2026-99-99', to: '2026-99-99' }, '2026-08-29').period).toEqual(period);
+  });
+
+  it('resolves the same period as the screen load for creative, dayparting and a standard screen', () => {
+    const today = '2026-08-29';
+    const cases = [{}, { from: '2026-06-01', to: '2026-06-14' }, { from: '2026-06-14', to: '2026-06-01' }, { from: '2026-06-01' }];
+    let compared = 0;
+    for (const id of ['creative', 'dayparting', 'grid'] as const) {
+      for (const params of cases) {
+        const shell = resolveShellPeriod(`/${id}`, params, today);
+        // Dayparting's load repairs a partial range per end on top of its screenPeriod default.
+        const screenWindow = id === 'dayparting' ? keepValidEnds(screenPeriod(id, {}, today), params) : screenPeriod(id, params, today);
+        expect(shell.period, `${id} ${JSON.stringify(params)}`).toEqual(screenWindow);
+        expect(shell.includeToday, id).toBe(screenDateRule(id).throughToday);
+        compared += 1;
+      }
+    }
+    expect(compared).toBe(12);
+    expect(resolveShellPeriod('/dayparting', { from: '2026-06-01' }, today).period).toEqual({ start: '2026-06-01', end: today });
+    // A path with no registered date screen follows the standard rule.
+    expect(resolveShellPeriod('/change-queue', {}, today)).toEqual({ period, includeToday: false });
   });
 
   it('selects the registry entity title and responds to query navigation', () => {

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { HomeContent } from './view';
 import { withBudget, withoutBudget } from './fixtures';
@@ -154,6 +155,32 @@ describe('collapsible Home sections', () => {
 
     render(<HomeContent {...withBudget} home={{ ...withBudget.home, preferenceKey: 'another-user' }} />);
     expect(screen.getAllByRole('button', { name: /^Hide / })).toHaveLength(sections.length);
+  });
+
+  it('applies a saved collapse on the first client render, with no open-then-collapse commit', () => {
+    window.localStorage.setItem(homeSectionStorageKey(withBudget.home.preferenceKey), JSON.stringify({ version: 1, collapsed: ['flags', 'ranks'] }));
+    const container = document.body.appendChild(document.createElement('div'));
+    const observer = new MutationObserver(() => undefined);
+    observer.observe(container, { attributes: true, attributeFilter: ['data-collapsed', 'hidden'], subtree: true });
+    render(<HomeContent {...withBudget} />, { container });
+    // Every data-collapsed or hidden change after the first commit would be recorded here.
+    expect(observer.takeRecords()).toHaveLength(0);
+    observer.disconnect();
+    const cards = [...container.querySelectorAll('section[data-section]')];
+    expect(cards).toHaveLength(sections.length);
+    for (const card of cards) {
+      const id = card.getAttribute('data-section');
+      const expected = id === 'flags' || id === 'ranks';
+      expect(card.getAttribute('data-collapsed'), String(id)).toBe(expected ? 'true' : 'false');
+      expect(card.querySelector('.wa-home-card-body')?.hasAttribute('hidden'), String(id)).toBe(expected);
+    }
+  });
+
+  it('renders every section open on the server, so hydration markup matches before the saved state applies', () => {
+    window.localStorage.setItem(homeSectionStorageKey(withBudget.home.preferenceKey), JSON.stringify({ version: 1, collapsed: ['flags'] }));
+    const html = renderToString(<HomeContent {...withBudget} />);
+    expect(html.match(/data-collapsed="false"/g)).toHaveLength(sections.length);
+    expect(html).not.toContain('data-collapsed="true"');
   });
 
   it('parses saved preferences defensively', () => {

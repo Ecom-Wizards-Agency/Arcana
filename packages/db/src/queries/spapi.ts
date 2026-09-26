@@ -466,6 +466,13 @@ export async function settleSpApiConnection(
         connectionId: context.targetConnectionId, orgId: context.operation.orgId, label,
         sellingPartnerId: context.sellingPartnerId, marketplaceIds: bindings.map((binding) => binding.marketplaceId),
       });
+      // A reconnect re-attaches every binding with reporting off. Record each binding that had
+      // reporting on, locked first so the prior state is the one this attachment replaces.
+      const reportingBefore = await sql<{ id: string; marketplace_id: string }[]>`
+        select id::text, marketplace_id from public.spapi_profile_bindings
+         where org_id = ${context.operation.orgId} and connection_id = ${connection.id} and enabled
+           and profile_id = any(${bindings.map((binding) => binding.profileId)}::uuid[])
+         order by profile_id for update`;
       let attached = 0;
       for (const binding of bindings) {
         const saved = await upsertSpApiProfileBinding({ sql }, {
@@ -476,6 +483,18 @@ export async function settleSpApiConnection(
           throw new SpApiConnectionCommandError();
         }
         attached += 1;
+      }
+      if (reportingBefore.length > 0) {
+        const audited = await sql<{ id: string }[]>`
+          insert into public.audit_log(org_id,actor_type,actor_id,action,target_type,target_id,payload,source)
+          select ${context.operation.orgId}::uuid,'service'::public.audit_actor_type,'connection-worker','spapi.binding_reporting_disabled',
+                 'spapi_profile_binding',prior.id,
+                 jsonb_build_object('connectionId',${connection.id}::text,'marketplaceId',prior.marketplace_id,'enabled',false,
+                   'reason','reconnect','operationId',${id}::text),'worker'
+            from unnest(${reportingBefore.map((row) => row.id)}::text[],${reportingBefore.map((row) => row.marketplace_id)}::text[])
+              as prior(id,marketplace_id)
+          returning id::text`;
+        if (audited.length !== reportingBefore.length) throw new SpApiConnectionCommandError();
       }
       const completed = spApiOperation(await sql<{ result: unknown }[]>`
         select app.finish_spapi_attachment(${id},${lease},${connection.id},${refresh}) as result

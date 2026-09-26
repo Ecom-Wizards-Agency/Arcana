@@ -875,7 +875,9 @@ export async function listChangeQueue(
         case when candidates.count>1 then candidates.label else b.tag end as batch_label,
         case when candidates.count>1 then null else b.reversible_rows+b.unsupported_rows end as batch_count,
         (candidates.count<=1 and b.experiment_id is not null) as experiment_start, candidates.count as candidate_count,
-        ec.acknowledged_at,ec.acknowledged_by,null::text as review_href,'ads_console'::text as actor_kind,null::uuid as actor_user
+        ec.acknowledged_at,ec.acknowledged_by,null::text as review_href,'ads_console'::text as actor_kind,null::uuid as actor_user,
+        -- The restore preview refuses a batch whose rows do not all carry a before-value; say so on the row.
+        case when candidates.count>1 or b.id is null then null else (b.unsupported_rows=0 and b.reversible_rows=(select count(*)::int from public.apply_rows br where br.org_id=b.org_id and br.profile_id=b.profile_id and br.batch_id=b.id)) end as batch_restorable
       from public.entity_changes ec
       left join public.apply_batches b on b.org_id=ec.org_id and b.profile_id=ec.profile_id and b.id=ec.apply_batch_id
       cross join lateral (
@@ -897,7 +899,8 @@ export async function listChangeQueue(
         ar.old_value,ar.new_value,'apply',case when exists(select 1 from public.entity_changes ec
           where ec.org_id=ar.org_id and ec.profile_id=ar.profile_id and ec.apply_row_id=ar.id) then 'confirmed' else 'exported' end,
         b.id,b.tag,b.reversible_rows+b.unsupported_rows,b.experiment_id is not null,0,null::timestamptz,null::uuid,null::text,
-        case when b.created_by is null then 'automation' else 'operator' end,b.created_by
+        case when b.created_by is null then 'automation' else 'operator' end,b.created_by,
+        (b.unsupported_rows=0 and b.reversible_rows=(select count(*)::int from public.apply_rows br where br.org_id=b.org_id and br.profile_id=b.profile_id and br.batch_id=b.id))
       from public.apply_rows ar join public.apply_batches b on b.org_id=ar.org_id and b.profile_id=ar.profile_id and b.id=ar.batch_id
       where ar.org_id=${input.orgId}::uuid and ar.profile_id=${input.profileId}::uuid and b.source_kind='legacy_export'
         and not exists(select 1 from visible_native_roots n where n.direction='forward'
@@ -907,7 +910,7 @@ export async function listChangeQueue(
       select 'queued:'||q.id::text,q.created_at,'target',q.target_id,coalesce(q.context->>'targetLabel',q.target_id),'bid',
         q.request#>'{expectedBid,amount}',q.request#>'{newBid,amount}','queued',
         case when a.change_id is null then 'awaiting review' else 'approved' end,null::uuid,null::text,null::integer,false,0,
-        null::timestamptz,null::uuid,q.id::text,'operator',coalesce(a.approved_by,q.created_by)
+        null::timestamptz,null::uuid,q.id::text,'operator',coalesce(a.approved_by,q.created_by),null::boolean
       from public.queued_changes q left join public.queued_change_approvals a on a.org_id=q.org_id and a.profile_id=q.profile_id and a.change_id=q.id
       where q.org_id=${input.orgId}::uuid and q.profile_id=${input.profileId}::uuid
       union all
@@ -922,7 +925,7 @@ export async function listChangeQueue(
         p.source_batch_id,b.tag,plan.provider_rows,false,0,null::timestamptz,null::uuid,
         case when cycle.execution_id is null then '/optimizer/confirm/' else '/optimizer/run/' end||p.source_batch_id::text||'?profile='||p.profile_id::text||'&plan='||p.plan_id::text
           ||case when cycle.execution_id is null then '' else '&execution='||cycle.execution_id::text end,
-        'operator',coalesce(review.reviewed_by,p.created_by)
+        'operator',coalesce(review.reviewed_by,p.created_by),null::boolean
       from public.sp_write_restore_proposals p
       join public.sp_write_plans plan on plan.org_id=p.org_id and plan.profile_id=p.profile_id and plan.plan_id=p.plan_id
       left join public.apply_batches b on b.org_id=p.org_id and b.profile_id=p.profile_id and b.id=p.source_batch_id
@@ -935,7 +938,7 @@ export async function listChangeQueue(
       union all
       select 'amazon:'||e.id::text,e.occurred_at,lower(e.entity_type),e.entity_id,e.entity_id,e.change_type,
         e.sanitized_payload->'previousValue',e.sanitized_payload->'newValue','amazon','observed',
-        null::uuid,null::text,null::integer,false,0,null::timestamptz,null::uuid,null::text,'unknown',null::uuid
+        null::uuid,null::text,null::integer,false,0,null::timestamptz,null::uuid,null::text,'unknown',null::uuid,null::boolean
       from public.amazon_change_events e
       where e.org_id=${input.orgId}::uuid and e.profile_id=${input.profileId}::uuid
       union all
@@ -948,13 +951,13 @@ export async function listChangeQueue(
         case when b.parent_batch_id is null then 'Campaign creation' else 'Retry of '||b.parent_batch_id::text end,
         b.node_count,false,0,null::timestamptz,null::uuid,
         '/campaigns/draft?profile='||b.profile_id::text||'&draft='||b.draft_id::text||'&batch='||b.id::text||'&step=result',
-        'operator',b.actor_id
+        'operator',b.actor_id,null::boolean
       from public.campaign_creation_batches b where b.org_id=${input.orgId}::uuid and b.profile_id=${input.profileId}::uuid
         and b.artifact->'plan'->>'schemaVersion'='openspell.campaign-creation-plan.v2'
     ) select jsonb_build_object('id',id,'when',to_char(at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
       'entity',entity,'entityType',entity_type,'entityId',entity_id,'field',field,'oldValue',old_value,'newValue',new_value,
       'source',source,'state',state,'batchId',batch_id,'batchLabel',batch_label,'batchCount',batch_count,
-      'experimentStart',experiment_start,'candidateCount',candidate_count,'acknowledgedAt',acknowledged_at,
+      'experimentStart',experiment_start,'candidateCount',candidate_count,'batchRestorable',batch_restorable,'acknowledgedAt',acknowledged_at,
       'acknowledgedBy',acknowledged_by,'reviewHref',review_href,
       'amazonObservation',case when source='amazon' then (
         select jsonb_build_object('marketplaceId',e.marketplace_id,'retrievedAt',to_char(e.retrieved_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
@@ -1010,7 +1013,7 @@ export async function listChangeQueue(
         const row = ChangeQueueEntry.parse({ id: entry.id, when: entry.observedAtExact, entity: entry.entityName ?? entry.amazonId,
           entityId: entry.amazonId, entityType: entry.entityType, field: entry.field, oldValue: entry.oldValue, newValue: entry.newValue,
           source: 'apply', state, batchId: null, batchLabel: entry.batch?.tag ?? null,
-          batchCount: write.execution.receipt.plan.counts.providerRows, experimentStart: false, candidateCount: 0,
+          batchCount: write.execution.receipt.plan.counts.providerRows, experimentStart: false, candidateCount: 0, batchRestorable: null,
           acknowledgedAt: null, acknowledgedBy: null, reviewHref: null, actor: { kind: operator ? 'operator' : 'automation', name: null } });
         if (operator) actorUsers.set(row, write.actor.userId);
         native.push(row);

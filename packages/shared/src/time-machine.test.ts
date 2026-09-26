@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { ChangeQueueActorKind, ChangeQueueEntry, ChangeQueueSource, RestorePreviewState, ChangeQueueRestoreBatchPreview } from './time-machine.js';
 const entry={id:'change:1',when:'2026-09-05T09:20:00.000001Z',entity:'Synthetic target',entityType:'keyword',entityId:'synthetic',field:'bid',
-  oldValue:null,newValue:1,source:'sync',state:'observed',batchId:null,batchLabel:null,batchCount:null,experimentStart:false,candidateCount:0,
+  oldValue:null,newValue:1,source:'sync',state:'observed',batchId:null,batchLabel:null,batchCount:null,experimentStart:false,candidateCount:0,batchRestorable:null,
   acknowledgedAt:null,acknowledgedBy:null,reviewHref:null,actor:{kind:'ads_console',name:null}};
 it('preserves unknown values and exact source timestamps',()=>{
   const parsed=ChangeQueueEntry.parse(entry);

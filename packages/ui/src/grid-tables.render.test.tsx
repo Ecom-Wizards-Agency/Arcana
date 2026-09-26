@@ -283,6 +283,17 @@ describe('readable target, match and placement labels (V19, D3, D6)', () => {
   });
 });
 
+describe('grouped grid accessible name', () => {
+  it('names the grouping levels by column header, never by column id', () => {
+    const rows = [targetRow('a', { targeting: 'synthetic one', target_kind: 'keyword', match_type: 'exact' }), targetRow('b', { targeting: 'synthetic two', target_kind: 'keyword', match_type: 'broad' })];
+    render(<Grid rows={rows} columns={[column('match_type'), column('campaign_name'), column('spend')]} groupBy={['match_type', 'campaign_name']} />);
+    const tree = screen.getByRole('treegrid');
+    expect(tree.getAttribute('aria-label')).toBe(`Results grouped by ${column('match_type').header}, ${column('campaign_name').header}`);
+    expect(tree.getAttribute('aria-label')).toBe('Results grouped by Match, Campaign');
+    expect(tree.getAttribute('aria-label')).not.toMatch(/match_type|campaign_name/);
+  });
+});
+
 describe('grouped column chooser (V20)', () => {
   const view: SavedView = { id: 'synthetic', name: 'Synthetic view', entity: 'targets', columns: ['targeting', 'spend'], pinned: ['targeting'], widths: {}, filter: { groups: [] }, groupBy: [], sort: [], dateRange: null, updatedAt: '2026-09-25' };
 

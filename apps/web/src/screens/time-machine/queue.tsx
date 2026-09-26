@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useId, useRef, useState } from 'react';
+import { Fragment, useEffect, useId, useRef, useState } from 'react';
 import { ChangeChip as Chip } from '../../../../../packages/ui/src/cells/ChangeChip';
 import { useRouter } from 'next/navigation';
 import { useRefreshShellEvidence } from '../../ui/shell-evidence';
@@ -26,9 +26,13 @@ function filterValueWords(key: FilterKey, value: string): string {
   if (key === 'source') { const parsed = ChangeQueueSource.safeParse(value); return parsed.success ? sourceWords(parsed.data) : value; }
   return key === 'field' ? value : words(value);
 }
+/** Why a batch's restore preview cannot open; the preview itself refuses with the same reason. */
+const RESTORE_UNAVAILABLE = 'Restore preview unavailable: some rows in this batch have no recorded before-value.';
 /** Restore preview widths; the value columns hold a full currency amount. WHY takes the rest. */
 const RESTORE_WIDTHS = [250,82,120,120,120,130,null] as const;
-type MenuItem = { label: string; href: string } | { label: string; run: () => void; disabled?: boolean };
+type MenuItem = { label: string; href: string } | { label: string; run: () => void; disabled?: boolean }
+  /** An item that exists for this row but cannot run, with the words saying why. */
+  | { label: string; unavailable: string };
 /** A row's actions: a menu button with pointer and keyboard support that closes on Escape and outside click. */
 export function RowMenu({ label, items, disabled }: { label: string; items: readonly MenuItem[]; disabled: boolean }) {
   const [open,setOpen] = useState(false);
@@ -60,9 +64,12 @@ export function RowMenu({ label, items, disabled }: { label: string; items: read
   return <div className="cq-row-menu" ref={root}>
     <button ref={trigger} id={`${id}-trigger`} type="button" aria-label={label} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? `${id}-menu` : undefined} disabled={disabled}
       onClick={() => setOpen(value => !value)} onKeyDown={event => { if (event.key === 'ArrowDown' && !open) { event.preventDefault(); setOpen(true); } }}>⋮</button>
-    {open ? <div role="menu" id={`${id}-menu`} aria-labelledby={`${id}-trigger`} ref={menu} onKeyDown={onMenuKey}>{items.map(item => 'href' in item
+    {open ? <div role="menu" id={`${id}-menu`} aria-labelledby={`${id}-trigger`} ref={menu} onKeyDown={onMenuKey}>{items.map((item, index) => 'href' in item
       ? <a key={item.label} role="menuitem" href={item.href} onClick={() => setOpen(false)}>{item.label}</a>
-      : <button key={item.label} type="button" role="menuitem" disabled={item.disabled} onClick={() => { setOpen(false); trigger.current?.focus(); item.run(); }}>{item.label}</button>)}</div> : null}
+      : 'unavailable' in item
+        ? <Fragment key={item.label}><button type="button" role="menuitem" disabled aria-describedby={`${id}-reason-${index}`}>{item.label}</button>
+          <span className="cq-menu-reason" id={`${id}-reason-${index}`}>{item.unavailable}</span></Fragment>
+        : <button key={item.label} type="button" role="menuitem" disabled={item.disabled} onClick={() => { setOpen(false); trigger.current?.focus(); item.run(); }}>{item.label}</button>)}</div> : null}
   </div>;
 }
 export default function ScreenView({ data }: { data: ScreenData }) {
@@ -139,7 +146,9 @@ function Queue({ data }: { data: Extract<ScreenData,{view:'ready'}>['props'] }) 
   const menuItems = (row: ChangeQueueEntry): MenuItem[] => {
     const items: MenuItem[] = [];
     // The batch view on this screen is its restore preview, so a batch row opens the batch through that one link.
-    if (restorable(row)) items.push({ label: 'Start restore preview', href: href({ batch: row.batchId! }) });
+    if (restorable(row)) items.push(row.batchRestorable === false
+      ? { label: 'Start restore preview', unavailable: RESTORE_UNAVAILABLE }
+      : { label: 'Start restore preview', href: href({ batch: row.batchId! }) });
     else if (row.reviewHref) items.push({ label: 'Open review', href: row.reviewHref });
     items.push({ label: 'Copy change ID', run: () => void copyId(row) });
     const grid = gridLink(row, data.profileId);

@@ -36,12 +36,37 @@ export function homeSectionStorageKey(userKey: string): string {
   return `${PREFERENCE_PREFIX}:${userKey}`;
 }
 
-export function readHomeSectionPreferences(userKey: string): HomeSectionPreferences | null {
+/** Documents this visit could not store; they still apply until the page unloads. */
+const unstored = new Map<string, string>();
+const listeners = new Set<() => void>();
+
+/**
+ * The saved document as a string, read synchronously. A string compares by
+ * value, so `useSyncExternalStore` sees no change until the document changes.
+ */
+export function readHomeSectionSnapshot(userKey: string): string | null {
+  const key = homeSectionStorageKey(userKey);
+  const pending = unstored.get(key);
+  if (pending !== undefined) return pending;
   try {
-    return parseHomeSectionPreferences(window.localStorage?.getItem(homeSectionStorageKey(userKey)) ?? null);
+    return window.localStorage?.getItem(key) ?? null;
   } catch {
     return null;
   }
+}
+
+export function readHomeSectionPreferences(userKey: string): HomeSectionPreferences | null {
+  return parseHomeSectionPreferences(readHomeSectionSnapshot(userKey));
+}
+
+/** Notified on every write here and on storage changes from other tabs. */
+export function subscribeHomeSectionPreferences(listener: () => void): () => void {
+  listeners.add(listener);
+  window.addEventListener('storage', listener);
+  return () => {
+    listeners.delete(listener);
+    window.removeEventListener('storage', listener);
+  };
 }
 
 export function writeHomeSectionPreferences(userKey: string, collapsed: ReadonlySet<HomeSectionId>): void {
@@ -49,9 +74,14 @@ export function writeHomeSectionPreferences(userKey: string, collapsed: Readonly
     version: PREFERENCE_VERSION,
     collapsed: HOME_SECTION_IDS.filter((id) => collapsed.has(id)),
   };
+  const key = homeSectionStorageKey(userKey);
+  const serialized = JSON.stringify(preferences);
   try {
-    window.localStorage?.setItem(homeSectionStorageKey(userKey), JSON.stringify(preferences));
+    window.localStorage?.setItem(key, serialized);
+    unstored.delete(key);
   } catch {
     // Storage may be disabled. Sections still collapse for this visit.
+    unstored.set(key, serialized);
   }
+  for (const listener of listeners) listener();
 }

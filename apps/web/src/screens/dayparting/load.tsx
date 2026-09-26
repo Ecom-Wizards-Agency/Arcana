@@ -5,7 +5,7 @@ import type { ScreenActor } from '../../server/page-read';
 
 import type { ScreenParams } from '../types';
 
-import { screenPeriod, screenToday } from '../../../app/_lib/periods';
+import { keepValidEnds, screenPeriod, screenToday } from '../../../app/_lib/periods';
 
 import { listProfiles } from '../../../app/_lib/profiles';
 
@@ -45,12 +45,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   }
 
   // A missing or invalid end keeps the rule's default for that end alone; an inverted pair falls back whole.
-  const fallback = screenPeriod('dayparting', {}, screenToday('dayparting', profile.timezone));
-  const requestedFrom = validDate(params.from) ? params.from : fallback.start;
-  const requestedTo = validDate(params.to) ? params.to : fallback.end;
-  const [from, to] = requestedFrom <= requestedTo
-    ? [requestedFrom, requestedTo]
-    : [fallback.start, fallback.end];
+  const { start: from, end: to } = keepValidEnds(screenPeriod('dayparting', {}, screenToday('dayparting', profile.timezone)), params);
   const metric = isDaypartingMetric(params.metric) ? params.metric : 'roas';
   const showAllEvidence = params.evidence === 'all';
   const campaignId = nonempty(params.campaign);
@@ -84,10 +79,6 @@ export async function load(access: ScreenActor, input: ScreenParams) {
     return {schedules,campaigns:[...campaigns],results:results as Record<string, DaypartingResults|null>};
   });
   return { view: 'ready' as const, props: { research, profile, summary, workspace, campaignId, campaignChoices, metric, showAllEvidence, from, to, selectedFacts, evidence, cellMap, proposals } };
-}
-
-function validDate(value: string | undefined): value is string {
-  return value !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
 function nonempty(value: string | undefined): string | null {
