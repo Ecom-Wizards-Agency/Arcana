@@ -194,12 +194,68 @@ jobs:
       - name: Install Chromium
         run: pnpm --filter @wizard-ads/web exec playwright install --with-deps chromium
 
+      - name: Resolve pinned Auth harness images
+        id: auth-images
+        # The cache key is derived from the four digest pins in stack.mjs, so
+        # changing a pin changes the key and the next run pulls afresh.
+        run: |
+          list="$(node --input-type=module -e "import { images } from './tools/auth-acceptance/stack.mjs'; console.log(Object.values(images).join(' '))")"
+          test "$(printf '%s\n' $list | grep -c '@sha256:')" -eq 4
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+          echo "names=$(printf '%s\n' $list | sed 's/:[^/@]*@/@/' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+          echo "platform=linux/$(dpkg --print-architecture)" >> "$GITHUB_OUTPUT"
+          echo "key=auth-acceptance-images-${{ runner.os }}-$(printf '%s' "$list" | sha256sum | cut -c1-64)" >> "$GITHUB_OUTPUT"
+          printf 'tarball=%s/auth-acceptance-images.tar\n' "$RUNNER_TEMP" >> "$GITHUB_OUTPUT"
+
+      - name: Use the containerd image store
+        # docker save/load drops digest references, so a loaded image would not
+        # satisfy the harness's inspect-by-digest check. containerd export and
+        # import keep them; that needs Docker's containerd image store.
+        run: |
+          (sudo cat /etc/docker/daemon.json 2>/dev/null || echo '{}') | jq '.features["containerd-snapshotter"] = true' > "$RUNNER_TEMP/daemon.json"
+          sudo cp "$RUNNER_TEMP/daemon.json" /etc/docker/daemon.json
+          sudo systemctl restart docker
+          docker info --format '{{json .DriverStatus}}' | grep -q io.containerd.snapshotter.v1
+
+      - name: Restore Auth harness images
+        id: auth-images-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.auth-images.outputs.tarball }}
+          key: ${{ steps.auth-images.outputs.key }}
+
+      - name: Load cached Auth harness images
+        if: steps.auth-images-cache.outputs.cache-hit == 'true'
+        # A failed load leaves the harness to pull, with its rate-limit retry.
+        continue-on-error: true
+        run: |
+          sudo ctr --address /run/containerd/containerd.sock --namespace moby images import --platform "${{ steps.auth-images.outputs.platform }}" "${{ steps.auth-images.outputs.tarball }}"
+          for image in ${{ steps.auth-images.outputs.list }}; do docker image inspect "$image" > /dev/null; done
+
+      - name: Pull and export Auth harness images
+        id: auth-images-pull
+        if: steps.auth-images-cache.outputs.cache-hit != 'true'
+        # Pulls through the harness, including its rate-limit retry. If this
+        # fails, the harness step below pulls again and reports the failure.
+        continue-on-error: true
+        run: |
+          node --input-type=module -e "import { prepareImages } from './tools/auth-acceptance/stack.mjs'; prepareImages()"
+          sudo ctr --address /run/containerd/containerd.sock --namespace moby images export --platform "${{ steps.auth-images.outputs.platform }}" "${{ steps.auth-images.outputs.tarball }}" ${{ steps.auth-images.outputs.names }}
+          sudo chown "$(id -u):$(id -g)" "${{ steps.auth-images.outputs.tarball }}"
+
+      - name: Cache Auth harness images
+        if: steps.auth-images-pull.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.auth-images.outputs.tarball }}
+          key: ${{ steps.auth-images.outputs.key }}
+
       - name: Verify actual Auth, mail and onboarding
         # The harness owns fresh internal Docker networks and random loopback
         # ports. It never reads hosted credentials or the other jobs' databases.
         # Missing Docker, images, Chromium, services or checks fail the job.
         run: |
-          node --test tools/auth-acceptance/support.test.mjs
+          node --test tools/auth-acceptance/support.test.mjs tools/auth-acceptance/stack.test.mjs
           node tools/auth-acceptance/run.mjs
 
       - name: Upload sanitized Auth evidence
