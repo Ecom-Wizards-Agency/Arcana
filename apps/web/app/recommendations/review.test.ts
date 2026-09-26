@@ -276,7 +276,7 @@ describe('ReviewWorkspace operator queue', () => {
     act(() => setSelectValue(add, 'queue'));
 
     expect(host.querySelector('[role="treegrid"]')?.getAttribute('aria-label')).toBe(
-      'Results grouped by queue',
+      'Results grouped by Queue',
     );
     const groups = [...host.querySelectorAll('[data-testid^="group-level-"]')].map(
       (element) => element.textContent ?? '',

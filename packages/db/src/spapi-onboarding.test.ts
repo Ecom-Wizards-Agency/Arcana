@@ -8,6 +8,7 @@ import { createSpApiConnection, createSpApiConnectionLifecycle, getSpApiRefreshT
   SpApiBindingReportingError, SpApiConnectionCommandError } from './queries/spapi.js';
 import { AgencyAccessDenied } from './queries/authenticated-actor.js';
 import type { DbHandle, QuerySql } from './client.js';
+import { settleSpApiConnection } from './queries/spapi.js';
 
 const available = await databaseAvailable();
 const refresh = ['synthetic', 'onboarding', 'refresh'].join('-');
@@ -148,6 +149,60 @@ describe.skipIf(!available)('SP onboarding transaction and authority', () => {
     expect(await f.lifecycle.custody.attach(reconnect.operationId,claim.leaseId,'synthetic-restored')).toMatchObject({ attachedBindings: 2 });
     expect(await db.sql`select enabled from public.spapi_profile_bindings where connection_id=${completed.connectionId!}`).toEqual([{ enabled: false },{ enabled: false }]);
     expect((await listSqpScheduleScopes(db)).filter((scope) => scope.orgId === f.actor.orgId)).toHaveLength(0);
+  });
+  it('records a reporting-disabled audit row on reconnect for each binding that had reporting on, and none otherwise', async () => {
+    const f = await claimed(await fixture(3)); const completed = await f.lifecycle.custody.attach(f.operation.operationId,f.claim.leaseId,refresh);
+    const connectionId = completed.connectionId!;
+    const bindings = await db.sql<{ id: string; profile_id: string }[]>`select id::text,profile_id::text from public.spapi_profile_bindings
+      where connection_id=${connectionId} order by profile_id`;
+    expect(bindings).toHaveLength(3);
+    const enabledIds = [bindings[0]!.id,bindings[2]!.id].sort();
+    await db.sql`update public.spapi_profile_bindings set enabled=true where id in ${db.sql(enabledIds)}`;
+    const disabledAudit = () => db.sql<{ actor_type: string; actor_id: string; target_type: string; target_id: string; source: string; payload: Record<string, unknown> }[]>`
+      select actor_type::text,actor_id,target_type,target_id,source,payload from public.audit_log
+       where org_id=${f.actor.orgId} and action='spapi.binding_reporting_disabled' order by target_id`;
+    expect(await disabledAudit()).toHaveLength(0);
+    await f.lifecycle.revoke(f.actor,connectionId);
+    const reconnect = await f.lifecycle.begin(f.actor,{ ...f.input,requestId: randomUUID() });
+    await f.lifecycle.submit(f.actor,{ ...f.submission,operationId: reconnect.operationId,code: 'synthetic-reconnect-audit' });
+    const claim = (await f.lifecycle.custody.claim(randomUUID()))!;
+    expect(await f.lifecycle.custody.attach(reconnect.operationId,claim.leaseId,'synthetic-restored')).toMatchObject({ state: 'completed',attachedBindings: 3 });
+    expect(await db.sql`select enabled from public.spapi_profile_bindings where connection_id=${connectionId}`).toEqual([{ enabled: false },{ enabled: false },{ enabled: false }]);
+    const audit = await disabledAudit();
+    expect(audit).toHaveLength(2);
+    expect(audit.map((row) => row.target_id)).toEqual(enabledIds);
+    for (const row of audit) {
+      expect(row).toMatchObject({ actor_type: 'service',actor_id: 'connection-worker',target_type: 'spapi_profile_binding',source: 'worker' });
+      expect(row.payload).toEqual({ connectionId,marketplaceId: 'ATVPDKIKX0DER',enabled: false,reason: 'reconnect',operationId: reconnect.operationId });
+    }
+    // A second reconnect, with every binding already off, writes nothing more.
+    await f.lifecycle.revoke(f.actor,connectionId);
+    const again = await f.lifecycle.begin(f.actor,{ ...f.input,requestId: randomUUID() });
+    await f.lifecycle.submit(f.actor,{ ...f.submission,operationId: again.operationId,code: 'synthetic-reconnect-audit-again' });
+    const next = (await f.lifecycle.custody.claim(randomUUID()))!;
+    expect(await f.lifecycle.custody.attach(again.operationId,next.leaseId,'synthetic-restored-again')).toMatchObject({ state: 'completed',attachedBindings: 3 });
+    expect(await disabledAudit()).toHaveLength(2);
+  });
+  it('rolls back the reconnect audit rows with the attachment when the attachment fails', async () => {
+    const f = await claimed(await fixture(1)); const completed = await f.lifecycle.custody.attach(f.operation.operationId,f.claim.leaseId,refresh);
+    const connectionId = completed.connectionId!;
+    await db.sql`update public.spapi_profile_bindings set enabled=true where connection_id=${connectionId}`;
+    const reconnect = await f.lifecycle.begin(f.actor,{ ...f.input,requestId: randomUUID() });
+    await f.lifecycle.submit(f.actor,{ ...f.submission,operationId: reconnect.operationId,code: 'synthetic-reconnect-refused' });
+    const claim = (await f.lifecycle.custody.claim(randomUUID()))!;
+    // Finish fails after the binding and audit writes; they roll back with it.
+    let finishCalls = 0;
+    const failFinish = (tx: QuerySql): QuerySql => Object.assign((parts: TemplateStringsArray, ...values: unknown[]) => {
+      if (parts.join('').includes('finish_spapi_attachment')) { finishCalls += 1; return Promise.reject(new Error('synthetic finish failure')); }
+      return (tx as unknown as (parts: TemplateStringsArray, ...values: unknown[]) => unknown)(parts,...values);
+    },tx) as unknown as QuerySql;
+    const failing = { sql: { begin: (run: (sql: QuerySql) => Promise<unknown>) => db.sql.begin((tx) => run(failFinish(tx as unknown as QuerySql))) } } as unknown as Pick<DbHandle, 'sql'>;
+    await expect(settleSpApiConnection(failing,reconnect.operationId,claim.leaseId,{ refresh: 'must-not-attach' })).rejects.toBeInstanceOf(SpApiConnectionCommandError);
+    expect(finishCalls).toBe(1);
+    expect(await f.lifecycle.custody.read(reconnect.operationId)).toMatchObject({ state: 'exchanging' });
+    expect(await db.sql`select enabled from public.spapi_profile_bindings where connection_id=${connectionId}`).toEqual([{ enabled: true }]);
+    expect(await db.sql`select id from public.audit_log where org_id=${f.actor.orgId} and action='spapi.binding_reporting_disabled'`).toHaveLength(0);
+    await f.lifecycle.cancel(f.actor,reconnect.operationId);
   });
   it('preserves a competing binding inserted after the authority snapshot', async () => {
     const f = await claimed(await fixture(1));

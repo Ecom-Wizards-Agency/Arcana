@@ -265,7 +265,7 @@ describe('campaign optimizer workspace', () => {
 
     act(() => setSelectValue(addLevel, 'campaign_state'));
     const tree = host.querySelector('[role="treegrid"]');
-    expect(tree?.getAttribute('aria-label')).toBe('Results grouped by campaign_state');
+    expect(tree?.getAttribute('aria-label')).toBe('Results grouped by State');
     expect(host.querySelectorAll('[data-testid="grid-group-chip"]')).toHaveLength(1);
     // Two states, each an aggregate of its members: 8 × $10 against 8 × $40.
     expect(host.querySelectorAll('[role="row"][aria-level="1"]')).toHaveLength(2);
@@ -275,7 +275,7 @@ describe('campaign optimizer workspace', () => {
 
     act(() => setSelectValue(addLevel, 'ad_product'));
     expect(host.querySelector('[role="treegrid"]')?.getAttribute('aria-label'))
-      .toBe('Results grouped by campaign_state, ad_product');
+      .toBe('Results grouped by State, Ad product');
     expect(host.querySelectorAll('[data-testid="grid-group-chip"]')).toHaveLength(2);
     expect(host.querySelectorAll('[role="row"][aria-level="2"]').length).toBeGreaterThan(0);
     // 25% at every level, because it is spend/sales at that level and never an

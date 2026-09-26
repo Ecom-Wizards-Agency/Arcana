@@ -13,9 +13,10 @@ import type { OrgActor, SpEvidence } from '@wizard-ads/shared';
 import { loadCrosscheckPanel } from '@wizard-ads/crosscheck-cli';
 import { loadProfileDailyRows } from '../../../app/_lib/dashboard-data';
 import { withExistingDatabase } from '../../../app/_lib/db';
-import { periodFromParams, precedingPeriod, screenPeriod, settledComparisonWindows, todayIso } from '../../../app/_lib/periods';
+import { precedingPeriod, screenPeriod, settledComparisonWindows, todayIso } from '../../../app/_lib/periods';
 import { listProfiles } from '../../../app/_lib/profiles';
 import { Cockpit } from '../../ui/cockpit';
+import { validShellDate } from '../../ui/date-format';
 import { kpiTiles, totalsOf } from '../../optimizer/view';
 import { CrosscheckChip } from '../../../app/crosscheck/panel';
 
@@ -87,8 +88,9 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   const entity = parseEntity(params.entity);
   const today = todayIso();
   const period = screenPeriod('grid', params, today);
-  const comparison = params.compareFrom && params.compareTo
-    ? periodFromParams({ from: params.compareFrom, to: params.compareTo }, today)
+  // An invalid or inverted explicit comparison falls back to the preceding window, never the current one.
+  const comparison = validShellDate(params.compareFrom) && validShellDate(params.compareTo) && params.compareFrom <= params.compareTo
+    ? { start: params.compareFrom, end: params.compareTo }
     : precedingPeriod(period);
   const settled = settledComparisonWindows(period, today);
 

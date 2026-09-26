@@ -10,10 +10,16 @@
  * `1234.5`, not `$1,234.50`. A CSV is going into a spreadsheet where somebody
  * will sum a column, and a currency-formatted string sums to zero. The currency
  * is stated once, in the header comment row, where it cannot be lost.
+ *
+ * Columns whose values are Amazon's vocabulary (targeting, target kind, match
+ * type, placement) are written as the words the grid shows, from the same
+ * shared mapping, so a spreadsheet reads `Close match` rather than
+ * `close-match`. Ids stay raw in their own columns.
  */
 import type { GridColumn } from './columns.js';
 import type { GridModel } from './pipeline.js';
 import { resolveField } from './rows.js';
+import { displayValue } from './value-labels.js';
 
 export interface CsvResult {
   csv: string;
@@ -75,7 +81,10 @@ export function toCsv(model: GridModel, options: CsvOptions): CsvResult {
 
   for (const row of model.exportRows) {
     lines.push(
-      options.columns.map((column) => escapeCell(resolveField(row, column.id))).join(','),
+      options.columns.map((column) => {
+        const value = resolveField(row, column.id);
+        return escapeCell(column.labels === undefined ? value : displayValue(column, value, row));
+      }).join(','),
     );
   }
 

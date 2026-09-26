@@ -204,7 +204,15 @@ export function screenPeriod(
   params: { from?: string | undefined; to?: string | undefined },
   today: string,
 ): Period {
-  const rule = screenDateRule(screenId);
+  return periodForRule(screenDateRule(screenId), params, today);
+}
+
+/** The period a date rule shows: a valid explicit `from`/`to` unchanged, otherwise the rule's default window. */
+export function periodForRule(
+  rule: ScreenDateRule,
+  params: { from?: string | undefined; to?: string | undefined },
+  today: string,
+): Period {
   const input = {
     ...(params.from === undefined ? {} : { from: params.from }),
     ...(params.to === undefined ? {} : { to: params.to }),
@@ -212,4 +220,17 @@ export function screenPeriod(
   return rule.throughToday
     ? periodFromParamsThroughToday(input, today, rule.windowDays)
     : periodFromParams(input, today, rule.windowDays);
+}
+
+/**
+ * Dayparting's repair of a partial range: a missing or invalid end keeps the
+ * default for that end alone; an inverted pair falls back whole.
+ */
+export function keepValidEnds(
+  fallback: Period,
+  params: { from?: string | undefined; to?: string | undefined },
+): Period {
+  const start = params.from !== undefined && ISO_DATE.test(params.from) ? params.from : fallback.start;
+  const end = params.to !== undefined && ISO_DATE.test(params.to) ? params.to : fallback.end;
+  return start <= end ? { start, end } : fallback;
 }

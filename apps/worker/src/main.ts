@@ -40,6 +40,7 @@ import { PostgresUnifiedDualRunStore } from './unified-reporting-store.js';
 import { ObservedSbVideoIngestion, PostgresSbVideoIngestionStore } from './sb-video-ingestion.js';
 import { createMrpEconomicsSync } from './mrp.js';
 import { terminateAfterFatalWorkerFailure, terminateAfterFinalShutdown } from './fatal-exit.js';
+import { installStopSignalHandlers } from './stop-signals.js';
 import { AuthHealthMonitor, BidSeriesSyncPass, QueueSettlementError, ScheduleProvisioner, shutdownExitCode, StaleClaimReaper, SyncWorker, type WorkerShutdownEvidence } from './worker.js';
 import type { JobType } from '@wizard-ads/shared';
 
@@ -273,8 +274,8 @@ async function shutdownForSignal(): Promise<void> {
   });
 }
 
-process.once('SIGTERM', () => void shutdownForSignal());
-process.once('SIGINT', () => void shutdownForSignal());
+// Persistent: a repeated signal is logged and ignored while shutdown settles custody.
+installStopSignalHandlers(() => void shutdownForSignal());
 
 try {
   const evidencePolicy = {

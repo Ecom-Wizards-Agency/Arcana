@@ -39,6 +39,11 @@ export const ChangeQueueEntry = z.object({
   field: z.string(), oldValue: z.unknown(), newValue: z.unknown(), source: ChangeQueueSource, state: ChangeQueueState,
   batchId: z.uuid().nullable(), batchLabel: z.string().nullable(), batchCount: z.number().int().nonnegative().nullable(),
   experimentStart: z.boolean(), candidateCount: z.number().int().nonnegative(),
+  /**
+   * Whether every row of the row's batch has a recorded before-value, so its restore preview can
+   * open. Null when the row names no exported batch it could restore.
+   */
+  batchRestorable: z.boolean().nullable(),
   acknowledgedAt: z.string().nullable(), acknowledgedBy: z.uuid().nullable(), reviewHref: z.string().nullable(),
  }).strict().superRefine((row,context)=>{
   if(row.source==='amazon' && (!row.amazonObservation || row.batchId!==null || row.reviewHref!==null || row.acknowledgedBy!==null || row.acknowledgedAt!==null || row.state!=='observed')) {
@@ -46,6 +51,9 @@ export const ChangeQueueEntry = z.object({
   }
   if(row.actor.name!==null && row.actor.kind!=='operator') {
     context.addIssue({code:'custom',message:'Only an operator carries a member name'});
+  }
+  if(row.batchRestorable!==null && row.batchId===null) {
+    context.addIssue({code:'custom',message:'Only a row with a batch can say whether the batch is restorable'});
   }
   const expected=row.source==='amazon'?'unknown':row.source==='sync'?'ads_console':null;
   if(expected!==null && row.actor.kind!==expected) {

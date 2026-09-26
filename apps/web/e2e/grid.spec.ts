@@ -173,7 +173,7 @@ test('grid restores the matching saved filter, grouping, and sort before becomin
   const workspace = page.getByTestId('grid-data-ready');
   await expect(workspace).toHaveAttribute('data-ready', 'true');
   await openGridControls(page);
-  await expect(page.getByRole('treegrid', { name: 'Results grouped by campaign_state' })).toBeVisible();
+  await expect(page.getByRole('treegrid', { name: 'Results grouped by State' })).toBeVisible();
   await expect(page.getByRole('columnheader', { name: 'Clicks' })).toHaveAttribute('aria-sort', 'ascending');
   const restoredFilter = page.getByRole('button', { name: 'Remove filter CAMPAIGN_ID' }).locator('..');
   await expect(restoredFilter).toContainText('Campaign ID equals c-1');
@@ -300,12 +300,12 @@ test('grid sorts on a header click, groups by dragging headers into the group ba
   const levels = page.getByRole('list', { name: 'Ordered grouping levels' });
   await expect(levels.getByRole('listitem')).toHaveCount(1);
   await expect(levels.getByRole('listitem').first()).toContainText('State');
-  await expect(page.getByRole('treegrid', { name: 'Results grouped by campaign_state' })).toBeVisible();
+  await expect(page.getByRole('treegrid', { name: 'Results grouped by State' })).toBeVisible();
 
   await page.getByRole('columnheader', { name: 'Ad type', exact: true }).dragTo(bar);
   await expect(levels.getByRole('listitem')).toHaveCount(2);
   await expect(levels.getByRole('listitem').nth(1)).toContainText('Ad type');
-  const tree = page.getByRole('treegrid', { name: 'Results grouped by campaign_state, ad_product' });
+  const tree = page.getByRole('treegrid', { name: 'Results grouped by State, Ad type' });
   await expect(tree).toBeVisible();
   await expect(tree.locator('[role="row"][aria-level="1"]').first()).toBeVisible();
   await expect(tree.locator('[role="row"][aria-level="2"]').first()).toBeVisible();

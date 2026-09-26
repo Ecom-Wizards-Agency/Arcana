@@ -10,8 +10,9 @@
  * turned into words rather than shown raw; it is never shown as the code.
  *
  * Labels only. Nothing here decides what a target *is* for a bid or a
- * recommendation, and stored values (filters, saved views, exports) keep the
- * code: a label is presentation.
+ * recommendation, and stored values (filters, saved views) keep the code: a
+ * label is presentation. The grid's CSV export writes the label and keeps ids
+ * in their own columns.
  */
 import type { MatchType, Placement } from './primitives.js';
 

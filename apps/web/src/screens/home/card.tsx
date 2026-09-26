@@ -1,7 +1,10 @@
 'use client';
-import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useId, useMemo, useState, useSyncExternalStore } from 'react';
 import type { ReactNode } from 'react';
-import { readHomeSectionPreferences, writeHomeSectionPreferences, type HomeSectionId } from './preferences';
+import {
+  parseHomeSectionPreferences, readHomeSectionPreferences, readHomeSectionSnapshot, subscribeHomeSectionPreferences,
+  writeHomeSectionPreferences, type HomeSectionId,
+} from './preferences';
 
 interface SectionsState {
   isCollapsed: (id: HomeSectionId) => boolean;
@@ -10,27 +13,34 @@ interface SectionsState {
 
 const SectionsContext = createContext<SectionsState | null>(null);
 
+/** The server cannot see this browser's preference; hydration starts from the same expanded markup. */
+const serverSnapshot = (): string | null => null;
+
 /**
  * Owns the collapsed state of every Home section for one signed-in user.
- * The first render expands everything, so server and client markup agree;
- * the saved state is restored after mount and written back on each change.
+ *
+ * The saved state is read synchronously through `useSyncExternalStore`, so a
+ * client render (every client navigation to Home) applies it on its first
+ * render and a collapsed section never paints open first. The server render
+ * and the hydration pass use the expanded server snapshot so both markups
+ * agree; React switches to the saved state right after hydrating.
  */
 export function HomeSections({ preferenceKey, children }: { preferenceKey: string; children: ReactNode }) {
-  const [collapsed, setCollapsed] = useState<ReadonlySet<HomeSectionId>>(() => new Set());
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    setCollapsed(new Set(readHomeSectionPreferences(preferenceKey)?.collapsed ?? []));
-    setReady(true);
-  }, [preferenceKey]);
-  useEffect(() => {
-    if (ready) writeHomeSectionPreferences(preferenceKey, collapsed);
-  }, [ready, preferenceKey, collapsed]);
-  const toggle = useCallback((id: HomeSectionId) => setCollapsed((previous) => {
-    const next = new Set(previous);
+  const serialized = useSyncExternalStore(
+    subscribeHomeSectionPreferences,
+    () => readHomeSectionSnapshot(preferenceKey),
+    serverSnapshot,
+  );
+  const collapsed = useMemo<ReadonlySet<HomeSectionId>>(
+    () => new Set(parseHomeSectionPreferences(serialized)?.collapsed ?? []),
+    [serialized],
+  );
+  const toggle = useCallback((id: HomeSectionId) => {
+    const next = new Set(readHomeSectionPreferences(preferenceKey)?.collapsed ?? []);
     if (next.has(id)) next.delete(id);
     else next.add(id);
-    return next;
-  }), []);
+    writeHomeSectionPreferences(preferenceKey, next);
+  }, [preferenceKey]);
   const value = useMemo(() => ({ isCollapsed: (id: HomeSectionId) => collapsed.has(id), toggle }), [collapsed, toggle]);
   return <SectionsContext.Provider value={value}>{children}</SectionsContext.Provider>;
 }

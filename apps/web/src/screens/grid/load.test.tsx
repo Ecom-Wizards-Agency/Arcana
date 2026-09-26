@@ -88,3 +88,19 @@ it('uses the topbar comparison dates in the workspace', async () => {
   const data = await load(access(), { searchParams: { from: '2026-07-01', to: '2026-07-14', compareFrom: '2026-05-01', compareTo: '2026-05-14' }, params: {} });
   expect(data).toMatchObject({ view: 'ready', props: { period: { start: '2026-07-01', end: '2026-07-14' }, comparison: { start: '2026-05-01', end: '2026-05-14' } } });
 });
+
+it('falls back to the preceding window, not the current one, for an invalid explicit comparison', async () => {
+  const period = { from: '2026-07-01', to: '2026-07-14' };
+  const preceding = { start: '2026-06-17', end: '2026-06-30' };
+  const invalid = [
+    { compareFrom: '2026-99-01', compareTo: '2026-05-14' },
+    { compareFrom: '2026-05-14', compareTo: '2026-05-01' },
+    { compareFrom: '2026-05-01' },
+    { compareFrom: 'yesterday', compareTo: 'today' },
+  ];
+  for (const compare of invalid) {
+    const data = await load(access(), { searchParams: { ...period, ...compare }, params: {} });
+    expect(data, JSON.stringify(compare)).toMatchObject({ view: 'ready', props: { period: { start: '2026-07-01', end: '2026-07-14' }, comparison: preceding } });
+  }
+  expect(invalid).toHaveLength(4);
+});

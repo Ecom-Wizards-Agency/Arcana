@@ -3,7 +3,7 @@
 /** Profile and date navigation preserve the current route's query state. */
 import { DateRangePicker, type FreshnessAssessment } from '@wizard-ads/ui';
 import type { VerdictChip } from '@wizard-ads/crosscheck-cli/pure';
-import { addDays, periodFromParams, periodFromParamsThroughToday, precedingPeriod, todayIsoInTimeZone, type Period } from '../../app/_lib/periods';
+import { DATE_WINDOW_SCREEN_IDS, keepValidEnds, periodForRule, periodFromParams, precedingPeriod, screenDateRule, screenPeriod, STANDARD_SCREEN_DATE_RULE, todayIsoInTimeZone, type DateWindowScreenId, type Period } from '../../app/_lib/periods';
 import { formatShellDate, validShellDate } from './date-format';
 export { formatShellDate } from './date-format';
 import { comparisonLengthState, dateRangeHref } from './date-range';
@@ -284,7 +284,8 @@ export function ScreenTopbar({ screens, today, profiles = [], now }: {
       .find((candidate) => candidate.path !== '/' && pathname.startsWith(`${candidate.path}/`));
   const preserved = Object.fromEntries(search.entries());
   const active = resolveActiveProfile(profiles, search.get('profile') ?? undefined);
-  const profileToday = pathname === '/creative' && active?.timezone && now ? todayIsoInTimeZone(active.timezone, new Date(now)) : today;
+  const dateScreen = shellDateScreen(pathname);
+  const profileToday = dateScreen !== null && screenDateRule(dateScreen).calendar === 'profile' && active?.timezone && now ? todayIsoInTimeZone(active.timezone, new Date(now)) : today;
   const { period, includeToday } = resolveShellPeriod(pathname, preserved, profileToday);
   const comparison = validShellDate(search.get('compareFrom') ?? undefined) && validShellDate(search.get('compareTo') ?? undefined) && search.get('compareFrom')! <= search.get('compareTo')!
     ? periodFromParams({ from: search.get('compareFrom')!, to: search.get('compareTo')! }, today)
@@ -302,18 +303,23 @@ function EvidenceStatusChips() {
   return <ShellStatusChips freshness={evidence?.freshness ?? null} crosscheck={evidence?.crosscheck ?? null} loading={loading} />;
 }
 
-/** Match the existing screen loaders' complete-day and current-day windows. */
+/** The date-window screen a path shows, or null for a path that follows the standard rule. */
+function shellDateScreen(path: string): DateWindowScreenId | null {
+  return DATE_WINDOW_SCREEN_IDS.find((id) => path === `/${id}`) ?? null;
+}
+
+/** The screen loads' own date rule (`screenDateRule` / `screenPeriod`), so the top bar and the screen show one window. */
 export function resolveShellPeriod(path: string, params: Readonly<Record<string, string | undefined>>, today: string) {
   const from = validShellDate(params['from']) ? params['from'] : undefined;
   const to = validShellDate(params['to']) ? params['to'] : undefined;
-  if (path === '/dayparting') {
-    const start = from ?? addDays(today, -55);
-    const end = to ?? today;
-    return { period: start <= end ? { start, end } : { start: addDays(today, -55), end: today }, includeToday: true };
-  }
-  const input = { ...(from === undefined ? {} : { from }), ...(to === undefined ? {} : { to }) };
-  const includeToday = path === '/creative';
-  return { period: includeToday ? periodFromParamsThroughToday(input, today) : periodFromParams(input, today), includeToday };
+  const input = { from, to };
+  const screenId = shellDateScreen(path);
+  if (screenId === null) return { period: periodForRule(STANDARD_SCREEN_DATE_RULE, input, today), includeToday: STANDARD_SCREEN_DATE_RULE.throughToday };
+  // Dayparting keeps a lone valid end, as its load does.
+  const period = screenId === 'dayparting'
+    ? keepValidEnds(screenPeriod(screenId, {}, today), input)
+    : screenPeriod(screenId, input, today);
+  return { period, includeToday: screenDateRule(screenId).throughToday };
 }
 
 const windowWords = (period: Period): string => `${formatShellDate(period.start)} – ${formatShellDate(period.end)}`;
