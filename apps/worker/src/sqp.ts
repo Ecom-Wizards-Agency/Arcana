@@ -45,13 +45,16 @@ import {
   SpApiAmbiguousOutcome,
   SpApiAuthError,
   SpApiError,
+  formatSqpRefusalSummary,
   parseSqpReport,
   planSqpReportRequests,
+  summarizeSqpRefusals,
   SQP_REPORT_TYPE,
   type CreateReportInput,
   type ParsedSqpReport,
   type SpApiReport,
   type SpApiReportDocument,
+  type SqpRefusalSummary,
   type SqpReportRequestPlan,
 } from '@wizard-ads/sp-api';
 
@@ -98,7 +101,32 @@ export interface SqpWorkflowCheckpoint {
   weekEnd: string;
   batches: SqpBatchCheckpoint[];
   completed: CompletedSqpWorkflowResult | null;
+  /**
+   * Why the last parse of this job's reports was refused. Reasons are fixed
+   * parser text plus field names, never a row value. Absent on checkpoints
+   * written before WP-335 and after a successful parse.
+   */
+  refusalSummary?: SqpRefusalSummary;
+  /** Operator requeues recorded by `sqp:requeue`, oldest first. */
+  requeues?: SqpRequeueRecord[];
 }
+
+/** One `sqp:requeue` of a dead job, kept on its checkpoint as the audit trail. */
+export interface SqpRequeueRecord {
+  requeuedAt: string;
+  previousAttempts: number;
+  /** Parser version that refused the week; null when the job died for another reason. */
+  refusedByParserVersion: number | null;
+  previousRefusal: SqpRefusalSummary | null;
+}
+
+export interface SqpWorkflowLogger {
+  error(message: string, details?: Record<string, unknown>): void;
+}
+
+const consoleSqpLogger: SqpWorkflowLogger = {
+  error: (message, details) => console.error(message, details ?? {}),
+};
 
 export interface SqpWorkflowCheckpointStore {
   load(runKey: string): Promise<SqpWorkflowCheckpoint | null>;
@@ -154,6 +182,8 @@ export interface SqpWorkflowDependencies {
   }) => Promise<boolean>;
   nextPollAfterSeconds?: number;
   now?: () => Date;
+  /** Receives the one value-free refusal line; defaults to the console. */
+  logger?: SqpWorkflowLogger;
 }
 
 export interface PendingSqpWorkflowResult {
@@ -374,11 +404,34 @@ export async function runSqpRequestWorkflow(
   }
 
   const merged = mergeParsedReports(parsedReports);
-  if (merged.counts.refusedRows > 0) {
+  if (merged.refusalSummary !== null) {
+    // The reasons must outlive the dead job: checkpoint first, then one log
+    // line, then an error whose text becomes the job's last_error.
+    const refusalSummary = merged.refusalSummary;
+    checkpoint.refusalSummary = refusalSummary;
+    let checkpointed = true;
+    try {
+      await dependencies.checkpoints.save(checkpoint);
+    } catch {
+      checkpointed = false;
+    }
+    const summaryLine = formatSqpRefusalSummary(refusalSummary);
+    (dependencies.logger ?? consoleSqpLogger).error('SQP report rows refused', {
+      runKey,
+      orgId: payload.orgId,
+      profileId: payload.profileId,
+      marketplaceId: payload.marketplaceId,
+      weekStart: payload.weekStart,
+      weekEnd: payload.weekEnd,
+      checkpointed,
+      summary: summaryLine,
+    });
     throw new SqpWorkflowPermanentError(
-      `SQP report refused ${merged.counts.refusedRows} rows; canonical promotion is blocked`,
+      `SQP report refused ${merged.counts.refusedRows} rows; canonical promotion is blocked; ${summaryLine}` +
+        (checkpointed ? '' : '; refusal summary was not checkpointed'),
     );
   }
+  delete checkpoint.refusalSummary;
   const vocabulary = await dependencies.data.listVocabulary({
     orgId: payload.orgId,
     marketplaceId: payload.marketplaceId,
@@ -637,6 +690,7 @@ export interface PostgresSqpRequestHandlerOptions {
   confirmCancelledNoData?: SqpWorkflowDependencies['confirmCancelledNoData'];
   nextPollAfterSeconds?: number;
   now?: () => Date;
+  logger?: SqpWorkflowLogger;
 }
 
 /** Build the queue handler once SP-API token custody is available to a runtime. */
@@ -664,6 +718,7 @@ export function createPostgresSqpRequestHandler(options: PostgresSqpRequestHandl
         ? {}
         : { nextPollAfterSeconds: options.nextPollAfterSeconds }),
       ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.logger === undefined ? {} : { logger: options.logger }),
     });
     if (result.status === 'pending') {
       throw new SqpWorkflowPendingError(result.nextPollAfterSeconds);
@@ -898,6 +953,8 @@ function parsingContext(payload: SqpRequestJobType, batch: SqpBatchCheckpoint): 
 function mergeParsedReports(reports: readonly ParsedSqpReport[]): {
   rows: SqpWeeklyFact[];
   counts: SqpIngestionCounts;
+  /** Null exactly when no row was refused. */
+  refusalSummary: SqpRefusalSummary | null;
 } {
   const rows = reports.flatMap((report) => report.rows);
   const seen = new Set<string>();
@@ -929,7 +986,11 @@ function mergeParsedReports(reports: readonly ParsedSqpReport[]): {
   ) {
     throw new SqpWorkflowPermanentError('merged SQP report counts do not reconcile');
   }
-  return { rows, counts: { ...counts, upserts: rows.length } };
+  const refusalSummary = counts.refusedRows === 0 ? null : summarizeSqpRefusals(reports);
+  if (refusalSummary !== null && refusalSummary.refusedRows !== counts.refusedRows) {
+    throw new SqpWorkflowPermanentError('SQP refusal summary does not reconcile with refused rows');
+  }
+  return { rows, counts: { ...counts, upserts: rows.length }, refusalSummary };
 }
 
 function toPpcFact(row: WeeklyPpcQueryRecord): PpcQueryFact {

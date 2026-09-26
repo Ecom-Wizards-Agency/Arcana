@@ -86,6 +86,22 @@ SP-API handler is available. The general worker must remain online: cron and the
 Evo report lane alone neither produce nor consume weekly SQP jobs. See the
 [weekly SQP prerequisites](../../apps/worker/README.md#weekly-sqp).
 
+A weekly SQP job whose rows the parser refuses goes `dead`. Its `last_error`,
+its checkpoint (`refusalSummary`) and one `SQP report rows refused` log line name
+the parser version, the refused count, the five most frequent fixed reasons and
+the field names of the first refused row, never a row value. After a release
+that changes the parser version, the producer re-offers the current week once
+under a versioned dedupe key. For any other dead week, run
+`pnpm --filter @wizard-ads/worker run sqp:requeue -- --org <slug> --profile <label> --week-start YYYY-MM-DD`
+with production `DATABASE_URL` in the operator shell, only after the release
+carrying the new parser is deployed and from a checkout of that release: the
+command compares the refusing version with its own checkout's parser. It resets
+the one dead job to `queued` and keeps the checkpoint, so Amazon reports already
+produced are downloaded again by document id; add `--fresh-reports` only if those
+documents can no longer be fetched. It takes the same per-week lock as the
+producer's re-offer, refuses when another job covers the week or when this
+checkout's parser version already refused it, and prints one JSON audit line.
+
 Schedule reconciliation runs in both runtimes and is idempotent. It creates schedules
 only from active integration connections, selects the first sync-enabled profile per
 org/country unless `config.profile_id` designates one, and disables the provider's
