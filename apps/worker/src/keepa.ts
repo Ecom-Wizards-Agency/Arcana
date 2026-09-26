@@ -42,7 +42,7 @@ export interface KeepaSyncDeps {
   activeConnection(orgId: string): Promise<ActiveKeepaConnection | null>;
   readCredential(connectionId: string): Promise<string | null>;
   scope(input: { orgId: string; profileId: string; includeCompetitors: boolean }): Promise<KeepaSyncScope>;
-  previous(orgId: string, asins: readonly string[]): Promise<KeepaObservationRecord[]>;
+  previous(orgId: string, asins: readonly string[], marketplace: string): Promise<KeepaObservationRecord[]>;
   loadObservations(rows: readonly NewKeepaBsrObservation[]): Promise<IdentityLoadCounts>;
   loadEvents(rows: readonly NewCompetitorPriceEvent[]): Promise<CompetitorEventLoadResult>;
   writeInsight(input: Parameters<typeof writeKeepaDealInsight>[1]): Promise<string>;
@@ -61,7 +61,7 @@ export function createKeepaSyncHandler(
     activeConnection: (orgId) => activeKeepaConnection(handle, orgId),
     readCredential: (connectionId) => getIntegrationSecret(handle, connectionId),
     scope: (input) => resolveKeepaSyncScope(handle, input),
-    previous: (orgId, asins) => latestKeepaObservations(handle, orgId, asins),
+    previous: (orgId, asins, marketplace) => latestKeepaObservations(handle, orgId, asins, marketplace),
     loadObservations: (rows) => loadKeepaBsrObservations(handle, rows),
     loadEvents: (rows) => loadNewCompetitorPriceEvents(handle, rows),
     writeInsight: (input) => writeKeepaDealInsight(handle, input),
@@ -101,6 +101,7 @@ export async function runKeepaSync(
   const previousRows = await deps.previous(
     payload.orgId,
     requested.filter((asin) => competitorAsins.has(asin)),
+    scope.marketplace.toUpperCase(),
   );
   const previous = new Map(previousRows.map((row) => [row.asin, row]));
   const syncedAt = deps.now();
@@ -128,7 +129,7 @@ export async function runKeepaSync(
   await deps.loadOwnListings?.(listingRows);
   }
 
-  const observationRows = fetched.products.map((product) => observationRow(payload.orgId, product, syncedAt));
+  const observationRows = fetched.products.map((product) => observationRow(payload.orgId, scope.marketplace, product, syncedAt));
   const detected = fetched.products.flatMap((product) => {
     if (!competitorAsins.has(product.asin)) return [];
     return detectForProduct(product, previous.get(product.asin) ?? null, syncedAt);
@@ -183,12 +184,14 @@ export async function runKeepaSync(
 
 function observationRow(
   orgId: string,
+  marketplace: string,
   product: KeepaProduct,
   fallbackAt: Date,
 ): NewKeepaBsrObservation {
   const current = currentProductValues(product);
   return {
     orgId,
+    marketplace: marketplace.toUpperCase(),
     asin: current.asin,
     observedAt: current.observedAt ?? fallbackAt,
     category: current.category,
@@ -202,7 +205,8 @@ function observationRow(
   };
 }
 
-function detectForProduct(
+/** The one competitor price rule: keepa.sync and the market-signals import both decide here. */
+export function detectForProduct(
   product: KeepaProduct,
   previous: KeepaObservationRecord | null,
   fallbackAt: Date,

@@ -36,7 +36,7 @@ function renderGated({ result }: Extract<ScreenData, { view: 'gated'; }>['props'
   </main>);
 }
 
-function renderReady({ context, status, lane, sources, coreEvidence, providerEvidence }: Extract<ScreenData, { view: 'ready'; }>['props']) {
+function renderReady({ context, status, lane, sources, coreEvidence, providerEvidence, marketSignals }: Extract<ScreenData, { view: 'ready'; }>['props']) {
   // Measured per profile by the lane query, including explicit zeros. A legacy
   // failure returns its job to Queued, so a stored `failed` state never exists.
   const health = new Map(lane.profiles.map((row) => [row.profileId, row]));
@@ -101,6 +101,11 @@ function renderReady({ context, status, lane, sources, coreEvidence, providerEvi
         {status.streams.map((row) => <tr key={row.datasetId} data-testid="stream-extension-row"><td style={td}>{row.datasetId}</td><td style={td}>{row.bindingCount}</td><td style={td}>{row.enabled ? 'on' : 'off'}</td><td style={td}>{row.confirmed ? 'confirmed' : 'missing confirmation'}</td><td style={td}>{row.stored}</td><td style={td}>{formatTimestamp(row.latestEventAt)}</td><td style={td}>{row.maximumLagSeconds === null ? '—' : `${row.maximumLagSeconds}s`}</td><td style={td}>{[row.duplicates, row.rejected, row.deadLettered].map((n) => n === null ? 'unmeasured' : n).join(' / ')}</td></tr>)}
       </tbody></table></TableFrame> : <p style={muted}>Choose a profile to inspect Stream bindings.</p>}
       <ReportLifecycleTables deadLetters={status.deadLetters} lifecycle={status.lifecycle} />
+
+      <h2 style={subheading}>Market signals import</h2>
+      {marketSignals ? <TableFrame><table style={table}><thead><tr>{['Data as of', 'Last import', 'Files', 'Batches', 'Observations', 'Change points', 'Signals', 'Tag marks', 'Invalid records', 'Unmapped signals'].map((label) => <th style={th} key={label}>{label}</th>)}</tr></thead><tbody>
+        <tr data-testid="market-signals-import-row"><td style={td}>{marketSignals.dataAsOf ? formatTimestamp(marketSignals.dataAsOf) : 'Not reported'}</td><td style={td}>{marketSignals.lastImportedAt ? formatTimestamp(marketSignals.lastImportedAt) : 'Not reported'}</td><td style={td}>{marketSignals.files}</td><td style={td}>{marketSignals.batchesImported}</td><td style={td}>{marketSignals.observations}</td><td style={td}>{marketSignals.changePoints}</td><td style={td}>{marketSignals.signals}</td><td style={td}>{marketSignals.tagMarks}</td><td style={{ ...td, color: marketSignals.invalidRecords ? colors.bad : undefined }}>{marketSignals.invalidRecords}</td><td style={td}>{marketSignals.unmappedSignals}</td></tr>
+      </tbody></table></TableFrame> : <p style={muted}>The wizards-ai market signals import has not run for this organisation.</p>}
 
       <h2 style={subheading}>Catalogue and Amazon history sources</h2>
       <TableFrame><table style={table}><thead><tr><th style={th}>Profile</th><th style={th}>Marketplace</th><th style={th}>Family</th><th style={th}>Gate</th><th style={th}>Covered window</th><th style={th}>Source age</th><th style={th}>Source rows</th><th style={th}>Verified rows</th><th style={th}>Cursor</th></tr></thead><tbody>

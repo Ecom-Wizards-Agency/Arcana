@@ -1,6 +1,6 @@
 import type { ProviderEvidenceReadResult } from '@wizard-ads/shared';
 import { readProviderEvidence } from '@wizard-ads/db';
-import { listMarketPositionLinks, listMarketPositionProducts, readMarketPositionSettings, readMarketRankSeries } from '@wizard-ads/db';
+import { listMarketPositionLinks, listMarketPositionProducts, readMarketPositionSettings, readMarketRankSeries, readMarketSignalsImportStatus } from '@wizard-ads/db';
 import type { MarketPositionLink, MarketPositionProduct, MarketPositionSettings, MarketRankSeries } from '@wizard-ads/shared';
 import { addDays, screenPeriod, todayIso } from '../../../app/_lib/periods';
 import { listProfiles } from '../../../app/_lib/profiles';
@@ -11,6 +11,8 @@ export type MarketPositionData = { view: 'gated' } | { view: 'empty' } | {
   view: 'ready'; providerEvidence?: ProviderEvidenceReadResult; profileId: string; countryCode: string; canEdit: boolean;
   start: string; end: string; selectedAsin: string; settings: MarketPositionSettings;
   products: MarketPositionProduct[]; links: MarketPositionLink[]; series: MarketRankSeries[];
+  /** The wizards-ai import's newest `state_generated_at`; absent while the import has never run. */
+  marketSignalsAsOf?: string | null;
 };
 
 export async function load(access: ScreenActor, input: ScreenParams): Promise<MarketPositionData> {
@@ -29,10 +31,12 @@ export async function load(access: ScreenActor, input: ScreenParams): Promise<Ma
     const links = (await listMarketPositionLinks(handle, orgId, profile.id)).filter((link) => products.some((product) => product.asin === link.ownAsin));
     const settings = await readMarketPositionSettings(handle, orgId, profile.id);
     const asins = [...new Set([...products.map((p) => p.asin), ...links.map((l) => l.competitorAsin)])];
-    const series = await readMarketRankSeries(handle, orgId, asins, addDays(period.start, -1), period.end);
+    const series = await readMarketRankSeries(handle, orgId, asins, addDays(period.start, -1), period.end, profile.countryCode);
+    const marketSignals = await readMarketSignalsImportStatus(handle, orgId);
     const selectedAsin = products.find((p) => p.asin === input.searchParams['asin'])?.asin ?? products[0]?.asin ?? '';
     const providerEvidence = await readProviderEvidence(handle, { orgId, profileId: profile.id, consumer: 'market-position' });
     return { view: 'ready', providerEvidence, profileId: profile.id, countryCode: profile.countryCode, canEdit: role === 'owner' || role === 'admin' || role === 'analyst',
-      start: period.start, end: period.end, selectedAsin, settings, products, links, series };
+      start: period.start, end: period.end, selectedAsin, settings, products, links, series,
+      ...(marketSignals ? { marketSignalsAsOf: marketSignals.dataAsOf } : {}) };
   });
 }

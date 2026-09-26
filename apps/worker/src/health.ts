@@ -5,10 +5,13 @@ import { MARKETING_STREAM_SUSTAINED_FAILURE_THRESHOLD } from './marketing-stream
 import type { WorkerClaimProtocol, WorkerDeploymentRole } from './deployment-role.js';
 import type { JobType } from '@wizard-ads/shared';
 import type { AmazonConnectionLoop } from './amazon-connections.js';
+import type { MarketSignalsImportStatusSnapshot } from './market-signals-import.js';
 
 export interface WorkerHealthComponents {
   reports?: () => Promise<ReportHealth>;
   amazonConnections?: Pick<AmazonConnectionLoop, 'status'>;
+  /** Counters only; an import failure never changes readiness. */
+  marketSignalsImport?: { status(): MarketSignalsImportStatusSnapshot };
   deployment: {
     revision: string;
     role: WorkerDeploymentRole;
@@ -90,6 +93,7 @@ export function startHealthServer(
       components: {
         marketingStream,
         amazonConnections,
+        marketSignalsImport: components.marketSignalsImport?.status() ?? { enabled: false },
       },
     });
     response.writeHead(degraded ? 503 : 200, {

@@ -54,14 +54,19 @@ export async function listMarketPositionLinks(handle: QueryHandle, orgId: string
   `;
 }
 
-/** Latest sample per UTC day and category, including explicit missing BSR samples. */
-export async function readMarketRankSeries(handle: QueryHandle, orgId: string, asins: readonly string[], start: string, end: string): Promise<MarketRankSeries[]> {
+/**
+ * Latest sample per UTC day and category, including explicit missing BSR samples.
+ * Rows from keepa.sync and from the wizards-ai import both count. With a
+ * marketplace, another marketplace's rows for the same ASIN stay out.
+ */
+export async function readMarketRankSeries(handle: QueryHandle, orgId: string, asins: readonly string[], start: string, end: string, marketplace?: string): Promise<MarketRankSeries[]> {
   if (!asins.length) return [];
   const rows = await handle.sql<{ asin: string; category: string; date: string; bsr: number | null; observedAt: Date | string }[]>`
     select distinct on (asin, category, (observed_at at time zone 'UTC')::date)
       asin, category, ((observed_at at time zone 'UTC')::date)::text as date, bsr, observed_at as "observedAt"
       from public.keepa_bsr_observations
      where org_id=${orgId} and asin=any(${[...asins]}::text[])
+       and (${marketplace?.toUpperCase() ?? null}::text is null or marketplace is null or marketplace=${marketplace?.toUpperCase() ?? null}::text)
        and observed_at >= ${start}::date::timestamp at time zone 'UTC'
        and observed_at < (${end}::date + 1)::timestamp at time zone 'UTC'
      order by asin, category, (observed_at at time zone 'UTC')::date, observed_at desc, id desc

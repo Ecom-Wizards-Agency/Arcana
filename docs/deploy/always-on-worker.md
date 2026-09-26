@@ -250,6 +250,24 @@ staged release whose checksums and link manifest verify, whose import graph
 resolves inside `app/`, and whose runtime launches its own `app/` at its recorded
 revision.
 
+## Market signals import (WP-331)
+
+wizards-ai is the only process that calls Keepa; the general worker imports its
+`market-signals/2` export. The import is off until `OPENSPELL_MARKET_SIGNALS_DIR`
+names a directory the hardened worker can read (with `ProtectHome=yes`, not a home
+directory), where wizards-ai's hourly pass writes `<UTC date>.ndjson` batches. With
+it set, the pass runs in the general worker every 15 minutes, never in the report
+or recommendation lanes. `OPENSPELL_MARKET_SIGNALS_ORG_KEYS=key=uuid[,key=uuid]`
+maps each export `org_key` to an organisation id; without it, only the default key
+`ecom-wizards` is imported, and only while the database holds exactly one
+organisation. Both values are non-secret. Map each wizards-ai profile key once
+with `pnpm --filter @wizard-ads/worker run market-signals:map -- --org <slug>
+--profile-key <key> --profile <label>`; signals under an unmapped key import with
+no profile and are counted. `pnpm --filter @wizard-ads/worker run
+market-signals:import -- --once` runs one pass for a runbook (exit 0 clean, 3 with
+findings, 2 usage, 1 failure). `/healthz` and `/sync-status` show the counters and
+the export's "data as of". `keepa.sync` keeps running until a later step.
+
 ## Report fetch reliability (WP-323)
 
 Until WP-323 every report fetch on the Vercel cron lane died with `report download
