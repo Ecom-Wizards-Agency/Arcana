@@ -27,9 +27,9 @@ it('counts rows from both insight writers, flags, proposals and rank observation
   expect(within(screen.getByRole('list', { name: 'Weekly events' })).getAllByRole('listitem')).toHaveLength(2);
   expect(screen.getByText('Keepa')).toBeTruthy();
   expect(screen.getByText('Analyst')).toBeTruthy();
-  expect(within(screen.getByRole('list', { name: 'Active flags' })).getAllByRole('listitem')).toHaveLength(1);
+  expect(within(screen.getByRole('group', { name: 'Raised flags' })).getAllByRole('listitem')).toHaveLength(4);
   expect(screen.getByText('Noted, not flagged (1)')).toBeTruthy();
-  expect(within(screen.getByRole('list', { name: 'Suppressed flags' })).getAllByRole('listitem')).toHaveLength(1);
+  expect(within(screen.getByRole('group', { name: 'Noted flags' })).getAllByRole('listitem')).toHaveLength(1);
   expect(screen.getByText('Insufficient settled evidence for this finding.')).toBeTruthy();
   expect(within(screen.getByRole('list', { name: 'Pending proposals' })).getAllByRole('listitem')).toHaveLength(2);
   expect(within(screen.getByRole('list', { name: 'Rank movements' })).getAllByRole('listitem')).toHaveLength(1);

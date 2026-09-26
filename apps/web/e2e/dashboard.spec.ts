@@ -72,9 +72,9 @@ test('Home renders five KPIs and the two-column decision cards in both budget st
       await expect(page.getByLabel('Campaigns near their limit')).toContainText('Not measured');
       await expect(page.getByLabel('Campaigns near their limit')).not.toContainText('0');
       await expect(page.getByLabel('Pacing', { exact: true })).toContainText(budget === null ? 'No monthly budget on file — pacing is not computed.' : 'Remaining · derived, not stored');
-      await expect(page.getByLabel('Events this week')).toContainText('Keepa');
-      await expect(page.getByLabel('Events this week')).toContainText('Analyst');
-      await expect(page.getByLabel('Rank watch')).toContainText('Up 4 places');
+      await expect(page.getByLabel('Events this week', { exact: true })).toContainText('Keepa');
+      await expect(page.getByLabel('Events this week', { exact: true })).toContainText('Analyst');
+      await expect(page.getByLabel('Rank watch', { exact: true })).toContainText('Up 4 places');
       await expect(page.getByLabel('Market position', { exact: true })).toContainText('Not measured');
       const screenshotDirectory = resolve('node_modules/.cache/playwright/profile-context');
       await mkdir(screenshotDirectory, { recursive: true });
@@ -88,6 +88,26 @@ test('Home renders five KPIs and the two-column decision cards in both budget st
       }));
       await writeFile(resolve(screenshotDirectory, `${name}-geometry.json`), JSON.stringify(geometry, null, 2));
     }
+    // Rank rows link to their product; sections collapse per user and stay collapsed across a reload.
+    await expect(page.getByLabel('Rank watch', { exact: true }).getByRole('link', { name: 'Open product B0HOME0001' }))
+      .toHaveAttribute('href', `/grid?${new URLSearchParams({ profile: fixtureProfileId, entity: 'products', asin: 'B0HOME0001' })}`);
+    await expect(page.getByTestId('home-count-ranks')).toHaveText('1 keyword');
+    await expect(page.getByLabel('Events this week', { exact: true }).getByTestId('home-count-events')).toHaveText(/^\d+ events?$/);
+    const flagsCard = page.getByLabel('Flags', { exact: true });
+    await expect(flagsCard.getByTestId('home-count-flags')).toHaveText(/^\d+ raised flags?$/);
+    await expect(async () => {
+      const hide = flagsCard.getByRole('button', { name: 'Hide Flags' });
+      if (await hide.count() === 1) await hide.click();
+      await expect(flagsCard.getByRole('button', { name: 'Show Flags' })).toHaveAttribute('aria-expanded', 'false', { timeout: 1_000 });
+    }).toPass();
+    await expect(flagsCard.locator('.wa-home-card-body')).toBeHidden();
+    await page.reload();
+    await expect(flagsCard.getByRole('button', { name: 'Show Flags' })).toHaveAttribute('aria-expanded', 'false');
+    await expect(flagsCard.getByTestId('home-count-flags')).toHaveText(/^\d+ raised flags?$/);
+    await flagsCard.getByRole('button', { name: 'Show Flags' }).click();
+    await expect(flagsCard.getByRole('button', { name: 'Hide Flags' })).toHaveAttribute('aria-expanded', 'true');
+    await expect(flagsCard.getByRole('group', { name: 'Filter flags' })).toBeVisible();
+
     // Verify the populated market state separately; both frame captures show missing market evidence.
     {
         const links = await database.sql`insert into public.competitor_links
