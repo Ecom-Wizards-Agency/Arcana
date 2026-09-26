@@ -7,7 +7,9 @@ export const entries: ChangeQueueEntry[] = ['apply','sync','sync','apply','queue
   state: (['confirmed','observed','unattributed','confirmed','awaiting review','approved'] as const)[index]!,
   batchId: source==='apply'?id(index+1):null,batchLabel:source==='apply'||index===2?String(1000+index):null,
   batchCount:source==='apply'?7:null,experimentStart:index===3,candidateCount:index===2?2:0,
-  acknowledgedAt:null,acknowledgedBy:null,reviewHref:source==='queued'?['/targets',`synthetic-${index}`,'queue',id(index+1)].join('/') + '?' + new URLSearchParams({profile:id(50)}):null,
+  acknowledgedAt:null,acknowledgedBy:null,
+  actor:source==='sync'?{kind:'ads_console',name:null}:index===0?{kind:'operator',name:'Synthetic operator'}:index===3?{kind:'automation',name:null}:{kind:'operator',name:null},
+  reviewHref:source==='queued'?['/targets',`synthetic-${index}`,'queue',id(index+1)].join('/') + '?' + new URLSearchParams({profile:id(50)}):null,
 }));
 export const restoreRows: RestorePreviewRow[] = ['ready','ready','conflict','already restored','conflict','unsupported','awaiting sync'].map((state,index) => ({
   rowId:id(index+1),entityId:`synthetic-${index}`,entityType:index===4?'campaign':'keyword',entity:`Synthetic restore ${index+1}`,
@@ -15,5 +17,5 @@ export const restoreRows: RestorePreviewRow[] = ['ready','ready','conflict','alr
   restoreTo:index===5?180:1,state:state as RestorePreviewRow['state'],readAt:index===6?null:'2026-09-05T09:20:00Z',
   why:['Untouched since we set it','Untouched since we set it','Someone changed it after us','Already back at the old value','Budget raised at Amazon','No adapter for this field','Not read back from Amazon yet'][index]!,
 }));
-export const ready = { view:'ready',props:{profileId:id(50),currencyCode:'USD',role:'owner',viewActor:{orgId:id(60),userId:id(61)},entries,hasOlder:false,cursor:null,query:{},partial:false,proposal:null,preview:null} } satisfies ScreenData;
+export const ready = { view:'ready',props:{profileId:id(50),currencyCode:'USD',role:'owner',viewActor:{orgId:id(60),userId:id(61)}, entries, filterOptions: { types: ['keyword'], fields: ['bid'] }, hasOlder:false,cursor:null,query:{},partial:false,proposal:null,preview:null} } satisfies ScreenData;
 export const restore = { view:'ready',props:{...ready.props,preview:{batchId:id(1),label:'1042',blockedReason:null,rows:restoreRows}} } satisfies ScreenData;

@@ -51,7 +51,12 @@ export async function load(access: ScreenActor, input: ScreenParams) {
     const selected = requested ?? profiles[0]?.profileId ?? null;
     const model: CrosscheckPanelModel | null =
       selected === null ? null : await loadCrosscheckPanel(handle, { orgId, profileId: selected });
-    return { profiles, selected, model };
+    // The panel model carries the compared dates; the run time is when the stored verdicts were last written.
+    const ranAt = selected === null ? null : (await handle.sql<{ ran_at: string | null }[]>`
+      select to_char(max(created_at) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as ran_at
+      from public.crosscheck_results where org_id = ${orgId}::uuid and profile_id = ${selected}::uuid
+    `)[0]?.ran_at ?? null;
+    return { profiles, selected, model, ranAt };
   });
 
   if (data === null) {

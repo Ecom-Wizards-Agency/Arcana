@@ -1,8 +1,8 @@
 import { expect, it } from 'vitest';
-import { ChangeQueueEntry, ChangeQueueSource, RestorePreviewState, ChangeQueueRestoreBatchPreview } from './time-machine.js';
+import { ChangeQueueActorKind, ChangeQueueEntry, ChangeQueueSource, RestorePreviewState, ChangeQueueRestoreBatchPreview } from './time-machine.js';
 const entry={id:'change:1',when:'2026-09-05T09:20:00.000001Z',entity:'Synthetic target',entityType:'keyword',entityId:'synthetic',field:'bid',
   oldValue:null,newValue:1,source:'sync',state:'observed',batchId:null,batchLabel:null,batchCount:null,experimentStart:false,candidateCount:0,
-  acknowledgedAt:null,acknowledgedBy:null,reviewHref:null};
+  acknowledgedAt:null,acknowledgedBy:null,reviewHref:null,actor:{kind:'ads_console',name:null}};
 it('preserves unknown values and exact source timestamps',()=>{
   const parsed=ChangeQueueEntry.parse(entry);
   expect(parsed.oldValue).toBeNull(); expect(parsed.batchCount).toBeNull(); expect(parsed.when).toBe(entry.when);
@@ -33,8 +33,20 @@ it('counts coordinated proposals separately from physical restore rows and refus
 });
 
 it('requires imported provenance and refuses local authority on Amazon observations',()=>{
-  const imported={...entry,source:'amazon',amazonObservation:{marketplaceId:'synthetic-market',retrievedAt:'2026-09-15T00:00:00.000Z',identityQuality:'derived',identityAmbiguity:'provider_id_unavailable',identityConflict:true,resolution:'unresolved',resolvedEntityType:null,resolvedAmazonId:null}};
+  const imported={...entry,source:'amazon',actor:{kind:'unknown',name:null},amazonObservation:{marketplaceId:'synthetic-market',retrievedAt:'2026-09-15T00:00:00.000Z',identityQuality:'derived',identityAmbiguity:'provider_id_unavailable',identityConflict:true,resolution:'unresolved',resolvedEntityType:null,resolvedAmazonId:null}};
   expect(ChangeQueueEntry.safeParse(imported).success).toBe(true);
   expect(ChangeQueueEntry.safeParse({...imported,reviewHref:'/restore'}).success).toBe(false);
   expect(ChangeQueueEntry.safeParse({...imported,amazonObservation:null}).success).toBe(false);
+});
+
+it('names an actor only for operators and keeps observed changes free of Arcana actors',()=>{
+  expect(ChangeQueueActorKind.options).toEqual(['operator','automation','ads_console','unknown']);
+  const applied={...entry,id:'apply:1',source:'apply',state:'exported'};
+  expect(ChangeQueueEntry.safeParse({...applied,actor:{kind:'operator',name:'synthetic@example.test'}}).success).toBe(true);
+  expect(ChangeQueueEntry.safeParse({...applied,actor:{kind:'operator',name:null}}).success).toBe(true);
+  expect(ChangeQueueEntry.safeParse({...applied,actor:{kind:'automation',name:null}}).success).toBe(true);
+  expect(ChangeQueueEntry.safeParse({...applied,actor:{kind:'automation',name:'synthetic@example.test'}}).success).toBe(false);
+  expect(ChangeQueueEntry.safeParse({...applied,actor:{kind:'operator',name:''}}).success).toBe(false);
+  expect(ChangeQueueEntry.safeParse({...entry,actor:{kind:'operator',name:null}}).success).toBe(false);
+  expect(ChangeQueueEntry.safeParse({...entry,actor:undefined}).success).toBe(false);
 });

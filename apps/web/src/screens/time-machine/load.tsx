@@ -40,10 +40,17 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       const source = ChangeQueueSource.safeParse(one(query['source']));
       const state = ChangeQueueState.safeParse(one(query['state']));
       const cursor = queueCursor(query);
-      const entries = await listChangeQueue(database, { orgId: actor.orgId, profileId: profile.id, from,
+      const scope = { orgId: actor.orgId, profileId: profile.id, from,
         to: to === null ? null : `${to}T23:59:59.999999Z`, source: source.success ? source.data : null,
-        state: state.success ? state.data : null, entityType: one(query['type']) ?? null,
+        state: state.success ? state.data : null };
+      const entries = await listChangeQueue(database, { ...scope, entityType: one(query['type']) ?? null,
         field: one(query['field']) ?? null, before: cursor, limit: 51 });
+      // The entity type and field dropdowns list the rows the other filters allow, so an applied value can be switched.
+      const optionRows = one(query['type']) || one(query['field'])
+        ? await listChangeQueue(database, { ...scope, entityType: null, field: null, before: null, limit: 50 })
+        : entries.slice(0,50);
+      const filterOptions = { types: [...new Set(optionRows.map((row) => row.entityType))].sort(),
+        fields: [...new Set(optionRows.map((row) => row.field))].sort() };
       const proposalId=one(query['proposal']);
       const proposal=proposalId && Uuid.safeParse(proposalId).success ? await readRestoreProposal(database,{orgId:actor.orgId,profileId:profile.id,planId:proposalId}) : null;
       if(proposalId && proposal===null) notFound();
@@ -71,7 +78,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       }));
       preserved['profile'] = profile.id;
       return { view: 'ready' as const, props: { profileId: profile.id, currencyCode: profile.currencyCode,
-        role, viewActor:actor, proposal, ...({ streamEvidence: await readStreamConsumerEvidence(database, { orgId: actor.orgId, profileId: profile.id, datasets: ['ads-campaign-management-campaigns','ads-campaign-management-adgroups','ads-campaign-management-ads','ads-campaign-management-targets'], asOf: new Date().toISOString(), maxAgeMs: 86400000, history: true, ...(from ? { from } : {}), ...(to ? { to: new Date(Date.parse(to)+86400000).toISOString() } : {}) }) } as { streamEvidence?: StreamConsumerEvidence }), entries: entries.slice(0,50), hasOlder: entries.length > 50, cursor, query: preserved,
+        role, viewActor:actor, proposal, ...({ streamEvidence: await readStreamConsumerEvidence(database, { orgId: actor.orgId, profileId: profile.id, datasets: ['ads-campaign-management-campaigns','ads-campaign-management-adgroups','ads-campaign-management-ads','ads-campaign-management-targets'], asOf: new Date().toISOString(), maxAgeMs: 86400000, history: true, ...(from ? { from } : {}), ...(to ? { to: new Date(Date.parse(to)+86400000).toISOString() } : {}) }) } as { streamEvidence?: StreamConsumerEvidence }), entries: entries.slice(0,50), filterOptions, hasOlder: entries.length > 50, cursor, query: preserved,
         partial: freshness?.partial ?? true,
         preview: preview === null ? null : { batchId: preview.batchId, label: preview.tag,
           blockedReason: preview.activeReversionBatchId === null ? null : 'This batch already has an active restore batch.',

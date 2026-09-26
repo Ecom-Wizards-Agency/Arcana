@@ -24,7 +24,7 @@ it('renders all six source and attribution cases in newest-first order',()=>{
   render(<Screen data={ready}/>);
   const rows=screen.getAllByTestId('timeline-entry'); expect(rows).toHaveLength(6);
   expect(rows.map(row=>row.textContent)).toEqual([
-    expect.stringContaining('Batch 1000 · 7 changes'),expect.stringContaining('not ours'),
+    expect.stringContaining('Batch 1000 · 7 changes'),expect.stringContaining('Ads console user'),
     expect.stringContaining('Batch 1002 · two rows could explain it'),expect.stringContaining('Batch 1003 · experiment start'),
     expect.stringContaining('awaiting review'),expect.stringContaining('approved'),
   ]);
@@ -35,7 +35,7 @@ it.each(['awaiting review', 'admitted', 'attempted', 'succeeded', 'failed', 'obs
   render(<Screen data={{ view: 'ready', props: { ...ready.props, entries: [entry] } }} />);
   const row = screen.getByTestId('timeline-entry');
   expect(screen.getAllByTestId('timeline-entry')).toHaveLength(1);
-  expect(screen.getByTestId('entry-source').textContent).toBe('Restore');
+  expect(screen.getByTestId('entry-source').textContent).toBe('Arcana · Restore');
   expect(row.textContent).toContain(state);
   if (state === 'awaiting review') expect(row.textContent).toContain('Review proposal');
   else expect(row.textContent).toContain('Batch 1000 · 7 changes');
@@ -54,7 +54,7 @@ it('renders exactly seven restore rows, ready 2, blocked 4 and nothing to do 1',
 });
 it('uses the exact measured column widths',()=>{
   const {container}=render(<Screen data={ready}/>);
-  expect([...container.querySelectorAll('col')].map(col=>col.style.width)).toEqual(['130px','300px','96px','92px','92px','168px','300px','118px']);
+  expect([...container.querySelectorAll('col')].map(col=>col.style.width)).toEqual(['130px','280px','96px','140px','140px','200px','228px','150px']);
 });
 
 it('shows coordinated restore refusal and offers no build action for its rows',()=>{

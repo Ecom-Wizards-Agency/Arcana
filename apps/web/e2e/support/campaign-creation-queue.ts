@@ -23,7 +23,7 @@ export async function captureCreationQueue(page: Page, testInfo: TestInfo, db: D
     }
   }
   await page.setViewportSize({width:1680,height:1024});
-  const sourceCases=[['campaign_creation','Campaign creation','needs attention'],['campaign_creation_retry','Campaign creation retry','observed']] as const;
+  const sourceCases=[['campaign_creation','Arcana · Campaign creation','needs attention'],['campaign_creation_retry','Arcana · Campaign creation retry','observed']] as const;
   for (const [source,label,state] of sourceCases) {
     const data=CampaignCreationDraftRouteData.parse(cases.find(item=>item.key==='adopted')!.payload);
     if(data.view!=='ready') throw new Error('Missing profile');

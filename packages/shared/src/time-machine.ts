@@ -26,8 +26,15 @@ export const ChangeQueueSource = z.enum(['apply', 'sync', 'amazon', 'queued', 'r
 export type ChangeQueueSource = z.infer<typeof ChangeQueueSource>;
 export const ChangeQueueState = z.enum(['confirmed', 'exported', 'observed', 'unattributed', 'awaiting review', 'approved', 'acknowledged', 'requested', 'admitted', 'attempted', 'succeeded', 'failed', 'partial_failed', 'awaiting_observation', 'refused', 'blocked', 'needs_attention']);
 export type ChangeQueueState = z.infer<typeof ChangeQueueState>;
+/** Who made a change: an operator, Arcana automation, a console user at Amazon, or nobody Arcana can name. */
+export const ChangeQueueActorKind = z.enum(['operator', 'automation', 'ads_console', 'unknown']);
+export type ChangeQueueActorKind = z.infer<typeof ChangeQueueActorKind>;
+/** The name is the member identity the reader may see; null when it is unknown or not readable to them. */
+export const ChangeQueueActor = z.object({ kind: ChangeQueueActorKind, name: z.string().min(1).nullable() }).strict();
+export type ChangeQueueActor = z.infer<typeof ChangeQueueActor>;
 export const ChangeQueueEntry = z.object({
   amazonObservation: AmazonObservation.nullable().optional(),
+  actor: ChangeQueueActor,
   id: z.string(), when: z.string(), entity: z.string(), entityType: z.string(), entityId: z.string(),
   field: z.string(), oldValue: z.unknown(), newValue: z.unknown(), source: ChangeQueueSource, state: ChangeQueueState,
   batchId: z.uuid().nullable(), batchLabel: z.string().nullable(), batchCount: z.number().int().nonnegative().nullable(),
@@ -36,6 +43,13 @@ export const ChangeQueueEntry = z.object({
  }).strict().superRefine((row,context)=>{
   if(row.source==='amazon' && (!row.amazonObservation || row.batchId!==null || row.reviewHref!==null || row.acknowledgedBy!==null || row.acknowledgedAt!==null || row.state!=='observed')) {
     context.addIssue({code:'custom',message:'Amazon observations have provenance and no local approval or restore authority'});
+  }
+  if(row.actor.name!==null && row.actor.kind!=='operator') {
+    context.addIssue({code:'custom',message:'Only an operator carries a member name'});
+  }
+  const expected=row.source==='amazon'?'unknown':row.source==='sync'?'ads_console':null;
+  if(expected!==null && row.actor.kind!==expected) {
+    context.addIssue({code:'custom',message:'Observed changes name no Arcana actor'});
   }
 });
 
