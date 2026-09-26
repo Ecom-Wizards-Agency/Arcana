@@ -28,7 +28,7 @@ export type ScreenData = Awaited<ReturnType<typeof load>>;
 /** The page title; the descriptor's guard heading repeats it so the signed-in guard finds the same heading. */
 export const SQP_TITLE = 'Search query performance (SQP)';
 /** One line under the title: what the data is and where it comes from. */
-export const SQP_EXPLANATION = 'Amazon Brand Analytics search query performance, reported weekly for each marketplace. It arrives through the Seller Central connection.';
+export const SQP_EXPLANATION = 'Amazon Brand Analytics search query performance, reported weekly for each marketplace. It arrives once Seller Central is connected and reporting is enabled for the profile on Settings → Connections.';
 
 function SqpTitle({ sub }: { sub: string }) {
   return (<div>
@@ -63,7 +63,7 @@ function renderNotMeasured({ providerEvidence, profile, coreEvidence, aba, resea
     <div className="wa-empty" data-state="not-measured">
       <p className="wa-empty__title">No weekly SQP data yet</p>
       <p className="wa-empty__body">
-        Next step: connect Seller Central in Settings → Connections. Once it is connected, Amazon's weekly search query performance report arrives on its own, and this page fills in once the first full week (Sunday to Saturday) is in.
+        Next step: connect Seller Central in Settings → Connections, then enable reporting for the profile. Once both are done, Amazon's weekly search query performance report arrives on its own, and this page fills in once the first full week (Sunday to Saturday) is in.
       </p>
       <a className="wa-btn wa-btn--sm" href="/settings/connections">Connect Seller Central</a>
       <p className="wa-empty__meta">No report was requested and no Amazon change was made.</p>

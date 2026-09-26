@@ -21,7 +21,7 @@ verifyScreen(descriptor, [
 describe('Search query performance title and connection state', () => {
   it('titles every state as SQP with one line on what the data is and where it comes from', () => {
     expect(SQP_TITLE).toBe('Search query performance (SQP)');
-    expect(SQP_EXPLANATION).toBe('Amazon Brand Analytics search query performance, reported weekly for each marketplace. It arrives through the Seller Central connection.');
+    expect(SQP_EXPLANATION).toBe('Amazon Brand Analytics search query performance, reported weekly for each marketplace. It arrives once Seller Central is connected and reporting is enabled for the profile on Settings → Connections.');
     expect(descriptor.guard.heading).toBe(SQP_TITLE);
     expect(descriptor.nav.label).toBe('Queries');
     expect(descriptor.path).toBe('/queries');
@@ -41,7 +41,7 @@ describe('Search query performance title and connection state', () => {
     render(<Screen data={{ view: 'not-measured', props: { profile } }} />);
     const state = document.querySelector<HTMLElement>('[data-state="not-measured"]')!;
     expect(state.querySelector('.wa-empty__title')!.textContent).toBe('No weekly SQP data yet');
-    expect(state.querySelector('.wa-empty__body')!.textContent!.trim()).toBe("Next step: connect Seller Central in Settings → Connections. Once it is connected, Amazon's weekly search query performance report arrives on its own, and this page fills in once the first full week (Sunday to Saturday) is in.");
+    expect(state.querySelector('.wa-empty__body')!.textContent!.trim()).toBe("Next step: connect Seller Central in Settings → Connections, then enable reporting for the profile. Once both are done, Amazon's weekly search query performance report arrives on its own, and this page fills in once the first full week (Sunday to Saturday) is in.");
     expect(within(state).getByRole('link', { name: 'Connect Seller Central' }).getAttribute('href')).toBe('/settings/connections');
     expect(state.textContent).not.toMatch(/contract|worker|promote/i);
     const evidence = screen.getByRole('region', { name: 'Amazon provider evidence' });
