@@ -1,5 +1,5 @@
 import type { SpEvidence, SpRetailSpendEvidence, StreamExtensionEvidence, StreamConsumerEvidence } from '@wizard-ads/shared';
-import { analyzeAccount, classifyCampaignCategory, computePacing, computePortfolioPacing, evaluate, pacingFlag, selectBudgetUsage } from '@wizard-ads/core';
+import { analyzeAccount, classifyCampaignCategory, computePacing, computePortfolioPacing, evaluate, pacingFlag, selectBudgetUsage, windowEvidence, type FlagContext } from '@wizard-ads/core';
 import { listHomeInsights, listHomeMarketGaps, listRecommendations, listPortfolioSpendEvidence, readBudgetUsageEvidence, readProviderEvidence, readSpReportEvidence, readSpRetailSpendEvidence, readStreamExtensionEvidence } from '@wizard-ads/db';
 import { readStreamConsumerEvidence } from '../creative/stream-evidence-load';
 import { loadCampaignDailyRows, loadHomeRankWatch, loadProfileDailyRows } from '../../../app/_lib/dashboard-data';
@@ -48,8 +48,13 @@ export async function load(access: ScreenActor, input: ScreenParams) {
     const provider: { providerBudget?: StreamConsumerEvidence; providerDiagnostics?: StreamExtensionEvidence } = { providerBudget: await readStreamConsumerEvidence(handle, { ...scope, datasets: ['sp-budget-recommendations'], asOf: new Date().toISOString(), maxAgeMs: 86400000 }), providerDiagnostics: await readStreamExtensionEvidence(handle, { ...scope, datasetId: 'sponsored-ads-campaign-diagnostics-recommendations', asOf: new Date().toISOString(), maxAgeMs: 86400000 }) };
     const pacing = computePacing(monthRows, reportDate, profile.monthlyBudget);
     const pacingAlert = pacingFlag(pacing, null);
-    const flags = evaluate(analyzeAccount(profile.label, reportDate, analysisRows,
-      campaigns.map((row) => ({ ...row, category: classifyCampaignCategory(row.campaignName) }))), null, profile.goalLens);
+    const categorised = campaigns.map((row) => ({ ...row, category: classifyCampaignCategory(row.campaignName) }));
+    const flags = evaluate(analyzeAccount(profile.label, reportDate, analysisRows, categorised), null, profile.goalLens,
+      windowEvidence(reportDate, analysisRows, categorised));
+    const pacingContext: FlagContext[] = pacingAlert === null || pacing === null ? [] : [{
+      flag: pacingAlert, family: 'pacing', campaignId: null,
+      evidence: { impressions: null, days: pacing.daysWithData, window: { start: `${reportDate.slice(0, 8)}01`, end: reportDate }, source: 'rows' },
+    }];
     return {
       ...({ retail, previousRetail, retailSpend: retailSpend ?? undefined } as { retail?: SpEvidence; previousRetail?: SpEvidence; retailSpend?: SpRetailSpendEvidence }),
       ...(providerEvidence ? { providerEvidence } : {}),
@@ -68,8 +73,9 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       events, ranks: ranks.map((row) => ({ ...row, spend: null as number | null })), market, pacing,
       budgetUsage: selectBudgetUsage(budgetEvidence, new Date().toISOString()),
       portfolioPacing: portfolioEvidence.map(computePortfolioPacing),
-      activeFlags: pacingAlert === null ? flags.active : [pacingAlert, ...flags.active],
-      suppressedFlags: flags.suppressed,
+      flags: { active: [...pacingContext, ...flags.activeContext], suppressed: flags.suppressedContext, flooredCount: flags.floored.length },
+      // Home section collapse state is kept per signed-in user.
+      preferenceKey: actor.userId,
       weekStart: addDays(weekEnd, -6), weekEnd,
     };
   });

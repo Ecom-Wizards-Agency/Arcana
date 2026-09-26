@@ -5,8 +5,10 @@ import { ProviderDiagnostics } from '../recommendations/provider-diagnostics';
 import { EmptyState, formatValue } from '@wizard-ads/ui';
 import { remainingBudget, resolvePacingThresholds } from '@wizard-ads/core';
 import { gateMessage } from '../../ui/gate-message';
-import { HomeCard } from './card';
+import { HomeCard, HomeSections } from './card';
+import { FlagsPanel } from './flags';
 import { ProposalsInbox } from './proposals';
+import { RankWatchList } from './ranks';
 import type { load } from './load';
 import './home.css';
 
@@ -48,25 +50,14 @@ export function HomeContent({ profile, context, home, period }: HomeReady) {
     </section>
     <RetailEvidencePanel evidence={home.retail} spend={home.retailSpend} previous={home.previousRetail} previousPeriod={home.comparison} start={period.start} end={period.end} />
     <ProviderDiagnostics evidence={home.providerDiagnostics} /><StreamEvidencePanel evidence={home.providerBudget} title="Provider budget advice" />
-    <div className="wa-home-grid">
+    <HomeSections preferenceKey={home.preferenceKey}><div className="wa-home-grid">
       <ProposalsInbox key={profile.id} proposals={home.proposals} canDecide={home.canDecide} profileId={profile.id} capped={home.proposalsCapped} />
-      <HomeCard title="Flags" subtitle="Raised and noted sit as peers. A suppressed flag is never hidden in a disclosure.">
-        <div className="wa-home-flags">
-          <div><h3 data-tone="bad">Raised ({home.activeFlags.length})</h3>
-            {home.activeFlags.length === 0 ? <p className="wa-home-note">No active flags.</p> :
-              <ul aria-label="Active flags">{home.activeFlags.map((flag, index) => <li key={`${flag.scope}-${flag.metric}-${index}`} data-tone={flag.severity === 'info' ? 'neutral' : flag.severity === 'warn' ? 'warn' : 'bad'}>
-                <p>{flag.message}</p><p className="wa-home-flag-reason">{flag.likelyCause}</p>
-              </li>)}</ul>}
-          </div>
-          <div><h3>Noted, not flagged ({home.suppressedFlags.length})</h3>
-            {home.suppressedFlags.length === 0 ? <p className="wa-home-note">No suppressed findings.</p> :
-              <ul aria-label="Suppressed flags">{home.suppressedFlags.map((flag, index) => <li key={`${flag.scope}-${flag.metric}-${index}`} data-tone="neutral">
-                <p>{flag.message}</p><p className="wa-home-flag-reason">{flag.suppressedReason ?? 'No suppression reason was recorded.'}</p>
-              </li>)}</ul>}
-          </div>
-        </div>
+      <HomeCard title="Flags" subtitle="Grouped by issue, most severe first. Raised and noted sit as peers; a suppressed flag is never hidden in a disclosure."
+        section={{ id: 'flags', count: home.flags.active.length, noun: ['raised flag', 'raised flags'] }}>
+        <FlagsPanel flags={home.flags} profileId={profile.id} profileLabel={profile.label} period={period} />
       </HomeCard>
-      <HomeCard title="Pacing" subtitle="Cut order is doctrine, not a per-client judgement.">
+      <HomeCard title="Pacing" subtitle="Cut order is doctrine, not a per-client judgement."
+        section={{ id: 'pacing', count: (pacing === null ? 0 : 1) + home.portfolioPacing.length, noun: ['budget', 'budgets'] }}>
         {pacing === null ? <>
           <p className="wa-home-note">No monthly budget on file — pacing is not computed.</p>
           <p className="wa-home-caption">A fabricated pace is worse than none. Set a budget in <a href={`/settings/profiles?profile=${encodeURIComponent(profile.id)}`}>Settings → Strategy</a>.</p>
@@ -100,15 +91,13 @@ export function HomeContent({ profile, context, home, period }: HomeReady) {
         </section> : null}
       </HomeCard>
       <div className="wa-home-right-stack">
-        <HomeCard title="Rank watch" subtitle="Where ads and organic disagree.">
+        <HomeCard title="Rank watch" subtitle="Where ads and organic disagree. Largest weekly moves first."
+          section={{ id: 'ranks', count: home.ranks.length, noun: ['keyword', 'keywords'] }}>
           {home.ranks.length === 0 ? <EmptyState variant="not-measured" title="Not measured" body="No recent organic rank observations are available for this profile." /> :
-            <ul className="wa-home-ranks" aria-label="Rank movements">{home.ranks.map((row) => <li key={`${row.asin}-${row.keyword}`} data-tone={row.movement === null || row.movement === 0 ? 'neutral' : row.movement > 0 ? 'good' : 'warn'}>
-              <div><strong>{row.keyword}</strong><p>{row.movement === null ? 'Weekly change not measured' : row.movement === 0 ? 'Unchanged this week' : `${row.movement > 0 ? 'Climbing' : 'Slipping'} · ${row.movement > 0 ? 'Up' : 'Down'} ${Math.abs(row.movement)} places`}</p></div>
-              <strong className="wa-home-rank-value">{row.currentRank === null ? '—' : `#${row.currentRank}`}{row.previousRank === null ? '' : ` ← #${row.previousRank}`}</strong>
-              <span className="wa-home-rank-spend" title="Ad spend attributable to this product and keyword" aria-label="Keyword spend">{money(row.spend)}</span>
-            </li>)}</ul>}
+            <RankWatchList ranks={home.ranks} profileId={profile.id} currencyCode={profile.currencyCode} />}
         </HomeCard>
-        <HomeCard title="Events this week" subtitle="Competitor deals and analyst observations.">
+        <HomeCard title="Events this week" subtitle="Competitor deals and analyst observations."
+          section={{ id: 'events', count: home.events.length, noun: ['event', 'events'] }}>
           {home.events.length === 0 ? <EmptyState title="No events this week" body="No events have been recorded for this profile this week." /> :
             <ul className="wa-home-events" aria-label="Weekly events">{home.events.map((event) => <li key={event.id}>
               <div><strong>{event.title}</strong><span>{event.source === 'keepa' ? 'Keepa' : event.source === 'headless_analyst' ? 'Analyst' : event.source}</span></div>
@@ -131,7 +120,8 @@ export function HomeContent({ profile, context, home, period }: HomeReady) {
         </>}
         <p className="wa-home-caption">Ads API and eligible Marketing Stream observations show usage at a point in time. They do not measure the share of a day spent exhausted.</p>
       </HomeCard>
-      <HomeCard title="Market position" subtitle="Distance to the product behind you, not your rank on its own.">
+      <HomeCard title="Market position" subtitle="Distance to the product behind you, not your rank on its own."
+        section={{ id: 'market', count: home.market.length, noun: ['product', 'products'] }}>
         {home.market.length === 0 ? <>
           <EmptyState variant="not-measured" title="Not measured" body="No comparable Best Seller Rank and tracked competitor observations are available for this profile. Both are needed before a gap can be drawn." />
           <ul className="wa-home-explanation"><li>Your Best Seller Rank, plotted so that rank 1 sits at the top.</li>
@@ -142,6 +132,6 @@ export function HomeContent({ profile, context, home, period }: HomeReady) {
           <p>{row.category} · BSR {row.ourRank.toLocaleString('en-US')} vs {row.competitorRank.toLocaleString('en-US')} · {row.observedOn}</p>
         </li>)}</ul><a className="wa-home-review" href={`/market-position?profile=${encodeURIComponent(profile.id)}`}>View market position →</a></>}
       </HomeCard>
-    </div>
+    </div></HomeSections>
   </main>;
 }

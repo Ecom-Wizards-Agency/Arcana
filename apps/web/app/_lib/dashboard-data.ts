@@ -170,7 +170,7 @@ export async function loadHomeRankWatch(
 ) {
   const rows = await handle.sql<{
     asin: string; keyword: string; currentRank: number | null; previousRank: number | null;
-    currentDate: string; previousDate: string | null; movement: number | null;
+    currentDate: string; previousDate: string | null; movement: number | null; productTitle: string | null;
   }[]>`
     with current_week as (
       select distinct on (asin, keyword) asin, keyword, organic_rank, observed_on
@@ -187,8 +187,25 @@ export async function loadHomeRankWatch(
     )
     select c.asin, c.keyword, c.organic_rank as "currentRank", p.organic_rank as "previousRank",
       c.observed_on::text as "currentDate", p.observed_on::text as "previousDate",
-      p.organic_rank - c.organic_rank as movement
+      p.organic_rank - c.organic_rank as movement, product.title as "productTitle"
     from current_week c left join previous_week p using (asin, keyword)
+    -- The newest returned catalogue title for the ASIN, read under the same
+    -- completed-acquisition rule as the grid's products preset. No title
+    -- leaves the row on its ASIN.
+    left join lateral (
+      select m.snapshot->'title'->>'value' as title
+        from public.ads_product_metadata_snapshots m
+        join public.ads_catalogue_source_receipts r on r.id = m.receipt_id
+        left join public.ads_catalogue_pages page on page.receipt_id = r.id
+        left join public.ads_catalogue_acquisitions a
+          on a.org_id = page.org_id and a.profile_id = page.profile_id and a.id = page.acquisition_id
+       where m.org_id = ${orgId} and m.profile_id = ${profileId} and m.asin = c.asin
+         and m.snapshot->'title'->>'state' = 'returned'
+         and length(btrim(m.snapshot->'title'->>'value')) > 0
+         and (r.selector_key not like 'acquisition:%' or a.final_receipt_id is not null)
+       order by m.acquired_at desc, m.retrieved_at desc
+       limit 1
+    ) product on true
     order by abs(p.organic_rank - c.organic_rank) desc nulls last, c.asin, c.keyword
   `;
   return [...rows];
