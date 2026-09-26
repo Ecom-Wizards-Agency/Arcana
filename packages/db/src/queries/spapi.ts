@@ -1,5 +1,6 @@
 import {
   SpApiConnectionBegin, SpApiConnectionSubmit, SpApiConnectionOperation, SpApiConnectionClaim, SpApiAttachmentContext, Uuid,
+  SpApiBindingReportingRequest, SpApiProfileBindingState,
   type ProviderConnectionLifecycle, type OrgActor, type SpApiConsentRefusal,
 } from '@wizard-ads/shared';
 import { withAuthenticatedActor, AgencyAccessDenied } from './authenticated-actor.js';
@@ -496,4 +497,59 @@ export async function latestSpApiConnection(
     const rows = await sql<{ result: unknown }[]>`select app.latest_spapi_connection(${actor.orgId}) as result`;
     return rows[0]?.result == null ? null : spApiOperation(rows);
   });
+}
+
+/** Every profile binding of the org with its saved reporting state, under the caller's RLS. */
+export async function listSpApiProfileBindings(
+  handle: QueryHandle, orgId: string,
+): Promise<SpApiProfileBindingState[]> {
+  const rows = await handle.sql<{ state: unknown }[]>`
+    select jsonb_build_object('bindingId',b.id,'connectionId',b.connection_id,'profileId',b.profile_id,
+      'profileName',left(coalesce(nullif(btrim(p.account_name),''),p.amazon_profile_id),512),'marketplaceId',b.marketplace_id,
+      'enabled',b.enabled,'enabledAt',b.enabled_at,'profileSyncEnabled',p.sync_enabled) as state
+      from public.spapi_profile_bindings b
+      join public.ad_profiles p on p.id = b.profile_id and p.org_id = b.org_id
+     where b.org_id = ${orgId}
+     order by b.connection_id, b.created_at, b.id
+  `;
+  return rows.map((row) => SpApiProfileBindingState.parse(row.state));
+}
+
+/** A refused reporting change. Only fixed reasons cross this boundary. */
+export class SpApiBindingReportingError extends Error {
+  override readonly name = 'SpApiBindingReportingError';
+  constructor(readonly reason: 'connection_inactive' | 'unconfirmed') { super('SP-API reporting change could not be completed'); }
+}
+
+/**
+ * Switch weekly reporting for one binding of one connection. The database locks
+ * owner/admin authority and writes the audit row; null means no such binding in
+ * this org and connection. A role refusal surfaces as AgencyAccessDenied.
+ */
+export async function setSpApiBindingReporting(
+  handle: Pick<DbHandle, 'sql'>, actor: OrgActor,
+  input: { connectionId: string; bindingId: string } & SpApiBindingReportingRequest,
+): Promise<SpApiProfileBindingState | null> {
+  // Postgres returns lowercase; an uppercase id must not fail the readback after a commit.
+  const connectionId = Uuid.parse(input.connectionId).toLowerCase();
+  const bindingId = Uuid.parse(input.bindingId).toLowerCase();
+  const { enabled } = SpApiBindingReportingRequest.parse({ enabled: input.enabled });
+  let rows: { result: unknown }[];
+  try {
+    rows = await withAuthenticatedActor(handle, actor, (sql) => sql<{ result: unknown }[]>`
+      select app.set_spapi_binding_reporting(${actor.orgId},${connectionId},${bindingId},${enabled}) as result
+    `);
+  } catch (error) {
+    if (error instanceof AgencyAccessDenied) throw error;
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
+    if (code === '42501') throw new AgencyAccessDenied();
+    throw new SpApiBindingReportingError(code === '55000' ? 'connection_inactive' : 'unconfirmed');
+  }
+  if (rows.length !== 1) throw new SpApiBindingReportingError('unconfirmed');
+  if (rows[0]!.result === null) return null;
+  const state = SpApiProfileBindingState.parse(rows[0]!.result);
+  if (state.bindingId !== bindingId || state.connectionId !== connectionId || state.enabled !== enabled) {
+    throw new SpApiBindingReportingError('unconfirmed');
+  }
+  return state;
 }

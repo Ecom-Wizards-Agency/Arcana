@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, t
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
 import { createSpApiConnectionLifecycle, SpApiConnectionCommandError } from '@wizard-ads/db';
 import { SpApiStartRefusalClass } from '@wizard-ads/shared';
-import { startSpApiConsent, receiveSpApiConsent, spApiOperationRoute, spApiHealthRoute } from './spapi-routes';
+import { startSpApiConsent, receiveSpApiConsent, spApiOperationRoute, spApiHealthRoute, spApiBindingReportingRoute } from './spapi-routes';
 import { createNonce, createState, nonceCookieName, verifyState } from './state';
 import { createSpApiState, verifySpApiState, spApiNonceName } from './spapi-state';
 
@@ -217,6 +217,75 @@ describe.skipIf(!available)('SP routes on authenticated database authority', () 
     expect(response.headers.get('referrer-policy')).toBe('no-referrer');
   });
 
+  describe('binding reporting switch', () => {
+    async function connected() {
+      const f = await begin();
+      await receiveSpApiConsent(callbackRequest(new URLSearchParams({ state: f.state,spapi_oauth_code: code,selling_partner_id: 'synthetic-seller' }),f.nonce));
+      const lifecycle = createSpApiConnectionLifecycle(db,() => true);
+      const claim = (await lifecycle.custody.claim(randomUUID()))!;
+      const completed = await lifecycle.custody.attach(f.operationId,claim.leaseId,'synthetic-refresh');
+      const [binding] = await db.sql<{ id: string }[]>`select id from public.spapi_profile_bindings where org_id=${f.actor.orgId}`;
+      return { ...f,lifecycle,connectionId: completed.connectionId!,bindingId: binding!.id };
+    }
+    const switchRequest = (org: string,body: unknown,from = origin) => new Request(origin + '/api/amazon/spapi/bindings?' + new URLSearchParams({ org }),
+      { method: 'POST',headers: { origin: from,'content-type': 'application/json' },body: typeof body === 'string' ? body : JSON.stringify(body) });
+    const audit = (orgId: string) => db.sql<{ action: string; actor_id: string; target_id: string }[]>`select action,actor_id,target_id
+      from public.audit_log where org_id=${orgId} and action like 'spapi.binding_reporting_%' order by id`;
+    const enabled = async (bindingId: string) => (await db.sql<{ enabled: boolean }[]>`select enabled from public.spapi_profile_bindings where id=${bindingId}`)[0]!.enabled;
+    it.each(['owner','admin'] as const)('lets an %s enable and then disable reporting, auditing each change', async (role) => {
+      const f = await connected();
+      await db.sql`update public.org_members set role=${role} where org_id=${f.actor.orgId} and user_id=${f.actor.userId}`;
+      const on = await spApiBindingReportingRoute(switchRequest(f.actor.orgId,{ enabled: true }),f.connectionId,f.bindingId);
+      expect(on.status).toBe(200); expect(on.headers.get('cache-control')).toContain('no-store');
+      const saved = (await on.json()).binding;
+      expect(saved).toMatchObject({ bindingId: f.bindingId,connectionId: f.connectionId,marketplaceId: 'ATVPDKIKX0DER',enabled: true });
+      expect(saved.enabledAt).toEqual(expect.any(String));
+      expect(await enabled(f.bindingId)).toBe(true);
+      const off = await spApiBindingReportingRoute(switchRequest(f.actor.orgId,{ enabled: false }),f.connectionId,f.bindingId);
+      expect(off.status).toBe(200); expect((await off.json()).binding).toMatchObject({ enabled: false,enabledAt: null });
+      expect(await enabled(f.bindingId)).toBe(false);
+      expect(await audit(f.actor.orgId)).toEqual([
+        { action: 'spapi.binding_reporting_enabled',actor_id: f.actor.userId,target_id: f.bindingId },
+        { action: 'spapi.binding_reporting_disabled',actor_id: f.actor.userId,target_id: f.bindingId },
+      ]);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+    it.each(['analyst','viewer'] as const)('refuses the %s role without writing', async (role) => {
+      const f = await connected();
+      await db.sql`update public.org_members set role=${role} where org_id=${f.actor.orgId} and user_id=${f.actor.userId}`;
+      const response = await spApiBindingReportingRoute(switchRequest(f.actor.orgId,{ enabled: true }),f.connectionId,f.bindingId);
+      expect(response.status).toBe(403);
+      expect(await enabled(f.bindingId)).toBe(false); expect(await audit(f.actor.orgId)).toHaveLength(0);
+    });
+    it('refuses an owner of another org and hides the binding from that org', async () => {
+      const f = await connected(); const other = await connected();
+      currentUser = { id: other.actor.userId,email: 'synthetic@example.test' };
+      expect((await spApiBindingReportingRoute(switchRequest(f.actor.orgId,{ enabled: true }),f.connectionId,f.bindingId)).status).toBe(403);
+      expect((await spApiBindingReportingRoute(switchRequest(other.actor.orgId,{ enabled: true }),f.connectionId,f.bindingId)).status).toBe(404);
+      expect((await spApiBindingReportingRoute(switchRequest(other.actor.orgId,{ enabled: true }),other.connectionId,f.bindingId)).status).toBe(404);
+      expect(await enabled(f.bindingId)).toBe(false);
+      expect(await audit(f.actor.orgId)).toHaveLength(0); expect(await audit(other.actor.orgId)).toHaveLength(0);
+    });
+    it('refuses a foreign origin, a malformed body or id, and enabling on a revoked connection', async () => {
+      const f = await connected(); let refused = 0;
+      const cases: [Request,string,string,number][] = [
+        [switchRequest(f.actor.orgId,{ enabled: true },'https://forged.test'),f.connectionId,f.bindingId,403],
+        [switchRequest(f.actor.orgId,{ enabled: 'true' }),f.connectionId,f.bindingId,400],
+        [switchRequest(f.actor.orgId,'not json'),f.connectionId,f.bindingId,400],
+        [switchRequest(f.actor.orgId,{ enabled: true,orgId: f.actor.orgId }),f.connectionId,f.bindingId,400],
+        [switchRequest(f.actor.orgId,{ enabled: true }),'not-a-uuid',f.bindingId,404],
+        [switchRequest(f.actor.orgId,{ enabled: true }),f.connectionId,randomUUID(),404],
+      ];
+      for (const [request,connectionId,bindingId,status] of cases) {
+        expect((await spApiBindingReportingRoute(request,connectionId,bindingId)).status).toBe(status); refused++;
+      }
+      expect(refused).toBe(cases.length);
+      await f.lifecycle.revoke(f.actor,f.connectionId);
+      const inactive = await spApiBindingReportingRoute(switchRequest(f.actor.orgId,{ enabled: true }),f.connectionId,f.bindingId);
+      expect(inactive.status).toBe(409); expect((await inactive.json()).error).toContain('Reconnect');
+      expect(await enabled(f.bindingId)).toBe(false); expect(await audit(f.actor.orgId)).toHaveLength(0);
+    });
+  });
   describe('classified start refusals', () => {
     const startEvent = 'arcana.spapi_start_refused'; const callbackEvent = 'arcana.spapi_callback_refused';
     let warn: MockInstance<typeof console.warn>; let saved: TestDatabase;

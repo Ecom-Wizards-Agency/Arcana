@@ -81,7 +81,9 @@ export interface SpApiSelectableProfile {
 export async function loadSpApiConnections(handle: QueryHandle, orgId: string, consentRegion: Region | null = null) {
   const connections = await handle.sql<Array<{ id: string; label: string; status: ConnectionStatus;
     has_credential: boolean; binding_count: number; enabled_bindings: number }>>`
-    select c.id,c.label,c.status::text,(c.status = 'active' and c.vault_secret_id is not null) as has_credential,
+    select c.id,c.label,c.status::text,
+      -- Usable exactly as the reporting RPC and the weekly producer require: active, stored, seller identified.
+      (c.status = 'active' and c.vault_secret_id is not null and nullif(btrim(c.selling_partner_id),'') is not null) as has_credential,
       count(b.id)::int as binding_count,count(b.id) filter (where b.enabled)::int as enabled_bindings
     from public.spapi_connections c left join public.spapi_profile_bindings b on b.connection_id=c.id and b.org_id=c.org_id
     where c.org_id=${orgId} group by c.id order by c.created_at,c.id
