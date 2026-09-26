@@ -1,0 +1,42 @@
+# Connection-only Amazon Ads consent exchange and profile discovery (WP-330).
+# The general worker cannot run this loop: its configuration refuses it without
+# entity.sync, which the Vercel cron tick owns. credential_runtime.py refuses
+# this mode unless /etc/wizard-ads/worker.json sets
+# OPENSPELL_AMAZON_CONNECTIONS_ENABLED=1 and AMAZON_OAUTH_ALLOWED_REDIRECT_URIS.
+[Unit]
+Description=Wizard Ads connection-only Amazon Ads exchange with 1Password-isolated credentials
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=30min
+StartLimitBurst=6
+
+[Service]
+Type=simple
+User=wizard-ads-runtime
+Group=wizard-ads-runtime
+ExecStart=/usr/local/lib/wizard-ads-runtime/worker-current/credential_runtime.py amazon-connections
+LoadCredentialEncrypted=database-url:/etc/credstore.encrypted/wizard-ads-database-url.cred
+LoadCredentialEncrypted=ads-lwa-client-id:/etc/credstore.encrypted/wizard-ads-ads-lwa-client-id.cred
+LoadCredentialEncrypted=ads-lwa-client-secret-value:/etc/credstore.encrypted/wizard-ads-ads-lwa-client-secret-value.cred
+StateDirectory=wizard-ads
+StateDirectoryMode=0750
+Restart=on-failure
+RestartSec=30s
+RestartSteps=6
+RestartMaxDelaySec=15min
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

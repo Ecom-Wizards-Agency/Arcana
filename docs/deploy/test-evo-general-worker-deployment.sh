@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Static deployment proof for the Evo general worker release (WP-326).
+# Static deployment proof for the Evo general worker release (WP-326) and its
+# connection-only Amazon Ads unit (WP-330).
 # Needs no privileges, credentials, host configuration or database.
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
@@ -10,6 +11,7 @@ runtime="$script_dir/wizard-ads-credential-runtime.py"
 runtime_test="$script_dir/test-evo-general-worker-runtime.py"
 worker_unit="$script_dir/wizard-ads-worker.service"
 spapi_unit="$script_dir/wizard-ads-spapi-connections.service"
+amazon_unit="$script_dir/wizard-ads-amazon-connections.service"
 template="$script_dir/wizard-ads-worker.TEMPLATE.json"
 builder="$script_dir/build-evo-general-worker-artifact.sh"
 normalizer="$script_dir/normalize-evo-general-worker-artifact.mjs"
@@ -37,7 +39,7 @@ if [[ "$ran_tests" != "$declared_tests" || "$declared_tests" -lt 1 ]] \
   exit 1
 fi
 
-# 2. Both units keep the host unit's lines exactly. Only comments, Description=,
+# 2. Every unit keeps the host unit's lines exactly. Only comments, Description=,
 # ExecStart= and LoadCredentialEncrypted= may differ, so no directive can be
 # added, repeated, reordered or overridden (a later ProtectHome=no, say).
 require_line() {
@@ -77,7 +79,7 @@ SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 [Install]
 WantedBy=multi-user.target'
-for unit in "$worker_unit" "$spapi_unit"; do
+for unit in "$worker_unit" "$spapi_unit" "$amazon_unit"; do
   shape="$(grep -v -e '^#' -e '^Description=' -e '^ExecStart=' \
     -e '^LoadCredentialEncrypted=' -e '^[[:space:]]*$' "$unit")"
   if [[ "$shape" != "$host_unit_lines" ]]; then
@@ -92,22 +94,41 @@ for unit in "$worker_unit" "$spapi_unit"; do
 done
 require_line "$worker_unit" "ExecStart=$release_path/credential_runtime.py worker"
 require_line "$spapi_unit" "ExecStart=$release_path/credential_runtime.py spapi-connections"
+require_line "$amazon_unit" "ExecStart=$release_path/credential_runtime.py amazon-connections"
 
 # 3. Unit credential names equal the runtime mapping, each from its own file.
-expected_credentials="$(python3 -B - "$runtime" <<'PY'
+# The worker and SP-API units load the worker mapping; the Amazon Ads unit loads
+# its own, so no unit holds the other application's LWA pair.
+runtime_credentials() {
+  python3 -B - "$runtime" "$1" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("credential_runtime", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-for name in sorted(module.WORKER_CREDENTIALS):
+for name in sorted(getattr(module, sys.argv[2])):
     print(name)
 PY
-)"
-if [[ "$(printf '%s\n' "$expected_credentials" | wc -l)" != 3 ]]; then
-  echo "runtime credential mapping does not declare exactly three credentials" >&2
+}
+worker_credentials="$(runtime_credentials WORKER_CREDENTIALS)"
+amazon_credentials="$(runtime_credentials AMAZON_CONNECTION_CREDENTIALS)"
+for mapping in "$worker_credentials" "$amazon_credentials"; do
+  if [[ "$(printf '%s\n' "$mapping" | wc -l)" != 3 ]]; then
+    echo "a runtime credential mapping does not declare exactly three credentials" >&2
+    exit 1
+  fi
+done
+shared_credentials="$(comm -12 <(printf '%s\n' "$worker_credentials" | LC_ALL=C sort) \
+  <(printf '%s\n' "$amazon_credentials" | LC_ALL=C sort))"
+if [[ "$shared_credentials" != database-url ]]; then
+  echo "the worker and Amazon Ads mappings may share only the database credential" >&2
   exit 1
 fi
-for unit in "$worker_unit" "$spapi_unit"; do
+for unit in "$worker_unit" "$spapi_unit" "$amazon_unit"; do
+  if [[ "$unit" == "$amazon_unit" ]]; then
+    expected_credentials="$amazon_credentials"
+  else
+    expected_credentials="$worker_credentials"
+  fi
   actual="$(awk -F '[=:]' '$1 == "LoadCredentialEncrypted" { print $2 }' "$unit" | LC_ALL=C sort)"
   if [[ "$actual" != "$(printf '%s\n' "$expected_credentials" | LC_ALL=C sort)" ]]; then
     echo "$(basename "$unit") credential names do not match the runtime mapping" >&2
@@ -132,7 +153,8 @@ if not isinstance(config, dict) or not all(isinstance(v, str) for v in config.va
     fail("must be an object of strings")
 if set(config) - module.WORKER_ENV_KEYS:
     fail("contains keys outside the runtime allowlist")
-if set(config) & set(module.WORKER_CREDENTIALS.values()):
+if set(config) & (set(module.WORKER_CREDENTIALS.values())
+                  | set(module.AMAZON_CONNECTION_CREDENTIALS.values())):
     fail("names a credential variable")
 if config.get("WORKER_ID") != "<worker-id>":
     fail("WORKER_ID must stay a placeholder")
@@ -164,6 +186,11 @@ if len(five.split(",")) != 5 or len(set(seven.split(","))) != 7 \
     fail(f"the runtime must accept only the six job types (got {verdicts})")
 if config.get(module.SPAPI_GATE) != "1":
     fail("the general worker must own the SP-API connection loop")
+if config.get(module.AMAZON_GATE) != "1" or not re.fullmatch(
+        r"<[^<>]+>/api/amazon/oauth/callback", config.get("AMAZON_OAUTH_ALLOWED_REDIRECT_URIS", "")):
+    fail("the Amazon Ads connection unit must be enabled with a placeholder callback")
+if module.AMAZON_KEYS != frozenset({module.AMAZON_GATE, "AMAZON_OAUTH_ALLOWED_REDIRECT_URIS"}):
+    fail("the Amazon Ads keys the worker mode withholds changed")
 secret_shapes = [r"postgres(ql)?://", r"amzn1\.oa2-cs", r"amzn1\.application-oa2-client\.",
                  "op" + r":/" + "/", r"/(home|Users)/", r"[A-Za-z0-9+=_-]{24,}"]
 for value in config.values():
@@ -197,7 +224,7 @@ if rg -n -F -- "$write_token" "$script_dir"; then
 fi
 private_locator_pattern='op:/''/'
 if rg -n -- "/home/|/Users/|$private_locator_pattern" \
-  "$runtime" "$runtime_test" "$worker_unit" "$spapi_unit" "$template" "$builder" "$normalizer"; then
+  "$runtime" "$runtime_test" "$worker_unit" "$spapi_unit" "$amazon_unit" "$template" "$builder" "$normalizer"; then
   echo "deployment files contain a home path or private locator" >&2
   exit 1
 fi
@@ -211,14 +238,17 @@ cleanup() {
 }
 trap cleanup EXIT
 install -d -m 0700 "$test_tmp/systemd"
-for unit in "$worker_unit" "$spapi_unit"; do
+for unit in "$worker_unit" "$spapi_unit" "$amazon_unit"; do
   sed -e 's#^ExecStart=.*#ExecStart=/bin/true#' -e '/^User=/d' -e '/^Group=/d' \
     "$unit" >"$test_tmp/systemd/$(basename "$unit")"
 done
 systemd-analyze verify "$test_tmp/systemd/wizard-ads-worker.service" \
-  "$test_tmp/systemd/wizard-ads-spapi-connections.service"
+  "$test_tmp/systemd/wizard-ads-spapi-connections.service" \
+  "$test_tmp/systemd/wizard-ads-amazon-connections.service"
 
-# 8. A staged release carries its revision into the worker environment.
+# 8. A staged release carries its revision into the worker environment. The
+# release does not carry the Amazon Ads unit (the build and its normalizer list
+# two units); it is installed from the checkout of the same revision.
 # shellcheck source=docs/deploy/build-evo-general-worker-artifact.sh
 source "$builder"
 fixture_revision=0000000000000000000000000000000000000001
@@ -264,6 +294,8 @@ install -d -m 0700 "$test_tmp/credentials"
 printf '%s\n' 'postgres://synthetic:fixture@127.0.0.1:5432/postgres' >"$test_tmp/credentials/database-url"
 printf 'synthetic-lwa-client-id\n' >"$test_tmp/credentials/spapi-lwa-client-id"
 printf 'synthetic-lwa-client-value\n' >"$test_tmp/credentials/spapi-lwa-client-secret-value"
+printf 'synthetic-ads-client-id\n' >"$test_tmp/credentials/ads-lwa-client-id"
+printf 'synthetic-ads-client-value\n' >"$test_tmp/credentials/ads-lwa-client-secret-value"
 python3 -B - "$stage/credential_runtime.py" "$template" "$test_tmp" "$fixture_revision" <<'PY'
 import importlib.util, io, json, os, sys
 from contextlib import redirect_stdout
@@ -276,45 +308,60 @@ spec.loader.exec_module(module)
 config = json.load(open(template, encoding="utf-8"))
 config.update({"WORKER_ID": "fixture-worker", "SP_API_APPLICATION_ID": "fixture-application",
                "SP_API_OAUTH_REGION": "NA",
-               "SP_API_OAUTH_ALLOWED_REDIRECT_URIS": "https://example.test/api/amazon/spapi/oauth/callback"})
+               "SP_API_OAUTH_ALLOWED_REDIRECT_URIS": "https://example.test/api/amazon/spapi/oauth/callback",
+               "AMAZON_OAUTH_ALLOWED_REDIRECT_URIS": "https://example.test/api/amazon/oauth/callback"})
 Path(tmp, "worker.json").write_text(json.dumps(config))
-captured = {}
-def execve(node, argv, env):
-    captured.update(node=node, argv=argv, env=env)
-    raise SystemExit(0)
 os.environ["CREDENTIALS_DIRECTORY"] = str(Path(tmp, "credentials"))
-with mock.patch.object(module, "WORKER_CONFIG", Path(tmp, "worker.json")), \
-        mock.patch.object(module.os, "execve", execve), redirect_stdout(io.StringIO()):
-    try:
-        module.run_worker()
-    except SystemExit:
-        pass
+def launch(run):
+    captured = {}
+    def execve(node, argv, env):
+        captured.update(node=node, argv=argv, env=env)
+        raise SystemExit(0)
+    with mock.patch.object(module, "WORKER_CONFIG", Path(tmp, "worker.json")), \
+            mock.patch.object(module.os, "execve", execve), redirect_stdout(io.StringIO()):
+        try:
+            run()
+        except SystemExit:
+            pass
+    return captured
 release = Path(path).resolve().parent
+runner = [str(release / "app/node_modules/tsx/dist/cli.mjs")]
+captured = launch(module.run_worker)
 if captured.get("node") != "/usr/local/bin/node" \
-        or captured["argv"][1:] != [str(release / "app/node_modules/tsx/dist/cli.mjs"), "src/main.ts"] \
+        or captured["argv"][1:] != runner + ["src/main.ts"] \
         or captured["env"].get("OPENSPELL_WORKER_REVISION") != revision \
         or captured["env"].get("SP_API_LWA_CLIENT_ID") != "synthetic-lwa-client-id" \
+        or set(captured["env"]) & (module.AMAZON_KEYS | {"LWA_CLIENT_ID", "LWA_CLIENT_SECRET"}) \
         or not Path(captured["argv"][1]).is_file() or not Path(release, "app/src/main.ts").is_file():
     sys.exit("staged runtime did not launch its own release at its recorded revision")
+captured = launch(module.run_amazon_connections)
+if captured.get("node") != "/usr/local/bin/node" \
+        or captured["argv"][1:] != runner + ["src/amazon-connections-cli.ts"] \
+        or captured["env"].get("LWA_CLIENT_ID") != "synthetic-ads-client-id" \
+        or captured["env"].get("OPENSPELL_AMAZON_CONNECTIONS_ENABLED") != "1" \
+        or any(key.startswith(("WORKER_", "SP_API_")) for key in captured["env"]) \
+        or not Path(release, "app/src/amazon-connections-cli.ts").is_file():
+    sys.exit("staged runtime did not launch its own Amazon Ads connection command")
 PY
-# Every import reachable from both entry points resolves inside the release,
+# Every import reachable from the three entry points resolves inside the release,
 # without executing main.ts (which connects at import).
 (cd "$stage/app" && node - <<'NODE'
 const esbuild = require('./node_modules/esbuild');
 const result = esbuild.buildSync({
-  entryPoints: ['src/main.ts', 'src/spapi-connections-cli.ts'],
+  entryPoints: ['src/main.ts', 'src/spapi-connections-cli.ts', 'src/amazon-connections-cli.ts'],
   bundle: true, platform: 'node', format: 'esm', target: 'node22',
   outdir: 'unused', write: false, metafile: true, logLevel: 'silent',
 });
 const inputs = Object.keys(result.metafile.inputs);
 const outside = inputs.filter((input) => input.startsWith('..') || input.startsWith('/'));
-if (outside.length > 0 || result.outputFiles.length < 2
+if (outside.length > 0 || result.outputFiles.length < 3
   || !inputs.some((input) => input.includes('@wizard-ads+sp-api'))
+  || !inputs.some((input) => input.includes('@wizard-ads+ads-api'))
   || !inputs.some((input) => input.includes('@aws-sdk+client-sqs'))) {
   console.error(`release import graph is incomplete or escapes app/ (${outside.length} outside)`);
   process.exit(1);
 }
-console.log(`resolved ${inputs.length} modules from main.ts and spapi-connections-cli.ts`);
+console.log(`resolved ${inputs.length} modules from main.ts, spapi-connections-cli.ts and amazon-connections-cli.ts`);
 NODE
 ) >"$test_tmp/import-graph.log"
 cat "$test_tmp/import-graph.log"

@@ -169,6 +169,68 @@ database handle and exits 0; further signals are logged as `signal_repeated` and
 ignored. Add `--once` for a runbook check: one pass, logged with its state and
 reason, exit 0 when it is `idle` or `observed`, 1 otherwise.
 
+### Connection-only Amazon Ads exchange (WP-330)
+
+The Settings, Connections screen starts a new Amazon Ads connection only when the web
+deployment sets `OPENSPELL_AMAZON_CONNECTIONS_ENABLED=1`, and that flag must stay off
+until a production process runs the Ads connection loop. The general worker runs the
+loop only when it also claims `entity.sync`: a new connection's profiles need their
+first entity sync, and the rule keeps the loop in a runtime that performs it. The Evo
+general worker does not claim `entity.sync` (the Vercel cron tick does), so its
+configuration refuses the loop.
+
+`pnpm --filter @wizard-ads/worker run amazon-connections:start` runs the Ads
+connection loop and nothing else: the one-use consent exchange and the regional
+profile discovery (`/v2/profiles` reads in NA, EU and FE). It builds the same pass as
+the general worker (the store, the installation check, the exchange credentials and
+the poll interval) from the shared `amazonConnectionPass` wiring. It does not start
+the queue worker, the health server, the stale-claim reaper, schedule provisioning,
+recommendation observation, bid-series sync, the auth health monitor, creative sync,
+the marketing stream consumer, the SP-API connection loop, SP write polling, unified
+reporting or the market signals import. It claims no queue job, so the `entity.sync`
+rule does not apply to it. It enqueues no job and provisions no schedule. Discovered
+profiles start with sync off; once sync is enabled for a profile, the Vercel cron tick
+provisions its schedules and runs its first entity sync. The exchange is not an
+Amazon Ads write.
+
+It requires `DATABASE_URL`, `OPENSPELL_AMAZON_CONNECTIONS_ENABLED=1`,
+`LWA_CLIENT_ID`, `LWA_CLIENT_SECRET` and `AMAZON_OAUTH_ALLOWED_REDIRECT_URIS`. The
+client id and secret must be those of the Amazon Ads LWA application that the web
+deployment's `AMAZON_LWA_CLIENT_ID` and the cron tick's `LWA_CLIENT_ID` name. The
+callback list must contain the web deployment's `AMAZON_OAUTH_REDIRECT_URI`; a
+submitted consent whose client id or callback differs is settled as
+`installation_changed` without a provider call. The OAuth state key
+(`AMAZON_OAUTH_STATE_KEY`) is verified by the web callback and is not needed here. The
+command refuses to start when any `WORKER_` variable is set, because it runs no jobs,
+and when `AMAZON_LWA_CLIENT_ID`, `AMAZON_LWA_CLIENT_SECRET` or
+`AMAZON_OAUTH_REDIRECT_URI` is set, because the shared wiring would otherwise read one
+of two names for the same setting. As with the SP-API command, give it a purpose-built
+environment: the whole worker config parser runs, so another worker setting copied
+over can stop it.
+
+Startup errors never print a value. A missing variable, a gate other than `1`, an
+LWA client id or secret with leading or trailing whitespace (the client id is compared
+byte for byte with each consent's), an empty callback list and an empty callback entry
+are named. A callback that is not
+HTTPS (or a local development origin), carries credentials or a fragment, more than
+ten callbacks, or an over-long client id is reported as `Invalid environment: Amazon
+connection callback configuration is invalid`.
+
+Output matches the SP-API command with `amazon_connection_` event names: a startup
+line with the number of allowed callback URIs and the last four characters of the
+client id, a pass line (`idle`, `observed`, `unavailable` or `uncertain`, with the
+operation's state and reason when there is one) for every non-idle pass and every
+change of outcome, and a heartbeat with the pass count at most every five minutes.
+`unavailable` means the claim itself failed, for example an unreachable database.
+In loop mode a first pass that is `unavailable` or `uncertain` exits 1 so a supervisor
+restarts the command; later ones are only logged. The first SIGINT or SIGTERM stops
+the loop, waits for custody, closes the database handle and exits 0; further signals
+are logged as `signal_repeated` and ignored. A stop during an exchange settles the
+consent as `reconnect_required` with `exchange_uncertain` (the code is never
+exchanged twice); a stop during discovery leaves the region resumable. `--once` runs
+one pass (an exchange, or one operation's discovery), exits 0 when it is `idle` or
+`observed` and 1 otherwise.
+
 ## Evo general worker package (WP-326)
 
 The Evo host's general worker (`wizard-ads-worker.service`) is the legacy
@@ -199,6 +261,8 @@ Each systemd credential populates exactly one variable:
 | `database-url` | `DATABASE_URL` |
 | `spapi-lwa-client-id` | `SP_API_LWA_CLIENT_ID` |
 | `spapi-lwa-client-secret-value` | `SP_API_LWA_CLIENT_SECRET` |
+| `ads-lwa-client-id` | `LWA_CLIENT_ID` (Amazon Ads unit only) |
+| `ads-lwa-client-secret-value` | `LWA_CLIENT_SECRET` (Amazon Ads unit only) |
 
 The secret's ID ends in `-value` because `pnpm hygiene` reads a unit line whose
 credential ID ends in `secret` followed by `:<path>` as a credential assignment.
@@ -220,6 +284,22 @@ command. It is not installed by the WP-326 upgrade. Its runtime mode passes only
 `DATABASE_URL`, the LWA credentials and the SP-API settings, and refuses to start
 while `worker.json` gives the loop to the general worker.
 
+`wizard-ads-amazon-connections.service` (WP-330) runs `credential_runtime.py
+amazon-connections` through the same `worker-current` link, with the host unit's
+hardening and its own credentials: `database-url`, `ads-lwa-client-id` and
+`ads-lwa-client-secret-value`. The general worker's unit loads neither Ads
+credential. `worker.json` gains two keys for it, `OPENSPELL_AMAZON_CONNECTIONS_ENABLED`
+and `AMAZON_OAUTH_ALLOWED_REDIRECT_URIS`. The Ads mode refuses to start unless the
+gate is `1` and the callback list is set, requires both Ads credentials, and passes
+only `DATABASE_URL`, `LWA_CLIENT_ID`, `LWA_CLIENT_SECRET`, the gate and the callback
+list to `src/amazon-connections-cli.ts`. The worker mode never passes the two Ads keys
+to the general worker, whose configuration would refuse the gate. The release built by
+`build-evo-general-worker-artifact.sh` carries `app/src/amazon-connections-cli.ts` but
+not this unit file: install the unit from the checkout of the release's revision. A
+release older than WP-330 refuses a `worker.json` with the two Ads keys, so add them
+only after `worker-current` points at a WP-330 release, and remove them before a
+rollback to an older one.
+
 Lanes after the upgrade:
 
 - The Evo general worker claims six job types: `keepa.sync`, `rank.sync`,
@@ -232,23 +312,25 @@ Lanes after the upgrade:
   `report.poll` and `report.fetch`, and `recommendations.run` unless the
   recommendation lane is enabled. It does not run `sqp.request`.
   `OPENSPELL_EVO_REPORT_LANE_READY` stays unset.
-- The Amazon Ads connection loop runs only in a general worker with
-  `OPENSPELL_AMAZON_CONNECTIONS_ENABLED=1` whose allowlist contains `entity.sync`.
-  The Evo general worker has neither, the Vercel cron route does not compose the
-  loop, and the report and recommendation lanes cannot own it, so it does not run
-  on Evo and this upgrade leaves it where it is.
+- The Amazon Ads connection loop runs in a general worker only with
+  `OPENSPELL_AMAZON_CONNECTIONS_ENABLED=1` and `entity.sync` in its allowlist. The
+  Evo general worker has neither, the Vercel cron route does not compose the loop,
+  and the report and recommendation lanes cannot own it. On Evo it runs in the
+  connection-only `wizard-ads-amazon-connections.service` (WP-330) once that unit is
+  installed.
 
 Switch `worker-current` only after the production database has the release
 revision's migrations; the worker exits at startup otherwise, and a rollback
 restores the previous unit and `worker.json` rather than touching the database.
 
 `bash docs/deploy/test-evo-general-worker-deployment.sh` is the static proof: the
-credential mapping tests, the units' exact shape (only the command and
+credential mapping tests, the three units' exact shape (only the command and
 credentials may differ from the host unit) and credential names against the
-runtime mapping, the configuration template, the build's revision pinning, and a
+runtime mappings (the worker mapping for the worker and SP-API units, the Amazon Ads
+mapping for the Ads unit), the configuration template, the build's revision pinning, and a
 staged release whose checksums and link manifest verify, whose import graph
-resolves inside `app/`, and whose runtime launches its own `app/` at its recorded
-revision.
+resolves inside `app/` from all three entry points, and whose runtime launches its
+own `app/` at its recorded revision in the worker and Amazon Ads modes.
 
 ## Market signals import (WP-331)
 
