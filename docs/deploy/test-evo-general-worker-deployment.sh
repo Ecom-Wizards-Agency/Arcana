@@ -138,8 +138,30 @@ if config.get("WORKER_ID") != "<worker-id>":
     fail("WORKER_ID must stay a placeholder")
 if not re.fullmatch(r"<[^<>]+>", config.get("SP_API_APPLICATION_ID", "")):
     fail("SP_API_APPLICATION_ID must stay a placeholder")
-if config.get("WORKER_JOB_TYPES") != "keepa.sync,rank.sync,economics.sync,sqp.categorize,recommendations.run":
+six = "keepa.sync,rank.sync,economics.sync,sqp.categorize,sqp.request,recommendations.run"
+if config.get("WORKER_JOB_TYPES") != six:
     fail("the general worker job types changed")
+if module.GENERAL_WORKER_JOB_TYPES != frozenset(six.split(",")) \
+        or len(module.GENERAL_WORKER_JOB_TYPES) != 6:
+    fail("the runtime job-type set differs from the six template job types")
+class Config:
+    def __init__(self, job_types):
+        self.text = json.dumps({"WORKER_ID": "fixture-worker", "WORKER_JOB_TYPES": job_types})
+    def read_text(self, encoding):
+        return self.text
+five = six.replace(",sqp.request", "")
+seven = six + ",report.fetch"
+verdicts = {}
+for label, job_types in (("six", six), ("five", five), ("seven", seven)):
+    module.WORKER_CONFIG = Config(job_types)
+    try:
+        module.general_worker_job_types(module.public_config())
+        verdicts[label] = "accepted"
+    except RuntimeError as exc:
+        verdicts[label] = "refused" if "WORKER_JOB_TYPES must list exactly" in str(exc) else str(exc)
+if len(five.split(",")) != 5 or len(set(seven.split(","))) != 7 \
+        or verdicts != {"six": "accepted", "five": "refused", "seven": "refused"}:
+    fail(f"the runtime must accept only the six job types (got {verdicts})")
 if config.get(module.SPAPI_GATE) != "1":
     fail("the general worker must own the SP-API connection loop")
 secret_shapes = [r"postgres(ql)?://", r"amzn1\.oa2-cs", r"amzn1\.application-oa2-client\.",

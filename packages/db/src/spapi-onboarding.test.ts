@@ -4,7 +4,9 @@ import { applySqlFile, createTestDatabase, databaseAvailable, type TestDatabase 
 import { fileURLToPath } from 'node:url';
 import { asActor, asUser } from './testing/rls.js';
 import { createSpApiConnection, createSpApiConnectionLifecycle, getSpApiRefreshToken, listSqpScheduleScopes,
-  revokeSpApiRefreshToken, storeSpApiRefreshToken, SpApiConnectionCommandError } from './queries/spapi.js';
+  listSpApiProfileBindings, revokeSpApiRefreshToken, setSpApiBindingReporting, storeSpApiRefreshToken,
+  SpApiBindingReportingError, SpApiConnectionCommandError } from './queries/spapi.js';
+import { AgencyAccessDenied } from './queries/authenticated-actor.js';
 import type { DbHandle, QuerySql } from './client.js';
 
 const available = await databaseAvailable();
@@ -219,6 +221,78 @@ describe.skipIf(!available)('SP onboarding transaction and authority', () => {
     expect(await db.sql`select id from public.audit_log where org_id=${f.actor.orgId} and action='spapi.consent_submitted'`).toHaveLength(reason === 'reused' ? 1 : 0);
     expect(await db.sql`select id from vault.secrets where name=${'openspell:spapi-consent:' + operation.operationId}`).toHaveLength(reason === 'reused' ? 1 : 0);
     await f.lifecycle.cancel(f.actor, operation.operationId);
+  });
+  async function attachedBindings(count = 2) {
+    const f = await claimed(await fixture(count));
+    const completed = await f.lifecycle.custody.attach(f.operation.operationId,f.claim.leaseId,refresh);
+    await db.sql`update public.ad_profiles set sync_enabled=true where org_id=${f.actor.orgId}`;
+    const bindings = await asUser(db,f.actor.userId,(sql) => listSpApiProfileBindings({ sql },f.actor.orgId));
+    expect(bindings).toHaveLength(count);
+    return { ...f,connectionId: completed.connectionId!,bindings };
+  }
+  const reportingAudit = (orgId: string) => db.sql<{ action: string; actor_id: string; target_id: string; payload: unknown }[]>`
+    select action,actor_id,target_id,payload from public.audit_log
+     where org_id=${orgId} and action like 'spapi.binding_reporting_%' order by id`;
+  const scheduled = async (orgId: string) => (await listSqpScheduleScopes(db)).filter((scope) => scope.orgId === orgId).map((scope) => scope.profileId);
+  it.each(['owner','admin'] as const)('lets an %s enable and disable reporting per binding with one audit row per change', async (role) => {
+    const f = await attachedBindings();
+    await db.sql`update public.org_members set role=${role} where org_id=${f.actor.orgId} and user_id=${f.actor.userId}`;
+    const [first,second] = f.bindings;
+    expect([first!.enabled,second!.enabled,first!.enabledAt,second!.enabledAt]).toEqual([false,false,null,null]);
+    expect(await scheduled(f.actor.orgId)).toEqual([]);
+    const enabled = await setSpApiBindingReporting(db,f.actor,{ connectionId: f.connectionId,bindingId: first!.bindingId,enabled: true });
+    expect(enabled).toMatchObject({ bindingId: first!.bindingId,profileId: first!.profileId,enabled: true,profileSyncEnabled: true });
+    expect(enabled!.enabledAt).not.toBeNull();
+    // The weekly producer schedules exactly the enabled binding and skips the disabled one.
+    expect(await scheduled(f.actor.orgId)).toEqual([first!.profileId]);
+    const repeated = await setSpApiBindingReporting(db,f.actor,{ connectionId: f.connectionId,bindingId: first!.bindingId,enabled: true });
+    expect(repeated).toEqual(enabled);
+    expect(await reportingAudit(f.actor.orgId)).toEqual([{ action: 'spapi.binding_reporting_enabled',actor_id: f.actor.userId,
+      target_id: first!.bindingId,payload: { connectionId: f.connectionId,marketplaceId: 'ATVPDKIKX0DER',enabled: true } }]);
+    // Uppercase ids commit once and read back as the saved lowercase row.
+    const disabled = await setSpApiBindingReporting(db,f.actor,{ connectionId: f.connectionId.toUpperCase(),bindingId: first!.bindingId.toUpperCase(),enabled: false });
+    expect(disabled).toMatchObject({ bindingId: first!.bindingId,enabled: false,enabledAt: null });
+    expect(await scheduled(f.actor.orgId)).toEqual([]);
+    expect((await reportingAudit(f.actor.orgId)).map((row) => row.action)).toEqual(['spapi.binding_reporting_enabled','spapi.binding_reporting_disabled']);
+    const listed = await asUser(db,f.actor.userId,(sql) => listSpApiProfileBindings({ sql },f.actor.orgId));
+    expect(listed.map((binding) => binding.enabled)).toEqual([false,false]);
+  });
+  it.each(['analyst','viewer'] as const)('refuses the %s role a reporting change without writing', async (role) => {
+    const f = await attachedBindings(1);
+    await db.sql`update public.org_members set role=${role} where org_id=${f.actor.orgId} and user_id=${f.actor.userId}`;
+    for (const enabled of [true,false]) {
+      await expect(setSpApiBindingReporting(db,f.actor,{ connectionId: f.connectionId,bindingId: f.bindings[0]!.bindingId,enabled }))
+        .rejects.toBeInstanceOf(AgencyAccessDenied);
+    }
+    expect(await asUser(db,f.actor.userId,(sql) => listSpApiProfileBindings({ sql },f.actor.orgId))).toHaveLength(1);
+    expect(await db.sql`select enabled from public.spapi_profile_bindings where org_id=${f.actor.orgId}`).toEqual([{ enabled: false }]);
+    expect(await reportingAudit(f.actor.orgId)).toHaveLength(0);
+  });
+  it('refuses another org and a mismatched connection scope', async () => {
+    const f = await attachedBindings(1); const foreign = await attachedBindings(1);
+    const target = { connectionId: f.connectionId,bindingId: f.bindings[0]!.bindingId,enabled: true };
+    await expect(setSpApiBindingReporting(db,{ ...f.actor,userId: foreign.actor.userId },target)).rejects.toBeInstanceOf(AgencyAccessDenied);
+    expect(await setSpApiBindingReporting(db,foreign.actor,target)).toBeNull();
+    expect(await setSpApiBindingReporting(db,f.actor,{ ...target,connectionId: foreign.connectionId })).toBeNull();
+    expect(await asUser(db,foreign.actor.userId,(sql) => listSpApiProfileBindings({ sql },f.actor.orgId))).toHaveLength(0);
+    expect(await db.sql`select enabled from public.spapi_profile_bindings where org_id in ${db.sql([f.actor.orgId,foreign.actor.orgId])}`)
+      .toEqual([{ enabled: false },{ enabled: false }]);
+    expect(await reportingAudit(f.actor.orgId)).toHaveLength(0);
+    expect(await reportingAudit(foreign.actor.orgId)).toHaveLength(0);
+  });
+  it('refuses enabling on a revoked connection, still disables, and owns the start date', async () => {
+    const f = await attachedBindings(1); const bindingId = f.bindings[0]!.bindingId;
+    await setSpApiBindingReporting(db,f.actor,{ connectionId: f.connectionId,bindingId,enabled: true });
+    await db.sql`update public.spapi_profile_bindings set enabled_at='2000-01-01T00:00:00Z' where id=${bindingId}`;
+    expect(await db.sql`select enabled_at is not null and enabled_at > '2000-01-01T00:00:00Z' as trigger_owned from public.spapi_profile_bindings where id=${bindingId}`)
+      .toEqual([{ trigger_owned: true }]);
+    await f.lifecycle.revoke(f.actor,f.connectionId);
+    await setSpApiBindingReporting(db,f.actor,{ connectionId: f.connectionId,bindingId,enabled: false });
+    const error = await setSpApiBindingReporting(db,f.actor,{ connectionId: f.connectionId,bindingId,enabled: true }).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(SpApiBindingReportingError);
+    expect(error).toMatchObject({ reason: 'connection_inactive' });
+    expect((await reportingAudit(f.actor.orgId)).map((row) => row.action)).toEqual(['spapi.binding_reporting_enabled','spapi.binding_reporting_disabled']);
+    expect(await db.sql`select enabled,enabled_at from public.spapi_profile_bindings where id=${bindingId}`).toEqual([{ enabled: false,enabled_at: null }]);
   });
   it('upgrades existing custody and binding states without enabling a source', async () => {
     const old = await createTestDatabase('spapi_upgrade', { throughMigration: '20260915260000_ad_group_product_assignments.sql',applyFixture: false });

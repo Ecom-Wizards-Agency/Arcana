@@ -107,7 +107,7 @@ function renderReady({ context, query, operation, mayConnect, enabled, connectio
       </p>
 
       <SpApiConnections key={org.orgId} orgId={org.orgId} mayManage={mayConnect} enabled={spApiEnabled}
-        connections={spApi.connections} profiles={spApi.profiles} initial={spApiOperation} callbackError={query.spapi_error ?? null} startDetail={query.spapi_detail ?? null} />
+        connections={spApi.connections} profiles={spApi.profiles} bindings={spApi.bindings} initial={spApiOperation} callbackError={query.spapi_error ?? null} startDetail={query.spapi_detail ?? null} />
 
       <h2 style={subheading}>More connections</h2>
       <p style={muted}>

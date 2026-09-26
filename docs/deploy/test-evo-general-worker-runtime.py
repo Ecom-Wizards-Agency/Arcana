@@ -28,9 +28,12 @@ DATABASE = "postgres" + "ql://synthetic:" + "fixture@127.0.0.1:5432/postgres"
 CLIENT_ID = "synthetic-lwa-" + "client-id-0001"
 CLIENT_SECRET = "synthetic-lwa-" + "client-value-0002"
 REDIRECT = "https://example.test/api/amazon/spapi/oauth/callback"
+SIX_JOB_TYPES = "keepa.sync,rank.sync,economics.sync,sqp.categorize,sqp.request,recommendations.run"
+FIVE_JOB_TYPES = "keepa.sync,rank.sync,economics.sync,sqp.categorize,recommendations.run"
+SEVEN_JOB_TYPES = SIX_JOB_TYPES + ",report.fetch"
 BASE_CONFIG = {
     "WORKER_ID": "fixture-worker",
-    "WORKER_JOB_TYPES": "keepa.sync,rank.sync,economics.sync,sqp.categorize,recommendations.run",
+    "WORKER_JOB_TYPES": SIX_JOB_TYPES,
     "WORKER_MAX_CONCURRENT_JOBS": "4",
     "PORT": "3777",
     "WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS": "1",
@@ -230,6 +233,57 @@ class RefusalTests(RuntimeCase):
         self.refuse(runtime.run_worker, "deployed worker runtime is unavailable")
 
 
+class JobTypeTests(RuntimeCase):
+    def test_runtime_declares_exactly_the_six_general_worker_job_types(self) -> None:
+        self.assertEqual(runtime.GENERAL_WORKER_JOB_TYPES, frozenset(SIX_JOB_TYPES.split(",")))
+        self.assertEqual(len(runtime.GENERAL_WORKER_JOB_TYPES), 6)
+        self.assertIn("sqp.request", runtime.GENERAL_WORKER_JOB_TYPES)
+
+    def test_six_type_set_is_accepted_in_any_order(self) -> None:
+        orders = (SIX_JOB_TYPES, ",".join(reversed(SIX_JOB_TYPES.split(","))))
+        accepted = 0
+        for order in orders:
+            with self.subTest(order=order):
+                self.write({**BASE_CONFIG, "WORKER_JOB_TYPES": order}, {"database-url": DATABASE})
+                self.assertEqual(runtime.public_config()["WORKER_JOB_TYPES"], order)
+                launched, _ = self.launch(runtime.run_worker)
+                self.assertEqual(launched.env["WORKER_JOB_TYPES"], order)
+                accepted += 1
+        self.assertEqual(accepted, len(orders))
+
+    def test_five_type_set_without_sqp_request_is_refused(self) -> None:
+        self.assertNotIn("sqp.request", FIVE_JOB_TYPES.split(","))
+        self.assertEqual(len(FIVE_JOB_TYPES.split(",")), 5)
+        self.write({**BASE_CONFIG, "WORKER_JOB_TYPES": FIVE_JOB_TYPES}, {"database-url": DATABASE})
+        message = self.refuse(runtime.run_worker, "WORKER_JOB_TYPES must list exactly")
+        self.assertIn("sqp.request", message)
+
+    def test_seven_type_set_is_refused(self) -> None:
+        self.assertEqual(len(set(SEVEN_JOB_TYPES.split(","))), 7)
+        self.write({**BASE_CONFIG, "WORKER_JOB_TYPES": SEVEN_JOB_TYPES}, {"database-url": DATABASE})
+        self.refuse(runtime.run_worker, "WORKER_JOB_TYPES must list exactly")
+
+    def test_duplicated_padded_or_absent_job_types_are_refused(self) -> None:
+        variants = {
+            "duplicate": SIX_JOB_TYPES + ",sqp.request",
+            "padded": SIX_JOB_TYPES.replace(",", ", "),
+            "trailing comma": SIX_JOB_TYPES + ",",
+            "empty": "",
+        }
+        refused = 0
+        for label, value in variants.items():
+            with self.subTest(variant=label):
+                self.write({**BASE_CONFIG, "WORKER_JOB_TYPES": value}, {"database-url": DATABASE})
+                self.refuse(runtime.run_worker, "WORKER_JOB_TYPES must list exactly")
+                refused += 1
+        config = dict(BASE_CONFIG)
+        del config["WORKER_JOB_TYPES"]
+        self.write(config, {"database-url": DATABASE})
+        self.refuse(runtime.run_worker, "WORKER_JOB_TYPES must list exactly")
+        refused += 1
+        self.assertEqual(refused, len(variants) + 1)
+
+
 class ConnectionOnlyTests(RuntimeCase):
     def test_passes_only_database_and_spapi_variables(self) -> None:
         self.write({**BASE_CONFIG, **SPAPI_CONFIG, "OPENSPELL_SPAPI_CONNECTIONS_ENABLED": "0"}, ALL_CREDENTIALS)
@@ -244,6 +298,19 @@ class ConnectionOnlyTests(RuntimeCase):
         self.assertFalse(any(key.startswith("WORKER_") for key in launched.env))
         self.assertNotIn("PORT", launched.env)
         self.assertEqual(lines[0]["mode"], "spapi-connections")
+
+    def test_does_not_apply_the_worker_job_type_set(self) -> None:
+        # The connection-only command claims no queue job, so a worker.json that
+        # the worker mode would refuse still starts the connection loop.
+        started = 0
+        for job_types in (FIVE_JOB_TYPES, SEVEN_JOB_TYPES):
+            with self.subTest(job_types=job_types):
+                self.write({**BASE_CONFIG, **SPAPI_CONFIG, "WORKER_JOB_TYPES": job_types,
+                            "OPENSPELL_SPAPI_CONNECTIONS_ENABLED": "0"}, ALL_CREDENTIALS)
+                launched, _ = self.launch(runtime.run_spapi_connections)
+                self.assertEqual(launched.argv[-1], "src/spapi-connections-cli.ts")
+                started += 1
+        self.assertEqual(started, 2)
 
     def test_refused_while_the_general_worker_owns_the_loop(self) -> None:
         self.write({**BASE_CONFIG, **SPAPI_CONFIG}, ALL_CREDENTIALS)

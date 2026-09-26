@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { SpApiConnectionBegin, SpApiConnectionSubmit, SpApiConnectionOperation, SpApiConsentRefusal } from './provider-connections.js';
+import {
+  SpApiBindingReportingRequest, SpApiConnectionBegin, SpApiConnectionSubmit, SpApiConnectionOperation, SpApiConsentRefusal,
+  SpApiProfileBindingState,
+} from './provider-connections.js';
 
 const id = '11111111-1111-4111-8111-111111111111';
 const hiddenValue = ['synthetic', 'refresh'].join('-');
@@ -32,5 +35,25 @@ describe('SP consent contracts', () => {
     expect(SpApiConnectionSubmit.parse({ ...input, sellingPartnerId: 'synthetic-seller' }).code).toBe(input.code);
     expect(SpApiConnectionSubmit.safeParse({ ...input, sellingPartnerId: 'seller', redirectUri: begin.redirectUri }).success).toBe(false);
     expect(SpApiConnectionOperation.safeParse({ ...input, refreshToken: hiddenValue }).success).toBe(false);
+  });
+});
+
+describe('SP binding reporting contracts', () => {
+  const state = { bindingId: id, connectionId: id, profileId: id, profileName: 'Synthetic seller', marketplaceId: 'ATVPDKIKX0DER',
+    enabled: true, enabledAt: '2026-09-26T10:00:00.123456+00:00', profileSyncEnabled: true };
+  it('accepts only an explicit boolean switch', () => {
+    expect(SpApiBindingReportingRequest.parse({ enabled: true })).toEqual({ enabled: true });
+    expect(SpApiBindingReportingRequest.parse({ enabled: false })).toEqual({ enabled: false });
+    for (const body of [{}, { enabled: 'true' }, { enabled: 1 }, { enabled: true, orgId: id }, null]) {
+      expect(SpApiBindingReportingRequest.safeParse(body).success).toBe(false);
+    }
+  });
+  it('carries a reporting start only while enabled, and allows an unrecorded start', () => {
+    expect(SpApiProfileBindingState.parse(state).enabledAt).toBe(state.enabledAt);
+    expect(SpApiProfileBindingState.parse({ ...state, enabledAt: null }).enabledAt).toBeNull();
+    expect(SpApiProfileBindingState.parse({ ...state, enabled: false, enabledAt: null }).enabled).toBe(false);
+    expect(SpApiProfileBindingState.safeParse({ ...state, enabled: false }).success).toBe(false);
+    expect(SpApiProfileBindingState.safeParse({ ...state, marketplaceId: 'lowercase' }).success).toBe(false);
+    expect(SpApiProfileBindingState.safeParse({ ...state, refreshToken: hiddenValue }).success).toBe(false);
   });
 });

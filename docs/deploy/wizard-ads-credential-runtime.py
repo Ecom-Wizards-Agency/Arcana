@@ -94,6 +94,18 @@ WORKER_ENV_KEYS = {
 }
 
 
+# The Evo general worker's exact claim surface. sqp.request is the weekly
+# Brand Analytics report request; the Vercel cron tick never claims it.
+GENERAL_WORKER_JOB_TYPES = frozenset({
+    "keepa.sync",
+    "rank.sync",
+    "economics.sync",
+    "sqp.categorize",
+    "sqp.request",
+    "recommendations.run",
+})
+
+
 class Refused(RuntimeError):
     pass
 
@@ -142,6 +154,16 @@ def public_config() -> dict[str, str]:
     if region is not None and region not in SPAPI_REGIONS:
         raise RuntimeError("SP_API_OAUTH_REGION must be NA, EU or FE")
     return config
+
+
+def general_worker_job_types(config: dict[str, str]) -> None:
+    """The worker mode claims exactly the six types; the connection-only mode claims none."""
+    job_types = config.get("WORKER_JOB_TYPES", "").split(",")
+    if len(job_types) != len(set(job_types)) or set(job_types) != GENERAL_WORKER_JOB_TYPES:
+        raise RuntimeError(
+            "WORKER_JOB_TYPES must list exactly these job types once each: "
+            + ",".join(sorted(GENERAL_WORKER_JOB_TYPES))
+        )
 
 
 def release_revision() -> str:
@@ -203,6 +225,7 @@ def exec_release(mode: str, revision: str, spapi_enabled: bool,
 
 def run_worker() -> None:
     config = public_config()
+    general_worker_job_types(config)
     revision = release_revision()
     spapi_enabled = config.get(SPAPI_GATE) == "1"
     if spapi_enabled and any(not config.get(name) for name in SPAPI_SETTINGS):
