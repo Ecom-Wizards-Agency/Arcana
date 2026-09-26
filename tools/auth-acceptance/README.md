@@ -21,23 +21,28 @@ the browser phase owns the web app's ordinary Next dev cache and process.
 Existing application `.env` files cause an explicit refusal.
 
 The two diagnostic-redaction tests verify written artifacts. The integration
-command runs 24 required checks in two fresh stacks:
+command runs 28 required checks in two fresh stacks:
 
-- Fourteen provider checks cover signup disabled; missing, unconfirmed and
+- Sixteen provider checks cover signup disabled; missing, unconfirmed and
   confirmed accounts; the maintained invite template; real session cookies and
   password setup/login; token replay, resend and wall-clock expiry; wrong-account
-  session replacement; redirect allowlisting; and three committed operations
-  whose successful responses are deliberately dropped. Final counts must be ten
-  users, ten captured emails and three dropped successful responses.
-- Ten browser checks apply every current migration, invoke the actual agency
+  session replacement; redirect allowlisting; three committed operations
+  whose successful responses are deliberately dropped; and admin-generated
+  invite and recovery links that send no email, verify once by token hash and
+  refuse a confirmed account. Final counts must be eleven users, ten captured
+  emails and three dropped successful responses.
+- Twelve browser checks apply every current migration, invoke the actual agency
   operator CLI and use the actual Next pages/actions. Landing GETs have no
   verification effect. Native forms verify email, set a password and accept
   exactly one owner membership, with one audit and the correct org cookie.
   Replay adds nothing. A wrong signed-in account is refused by the page and by a
   direct submission of the real bound form. Fresh hydrated password login must
-  show the dashboard **and** reach its actual URL. Final counts must be two
-  agencies, two users, two emails, one membership, one acceptance audit, one
-  accepted invitation and one pending invitation.
+  show the dashboard **and** reach its actual URL. The operator's default link
+  delivery then activates a third owner with no email and one link audit, and an
+  owner-issued reset link (the URL the Members screen shows) replaces a password
+  only after an explicit POST and refuses replay. Final counts must be three
+  agencies, three users, two emails, two memberships, two acceptance audits, one
+  link audit, two accepted invitations and one pending invitation.
 
 The primary onboarding browser disables JavaScript to test native forms before
 hydration. This catches incompatible referrer policies that make an otherwise

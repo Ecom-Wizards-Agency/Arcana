@@ -110,6 +110,7 @@ export * from './queries/product-assignment.js';
 export * from './queries/report-families.js';
 export * from './queries/spapi-reports.js';
 export * from './queries/grid-performance-evidence.js';
+export * from './queries/access-links.js';
 export * from './queries/asset-registration.js';
 export * from './queries/campaign-drafts.js';
 export * from './queries/naming-presets.js';

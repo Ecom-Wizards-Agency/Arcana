@@ -11,7 +11,12 @@ import {
 } from '../../../src/data/invitations';
 import type { InvitationRecord } from '../../../src/data/invitations';
 import { listMembers, removeMember, updateMemberRole } from '../../../src/data/members';
-import { deliverTeamInvitation, teamInvitationDeliveryMessage } from '../../../src/invitations/delivery';
+import type { InvitationDeliveryStatus } from '@wizard-ads/shared';
+import { createMemberRecoveryLink } from '../../../src/auth/recovery';
+import {
+  createTeamInvitationLink, deliverTeamInvitation, invitationLinkInstruction, invitationLinkStatusLabel,
+  teamInvitationDeliveryMessage,
+} from '../../../src/invitations/delivery';
 
 export type MemberActionResult =
   | { status: 'idle' }
@@ -27,9 +32,31 @@ export type InviteActionResult =
       invitation: InvitationRecord;
       /** Exists only in this action response. It is never persisted or put in a URL. */
       inviteUrl: string;
+      /** The plaintext invitation token, posted back only for the optional email. */
+      token: string;
+      delivery: InvitationDeliveryStatus;
+      deliveryLabel: string;
     };
 
-/** Create one non-owner invitation and return its plaintext URL exactly once. */
+export type EmailDeliveryResult =
+  | { status: 'idle' }
+  | { status: 'error'; message: string }
+  | { status: 'ok'; delivery: InvitationDeliveryStatus; label: string; message: string };
+
+export type ResetLinkResult =
+  | { status: 'idle' }
+  | { status: 'error'; message: string }
+  | {
+      status: 'ok';
+      /** Exists only in this action response. It is never persisted or logged. */
+      url: string;
+      message: string;
+    };
+
+/**
+ * Create one non-owner invitation and return its link exactly once. Link
+ * delivery is the default: nothing is emailed unless the manager asks.
+ */
 export async function createInvite(
   _previous: InviteActionResult,
   formData: FormData,
@@ -43,6 +70,8 @@ export async function createInvite(
       return errorResult('Invitations may grant admin, analyst, or viewer access.');
     }
 
+    // Links are built from authOrigin(); refuse before issuing when the
+    // installation origin they depend on is not configured.
     const appUrl = process.env['WIZARD_ADS_APP_URL']?.replace(/\/+$/, '');
     if (!appUrl) {
       return errorResult('Invitation links are not configured. Set WIZARD_ADS_APP_URL.');
@@ -54,17 +83,70 @@ export async function createInvite(
       role,
       invitedBy: actor.id,
     });
-    const delivery = await deliverTeamInvitation(handle, { orgId: active.orgId, userId: actor.id }, issued.token);
+    let link: Awaited<ReturnType<typeof createTeamInvitationLink>>;
+    try {
+      link = await createTeamInvitationLink(handle, { orgId: active.orgId, userId: actor.id }, issued.token);
+    } catch {
+      revalidatePath('/settings/members');
+      return errorResult('The invitation is saved, but its link could not be recorded. Revoke it and invite again.');
+    }
 
     revalidatePath('/settings/members');
     return {
       status: 'ok',
-      message: `Invitation created for ${issued.invitation.email}. ${teamInvitationDeliveryMessage(delivery)}`,
+      message: invitationLinkInstruction(link.status, issued.invitation.email),
       invitation: issued.invitation,
-      inviteUrl: `${appUrl}/invite/${issued.token}`,
+      inviteUrl: link.url,
+      token: issued.token,
+      delivery: link.status,
+      deliveryLabel: invitationLinkStatusLabel(link.status),
     };
   } catch (error) {
     return memberError(error, 'The invitation could not be created.');
+  }
+}
+
+/** The secondary path: ask Auth to email the open invitation. Needs SMTP. */
+export async function sendInviteEmail(
+  _previous: EmailDeliveryResult,
+  formData: FormData,
+): Promise<EmailDeliveryResult> {
+  try {
+    const { handle, active } = await gateAction();
+    authorize(active.role, 'manageMembers');
+    const actor = await actorId();
+    const token = requiredText(formData.get('token'), 'No invitation was selected.');
+    const delivery = await deliverTeamInvitation(handle, { orgId: active.orgId, userId: actor.id }, token);
+    return {
+      status: 'ok',
+      delivery,
+      label: delivery === 'accepted_by_provider' ? 'Email accepted for delivery' : 'Email not sent',
+      message: teamInvitationDeliveryMessage(delivery),
+    };
+  } catch (error) {
+    return memberError(error, 'The email could not be requested.');
+  }
+}
+
+/** Owner/admin-issued password reset link for another member, shown once. */
+export async function createResetLink(
+  _previous: ResetLinkResult,
+  formData: FormData,
+): Promise<ResetLinkResult> {
+  try {
+    const { handle, active } = await gateAction();
+    authorize(active.role, 'manageMembers');
+    const actor = await actorId();
+    const userId = requiredText(formData.get('userId'), 'No member was selected.');
+    const result = await createMemberRecoveryLink(handle, { orgId: active.orgId, userId: actor.id }, userId);
+    if (result.status === 'error') return errorResult(result.message);
+    return {
+      status: 'ok',
+      url: result.url,
+      message: `Send this link to ${result.email} yourself; it lets them choose a new password. It is shown only now.`,
+    };
+  } catch (error) {
+    return memberError(error, 'The reset link could not be created.');
   }
 }
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { email, sleep } from './support.mjs';
 
-export const providerChecks = 14;
+export const providerChecks = 16;
 
 /** Actual SDK -> HTTP proxy -> GoTrue -> PostgreSQL/SMTP. No Auth doubles. */
 export async function providerSuite(stack, evidence) {
@@ -130,10 +130,44 @@ export async function providerSuite(stack, evidence) {
     assert.equal(result.data.user.id, missing.user.id); assert.ok(result.data.user.email_confirmed_at);
     return { sameVerifiedUser: true };
   });
+  // Link delivery: the application shows these links once instead of mailing them.
+  const secretLink = (properties) => {
+    for (const value of [properties.hashed_token, properties.email_otp, properties.action_link]) evidence.secret(value);
+    return properties.hashed_token;
+  };
+  const noNewMail = async (before) => { await sleep(1000); assert.equal((await stack.messages()).length, before); };
+  const linked = email('link-invite');
+  await check('admin invite link creates a missing account without mail and verifies by token hash', async () => {
+    const before = (await stack.messages()).length;
+    const result = await stack.admin.auth.admin.generateLink({ type: 'invite', email: linked, options: { redirectTo: redirect() } });
+    assert.equal(result.error, null); assert.ok(result.data.user); assert.ok(!result.data.user.email_confirmed_at);
+    const hash = secretLink(result.data.properties); await noNewMail(before);
+    const client = await verify({ address: linked, mail: { hash } });
+    assert.equal((await client.auth.updateUser({ password: passphrase })).error, null);
+    assert.equal((await login(linked)).data.user.id, result.data.user.id);
+    assert.equal((await stack.client().auth.verifyOtp({ type: 'invite', token_hash: hash })).error?.code, 'otp_expired');
+    const existing = await stack.admin.auth.admin.generateLink({ type: 'invite', email: email('confirmed'), options: { redirectTo: redirect() } });
+    assert.equal(existing.error?.code, 'email_exists');
+    return { emails: 0, verifiedEmail: true, ordinaryPasswordLogin: true, replayRefused: true, confirmedAccountRefused: true };
+  });
+  await check('admin recovery link sends no mail and verifies once for a password change', async () => {
+    const before = (await stack.messages()).length;
+    const result = await stack.admin.auth.admin.generateLink({ type: 'recovery', email: linked, options: { redirectTo: stack.appOrigin + '/auth/recovery/callback' } });
+    assert.equal(result.error, null); const hash = secretLink(result.data.properties); await noNewMail(before);
+    const client = stack.client(); assert.equal((await client.auth.initialize()).error, null);
+    const verified = await client.auth.verifyOtp({ type: 'recovery', token_hash: hash });
+    assert.equal(verified.error, null); assert.ok(verified.data.session); assert.equal(verified.data.user.email, linked);
+    const replacement = evidence.secret(randomBytes(24).toString('hex'));
+    assert.equal((await client.auth.updateUser({ password: replacement })).error, null);
+    assert.equal((await login(linked, replacement)).error, null);
+    assert.equal((await login(linked)).error?.code, 'invalid_credentials');
+    assert.equal((await stack.client().auth.verifyOtp({ type: 'recovery', token_hash: hash })).error?.code, 'otp_expired');
+    return { emails: 0, passwordReplaced: true, previousPasswordRefused: true, replayRefused: true };
+  });
   await check('provider counts reconcile', async () => {
     const users = (await stack.users()).length; const emails = (await stack.messages()).length;
     const faults = (await stack.events()).filter((row) => row.responseDropped);
-    assert.equal(users, 10); assert.equal(emails, 10); assert.equal(stack.mailArtifacts.size, 10);
+    assert.equal(users, 11); assert.equal(emails, 10); assert.equal(stack.mailArtifacts.size, 10);
     assert.equal(faults.length, 3); assert.ok(faults.every((row) => row.status === 200));
     assert.equal(stack.outsideRequests, 0);
     return { users, emails, committedResponseFaults: faults.length, externalRequests: 0 };

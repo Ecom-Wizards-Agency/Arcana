@@ -76,10 +76,10 @@ export class Application {
     this.browser = await web('@playwright/test').chromium.launch({ headless: true });
   }
 
-  async provision(name) {
+  async provision(name, { link = false } = {}) {
     const args = ['--import', web.resolve('tsx'), resolve(root, 'tools/agency-operator/src/cli.ts'),
       'provision', '--request-id', randomUUID(), '--name', 'Synthetic agency ' + name,
-      '--slug', 'synthetic-agency-' + name, '--owner-email', email(name), '--send-email'];
+      '--slug', 'synthetic-agency-' + name, '--owner-email', email(name), ...(link ? [] : ['--send-email'])];
     const env = childEnvironment({ ...this.network,
       OPENSPELL_OPERATOR_DATABASE_URL: this.stack.databaseUrl, WIZARD_ADS_APP_URL: this.origin,
       OPENSPELL_OPERATOR_AUTH_URL: this.stack.base, OPENSPELL_OPERATOR_AUTH_KEY: this.stack.jwt('service_role'),
@@ -96,6 +96,17 @@ export class Application {
       });
     });
     const result = JSON.parse(output);
+    if (link) {
+      // Link delivery: one printed URL carrying the Auth token hash, no email.
+      const url = new globalThis.URL(result.invitationUrl);
+      this.evidence.secret(url.pathname.split('/').at(-1)); this.evidence.secret(url.searchParams.get('token_hash'));
+      this.evidence.secret(result.invitationUrl.split('/').at(-1));
+      assert.equal(result.delivery, 'link_ready'); assert.equal(url.origin, this.origin);
+      assert.ok(url.searchParams.get('token_hash'));
+      const user = (await this.stack.users()).find((item) => item.email === email(name)); assert.ok(user);
+      assert.ok(!user.email_confirmed_at);
+      return { result, mail: { url }, user, address: email(name) };
+    }
     this.evidence.secret(result.invitationUrl?.split('/').at(-1));
     assert.equal(result.delivery, 'accepted_by_provider'); assert.ok(result.invitationUrl);
     const mail = (await this.stack.mailFor(email(name)))[0];

@@ -149,8 +149,37 @@ export const TeamInvitationDeliveryContext = z.object({
 }).strict();
 export type TeamInvitationDeliveryContext = z.infer<typeof TeamInvitationDeliveryContext>;
 
-/** Provider acceptance is not proof of inbox delivery or agency membership. */
+/**
+ * Provider acceptance is not proof of inbox delivery or agency membership.
+ * `link_ready` means Auth returned a one-time account link for the inviting
+ * manager or operator to hand over; no email was sent.
+ */
 export const InvitationDeliveryStatus = z.enum([
-  'accepted_by_provider', 'existing_account', 'unavailable', 'failed', 'uncertain',
+  'accepted_by_provider', 'existing_account', 'unavailable', 'failed', 'uncertain', 'link_ready',
 ]);
 export type InvitationDeliveryStatus = z.infer<typeof InvitationDeliveryStatus>;
+
+/**
+ * `link` returns the invitation link once to the issuing manager/operator, who
+ * sends it over their own channel. `email` asks Auth to send it and needs SMTP.
+ */
+export const InvitationDeliveryMode = z.enum(['link', 'email']);
+export type InvitationDeliveryMode = z.infer<typeof InvitationDeliveryMode>;
+
+/** Audit actions for issued one-time links. Rows never contain the link. */
+export const ACCESS_LINK_AUDIT_ACTIONS = {
+  team: 'team.invitation_link_issued',
+  agency: 'agency.invitation_link_issued',
+  recovery: 'auth.recovery_link_issued',
+} as const;
+
+/** One owner/admin-issued password reset link per member per window. */
+export const MEMBER_RECOVERY_LINK_INTERVAL_MINUTES = 10;
+
+export const MemberRecoveryLinkRequest = z.object({ userId: Uuid }).strict();
+export type MemberRecoveryLinkRequest = z.infer<typeof MemberRecoveryLinkRequest>;
+
+/** Why an owner/admin reset link was refused before any Auth call. */
+/** `other_orgs`: the member's password also guards a workspace the issuer does not manage. */
+export const MemberRecoveryLinkRefusal = z.enum(['not_member', 'self', 'owner_only', 'other_orgs', 'rate_limited']);
+export type MemberRecoveryLinkRefusal = z.infer<typeof MemberRecoveryLinkRefusal>;

@@ -21,13 +21,17 @@ import {
 import {
   changeMemberRole,
   createInvite,
+  createResetLink,
   removeOrgMember,
   revokeInvite,
+  sendInviteEmail,
 } from './actions';
-import type { InviteActionResult, MemberActionResult } from './actions';
+import type { EmailDeliveryResult, InviteActionResult, MemberActionResult, ResetLinkResult } from './actions';
 
 const IDLE: MemberActionResult = { status: 'idle' };
 const IDLE_INVITE: InviteActionResult = { status: 'idle' };
+const IDLE_EMAIL: EmailDeliveryResult = { status: 'idle' };
+const IDLE_RESET: ResetLinkResult = { status: 'idle' };
 
 export function MembersManager({
   actor,
@@ -128,14 +132,10 @@ export function MembersManager({
 function InviteForm(): ReactNode {
   const [result, action, pending] = useActionState(createInvite, IDLE_INVITE);
   const [dismissedUrl, setDismissedUrl] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
-    if (result.status === 'ok') {
-      formRef.current?.reset();
-      setCopied(false);
-    }
+    if (result.status === 'ok') formRef.current?.reset();
   }, [result]);
 
   const visibleUrl = result.status === 'ok' && dismissedUrl !== result.inviteUrl;
@@ -181,33 +181,103 @@ function InviteForm(): ReactNode {
       ) : null}
 
       {visibleUrl && result.status === 'ok' ? (
-        <div className="wa-banner wa-banner--good" style={{ display: 'block', marginTop: '0.75rem' }}>
-          <strong>Copy this invitation link now.</strong> This link will not be shown again.
-          <div className="wa-row" style={{ marginTop: '0.5rem' }}>
-            <code
-              data-testid="invite-url"
-              style={{ flex: '1 1 24rem', overflowWrap: 'anywhere' }}
-            >
-              {result.inviteUrl}
-            </code>
-            <Button
-              size="sm"
-              onClick={() => {
-                void navigator.clipboard.writeText(result.inviteUrl).then(
-                  () => setCopied(true),
-                  () => setCopied(false),
-                );
-              }}
-            >
-              {copied ? 'Copied' : 'Copy'}
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => setDismissedUrl(result.inviteUrl)}>
-              Done
-            </Button>
-          </div>
-        </div>
+        <OnceLink
+          key={result.inviteUrl}
+          url={result.inviteUrl}
+          urlTestId="invite-url"
+          status={result.deliveryLabel}
+          statusTestId="invite-delivery-status"
+          instruction={result.message}
+          onDone={() => setDismissedUrl(result.inviteUrl)}
+        >
+          <EmailFallback key={result.token} token={result.token} replacesLink={result.delivery === 'link_ready'} />
+        </OnceLink>
       ) : null}
     </Card>
+  );
+}
+
+/** A bearer link shown once, with copy and dismiss controls. */
+function OnceLink({
+  url,
+  urlTestId,
+  status,
+  statusTestId,
+  instruction,
+  onDone,
+  children,
+}: {
+  url: string;
+  urlTestId: string;
+  status?: string;
+  statusTestId?: string;
+  instruction: string;
+  onDone: () => void;
+  children?: ReactNode;
+}): ReactNode {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="wa-banner wa-banner--good" style={{ display: 'block', marginTop: '0.75rem' }}>
+      {status ? (
+        <p style={{ margin: 0 }}>
+          <Badge tone="info" data-testid={statusTestId}>{status}</Badge>
+        </p>
+      ) : null}
+      <p style={{ margin: '0.5rem 0 0' }} data-testid={`${urlTestId}-instruction`}>{instruction}</p>
+      <div className="wa-row" style={{ marginTop: '0.5rem' }}>
+        <code
+          data-testid={urlTestId}
+          style={{ flex: '1 1 24rem', overflowWrap: 'anywhere' }}
+        >
+          {url}
+        </code>
+        <Button
+          size="sm"
+          onClick={() => {
+            void navigator.clipboard.writeText(url).then(
+              () => setCopied(true),
+              () => setCopied(false),
+            );
+          }}
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onDone}>
+          Done
+        </Button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** Secondary path: works once the installation has SMTP, fails visibly without it. */
+function EmailFallback({ token, replacesLink }: { token: string; replacesLink: boolean }): ReactNode {
+  const [result, action, pending] = useActionState(sendInviteEmail, IDLE_EMAIL);
+  return (
+    <form action={action} style={{ marginTop: '0.75rem' }}>
+      <input type="hidden" name="token" value={token} />
+      <Button type="submit" size="sm" variant="ghost" disabled={pending || result.status === 'ok'} data-testid="invite-send-email">
+        {pending ? 'Sending…' : 'Also send by email'}
+      </Button>
+      {replacesLink && result.status === 'idle' ? (
+        <span className="wa-hint" style={{ display: 'block', marginTop: '0.25rem' }}>
+          Sending the email replaces the link above; they must then use the email.
+        </span>
+      ) : null}
+      {result.status === 'idle' ? null : (
+        <span
+          className={`wa-hint${result.status === 'error' || result.delivery !== 'accepted_by_provider' ? ' wa-text-bad' : ''}`}
+          role={result.status === 'error' || result.delivery !== 'accepted_by_provider' ? 'alert' : 'status'}
+          data-testid="invite-email-status"
+          style={{ display: 'block', marginTop: '0.25rem' }}
+        >
+          {result.status === 'ok' ? `${result.label}. ${result.message}` : result.message}
+          {replacesLink && result.status === 'ok' && (result.delivery === 'failed' || result.delivery === 'uncertain')
+            ? ' The link above may no longer work; revoke this invitation and invite again.' : null}
+        </span>
+      )}
+    </form>
   );
 }
 
@@ -222,7 +292,12 @@ function MemberRow({
 }): ReactNode {
   const [roleResult, roleAction, rolePending] = useActionState(changeMemberRole, IDLE);
   const [removeResult, removeAction, removePending] = useActionState(removeOrgMember, IDLE);
+  const [resetResult, resetAction, resetPending] = useActionState(createResetLink, IDLE_RESET);
+  const [dismissedReset, setDismissedReset] = useState<string | null>(null);
   const actorOwns = actor.role === 'owner';
+  const mayReset =
+    (actor.role === 'owner' || actor.role === 'admin') &&
+    member.userId !== actor.id && (member.role !== 'owner' || actorOwns);
   const mayEditRole = !soleOwner && (member.role !== 'owner' || actorOwns);
   const mayRemove =
     member.userId !== actor.id && !soleOwner && (member.role !== 'owner' || actorOwns);
@@ -291,6 +366,28 @@ function MemberRow({
             {result.message}
           </span>
         )}
+        {mayReset ? (
+          <form action={resetAction} style={{ marginTop: '0.25rem' }}>
+            <input type="hidden" name="userId" value={member.userId} />
+            <Button type="submit" size="sm" variant="ghost" disabled={resetPending} data-testid="create-reset-link">
+              {resetPending ? 'Creating…' : 'Create reset link'}
+            </Button>
+          </form>
+        ) : null}
+        {resetResult.status === 'error' ? (
+          <span className="wa-hint wa-text-bad" role="alert" data-testid="reset-link-error" style={{ display: 'block', marginTop: '0.25rem' }}>
+            {resetResult.message}
+          </span>
+        ) : null}
+        {resetResult.status === 'ok' && dismissedReset !== resetResult.url ? (
+          <OnceLink
+            key={resetResult.url}
+            url={resetResult.url}
+            urlTestId="reset-url"
+            instruction={resetResult.message}
+            onDone={() => setDismissedReset(resetResult.url)}
+          />
+        ) : null}
       </td>
     </tr>
   );
