@@ -24,12 +24,17 @@ it('controls tab panels and updates only the tab query parameter with keyboard n
   expect(screen.getByRole('status').textContent).toBe('profile=synthetic&tab=overview');
 });
 it('names each status and keeps missing measurement distinct from access gates', () => {
-  const states: StatusChipState[] = ['working', 'needs-data', 'idea'];
+  const states: StatusChipState[] = ['working', 'needs-data', 'idea', 'run-by-hand'];
   const { container } = render(<>{states.map((status) => <StatusChip key={status} status={status} />)}
     <EmptyState variant="not-measured" title="Not measured" body="Awaiting a report" />
     <EmptyState variant="gated" title="Access required" body="Ask an owner for access" /></>);
   expect(container.querySelectorAll('[data-status]')).toHaveLength(states.length);
   expect(container.querySelector('[data-status="needs-data"]')?.getAttribute('style')).toContain('--wa-warn-text');
+  const manual = container.querySelector<HTMLElement>('[data-status="run-by-hand"]');
+  expect(manual?.textContent).toBe('Run by hand');
+  expect(manual?.style.border).toBe('1px solid rgb(198, 199, 201)');
+  expect(manual?.style.color).toBe('rgb(142, 96, 19)');
+  expect([manual?.style.borderRadius, manual?.style.padding, manual?.style.fontSize, manual?.style.fontWeight]).toEqual(['7px', '2px 7px', '10px', '600']);
   expect(container.querySelector('[data-state="not-measured"]')?.textContent).toContain('Awaiting a report');
   expect(container.querySelector('[data-state="gated"]')?.textContent).toContain('Ask an owner');
 });

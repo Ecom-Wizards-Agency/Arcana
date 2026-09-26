@@ -134,7 +134,9 @@ describe('the sidebar and the chosen profile', () => {
     const planned = NAV_GROUPS.flatMap((group) => group.links).filter((link) => link.disabled);
     const disabled = [...host.querySelectorAll('.wa-navlink[aria-disabled="true"]')];
     expect(disabled).toHaveLength(planned.length);
-    expect(NAV_GROUPS.find((group) => group.id === 'creators')?.links.filter((link) => link.disabled)).toHaveLength(3);
+    // Creator Connections shipped its three sidebar screens (WP-332): the group is live, none disabled.
+    expect(NAV_GROUPS.find((group) => group.id === 'creators')?.links.map((link) => [link.href, link.disabled ?? false])).toEqual([
+      ['/creators', false], ['/creators/sweep', false], ['/creators/samples', false]]);
     expect(disabled.map((row) => row.querySelector('.wa-navlink-label')?.textContent)).toEqual(planned.map((link) => link.label));
     expect(disabled.every((row) => row.tagName === 'SPAN' && !row.hasAttribute('href') && !row.hasAttribute('tabindex'))).toBe(true);
   });
