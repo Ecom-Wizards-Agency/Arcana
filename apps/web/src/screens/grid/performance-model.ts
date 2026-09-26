@@ -1,6 +1,7 @@
-import { buildGridModelSafely, grandTotal, resolveField, type FilterSet, type GridModelResult, type GridQuery, type GridRow } from '@wizard-ads/ui';
-import { PerformanceVerdict } from '@wizard-ads/shared';
+import { buildGridModelSafely, resolveField, type FilterSet, type GridModelResult, type GridQuery, type GridRow } from '@wizard-ads/ui';
+import { PerformanceVerdict, describeTargeting } from '@wizard-ads/shared';
 import { shareOfSpend } from '@wizard-ads/core';
+import { windowTotal } from './summary-model';
 
 /** A quick chip replaces every selected verdict, retaining each non-verdict OR branch. */
 export function verdictFilter(filter: FilterSet, diagnosis: string): FilterSet {
@@ -11,8 +12,34 @@ export function verdictFilter(filter: FilterSet, diagnosis: string): FilterSet {
   })) };
 }
 
+/**
+ * The screen's working population: the ASIN scope, with the phrase each target
+ * row carries for the Phrase column (WP-316, V19). The phrase is read from the
+ * stored targeting text and kind through the shared targeting labels, so it
+ * sorts, filters and exports like any other dimension; an automatic or product
+ * target has none, and its cell stays empty rather than showing a code. Rows
+ * that are not targets, or already carry a phrase, pass through untouched.
+ */
 export function scopeRows(rows: readonly GridRow[], asin: string | null): readonly GridRow[] {
-  return asin === null ? rows : rows.filter((row) => row.dimensions['asin'] === asin);
+  return withTargetPhrases(asin === null ? rows : rows.filter((row) => row.dimensions['asin'] === asin));
+}
+
+function needsPhrase(row: GridRow): boolean {
+  return 'target_kind' in row.dimensions && 'targeting' in row.dimensions && !('target_phrase' in row.dimensions);
+}
+
+function withTargetPhrases(rows: readonly GridRow[]): readonly GridRow[] {
+  if (!rows.some(needsPhrase)) return rows;
+  return rows.map((row) => {
+    if (!needsPhrase(row)) return row;
+    const { targeting, target_kind: kind, match_type: matchType } = row.dimensions;
+    const phrase = describeTargeting({
+      targeting: typeof targeting === 'string' ? targeting : null,
+      targetKind: typeof kind === 'string' ? kind : null,
+      matchType: typeof matchType === 'string' ? matchType : null,
+    }).phrase;
+    return { ...row, dimensions: { ...row.dimensions, target_phrase: phrase } };
+  });
 }
 
 function hasSpendShareFilter(filter: FilterSet | undefined): boolean {
@@ -38,12 +65,16 @@ export function buildPerformanceModel(rows: readonly GridRow[], query: GridQuery
     rows = population;
   }
   const filtered = buildGridModelSafely(rows, { filter: query.filter, totals: 'none' });
-  const total = grandTotal(filtered.model.matchedRows);
+  // The strip's window rule (WP-321): a row with no facts in the window adds
+  // nothing, rather than making the whole denominator unknown.
+  const total = windowTotal(filtered.model.matchedRows);
   const denominator = total === null ? null : resolveField(total, 'spend');
   const withShare = <T extends GridRow>(row: T): T => ({ ...row, dimensions: { ...row.dimensions,
     spend_share: shareOfSpend(resolveField(row, 'spend') as number | null, typeof denominator === 'number' ? denominator : null),
   } });
-  const { filter: _filter, ...shape } = query;
+  const { filter: _filter, ...rest } = query;
+  // The pinned total follows the same rule unless the caller chose its own totals.
+  const shape: GridQuery = rest.totals === 'none' || rest.totals === 'custom' ? rest : { ...rest, totals: 'custom', customTotals: windowTotal };
   // For a measured denominator, group shares sort exactly as group spend.
   if (shape.groupBy?.length) shape.sort = shape.sort?.map((rule) => rule.columnId === 'spend_share' ? { ...rule, columnId: 'spend' } : rule);
   const result = buildGridModelSafely(filtered.model.matchedRows.map(withShare), shape);

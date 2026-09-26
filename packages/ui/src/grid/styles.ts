@@ -8,7 +8,7 @@
  * the helpers only fold a column's width, alignment and pinning into a style.
  */
 import type { CSSProperties } from 'react';
-import { minimumColumnWidth, type GridColumn } from '../columns.js';
+import { isSelectionColumn, minimumColumnWidth, type GridColumn } from '../columns.js';
 import type { GridDensity } from '../density.js';
 import { tokens } from '../theme.js';
 
@@ -20,6 +20,17 @@ import { tokens } from '../theme.js';
  * happened before this was pinned.
  */
 export const HEADER_HEIGHT = 44;
+
+/**
+ * The grid's rules and header band (V15). The page border token alone is a
+ * 1.2:1 line on the zebra rows, which is why rows and columns ran together;
+ * body rules sit halfway to the strong border, header rules use it outright,
+ * and the header is a band of its own (`surfaceHover`) rather than the same
+ * white as every other row. Tokens only, so dark mode follows.
+ */
+export const GRID_RULE = `color-mix(in srgb, ${tokens.color.borderStrong} 50%, ${tokens.color.border})`;
+export const GRID_HEADER_RULE = tokens.color.borderStrong;
+export const GRID_HEADER_BACKGROUND = tokens.color.surfaceHover;
 
 export const shell: CSSProperties = {
   border: `1px solid ${tokens.color.border}`,
@@ -51,8 +62,9 @@ export const scrollerFill: CSSProperties = {
 };
 
 export const headerRow: CSSProperties = {
-  background: tokens.color.surfaceAlt,
-  borderBottom: `1px solid ${tokens.color.borderStrong}`,
+  background: GRID_HEADER_BACKGROUND,
+  borderBottom: `1px solid ${GRID_HEADER_RULE}`,
+  color: tokens.color.text,
   boxSizing: 'border-box',
   display: 'flex',
   height: HEADER_HEIGHT,
@@ -63,7 +75,9 @@ export const headerRow: CSSProperties = {
 
 const headerCell: CSSProperties = {
   alignItems: 'center',
+  borderRight: `1px solid ${GRID_HEADER_RULE}`,
   boxSizing: 'border-box',
+  color: tokens.color.text,
   cursor: 'pointer',
   display: 'flex',
   fontSize: tokens.font.size.eyebrow,
@@ -119,17 +133,28 @@ const pinButton: CSSProperties = {
   padding: 0,
 };
 
-export const resizeHandle: CSSProperties = {
-  cursor: 'col-resize',
-  height: '100%',
-  position: 'absolute',
-  right: 0,
-  top: 0,
-  width: '5px',
-};
+/**
+ * The column edge. A grip the operator can see at rest (a short rule in the
+ * header's rule colour) that turns accent and full height while it is hovered,
+ * focused or dragged; the hit area is wider than the grip.
+ */
+export function resizeHandleStyle(active: boolean): CSSProperties {
+  const colour = active ? tokens.color.accent : GRID_HEADER_RULE;
+  return {
+    background: `linear-gradient(${colour}, ${colour}) right 2px center / ${active ? '3px 100%' : '2px 55%'} no-repeat`,
+    cursor: 'col-resize',
+    height: '100%',
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    touchAction: 'none',
+    width: '9px',
+    zIndex: 1,
+  };
+}
 
 export const bodyRow: CSSProperties = {
-  borderBottom: `1px solid ${tokens.color.border}`,
+  borderBottom: `1px solid ${GRID_RULE}`,
   display: 'flex',
 };
 
@@ -143,6 +168,7 @@ export const totalsRow: CSSProperties = {
 };
 
 const bodyCell: CSSProperties = {
+  borderRight: `1px solid ${GRID_RULE}`,
   boxSizing: 'border-box',
   fontVariantNumeric: 'tabular-nums',
   fontSize: tokens.font.size.sm,
@@ -235,6 +261,20 @@ export const footerNote: CSSProperties = { color: tokens.color.textMuted };
 
 export const footerSelection: CSSProperties = { color: tokens.color.indigo, fontWeight: 600 };
 
+/**
+ * A row-selection column: centred, unpadded and unclipped. The checkbox rendered
+ * oddly because an eight-pixel padding either side left twelve of its thirteen
+ * pixels in a 28px column (J4).
+ */
+const selectionCell: CSSProperties = {
+  cursor: 'default',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  overflow: 'visible',
+  padding: 0,
+};
+
 /** A pinned column sticks to the left of the scroller above whatever scrolls under it. */
 export interface Pinned {
   left: number;
@@ -254,18 +294,26 @@ export function headerCellStyle(
     width,
     flexShrink: 0,
     ...(definition === undefined ? {} : { minWidth: minimumColumnWidth(definition) }),
-    // A control header does not sort, so it must not offer a sort cursor.
-    ...(definition?.kind === 'control' ? { cursor: 'default' } : {}),
     justifyContent: definition?.align === 'right' ? 'flex-end' : 'flex-start',
-    ...sticky(pinned, 3, tokens.color.surfaceAlt),
+    // A control header does not sort, so it must not offer a sort cursor; a
+    // selection header's checkbox sits centred with no padding to clip it.
+    ...(definition?.kind === 'control' ? { cursor: 'default' } : {}),
+    ...(isSelectionColumn(definition) ? selectionCell : {}),
+    ...sticky(pinned, 3, GRID_HEADER_BACKGROUND),
   };
 }
 
 export function headerStackStyle(definition: GridColumn | undefined): CSSProperties {
   return {
     ...headerStack,
-    alignItems: definition?.align === 'right' ? 'flex-end' : 'flex-start',
+    alignItems: isSelectionColumn(definition) ? 'center' : definition?.align === 'right' ? 'flex-end' : 'flex-start',
+    ...(isSelectionColumn(definition) ? { overflow: 'visible' } : {}),
   };
+}
+
+/** Header label; a selection header's checkbox is never clipped by the ellipsis. */
+export function headerLabelStyle(definition: GridColumn | undefined): CSSProperties {
+  return isSelectionColumn(definition) ? { display: 'inline-flex', overflow: 'visible' } : headerLabel;
 }
 
 export function pinButtonStyle(isPinned: boolean): CSSProperties {
@@ -305,6 +353,7 @@ export function bodyCellStyle(
     flexShrink: 0,
     ...(definition === undefined ? {} : { minWidth: minimumColumnWidth(definition) }),
     textAlign: definition?.align ?? 'left',
+    ...(isSelectionColumn(definition) ? selectionCell : {}),
     ...sticky(pinned, 1, 'inherit'),
   };
 }

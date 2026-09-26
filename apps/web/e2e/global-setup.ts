@@ -51,7 +51,7 @@ const MIGRATIONS = `${REPO_ROOT}supabase/migrations`;
 const SHIM = `${REPO_ROOT}supabase/tests/supabase-platform-shim.sql`;
 const FIXTURE = `${REPO_ROOT}supabase/tests/tenant-fixture.sql`;
 
-/** Suites whose dev process enables the creative, report and prompts lanes. */
+/** Suites whose dev process enables the prompts lane of the operator shell. */
 const ROUTE_ACCEPTANCE_SHELL_SUITES = new Set(['route-acceptance', 'undesigned-routes']);
 
 /** Assembled from fragments; nothing in this repository may look like a credential. */
@@ -373,7 +373,7 @@ async function spawnConnectionTestWorker(connectionString: string, mockOrigin: s
   } catch (error) { await stopProcess(worker); throw error; }
 }
 
-function spawnWebServer(connectionString: string, amazon: AmazonMock, fixtureProfileId: string): SpawnedWebServer {
+function spawnWebServer(connectionString: string, amazon: AmazonMock, _fixtureProfileId: string): SpawnedWebServer {
   const requestLog = resolve(tmpdir(), `oauth-next-${APP_PORT}.log`);
   writeFileSync(requestLog, '');
   if (process.env['WIZARD_ADS_E2E_SUITE'] === 'auth-oauth') rmSync(resolve(WEB_ROOT, '.next/dev/trace'), { force: true });
@@ -408,14 +408,10 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock, fixturePro
         OPENSPELL_SPAPI_CONNECTIONS_ENABLED: '1',SP_API_APPLICATION_ID: 'synthetic-sp-app',SP_API_LWA_CLIENT_ID: 'synthetic-sp-client',
         SP_API_OAUTH_REGION: 'NA',SP_API_OAUTH_REDIRECT_URI: `${BASE_URL}/api/amazon/spapi/oauth/callback`,
         SP_API_TEST_CONSENT_URL: `${amazon.url}/spapi/consent`,
-        // This process owns only the synthetic suite database. The creative
-        // producer allowlist is confined to its seeded profile; no cron runs.
+        // This process owns only the synthetic suite database; no cron runs.
         // The undesigned captures keep the operator shell route acceptance had
         // when they shared its process, including the prompts navigation entry.
         ...(ROUTE_ACCEPTANCE_SHELL_SUITES.has(process.env['WIZARD_ADS_E2E_SUITE'] ?? '') ? {
-          OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '1',
-          OPENSPELL_EVO_REPORT_LANE_READY: '1',
-          OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST: fixtureProfileId,
           WIZARD_ADS_PROMPTS_ENABLED: '1',
         } : {}),
       },

@@ -1,3 +1,5 @@
+import { campaignCreationReviewFreshness } from '@wizard-ads/shared/campaign-creation-approval';
+import { campaignCreationResult } from '../../campaigns/creation-result';
 import { CAMPAIGN_UNAVAILABLE_COPY } from './unavailable';
 import type { ReactNode } from 'react';
 import type { ScreenState } from '../types';
@@ -15,7 +17,7 @@ import { AssetPicker } from '../campaigns-assets/picker';
 import NamingScreen, { NamingReady } from '../campaigns-naming/view';
 import EligibilityScreen from '../campaigns-eligibility/view';
 import UpdateScreen from '../campaigns-update/view';
-import { fixtureCpcRationale, fixtureNaming, fixtureReverseName, builderContext, builderRecipe, savedDraft, validatedDraft, blockedDraft, fixtureReview, validationChecks, fixtureId, assetSnapshot, creationResult, ready } from './render-fixture';
+import { fixtureCpcRationale, fixtureNaming, fixtureReverseName, builderContext, builderRecipe, savedDraft, validatedDraft, blockedDraft, fixtureReview, validationChecks, measuredCreationChecks, creationBatchFixture, fixtureId, assetSnapshot, creationResult, ready } from './render-fixture';
 
 export interface CampaignVisualCase { screen: string; key: string; state: ScreenState | 'ready'; text: string; render: () => ReactNode }
 const noop = () => {};
@@ -43,7 +45,19 @@ add('campaigns-draft', 'bid-rationale', 'Source reconciled', () => <BidEditor {.
 add('campaigns-draft', 'bid-sqp-unmeasured', 'SQP value: not measured', () => <BidEditor {...bidProps} keyword={{ ...bidProps.keyword, basis: 'sqp_value' }} />);
 add('campaigns-draft', 'validation', 'Fix draft issues', () => <DraftReady data={{ ...draftData, draft: blockedDraft, step: 'validation' }} />);
 add('campaigns-draft', 'confirm-unavailable', 'Creation in Amazon is not available yet', () => <CreationConfirm marketplaceLabel={builderContext.profile.countryCode} review={fixtureReview} checks={validationChecks} executor={unavailable} onExport={noop} onBack={noop} />);
-add('campaigns-draft', 'confirm-executor-fixture', 'Yes, create 1 campaign in Amazon', () => <CreationConfirm marketplaceLabel={builderContext.profile.countryCode} review={fixtureReview} checks={validationChecks} executor={available} onExport={noop} onBack={noop} />);
+add('campaigns-draft', 'confirm-executor-fixture', 'Yes, create 1 campaign in Amazon', () => <CreationConfirm marketplaceLabel={builderContext.profile.countryCode} review={fixtureReview} checks={measuredCreationChecks} executor={available} onExport={noop} onBack={noop} />);
+const staleReview = { ...fixtureReview, checkedAt: fixtureReview.plan.expiresAt };
+add('campaigns-draft', 'confirm-stale', 'The current approval evidence is unavailable or stale', () => <CreationConfirm review={{ ...staleReview, freshness: campaignCreationReviewFreshness(staleReview) }} checks={measuredCreationChecks} executor={available} onExport={noop} onBack={noop} />, 'stale');
+add('campaigns-draft', 'confirm-blocked', 'Review this draft again', () => <CreationConfirm review={fixtureReview} checks={blockedDraft.validation!.checks} executor={available} onExport={noop} onBack={noop} />);
+add('campaigns-draft', 'in-progress', 'Campaign creation in progress', () => <CreationResult batch={creationBatchFixture('admitted')} result={campaignCreationResult(creationBatchFixture('admitted'))} onRetry={noop} onBack={noop} />);
+add('campaigns-draft', 'batch-partial', 'Campaign partially created', () => <CreationResult batch={creationBatchFixture('partial')} result={campaignCreationResult(creationBatchFixture('partial'))} onRetry={noop} onBack={noop} />);
+add('campaigns-draft', 'batch-complete', 'Campaign created', () => <CreationResult batch={creationBatchFixture('complete')} result={campaignCreationResult(creationBatchFixture('complete'))} onRetry={noop} onBack={noop} />);
+add('campaigns-draft', 'batch-retry', 'Yes, retry 1 keyword in Amazon', () => <KeywordRetry plan={fixtureReview.plan} result={campaignCreationResult(creationBatchFixture('partial'))} executor={unavailable} onBack={noop} />);
+add('campaigns-draft', 'confirm-not-measured-executor-fixture', 'Checks not measured', () => <CreationConfirm review={fixtureReview} checks={validationChecks} executor={available} onExport={noop} onBack={noop} />);
+add('campaigns-draft', 'needs-attention', 'Campaign creation needs attention', () => <CreationResult batch={creationBatchFixture('uncertain')} onRetry={noop} onBack={noop} />);
+add('campaigns-draft', 'ambiguous-readback', 'ambiguous_readback', () => <CreationResult batch={creationBatchFixture('ambiguous')} onRetry={noop} onBack={noop} />, 'refused');
+add('campaigns-draft', 'resource-retry', 'Yes, recover 4 resources in Amazon', () => <KeywordRetry batch={creationBatchFixture('uncertain')} plan={fixtureReview.plan} executor={unavailable} onBack={noop} />);
+add('campaigns-draft', 'adopted', 'Existing resources adopted 1', () => <CreationResult batch={creationBatchFixture('adopted')} onRetry={noop} onBack={noop} />);
 add('campaigns-draft', 'partial', 'Campaign partially created', () => <CreationResult result={creationResult(false)} onRetry={noop} onBack={noop} />);
 add('campaigns-draft', 'retry-unavailable', 'Yes, retry 1 keyword in Amazon', () => <KeywordRetry plan={fixtureReview.plan} result={creationResult(false)} executor={unavailable} onBack={noop} />);
 add('campaigns-draft', 'retry-executor-fixture', 'Successful resources will not be created again', () => <KeywordRetry plan={fixtureReview.plan} result={creationResult(false)} executor={available} onBack={noop} />);

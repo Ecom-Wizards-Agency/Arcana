@@ -2,15 +2,15 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { BudgetUsageConfig } from '@wizard-ads/shared';
 import type { ScreenActor } from '../../server/page-read';
 import { withoutBudget } from './fixtures';
+import { load } from './load';
 const mocks = vi.hoisted(() => ({
   provider: vi.fn(async () => ({ rows: [], runs: [], totalCount: 0 })), performance: vi.fn(), role: vi.fn(), proposals: vi.fn(), events: vi.fn(), market: vi.fn(),
   spend: vi.fn().mockResolvedValue(null), retail: vi.fn().mockResolvedValue({ state: 'unavailable', reason: 'Disabled', report: null }), campaigns: vi.fn(), ranks: vi.fn(), month: vi.fn(), budget: vi.fn(), portfolios: vi.fn(),
 }));
 vi.mock('../cockpit/load', () => ({ load: mocks.performance }));
 vi.mock('../../server/org-role', () => ({ requireOrgRole: mocks.role }));
-vi.mock('@wizard-ads/db', () => ({ readProviderEvidence: mocks.provider, readSpReportEvidence: mocks.retail, readSpRetailSpendEvidence: mocks.spend, listRecommendations: mocks.proposals, listHomeInsights: mocks.events, listHomeMarketGaps: mocks.market, readBudgetUsageEvidence: mocks.budget, listPortfolioSpendEvidence: mocks.portfolios }));
+vi.mock('@wizard-ads/db', () => ({ readStreamConsumerSource: vi.fn(async()=>({events:[],scope:{orgId:'00000000-0000-4000-8000-000000000001',profileId:'00000000-0000-4000-8000-000000000002',amazonProfileId:'313',region:'EU'},graph:{observations:[],associations:[],persistedObservations:0,persistedAssociations:0},truncated:false})), readStreamExtensionEvidence: vi.fn(async () => ({ events: [], count: 0, source: 'amazon_marketing_stream', completeness: 'missing', selectionAuthority: false })), readProviderEvidence: mocks.provider, readSpReportEvidence: mocks.retail, readSpRetailSpendEvidence: mocks.spend, listRecommendations: mocks.proposals, listHomeInsights: mocks.events, listHomeMarketGaps: mocks.market, readBudgetUsageEvidence: mocks.budget, listPortfolioSpendEvidence: mocks.portfolios }));
 vi.mock('../../../app/_lib/dashboard-data', () => ({ loadCampaignDailyRows: mocks.campaigns, loadHomeRankWatch: mocks.ranks, loadProfileDailyRows: mocks.month }));
-import { load } from './load';
 
 beforeEach(() => {
   mocks.budget.mockResolvedValue({ orgId: 'synthetic-org', profileId: withoutBudget.profile.id, config: BudgetUsageConfig.parse({}), campaigns: [], observations: [], sources: [], totalCampaigns: 0 });

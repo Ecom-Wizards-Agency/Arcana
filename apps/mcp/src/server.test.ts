@@ -161,6 +161,8 @@ describe.skipIf(!available)('the MCP server', () => {
         [
           'download_data',
           'get_entity_data',
+          'get_product_evidence',
+          'get_amazon_change_history',
           'get_flags',
           'get_pacing',
           'get_experiment',

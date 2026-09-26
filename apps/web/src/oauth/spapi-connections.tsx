@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ProviderConnectionHealth, SpApiConnectionOperation, SpApiConsentRefusal } from '@wizard-ads/shared';
 import type { SpApiConnectionSummary, SpApiSelectableProfile } from '../data/connections';
+import { parseSpApiStartRefusal, spApiStartRefusalMessage } from '../screens/settings-connections/spapi-start-refusal';
 import { TableFrame } from '../ui/primitives';
 import { banner, input, muted, subheading, table, td, th } from '../ui/tokens';
 
@@ -34,9 +35,11 @@ const callbackMessages: Record<SpApiConsentRefusal, string> = {
   provider_refused: 'Seller authorization was declined. Start again when ready.',
 };
 
-export function SpApiConnections({ orgId, mayManage, enabled, connections, profiles, initial, callbackError }: {
+/** `callbackError` carries a callback or a start refusal code; `startDetail` is the start refusal's fixed detail. */
+export function SpApiConnections({ orgId, mayManage, enabled, connections, profiles, initial, callbackError, startDetail = null }: {
   orgId: string; mayManage: boolean; enabled: boolean; connections: SpApiConnectionSummary[];
   profiles: SpApiSelectableProfile[]; initial: SpApiConnectionOperation | null; callbackError: string | null;
+  startDetail?: string | null;
 }) {
   const router = useRouter();
   const [operation, setOperation] = useState(initial);
@@ -95,6 +98,7 @@ export function SpApiConnections({ orgId, mayManage, enabled, connections, profi
   }
 
   const callbackRefusal = SpApiConsentRefusal.safeParse(callbackError);
+  const startRefusal = callbackError && !callbackRefusal.success ? parseSpApiStartRefusal(callbackError, startDetail) : null;
   const linked = connections.find((connection) => connection.id === operation?.connectionId);
   const currentHealth = health?.connectionId === operation?.connectionId ? health : null;
   const connected = linked?.status === 'active' && linked.hasCredential
@@ -105,7 +109,7 @@ export function SpApiConnections({ orgId, mayManage, enabled, connections, profi
   return <section data-testid="spapi-connections">
     <h2 style={subheading}>Seller Central</h2>
     <p style={muted}>Connect a seller account for the selected profiles. Reporting stays disabled until it is separately enabled.</p>
-    {callbackError ? <p role="alert" style={banner('bad')}>{callbackRefusal.success ? callbackMessages[callbackRefusal.data] : 'Seller authorization could not be verified. Start again from Connections.'}</p> : null}
+    {callbackError && !startRefusal ? <p role="alert" style={banner('bad')}>{callbackRefusal.success ? callbackMessages[callbackRefusal.data] : 'Seller authorization could not be verified. Start again from Connections.'}</p> : null}
     {error ? <p role="alert">{error}</p> : null}
     {operation ? <div aria-live="polite" style={banner(operation.state === 'completed' && connected ? 'good' : 'warn')} data-testid="spapi-progress">
       <strong>{operation.state === 'completed' && !connected ? completedLabel : labels[operation.state]}</strong>
@@ -130,6 +134,7 @@ export function SpApiConnections({ orgId, mayManage, enabled, connections, profi
       </div></td>
     </tr>)}</tbody></table></TableFrame> : null}
     {health ? <p role="status">Saved connection health: {health.state} · {health.hasCredential ? 'Credential stored' : 'No active credential'}</p> : null}
+    {startRefusal ? <p role="alert" style={banner('bad')} data-testid="spapi-start-refusal">{spApiStartRefusalMessage(startRefusal)}</p> : null}
     {!mayManage ? <p style={muted}>Connecting Seller Central requires the admin or owner role.</p>
       : !enabled ? <p style={muted}>Seller connections are unavailable. Contact your installation operator.</p>
         : active ? <p style={muted}>Finish or cancel the current seller authorization before starting another.</p>

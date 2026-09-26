@@ -1430,4 +1430,80 @@ describe.skipIf(!available)('migrations', () => {
     expect(await lifecycle.revoke(actor,attached.connectionId!)).toMatchObject({ state: 'revoked',hasCredential: false });
   });
 
+  it('isolates WP-313 evidence, preserves immutable replay and bounds retention without enabling sources', async () => {
+    const actor = randomUUID(); const stranger = randomUUID();
+    const [left] = await database.sql<{ org_id: string }[]>`
+      select app.seed_tenant_fixture(${'wp313-left-' + randomUUID()},${actor}::uuid,'owner') as org_id
+    `;
+    const [right] = await database.sql<{ org_id: string }[]>`
+      select app.seed_tenant_fixture(${'wp313-right-' + randomUUID()},${stranger}::uuid,'owner') as org_id
+    `;
+    const orgId = left!.org_id; const otherOrg = right!.org_id;
+    const tables = ['marketing_stream_extension_bindings','marketing_stream_extension_events',
+      'marketing_stream_extension_projections','asset_library_versions','asset_library_observations',
+      'asset_moderation_observations','provider_graph_observations','provider_entity_associations'];
+    for (const table of tables) {
+      const rows = await database.sql<{ org_id: string }[]>`
+        select org_id from ${database.sql(table)} where org_id in (${orgId}::uuid,${otherOrg}::uuid) order by org_id
+      `;
+      expect(rows.map(row => row.org_id).sort(), `${table} has one row for each tenant`).toEqual([orgId,otherOrg].sort());
+      await asUser(database,actor,async sql => {
+        expect(await sql`select org_id from ${sql(table)} where org_id in (${orgId}::uuid,${otherOrg}::uuid)`)
+          .toEqual([{ org_id: orgId }]);
+      });
+    }
+    const [binding] = await database.sql`select enabled,confirmed,capability_verified from public.marketing_stream_extension_bindings where org_id=${orgId}`;
+    expect(binding).toEqual({ enabled: false, confirmed: false, capability_verified: false });
+    const [association] = await database.sql`select resolution from public.provider_entity_associations where org_id=${orgId}`;
+    expect(association).toEqual({ resolution: 'unresolved' });
+    const [access] = await database.sql`select has_table_privilege('authenticated','public.marketing_stream_extension_receipts','select') as receipt_read,
+      has_function_privilege('authenticated','app.prune_wp313_evidence(timestamptz)','execute') as prune`;
+    expect(access).toEqual({ receipt_read: false, prune: false });
+
+    const contracts = await import('@wizard-ads/shared');
+    const assetContracts = await import('@wizard-ads/shared/asset-library');
+    const [event] = await database.sql<{ event: unknown; received_at: Date }[]>`select event,received_at from public.marketing_stream_extension_events where org_id=${orgId}`;
+    expect(contracts.StreamExtensionEvent.safeParse(event!.event).success).toBe(true);
+    const [asset] = await database.sql<{ observation: unknown }[]>`select observation from public.asset_library_observations where org_id=${orgId}`;
+    expect(assetContracts.AssetLibraryObservation.safeParse(asset!.observation).success).toBe(true);
+    const [moderation] = await database.sql<{ observation: unknown }[]>`select observation from public.asset_moderation_observations where org_id=${orgId}`;
+    expect(contracts.AssetModerationObservation.safeParse(moderation!.observation).success).toBe(true);
+    const [graph] = await database.sql<{ observation: unknown }[]>`select observation from public.provider_graph_observations where org_id=${orgId}`;
+    expect(contracts.ProviderGraphObservation.safeParse(graph!.observation).success).toBe(true);
+
+    for (const table of ['asset_library_versions','asset_library_observations','asset_moderation_observations','provider_graph_observations']) {
+      await expect(database.sql`update ${database.sql(table)} set observation='{}'::jsonb where org_id=${orgId}`)
+        .rejects.toMatchObject({ code: '23514' });
+    }
+    await expect(database.sql`update public.marketing_stream_extension_events set event='{}'::jsonb where org_id=${orgId}`)
+      .rejects.toMatchObject({ code: '23514' });
+    await expect(database.sql`insert into public.asset_library_versions select * from public.asset_library_versions where org_id=${orgId}`)
+      .rejects.toMatchObject({ code: '23505' });
+    expect(await database.sql`insert into public.marketing_stream_extension_events select * from public.marketing_stream_extension_events
+      where org_id=${orgId} on conflict do nothing returning identity`).toHaveLength(0);
+    expect((await database.sql`select received_at from public.marketing_stream_extension_events where org_id=${orgId}`)[0]?.received_at)
+      .toEqual(event!.received_at);
+    await expect(database.sql`insert into public.asset_library_observations
+      (org_id,profile_id,identity,asset_id,asset_version,observation,observed_at,expires_at)
+      select org_id,profile_id,identity||'-expired','synthetic-library-asset','1',observation,observed_at,observed_at+interval '96 days'
+      from public.asset_library_observations where org_id=${orgId}`).rejects.toMatchObject({ code: '23514' });
+    await expect(database.sql`insert into public.asset_library_observations
+      (org_id,profile_id,identity,asset_id,asset_version,observation,observed_at,expires_at)
+      select ${otherOrg}::uuid,profile_id,identity||'-cross-tenant',asset_id,asset_version,observation,observed_at,expires_at
+      from public.asset_library_observations where org_id=${orgId}`).rejects.toMatchObject({ code: '23503' });
+    await asUser(database,actor,async sql => {
+      await expect(sql`update public.marketing_stream_extension_bindings set enabled=true where org_id=${orgId}`)
+        .rejects.toMatchObject({ code: '42501' });
+    });
+    const deliveryId = 'wp313-expired-' + randomUUID();
+    await database.sql`insert into public.marketing_stream_extension_receipts
+      (delivery_id,body_fingerprint,received_at,receipt,expires_at)
+      values(${deliveryId},${'a'.repeat(64)},now()-interval '2 days','{}'::jsonb,now()-interval '1 day')`;
+    await expect(database.sql`select app.prune_wp313_evidence(now()+interval '1 day')`).rejects.toThrow('future');
+    const [pruned] = await database.sql<{ count: number }[]>`select app.prune_wp313_evidence(now())::int as count`;
+    expect(pruned?.count).toBe(1);
+    expect(await database.sql`select delivery_id from public.marketing_stream_extension_receipts where delivery_id=${deliveryId}`).toHaveLength(0);
+    expect(await database.sql`select identity from public.marketing_stream_extension_events where org_id=${orgId}`).toHaveLength(1);
+  });
+
 });

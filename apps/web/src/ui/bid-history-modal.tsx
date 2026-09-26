@@ -6,6 +6,7 @@ import type { BidHistoryPayload } from '../../app/_lib/bid-corridor';
 import { bidHistoryKpiTiles } from '../optimizer/view';
 import { KpiTile } from './dashboard';
 import { BidCorridorChart } from '@wizard-ads/ui';
+import { describeTargeting } from '@wizard-ads/shared';
 import { Target360 } from '../screens/targets/target360';
 import type { Target360Model } from '../screens/targets/model';
 
@@ -132,12 +133,15 @@ export function BidHistoryModal({
   };
 
   const payload = state.status === 'ready' ? state.payload : null;
+  // The target in words (WP-316): a keyword with its match type, an expression
+  // target as "Close match" or "Product: B0…" rather than Amazon's code.
+  const described = payload === null ? null : describeTargeting({
+    targeting: payload.target.targeting, targetKind: payload.target.targetKind, matchType: payload.target.matchType,
+  });
   const title =
-    payload === null
+    described === null
       ? 'Bid history'
-      : `${payload.target.targeting}${
-          payload.target.matchType === null ? '' : ` · ${payload.target.matchType}`
-        }`;
+      : described.group === 'keyword' && described.type !== null ? `${described.label} · ${described.type}` : described.label;
   const campaignHref = useMemo(() => {
     if (payload === null) return null;
     const query = new URLSearchParams({

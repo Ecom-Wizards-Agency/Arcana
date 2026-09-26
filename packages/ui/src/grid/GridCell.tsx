@@ -23,6 +23,7 @@ import { NumericValue } from '../primitives/NumericValue.js';
 import { tokens } from '../theme.js';
 import { StatusChip } from '../primitives/StatusChip.js';
 import { deltaColor } from '../theme.js';
+import { displayValue } from '../value-labels.js';
 import {
   cellSubline,
   deltaStyle,
@@ -56,9 +57,11 @@ export function GridCell({ row, column, context, totalsRow, collapsedGroupIds, o
 
   const value = resolveField(row, column.id);
   const ref = parseFieldId(column.id);
+  // What is drawn; `value` stays the stored code for every comparison below.
+  const shown = displayValue(column, value, row);
 
   if (isGroupedRow(row) && row.groupDepth >= 0 && column.kind === 'dimension') {
-    if (row.groupColumnId !== column.id) return value == null ? null : <span>{formatValue(value, column.scale, context)}<sup style={groupCount}>{formatInteger(row.groupSize, context.locale)}</sup></span>;
+    if (row.groupColumnId !== column.id) return value == null ? null : <span>{formatValue(shown, column.scale, context)}<sup style={groupCount}>{formatInteger(row.groupSize, context.locale)}</sup></span>;
     const collapsed = collapsedGroupIds.has(row.id);
     const spend = resolveField(row, 'spend');
     const totalSpend = totalsRow == null ? null : resolveField(totalsRow, 'spend');
@@ -70,7 +73,7 @@ export function GridCell({ row, column, context, totalsRow, collapsedGroupIds, o
         ) : (
           <button
             type="button"
-            aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${column.header} ${formatValue(value, column.scale, context)}`}
+            aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${column.header} ${formatValue(shown, column.scale, context)}`}
             aria-expanded={!collapsed}
             onClick={(event) => {
               event.stopPropagation();
@@ -82,7 +85,7 @@ export function GridCell({ row, column, context, totalsRow, collapsedGroupIds, o
           </button>
         )}
         {row.groupDepth === 0 ? null : <span aria-hidden style={groupBranch}>↳</span>}
-        <span style={groupValue}>{formatValue(value, column.scale, context)}</span>
+        <span style={groupValue}>{formatValue(shown, column.scale, context)}</span>
         <sup style={groupCount}>{formatInteger(row.groupSize, context.locale)} rows</sup>
         <span data-group-share style={{ display: 'inline-flex', alignItems: 'center', gap: tokens.space(1), flexShrink: 0 }}>
           {share === null ? <span aria-label="Share of total spend unavailable">—</span> : <>
@@ -96,7 +99,7 @@ export function GridCell({ row, column, context, totalsRow, collapsedGroupIds, o
 
   if (column.cell === 'status') {
     return value === 'working' || value === 'needs-data' || value === 'idea'
-      ? <StatusChip status={value} /> : <>{formatValue(value, column.scale, context)}</>;
+      ? <StatusChip status={value} /> : <>{formatValue(shown, column.scale, context)}</>;
   }
 
   if (column.cell === 'suggested_bid') {
@@ -123,7 +126,7 @@ export function GridCell({ row, column, context, totalsRow, collapsedGroupIds, o
     );
   }
 
-  const formatted = formatValue(value, column.scale, context);
+  const formatted = formatValue(shown, column.scale, context);
   const denominator = totalsRow == null ? null : resolveField(totalsRow, column.id);
   const share = isGroupedRow(row) && row.groupDepth >= 0 && (ref?.part === 'value' || ref?.part === 'comparison')
     && metricSpec(ref.metric)?.derived === null && typeof value === 'number'

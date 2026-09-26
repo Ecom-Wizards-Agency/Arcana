@@ -119,8 +119,10 @@ describe('GridToolbar filter draft', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
     expect(screen.getByLabelText('Filter values').textContent).toContain('Choose match');
 
-    fireEvent.click(screen.getByLabelText('exact'));
-    fireEvent.click(screen.getByLabelText('phrase'));
+    // WP-316: options read as words (the shared match-type labels) while the
+    // filter keeps the stored codes.
+    fireEvent.click(screen.getByLabelText('Exact'));
+    fireEvent.click(screen.getByLabelText('Phrase'));
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     const emitted = onFilterChange.mock.calls[0]?.[0] as FilterSet;
@@ -167,9 +169,9 @@ describe('GridToolbar filter draft', () => {
     );
     fireEvent.change(screen.getByLabelText('Filter column'), { target: { value: 'MATCH_TYPE' } });
     fireEvent.click(screen.getByLabelText('Filter values'));
-    expect(screen.getByLabelText('exact')).toBeTruthy();
-    expect(screen.getByLabelText('phrase')).toBeTruthy();
-    expect(screen.getByLabelText('broad')).toBeTruthy();
+    expect(screen.getByLabelText('Exact')).toBeTruthy();
+    expect(screen.getByLabelText('Phrase')).toBeTruthy();
+    expect(screen.getByLabelText('Broad')).toBeTruthy();
   });
 
   it('emits a filter the evaluator accepts, after that switch', () => {

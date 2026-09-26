@@ -10,16 +10,24 @@ export const TimelineViewState = z.object({
 export type TimelineViewState = z.infer<typeof TimelineViewState>;
 
 import { TranslationView } from './translation.js';
+import { IsoDate } from './primitives.js';
 import { ChangeQueueSource, ChangeQueueState } from './time-machine.js';
 
 const strings = z.array(z.string()).readonly();
+const gridBases = ['impressions', 'clicks', 'spend', 'sales', 'orders', 'units'] as const;
 /** Base-sum slots may be placeholders only when explicitly marked unmeasured. */
 export const GridMeasurement = z.strictObject({
-  missing: z.array(z.enum(['impressions', 'clicks', 'spend', 'sales', 'orders', 'units'])),
-  comparisonMissing: z.array(z.enum(['impressions', 'clicks', 'spend', 'sales', 'orders', 'units'])),
-});
+  missing: z.array(z.enum(gridBases)),
+  comparisonMissing: z.array(z.enum(gridBases)),
+  /**
+   * The selected window holds no fact row for this entity: it is listed for its
+   * comparison-window facts or its catalogue entry. Every base is then missing,
+   * and a window total skips the row rather than reading it as a partial report.
+   */
+  unreported: z.literal(true).optional(),
+}).refine((value) => value.unreported !== true || gridBases.every((key) => value.missing.includes(key)),
+  'An unreported row has no measured base');
 export type GridMeasurement = z.infer<typeof GridMeasurement>;
-const gridBases = ['impressions', 'clicks', 'spend', 'sales', 'orders', 'units'] as const;
 type GridDimension = string | number | boolean | null;
 const isGridDimension = (value: unknown): value is GridDimension => value === null || typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value));
 const gridDimension = z.custom<GridDimension>(isGridDimension, 'Grid dimensions must be text, finite numbers, booleans or null');
@@ -150,10 +158,30 @@ export const GridFeedCoverage = z.strictObject({
   status: z.enum(['complete', 'partial', 'not-measured']), reason: z.string().min(1),
 });
 export type GridFeedCoverage = z.infer<typeof GridFeedCoverage>;
+const GridWindow = z.strictObject({ start: IsoDate, end: IsoDate }).refine((window) => window.start <= window.end, 'Window dates must be ordered');
+/** The fact table behind a grid preset's base metrics. */
+export const GridSummarySource = z.enum(['sp_target', 'search_term', 'placement', 'advertised_product']);
+export type GridSummarySource = z.infer<typeof GridSummarySource>;
+/**
+ * What the summary strip needs to call a window unmeasured honestly: the two
+ * windows the rows were read for, and the first and last fact dates the
+ * profile holds in the preset's source (both null when it holds none).
+ */
+export const GridSummaryEvidence = z.strictObject({
+  source: GridSummarySource,
+  heldFrom: IsoDate.nullable(),
+  heldThrough: IsoDate.nullable(),
+  period: GridWindow,
+  comparison: GridWindow,
+}).refine((value) => (value.heldFrom === null) === (value.heldThrough === null)
+  && (value.heldFrom === null || value.heldThrough === null || value.heldFrom <= value.heldThrough),
+'Held fact dates must be both absent or both present and ordered');
+export type GridSummaryEvidence = z.infer<typeof GridSummaryEvidence>;
 export const GridPerformanceEvidence = z.strictObject({
   feeds: z.array(GridFeedCoverage),
   unattributed: z.strictObject({ adGroups: z.number().int().nonnegative(), spend: z.number().nonnegative(), days: z.number().int().nonnegative() }).nullable(),
   rankDays: z.record(z.string(), z.array(z.strictObject({ date: z.string(), observed: z.boolean(), rank: z.number().int().positive().nullable() })).length(14)),
+  summary: GridSummaryEvidence.optional(),
 });
 export type GridPerformanceEvidence = z.infer<typeof GridPerformanceEvidence>;
 /** One date axis per response. null = unobserved; 0 = observed, never ranked. */
@@ -169,7 +197,7 @@ export function encodeGridPerformance(evidence: GridPerformanceEvidence): GridPe
   for (const [, days] of histories) {
     if (days.some((day, index) => day.date !== rankAxis[index])) throw new Error('Rank history date axes disagree');
   }
-  return { feeds: evidence.feeds, unattributed: evidence.unattributed, rankAxis,
+  return { feeds: evidence.feeds, unattributed: evidence.unattributed, ...(evidence.summary === undefined ? {} : { summary: evidence.summary }), rankAxis,
     rankValues: Object.fromEntries(histories.map(([id, days]) => [id, days.map((day) => day.observed ? day.rank ?? 0 : null)])) };
 }
 
@@ -191,8 +219,19 @@ export function decodeGridPerformance(raw: unknown): GridPerformanceEvidence {
       set: store,
     });
   }
-  return { feeds: value.feeds, unattributed: value.unattributed, rankDays };
+  return { feeds: value.feeds, unattributed: value.unattributed, ...(value.summary === undefined ? {} : { summary: value.summary }), rankDays };
 }
+
+/** The metrics a saved view can chart as series; the summary cards that toggle a series. */
+export const GRID_CHART_SERIES = ['impressions', 'clicks', 'spend', 'sales', 'orders', 'acos', 'cvr', 'cpc'] as const;
+export const GridChartSeries = z.enum(GRID_CHART_SERIES);
+export type GridChartSeries = z.infer<typeof GridChartSeries>;
+/** Every metric the grid can total, in the grid metric registry's order (`packages/ui` metrics). */
+export const GRID_SUMMARY_METRICS = ['impressions', 'clicks', 'spend', 'sales', 'orders', 'units', 'ctr', 'cvr', 'cpc', 'cpm', 'cpa', 'rpc', 'aov', 'acos', 'roas'] as const;
+export const GridSummaryMetric = z.enum(GRID_SUMMARY_METRICS);
+export type GridSummaryMetric = z.infer<typeof GridSummaryMetric>;
+/** The summary strip holds eight cards beside its series tile. */
+export const GRID_SUMMARY_METRIC_LIMIT = 8;
 
 export const GridSavedView = z.object({
   id: z.string().min(1).max(200),
@@ -217,7 +256,9 @@ export const GridSavedView = z.object({
   dateRange: z.object({ start: z.string(), end: z.string() }).strict().nullable(),
   chartedMeasures: z.array(TimelineMeasure).min(1).max(4).refine((values) => new Set(values).size === values.length).optional(),
   timeline: TimelineViewState.optional(),
-  chart: z.strictObject({ series: z.array(z.enum(['impressions', 'clicks', 'spend', 'sales', 'orders', 'acos', 'cvr', 'cpc'])).max(4).refine((series) => new Set(series).size === series.length) }).optional(),
+  chart: z.strictObject({ series: z.array(GridChartSeries).max(4).refine((series) => new Set(series).size === series.length) }).optional(),
+  /** The metrics the summary strip shows, in card order. Absent means the default eight. */
+  summary: z.strictObject({ metrics: z.array(GridSummaryMetric).min(1).max(GRID_SUMMARY_METRIC_LIMIT).refine((metrics) => new Set(metrics).size === metrics.length, 'Summary metrics must be unique') }).optional(),
   translation: TranslationView.optional(),
   changeQueue: z.object({
     filters: z.object({ source: ChangeQueueSource.optional(), state: ChangeQueueState.optional(),

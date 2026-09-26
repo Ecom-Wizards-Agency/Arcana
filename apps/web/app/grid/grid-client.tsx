@@ -14,8 +14,8 @@
  * affordable; without it this component would be a guess.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import Link from 'next/link';
-import { TargetDrawerProvider, TargetDrawerTrigger } from '../../src/screens/targets/drawer-trigger';
+import { TargetDrawerProvider } from '../../src/screens/targets/drawer-trigger';
+import { SelectAllMatched, SelectRowCheckbox, TargetingCell } from '../../src/screens/grid/table-cells';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { gridWork } from '../../src/screens/grid/performance-timing';
 import type { ReactNode } from 'react';
@@ -634,6 +634,8 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
   const density: GridDensity = view.density ?? DEFAULT_DENSITY;
   const translation = useTranslationColumn(props.profileId, view.translation?.language ?? 'en', viewReady && view.columns.includes('translation'), props.rows);
   const experimentHref = gridExperimentHref(props.profileId, props.entity, model.matchedRows);
+  const matchedRowIds = useMemo(() => model.matchedRows.map((row) => row.id), [model.matchedRows]);
+  const identityColumn = useMemo(() => available.find((column) => column.pinned), [available]);
   const backToGrid = useMemo(() => `/grid?${new URLSearchParams({ profile: props.profileId, entity: props.entity, from: props.period.start, to: props.period.end, compareFrom: props.comparisonPeriod.start, compareTo: props.comparisonPeriod.end, view: serializeGridView(view), ...(asinScope ? { asin: asinScope } : {}) })}`, [props.profileId, props.entity, props.period, props.comparisonPeriod, view, asinScope]);
   const rowHref = useCallback((row: GridRow) => {
     return `/targets/${encodeURIComponent(String(row.dimensions['target_id']))}?${new URLSearchParams({ profile: props.profileId, from: props.period.start, to: props.period.end, compareFrom: props.comparisonPeriod.start, compareTo: props.comparisonPeriod.end, back: backToGrid })}`;
@@ -656,7 +658,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
     if (column.id === 'rank_grid') return <DataGrid.cells.RankGridCell days={props.performance?.rankDays[row.id] ?? Array.from({ length: 14 }, (_, index) => ({ date: new Date(Date.parse(props.period.end) - (13 - index) * 86400000).toISOString().slice(0, 10), observed: false, rank: null }))} reason={reason('RANK')} />;
     if (column.id === 'verdict') return <DataGrid.cells.VerdictCell verdict={{ diagnosis: PerformanceVerdict.shape.diagnosis.safeParse(row.dimensions['verdict']).data ?? 'Insufficient evidence', reason: String(row.dimensions['verdict_reason'] ?? 'no threshold configured') }} />;
     if (column.id === 'rank_change' || column.id === 'acos_vs_target' || column.id === 'conversion_points') return <DataGrid.cells.DeltaCell value={number(row, column.id)} suffix={column.id === 'rank_change' ? '' : ' pts'} better={column.id === 'acos_vs_target' ? 'lower' : 'higher'} />;
-    if (column.id === 'targeting' && props.entity === 'targets') return <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}><span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}><Link href={rowHref(row)} prefetch={false} onClick={(event) => event.stopPropagation()}>{String(row.dimensions['targeting'] ?? row.dimensions['target_id'])}</Link><TargetDrawerTrigger label={String(row.dimensions['targeting'] ?? row.dimensions['target_id'])} targetId={String(row.dimensions['target_id'])} /></span><small style={{ color: tokens.color.textMuted }}>{String(row.dimensions['match_type'] ?? '')}{row.dimensions['campaign_purpose'] ? ` · ${row.dimensions['campaign_purpose']}` : ''} {row.dimensions['not_the_query'] === true ? <DataGrid.cells.NotTheQueryChip /> : null}</small></span>;
+    if (column.id === 'targeting' && props.entity === 'targets') return <TargetingCell row={row} href={rowHref(row)} />;
     if (row.dimensions[column.id] == null && column.kind === 'dimension' && column.subject !== 'Identity') return <DataGrid.cells.NotMeasuredCell reason={column.subject === 'BRAND ANALYTICS' ? 'Brand Analytics ingestion is not configured.' : reason(column.subject === 'SQP' ? 'SQP' : column.subject === 'RANK & ORGANIC' ? 'RANK' : 'PPC')} />;
     return undefined;
   }]));
@@ -808,11 +810,11 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
           presentation="performance"
           style={{ marginInline: 24, border: 0, borderRadius: 0 }}
           model={model}
-          renderCell={{ ...renderCells, selection: (row) => <input type="checkbox" aria-label={`Select ${row.id}`} checked={selectedRowIds.includes(row.id)} onClick={(event) => event.stopPropagation()} onChange={() => setSelectedRowIds((ids) => ids.includes(row.id) ? ids.filter((id) => id !== row.id) : [...ids, row.id])} /> }}
-          renderHeader={{ selection: () => <input type="checkbox" aria-label="Select all rows" checked={model.matchedRows.length > 0 && model.matchedRows.every((row) => selectedRowSet.has(row.id))} onChange={(event) => { const matched = new Set(model.matchedRows.map((row) => row.id)); setSelectedRowIds((selected) => event.target.checked ? [...new Set([...selected, ...matched])] : selected.filter((id) => !matched.has(id))); }} />, signals: () => <DataGrid.cells.SignalsLegend /> }}
+          renderCell={{ ...renderCells, selection: (row) => <SelectRowCheckbox row={row} identity={identityColumn} checked={selectedRowSet.has(row.id)} onToggle={() => setSelectedRowIds((ids) => ids.includes(row.id) ? ids.filter((id) => id !== row.id) : [...ids, row.id])} /> }}
+          renderHeader={{ selection: () => <SelectAllMatched rowIds={matchedRowIds} selected={selectedRowSet} onChange={setSelectedRowIds} />, signals: () => <DataGrid.cells.SignalsLegend /> }}
           collapsedGroupIds={view.collapsedGroupIds ?? []}
           onCollapsedGroupIdsChange={(collapsedGroupIds) => update({ collapsedGroupIds })}
-          columns={[{ id: 'selection', header: 'Select', kind: 'control', scale: 'text', align: 'left', width: 28, minWidth: 28, pinned: true }, ...visibleColumns]}
+          columns={[{ id: 'selection', header: 'Select', kind: 'control', cell: 'selection', scale: 'text', align: 'left', width: 28, minWidth: 28, pinned: true }, ...visibleColumns]}
           currencyCode={props.currencyCode}
           sort={view.sort}
           onSortChange={(sort: SortRule[]) => update({ sort })}

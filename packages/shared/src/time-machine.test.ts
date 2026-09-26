@@ -7,8 +7,8 @@ it('preserves unknown values and exact source timestamps',()=>{
   const parsed=ChangeQueueEntry.parse(entry);
   expect(parsed.oldValue).toBeNull(); expect(parsed.batchCount).toBeNull(); expect(parsed.when).toBe(entry.when);
 });
-it('declares all four sources and every restore preview state without conflating ambiguity with readiness',()=>{
-  expect(ChangeQueueSource.options).toEqual(['apply','sync','queued','restore']);
+it('declares all seven sources and every restore preview state without conflating ambiguity with readiness',()=>{
+  expect(ChangeQueueSource.options).toEqual(['apply','sync','amazon','queued','restore','campaign_creation','campaign_creation_retry']);
   expect(RestorePreviewState.options).toEqual(['ready','conflict','already restored','unsupported','awaiting sync','ambiguous']);
 });
 it('refuses invalid sources and negative candidate counts',()=>{
@@ -30,4 +30,11 @@ it('counts coordinated proposals separately from physical restore rows and refus
   expect(ChangeQueueRestoreBatchPreview.safeParse({...batch,exportAllowed:true}).success).toBe(false);
   expect(ChangeQueueRestoreBatchPreview.safeParse({...batch,dependencySetCount:null}).success).toBe(false);
   expect(ChangeQueueRestoreBatchPreview.safeParse({...batch,dependencySetCount:null,exportedProposals:2}).success).toBe(true);
+});
+
+it('requires imported provenance and refuses local authority on Amazon observations',()=>{
+  const imported={...entry,source:'amazon',amazonObservation:{marketplaceId:'synthetic-market',retrievedAt:'2026-09-15T00:00:00.000Z',identityQuality:'derived',identityAmbiguity:'provider_id_unavailable',identityConflict:true,resolution:'unresolved',resolvedEntityType:null,resolvedAmazonId:null}};
+  expect(ChangeQueueEntry.safeParse(imported).success).toBe(true);
+  expect(ChangeQueueEntry.safeParse({...imported,reviewHref:'/restore'}).success).toBe(false);
+  expect(ChangeQueueEntry.safeParse({...imported,amazonObservation:null}).success).toBe(false);
 });

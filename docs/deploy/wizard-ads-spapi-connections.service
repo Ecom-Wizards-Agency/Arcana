@@ -1,0 +1,41 @@
+# Connection-only SP-API exchange. Template: the WP-326 upgrade does not
+# install or enable it. Use it only instead of the general worker's loop:
+# credential_runtime.py refuses this mode while /etc/wizard-ads/worker.json
+# sets OPENSPELL_SPAPI_CONNECTIONS_ENABLED=1.
+[Unit]
+Description=Wizard Ads connection-only SP-API exchange with 1Password-isolated credentials
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=30min
+StartLimitBurst=6
+
+[Service]
+Type=simple
+User=wizard-ads-runtime
+Group=wizard-ads-runtime
+ExecStart=/usr/local/lib/wizard-ads-runtime/worker-current/credential_runtime.py spapi-connections
+LoadCredentialEncrypted=database-url:/etc/credstore.encrypted/wizard-ads-database-url.cred
+LoadCredentialEncrypted=spapi-lwa-client-id:/etc/credstore.encrypted/wizard-ads-spapi-lwa-client-id.cred
+LoadCredentialEncrypted=spapi-lwa-client-secret-value:/etc/credstore.encrypted/wizard-ads-spapi-lwa-client-secret-value.cred
+StateDirectory=wizard-ads
+StateDirectoryMode=0750
+Restart=on-failure
+RestartSec=30s
+RestartSteps=6
+RestartMaxDelaySec=15min
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

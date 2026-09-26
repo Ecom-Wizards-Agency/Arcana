@@ -7,12 +7,28 @@ import { grandTotal } from './aggregate.js';
 const measured: GridRow = { id: 'measured', currencyCode: 'USD', dimensions: { campaign: 'Synthetic campaign', kind: 'exact' }, totals: { impressions: 10, clicks: 2, spend: 0, sales: 4, orders: 1, units: 1 }, comparison: null };
 const absent: GridRow = { ...measured, id: 'absent', measurement: { missing: ['spend'], comparisonMissing: [] } };
 describe('unmeasured performance values', () => {
-  it('propagates a wholly absent comparison through groups, totals and deltas', () => {
+  // WP-316 (item 7) changed the aggregate half of this expectation: groups and
+  // totals follow the summary strip's reporting-rows rule, so the row with no
+  // comparison adds nothing to the comparison window instead of blanking it. The
+  // row itself still has no comparison, and a window nobody reported in stays
+  // unknown at every level.
+  it('keeps an absent comparison absent on its row and out of the aggregate comparison', () => {
     const first = { ...measured, totals: { ...measured.totals, spend: 10 }, comparison: { ...measured.totals, spend: 10 } };
     const second = { ...measured, id: 'new', totals: { ...measured.totals, spend: 20 } };
+    for (const key of ['spend_comparison', 'spend_delta_percent', 'spend_delta_absolute', 'acos_comparison']) {
+      expect(resolveField(second, key)).toBeNull();
+      expect(fieldAccessor(key)(second)).toBeNull();
+    }
     for (const groupBy of [[], ['campaign'], ['campaign', 'kind']]) {
       const model = buildGridModel([first, second], { groupBy });
       for (const row of [model.totalsRow!, ...(groupBy.length ? model.rows : [])]) {
+        expect(resolveField(row, 'spend')).toBe(30);
+        expect(resolveField(row, 'spend_comparison')).toBe(10);
+        expect(fieldAccessor('spend_delta_absolute')(row)).toBe(20);
+        expect(resolveField(row, 'spend_delta_percent')).toBe(2);
+      }
+      const unreported = buildGridModel([{ ...first, comparison: null }, second], { groupBy });
+      for (const row of [unreported.totalsRow!, ...(groupBy.length ? unreported.rows : [])]) {
         expect(resolveField(row, 'spend')).toBe(30);
         for (const key of ['spend_comparison', 'spend_delta_percent', 'spend_delta_absolute', 'acos_comparison']) {
           expect(resolveField(row, key)).toBeNull();

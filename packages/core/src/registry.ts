@@ -6,6 +6,9 @@ export const PACKAGE_REGISTRY = [
   { "module": "./creative/prompt-loop.js", "clause": "*" },
   { "module": "./spapi-evidence.js", "clause": "*" },
   { module: './provider-evidence.js', clause: '*' },
+  { module: "./stream-consumer.js", clause: "*" },
+  { module: "./asset-eligibility.js", clause: "*" },
+  { module: "./provider-graph.js", clause: "*" },
   {
     "module": "./types.js",
     "clause": "*"

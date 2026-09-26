@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeGridRowColumns, encodeGridRowColumns, encodeGridPerformance, decodeGridPerformance, parseGridView, serializeGridView, type GridSavedView, type GridTransportRow, GridSavedView as GridSavedViewSchema } from './grid-views.js';
+import { decodeGridRowColumns, encodeGridRowColumns, encodeGridPerformance, decodeGridPerformance, parseGridView, serializeGridView, type GridSavedView, type GridTransportRow, GridSavedView as GridSavedViewSchema, GridMeasurement, GridSummaryEvidence, GRID_SUMMARY_METRICS, GRID_SUMMARY_METRIC_LIMIT, GRID_CHART_SERIES, GridChartSeries } from './grid-views.js';
 const view: GridSavedView = {
   id: 'synthetic', name: '分析 café', entity: 'targets', columns: ['targeting', 'spend'],
   widths: { targeting: 301 }, alignments: { targeting: 'left', spend: 'right' }, pinned: ['targeting'], density: 'compact',
@@ -114,5 +114,51 @@ describe('Change queue saved state', () => {
     expect(parseGridView(serializeGridView(saved))).toEqual(saved);
     expect(parseGridView(serializeGridView(saved).replace(/^1\./, '2.'))).toBeNull();
     expect(GridSavedViewSchema.safeParse({ ...saved, changeQueue: { ...saved.changeQueue, filters: { source: 'invented' } } }).success).toBe(false);
+  });
+});
+
+describe('WP-321 summary contracts', () => {
+  const bases = ['impressions', 'clicks', 'spend', 'sales', 'orders', 'units'] as const;
+  const totals = { impressions: 1, clicks: 1, spend: 1, sales: 1, orders: 1, units: 1 };
+  it('marks a row unreported only when every base is missing, and carries the mark through row columns', () => {
+    expect(GridMeasurement.safeParse({ missing: [...bases], comparisonMissing: [], unreported: true }).success).toBe(true);
+    expect(GridMeasurement.safeParse({ missing: ['spend'], comparisonMissing: [], unreported: true }).success).toBe(false);
+    expect(GridMeasurement.safeParse({ missing: [...bases], comparisonMissing: [], unreported: false }).success).toBe(false);
+    const rows: GridTransportRow[] = [
+      { id: 'reported', currencyCode: 'USD', dimensions: {}, totals, comparison: totals },
+      { id: 'silent', currencyCode: 'USD', dimensions: {}, totals: { ...totals, spend: 0 }, comparison: totals, measurement: { missing: [...bases], comparisonMissing: [], unreported: true } },
+    ];
+    expect(decodeGridRowColumns(JSON.parse(JSON.stringify(encodeGridRowColumns(rows))))).toEqual(rows);
+  });
+  it('validates the summary evidence windows and held span', () => {
+    const evidence = { source: 'sp_target', heldFrom: '2026-07-01', heldThrough: '2026-09-15', period: { start: '2026-08-17', end: '2026-09-15' }, comparison: { start: '2026-07-18', end: '2026-08-16' } } as const;
+    expect(GridSummaryEvidence.safeParse(evidence).success).toBe(true);
+    expect(GridSummaryEvidence.safeParse({ ...evidence, heldFrom: null, heldThrough: null }).success).toBe(true);
+    for (const invalid of [{ heldThrough: null }, { heldFrom: '2026-09-16' }, { period: { start: '2026-09-15', end: '2026-08-17' } }, { source: 'fact_sp_target_daily' }, { heldFrom: '1 Jul 2026' }]) {
+      expect(GridSummaryEvidence.safeParse({ ...evidence, ...invalid }).success, JSON.stringify(invalid)).toBe(false);
+    }
+    const domain = { feeds: [], unattributed: null, rankDays: {}, summary: evidence };
+    expect(decodeGridPerformance(domain)).toEqual(domain);
+    const wire = encodeGridPerformance(domain);
+    expect(wire.summary).toEqual(evidence);
+    expect(decodeGridPerformance(JSON.parse(JSON.stringify(wire)))).toEqual(domain);
+    expect('summary' in decodeGridPerformance(encodeGridPerformance({ feeds: [], unattributed: null, rankDays: {} }))).toBe(false);
+  });
+  it('bounds the saved summary metrics and round trips them in the shared link', () => {
+    const chosen: GridSavedView = { ...view, summary: { metrics: ['roas', 'spend'] } };
+    expect(parseGridView(serializeGridView(chosen))).toEqual(chosen);
+    expect(GRID_SUMMARY_METRIC_LIMIT).toBe(8);
+    expect(GRID_SUMMARY_METRICS).toHaveLength(15);
+    expect(GridSavedViewSchema.safeParse({ ...view, summary: { metrics: GRID_SUMMARY_METRICS.slice(0, 8) } }).success).toBe(true);
+    for (const metrics of [[], GRID_SUMMARY_METRICS.slice(0, 9), ['spend', 'spend'], ['tacos']]) {
+      expect(GridSavedViewSchema.safeParse({ ...view, summary: { metrics } }).success, JSON.stringify(metrics)).toBe(false);
+    }
+    expect(GridSavedViewSchema.safeParse({ ...view, summary: { metrics: ['spend'], extra: true } }).success).toBe(false);
+  });
+  it('exports the chart-series enum the saved view charts with, a subset of the summary catalogue', () => {
+    expect(GridChartSeries.options).toEqual([...GRID_CHART_SERIES]);
+    expect(GRID_CHART_SERIES.every((key) => (GRID_SUMMARY_METRICS as readonly string[]).includes(key))).toBe(true);
+    expect(GridSavedViewSchema.safeParse({ ...view, chart: { series: ['spend', 'acos'] } }).success).toBe(true);
+    expect(GridSavedViewSchema.safeParse({ ...view, chart: { series: ['roas'] } }).success).toBe(false);
   });
 });

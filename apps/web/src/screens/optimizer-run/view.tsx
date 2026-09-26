@@ -29,6 +29,7 @@ function RunScreen({ data }: { data: Extract<ScreenData, { view: 'ready' }> }) {
   const [retry, setRetry] = useState(data.props.retry);
   const [preparedRetry, setPreparedRetry] = useState<OptimizerRetryPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const restore = operation.plan.source.kind === 'apply_batch' ? operation.plan.source.restoreProposal : undefined;
   useEffect(() => {
     const identity = operation.detail.operation;
     const query = new URLSearchParams({ profileId: profile.id, executionId: identity.executionId, planId: identity.planId });
@@ -40,7 +41,7 @@ function RunScreen({ data }: { data: Extract<ScreenData, { view: 'ready' }> }) {
         const response = await fetch(`/api/writes/status?${query}`, { signal: controller.signal, credentials: 'same-origin' });
         if (!response.ok) throw new Error('Saved execution status is temporarily unavailable.');
         const detail = SpWriteOperationDetail.parse(await response.json());
-        const rows = await fetch(`/api/optimizer/operations?${rowQuery}`, { signal: controller.signal, credentials: 'same-origin' });
+        const rows = await fetch(`${restore ? '/api/time-machine/restore/operations' : '/api/optimizer/operations'}?${rowQuery}`, { signal: controller.signal, credentials: 'same-origin' });
         if (!rows.ok) throw new Error('Updated row observations are temporarily unavailable.');
         const next = OptimizerOperation.parse(await rows.json());
         if (detail.operation.planId !== identity.planId || detail.operation.executionId !== identity.executionId
@@ -52,13 +53,13 @@ function RunScreen({ data }: { data: Extract<ScreenData, { view: 'ready' }> }) {
     };
     timer = setTimeout(() => { void poll(); }, 1000);
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [profile.id, batchId, operation.detail.operation.planId, operation.detail.operation.executionId]);
+  }, [profile.id, batchId, operation.detail.operation.planId, operation.detail.operation.executionId, Boolean(restore)]);
   async function prepareRetry() {
     if (retryLock.current) return;
     retryLock.current = true; setPreparingRetry(true); setError(null);
     const requestId = retryIdentity.current ?? crypto.randomUUID(); retryIdentity.current = requestId;
     try {
-      const response = await fetch('/api/optimizer/retry', { method: 'POST', credentials: 'same-origin',
+      const response = await fetch(restore ? '/api/time-machine/restore/retry' : '/api/optimizer/retry', { method: 'POST', credentials: 'same-origin',
         headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId, profileId: profile.id,
           batchId, original: operation.detail.operation }) });
       if (!response.ok) throw new Error('This retry needs a fresh evaluation or updated operation evidence. Original values have not been changed.');
@@ -66,7 +67,7 @@ function RunScreen({ data }: { data: Extract<ScreenData, { view: 'ready' }> }) {
       const source = saved.preview.plan.source;
       if (source.kind !== 'apply_batch' || source.retryOrigin?.executionId !== operation.detail.operation.executionId
         || source.retryOrigin.planId !== operation.plan.id || source.retryOrigin.planFingerprint !== operation.plan.fingerprint
-        || saved.preview.plan.profileId !== profile.id) throw new Error('The retry response identifies another saved operation.');
+        || saved.preview.plan.profileId !== profile.id || (restore && source.restoreProposal?.sourceBatchId !== restore.sourceBatchId)) throw new Error('The retry response identifies another saved operation.');
       setPreparedRetry(saved);
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'The saved retry could not be read. Try again to recover it.'); }
     finally { retryLock.current = false; setPreparingRetry(false); }
@@ -94,6 +95,14 @@ export function PreparedRetryReview({ saved, proposals = [], snapshots = [], onB
   onBack(): void; onReview(): void;
 }) {
   const { plan, evidence } = saved.preview;
+  const restore = plan.source.kind === 'apply_batch' ? plan.source.restoreProposal : undefined;
+  if (restore) return <section aria-label="Refreshed unresolved changes">
+    <p data-testid="restore-source">Restore of batch {restore.sourceBatchId} · {plan.counts.logicalChanges} rows</p>
+    <h2>Review unresolved change</h2><p>This fresh preview contains {plan.counts.logicalChanges} original unresolved change{plan.counts.logicalChanges === 1 ? '' : 's'}.</p>
+    <p>The earlier successful changes are excluded: {saved.excludedSuccessfulRows.map((row) => row.name).join(', ') || 'None recorded'}.</p>
+    <DataTable headers={['Row', 'Field', 'Current', 'Restore to']} label="Refreshed retry changes">{restore.rows.map((row) => <tr key={row.sourceRowId}><Cell>{row.entityId}</Cell><Cell>bid</Cell><Cell>{changeValue(row.current, 'bid', plan.providerScope.currencyCode)}<div>Read at {row.readAt}</div></Cell><Cell>{changeValue(row.restoreTo, 'bid', plan.providerScope.currencyCode)}</Cell></tr>)}</DataTable>
+    <div className={styles.footer}><button className={styles.action} onClick={onBack}>Return to results</button><button className={`${styles.action} ${styles.primary}`} onClick={onReview}>Review {plan.counts.logicalChanges} selected change{plan.counts.logicalChanges === 1 ? '' : 's'}</button></div>
+  </section>;
   if (!evidence || evidence.schemaVersion !== 'openspell.sp-write-preview-evidence.v1') return <p role="alert">Recorded retry source unavailable. Reload this run.</p>;
   const artifact = ApplyRowWire.array().parse(JSON.parse(evidence.provenance.artifactText));
   const count = plan.counts.logicalChanges;

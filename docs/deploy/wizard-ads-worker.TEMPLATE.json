@@ -1,0 +1,11 @@
+{
+  "WORKER_ID": "<worker-id>",
+  "WORKER_JOB_TYPES": "keepa.sync,rank.sync,economics.sync,sqp.categorize,recommendations.run",
+  "WORKER_MAX_CONCURRENT_JOBS": "4",
+  "PORT": "3777",
+  "WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS": "1",
+  "OPENSPELL_SPAPI_CONNECTIONS_ENABLED": "1",
+  "SP_API_APPLICATION_ID": "<sp-api-application-id>",
+  "SP_API_OAUTH_REGION": "<NA|EU|FE>",
+  "SP_API_OAUTH_ALLOWED_REDIRECT_URIS": "<https-web-origin>/api/amazon/spapi/oauth/callback"
+}

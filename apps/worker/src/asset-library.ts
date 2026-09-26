@@ -1,5 +1,5 @@
 import type { IngestionRegistry } from './ingestion-registry.js';
-import { readAssetLibraryJobSnapshot, recordAssetLibrarySnapshot, type DbHandle } from '@wizard-ads/db';
+import { persistAssetLibraryEvidence, readAssetLibraryJobSnapshot, recordAssetLibrarySnapshot, type DbHandle } from '@wizard-ads/db';
 import { ingestionSource } from './ingestion-sources.js';
 import { AssetLibraryObservation, AssetLibrarySnapshot, AssetLibrarySearchJob, type AssetLibrarySnapshotAsset } from '@wizard-ads/shared/asset-library';
 import type { AdsProfileContext, SbVideoContractProbeClient } from './ads-api.js';
@@ -9,6 +9,7 @@ export async function executeAssetLibrarySearch(input: {
   job: AssetLibrarySearchJob; jobId: string; profile: AdsProfileContext;
   reader: SbVideoContractProbeClient; now: () => string;
   readExisting: (orgId: string, profileId: string, jobId: string) => Promise<AssetLibrarySnapshot | null>;
+  persistEvidence?: (orgId: string, snapshot: AssetLibrarySnapshot) => Promise<void>;
   persist: (orgId: string, snapshot: AssetLibrarySnapshot) => Promise<{ persistedRows: number; verifiedRows: number }>;
 }) {
   const job = AssetLibrarySearchJob.parse(input.job);
@@ -17,6 +18,7 @@ export async function executeAssetLibrarySearch(input: {
   if (existing) {
     const saved = AssetLibrarySnapshot.parse(existing);
     if (saved.id !== input.jobId || saved.profileId !== job.profileId) throw new Error('Asset library replay scope mismatch');
+    await input.persistEvidence?.(job.orgId,saved);
     return { sourceRows: saved.sourceRows, parsedRows: saved.assets.length, loadedRows: saved.persistedRows, verifiedLoadedRows: saved.assets.length, refusedRows: 0, observedAt: saved.observedAt };
   }
   const observedAt = input.now();
@@ -35,6 +37,7 @@ export async function executeAssetLibrarySearch(input: {
   const snapshot = AssetLibrarySnapshot.parse({ id: input.jobId, profileId: job.profileId, observedAt, assets, sourceRows: library.sourceRows, persistedRows: assets.length });
   const receipt = await input.persist(job.orgId, snapshot);
   if (receipt.persistedRows !== assets.length || receipt.verifiedRows !== assets.length) throw new Error('Asset library snapshot counts do not reconcile');
+  await input.persistEvidence?.(job.orgId,snapshot);
   return { sourceRows: library.sourceRows, parsedRows: assets.length, loadedRows: receipt.persistedRows, verifiedLoadedRows: receipt.verifiedRows, refusedRows: 0, observedAt };
 }
 
@@ -50,6 +53,12 @@ export function registerAssetLibrarySource(
     plan: (context) => context,
     execute: ({ payload, job, profile }) => executeAssetLibrarySearch({ job: payload, jobId: job.id, profile, reader, now,
       readExisting: (orgId, profileId, jobId) => readAssetLibraryJobSnapshot(handle, orgId, profileId, jobId),
+      persistEvidence: async (orgId,snapshot) => {
+        const receipt=await persistAssetLibraryEvidence(handle,{orgId,profileId:snapshot.profileId},snapshot.assets.map(asset=>({
+          observation:asset.observation,expiresAt:new Date(Date.parse(asset.observation.observedAt)+95*86400000).toISOString(),
+        })));
+        if(receipt.source!==snapshot.assets.length || receipt.verified!==receipt.canonical) throw new Error('Asset evidence readback mismatch');
+      },
       persist: (orgId, snapshot) => recordAssetLibrarySnapshot(handle, orgId, snapshot),
     }),
     counts: (result) => result,

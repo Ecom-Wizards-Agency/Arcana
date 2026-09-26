@@ -3,10 +3,13 @@
  * `GET /api/cron/sync` — the daily pull, hosted on Vercel Cron.
  *
  * The Vercel worker is one-shot: Vercel Cron hits this route every five minutes
- * and one tick runs under a wall-clock budget. After the explicit report-lane
- * handoff, the separate always-on Evo process owns Creative and report queue
- * jobs. Recommendation ownership transfers independently to its dedicated
- * claimant; this route always retains entity claims. The tick
+ * and one tick runs under a wall-clock budget. Until the explicit report-lane
+ * handoff, this route claims Creative and report queue jobs, so it carries the
+ * same SB Video runtime as the Evo worker: `creative.sync` and `sbAds`
+ * `report.fetch` dead-letter without it. After the handoff, the separate
+ * always-on Evo process owns those jobs. Recommendation ownership transfers
+ * independently to its dedicated claimant; this route always retains entity
+ * claims. The tick
  * itself — lock, repair, provision/enqueue/requeue/bid-series/drain/release —
  * lives in `src/server/sync-tick.ts`; this file is the door.
  *
@@ -48,8 +51,10 @@ import {
   enqueueDailyCreativeSyncJobs,
 } from '@wizard-ads/db';
 import {
+  ObservedSbVideoIngestion,
   PostgresBidSeriesStore,
   PostgresRecommendationRunStore,
+  PostgresSbVideoIngestionStore,
   PostgresWorkerStore,
   SyncWorker,
   createAdsApiClientFromEnv,
@@ -57,7 +62,7 @@ import {
   runBidSeriesSync,
 } from '@wizard-ads/worker';
 import {
-  creativeSyncPilotFromEnv,
+  creativeSyncPolicyFromEnv,
   cronSyncJobTypesFromEnv,
   runSyncTick,
 } from '../../../../src/server/sync-tick';
@@ -90,11 +95,11 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   let jobTypes;
-  let creativeSyncPilot;
+  let creativeSyncPolicy;
   let recommendationLaneIntent;
   try {
     jobTypes = cronSyncJobTypesFromEnv();
-    creativeSyncPilot = creativeSyncPilotFromEnv();
+    creativeSyncPolicy = creativeSyncPolicyFromEnv();
     recommendationLaneIntent = recommendationLaneIntentFromEnv();
   } catch {
     return NextResponse.json(
@@ -126,6 +131,8 @@ export async function GET(request: Request): Promise<Response> {
     adsApi,
     jobTypes,
     reportBacklogRecovery: true,
+    // Read-only SB Video snapshot and sbAds ingestion, wired as in the Evo worker.
+    sbVideo: new ObservedSbVideoIngestion(adsApi, new PostgresSbVideoIngestionStore(handle, store)),
     ...(claimsRecommendations
       ? { recommendationsRun: createRecommendationsRunner(recommendationRuns) }
       : {}),
@@ -150,10 +157,10 @@ export async function GET(request: Request): Promise<Response> {
             },
           }
         : {}),
-      ...(creativeSyncPilot.enabled
+      ...(creativeSyncPolicy.enabled && jobTypes.includes('creative.sync')
         ? {
             creativeSyncSchedules: () =>
-              enqueueDailyCreativeSyncJobs(handle, creativeSyncPilot.profileIds),
+              enqueueDailyCreativeSyncJobs(handle, undefined, new Date(), 'legacy'),
           }
         : {}),
       budgetMs: DRAIN_BUDGET_MS,

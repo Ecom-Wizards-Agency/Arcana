@@ -1,7 +1,16 @@
-import { readProviderEvidence } from '@wizard-ads/db';
+import { readProviderEvidence, getRecommendationRun, readStreamExtensionEvidence, listRecommendationRuns, listRecommendations } from '@wizard-ads/db';
+import type { StreamConsumerEvidence, StreamExtensionEvidence } from '@wizard-ads/shared';
+import { readStreamConsumerEvidence } from '../creative/stream-evidence-load';
 import type { ScreenActor } from '../../server/page-read';
-
 import type { ScreenParams } from '../types';
+import { pageReadErrorMessage } from '../../server/authenticated-page-read';
+import { redirect, unstable_rethrow } from 'next/navigation';
+import { authenticationDestination } from '../../server/request-context';
+import { requireOrgRole } from '../../server/org-role';
+import { listOrgProfiles } from '../../recommendations/data';
+import { toProposalView } from '../../recommendations/view';
+import { selectRecommendationRun } from '../../recommendations/runs';
+
 
 /**
  * `/recommendations` — the review surface for engine proposals.
@@ -19,25 +28,13 @@ import type { ScreenParams } from '../types';
  * And the differentiator the brief names: the provenance panel. AdLabs publishes
  * the formula; we publish the numbers that went into this row.
  */
-import { pageReadErrorMessage } from '../../server/authenticated-page-read';
 
-import { redirect, unstable_rethrow } from 'next/navigation';
 
-import {
-  getRecommendationRun,
-  listRecommendationRuns,
-  listRecommendations,
-} from '@wizard-ads/db';
 
-import { authenticationDestination } from '../../server/request-context';
 
-import { requireOrgRole } from '../../server/org-role';
 
-import { listOrgProfiles } from '../../recommendations/data';
 
-import { toProposalView } from '../../recommendations/view';
 
-import { selectRecommendationRun } from '../../recommendations/runs';
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -90,7 +87,8 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       );
 
       const providerEvidence = await readProviderEvidence(database, { orgId: actor.orgId, profileId: profile.id, consumer: 'recommendations' });
-      return { view: 'ready' as const, props: { run, proposals, profile, runs, role, ...(providerEvidence ? { providerEvidence } : {}) } };
+      const provider: { providerBudget?: StreamConsumerEvidence; providerDiagnostics?: StreamExtensionEvidence } = { providerBudget: await readStreamConsumerEvidence(database, { orgId: actor.orgId, profileId: profile.id, datasets: ['sp-budget-recommendations'], asOf: new Date().toISOString(), maxAgeMs: 86400000 }), providerDiagnostics: await readStreamExtensionEvidence(database, { orgId: actor.orgId, profileId: profile.id, datasetId: 'sponsored-ads-campaign-diagnostics-recommendations', asOf: new Date().toISOString(), maxAgeMs: 86400000 }) };
+      return { view: 'ready' as const, props: { run, proposals, profile, runs, role, ...(providerEvidence ? { providerEvidence } : {}), ...provider } };
     });
   } catch (error) {
     unstable_rethrow(error);

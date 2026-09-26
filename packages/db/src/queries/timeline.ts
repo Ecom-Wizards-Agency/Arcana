@@ -87,7 +87,7 @@ async function readScopeDays(handle: QueryHandle, orgId: string, profileId: stri
 export async function readTimeline(handle: QueryHandle, orgId: string, profileId: string): Promise<TimelineSnapshot> {
     if (!(await profileBelongsToOrg(handle, { orgId, profileId })))
         throw new TimelineInputError('Profile not found');
-    const [profile, experiments, manual, batches, organic, bsr, settings] = await Promise.all([
+    const [profile, experiments, manual, batches, amazonChanges, organic, bsr, settings] = await Promise.all([
         readProfileDays(handle, orgId, profileId), listExperiments(handle, { orgId, profileId, limit: 2147483647 }), readManualTimelineEvents(handle, orgId, profileId),
         handle.sql `select b.id,b.tag as name,b.status,coalesce(b.applied_on,(b.applied_at at time zone 'UTC')::date)::text as start,b.note,b.created_by::text as "actorId",b.created_at::text as "createdAt",
       coalesce(jsonb_agg(distinct r.entity_id) filter(where r.entity_type='campaign'),'[]') as campaigns,
@@ -96,6 +96,12 @@ export async function readTimeline(handle: QueryHandle, orgId: string, profileId
       from public.apply_batches b left join public.apply_rows r on r.batch_id=b.id and r.org_id=b.org_id and r.profile_id=b.profile_id
       where b.org_id=${orgId} and b.profile_id=${profileId} and b.status in ('applied','reverted') and (b.applied_on is not null or b.applied_at is not null)
       group by b.id order by start,b.id`,
+        handle.sql `select e.id,e.entity_type,e.entity_id,e.change_type,e.occurred_at,e.retrieved_at,e.identity_quality,e.marketplace_id,
+          exists(select 1 from public.amazon_change_events c where c.org_id=e.org_id and c.profile_id=e.profile_id and c.marketplace_id=e.marketplace_id and c.source_namespace=e.source_namespace and c.source_event_key=e.source_event_key and c.payload_digest<>e.payload_digest) as identity_conflict,
+          e.sanitized_payload,case when r.event_id is null then false else true end as resolved
+          from public.amazon_change_events e left join lateral(select event_id from public.amazon_change_event_resolutions
+            where event_id=e.id order by resolved_at desc,id desc limit 1)r on true
+          where e.org_id=${orgId} and e.profile_id=${profileId} order by e.occurred_at,e.id`,
         handle.sql<{
             asin: string;
             keyword: string;
@@ -129,7 +135,12 @@ export async function readTimeline(handle: QueryHandle, orgId: string, profileId
     const events: TimelineEvent[] = [...observed, ...manual, ...experiments.map((e) => ({ id: e.id, name: e.name, kind: 'experiment' as const, start: e.startAt.toISOString().slice(0, 10), end: e.endAt?.toISOString().slice(0, 10) ?? null,
             status: e.status, scope: e.scope, scopeText: [e.scope.campaignIds?.length ? `${e.scope.campaignIds.length} campaigns` : '', e.scope.adGroupIds?.length ? `${e.scope.adGroupIds.length} ad groups` : '', e.scope.targetIds?.length ? `${e.scope.targetIds.length} targets` : '', e.scope.asins?.length ? `${e.scope.asins.length} products (recorded only)` : ''].filter(Boolean).join(' · ') || 'No measured scope',
             focus: e.metricFocus, note: e.hypothesis, actorId: e.createdBy, createdAt: e.createdAt.toISOString(), supersedesId: null })),
-        ...batches.map((b) => TimelineEvent.parse({ ...b, kind: 'apply_batch', end: b['start'], status: b['status'], scope: { campaignIds: b['campaigns'], adGroupIds: b['groups'], targetIds: b['targets'] }, scopeText: 'Applied advertising entities', focus: 'acos', supersedesId: null }))];
+        ...batches.map((b) => TimelineEvent.parse({ ...b, kind: 'apply_batch', end: b['start'], status: b['status'], scope: { campaignIds: b['campaigns'], adGroupIds: b['groups'], targetIds: b['targets'] }, scopeText: 'Applied advertising entities', focus: 'acos', supersedesId: null })),
+        ...amazonChanges.map((e) => TimelineEvent.parse({ id:`amazon:${e['id']}`,name:`Amazon observed ${String(e['change_type']).toLowerCase()}`,
+          kind:'amazon_change',start:new Date(e['occurred_at'] as string|Date).toISOString().slice(0,10),end:new Date(e['occurred_at'] as string|Date).toISOString().slice(0,10),
+          status:e['identity_conflict']?'identity conflict':e['resolved']?'resolved entity':'unresolved entity',scope:{},scopeText:`${e['entity_type']} ${e['entity_id']} · ${e['marketplace_id']} · provider scope`,focus:'acos',
+          note:`Amazon Ads Change History v1 · ${e['identity_quality']} identity (provider ID unavailable) · retrieved ${new Date(e['retrieved_at'] as string|Date).toISOString()} · no local actor or restore authority`,
+          actorId:null,createdAt:new Date(e['retrieved_at'] as string|Date).toISOString(),supersedesId:null }))];
     const scoped = Object.fromEntries(await Promise.all(events.map(async (event) => [event.id, await readScopeDays(handle, orgId, profileId, event)])));
     const ranks = new Map<string, TimelineRank>();
     for (const row of organic) {
@@ -146,7 +157,7 @@ export async function readTimeline(handle: QueryHandle, orgId: string, profileId
     }
     if ([...ranks.values()].reduce((n, r) => n + r.points.length, 0) !== organic.length + bsr.length)
         throw new Error('Rank observation count mismatch');
-    if (new Set(events.map((e) => e.id)).size !== events.length || events.length !== manual.length + experiments.length + batches.length + listingChanges.length + bidChanges.length)
+    if (new Set(events.map((e) => e.id)).size !== events.length || events.length !== manual.length + experiments.length + batches.length + listingChanges.length + bidChanges.length + amazonChanges.length)
         throw new Error('Timeline source count mismatch');
     const [failure] = await handle.sql<{
         since: string | null;

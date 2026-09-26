@@ -1,10 +1,17 @@
 import type { ChangeQueueEntry } from '@wizard-ads/shared';
 import { buildGridModel, ZERO_TOTALS, type GridColumn } from '@wizard-ads/ui';
-export const SOURCE_LABEL = { apply: 'we sent it', sync: 'changed at Amazon', queued: 'queued', restore: 'restore' } as const;
+export const SOURCE_LABEL = { apply: 'we sent it', sync: 'changed at Amazon', amazon: 'Amazon observed', queued: 'queued', restore: 'Restore',
+  campaign_creation: 'Campaign creation', campaign_creation_retry: 'Campaign creation retry' } as const;
 export function attribution(row: ChangeQueueEntry): string {
+  if (row.source === 'campaign_creation') return `Approved creation · ${row.batchCount ?? 0} resources`;
+  if (row.source === 'campaign_creation_retry') return row.batchLabel ?? 'Approved resource retry';
   const batch = row.batchLabel === null ? null : (/^Batch\s/i.test(row.batchLabel) ? row.batchLabel : `Batch ${row.batchLabel}`);
   if (row.candidateCount > 1) return `${batch === null ? '' : `${batch} · `}${row.candidateCount === 2 ? 'two' : row.candidateCount} rows could explain it`;
-  if ((row.source === 'queued' || row.source === 'restore')) return 'Review proposal';
+  if (row.source === 'queued' || (row.source === 'restore' && ['awaiting review', 'approved'].includes(row.state))) return 'Review proposal';
+  if (row.source === 'amazon') {
+    const evidence=row.amazonObservation;
+    return `Provider history · no local actor · ${evidence?.marketplaceId??'marketplace unavailable'} · ${evidence?.resolution??'unresolved'}${evidence?.resolvedAmazonId?` ${evidence.resolvedEntityType} ${evidence.resolvedAmazonId}`:''} · derived identity (provider ID unavailable)${evidence?.identityConflict?' · identity conflict':''}`;
+  }
   if (batch === null) return row.source === 'apply' ? 'Approved application' : 'not ours';
   return `${batch} · ${row.experimentStart ? 'experiment start' : row.batchCount === null ? '— changes' : `${row.batchCount} changes`}`;
 }

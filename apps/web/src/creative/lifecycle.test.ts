@@ -3,7 +3,9 @@ import type { CreativeSyncJobState } from '@wizard-ads/db';
 import type { CreativeSyncSnapshot } from '@wizard-ads/shared';
 import {
   creativeLifecycle,
+  producerEligibility,
   type CreativeLifecycleEvidence,
+  type CreativeProducerEligibility,
 } from './lifecycle';
 
 const snapshot: CreativeSyncSnapshot = {
@@ -35,13 +37,32 @@ const snapshot: CreativeSyncSnapshot = {
 
 describe('creative lifecycle', () => {
   it('distinguishes an inactive producer from an eligible profile awaiting its first schedule', () => {
-    const inactive = creativeLifecycle(evidence({ producerEligible: false }));
-    const awaiting = creativeLifecycle(evidence({ producerEligible: true }));
+    const inactive = creativeLifecycle(evidence({}, { producerEligible: false, reason: 'profile_sync_disabled' }));
+    const awaiting = creativeLifecycle(evidence({}, { producerEligible: true, reason: null }));
 
-    expect(inactive).toMatchObject({ state: 'inactive', counts: [] });
+    expect(inactive).toMatchObject({ state: 'inactive', counts: [], title: 'Profile sync is switched off' });
     expect(awaiting).toMatchObject({ state: 'awaiting_schedule', counts: [] });
     expect(inactive.body + awaiting.body).not.toContain('Run a Creative sync');
     expect(awaiting.body).toContain('automatically');
+  });
+
+  it('names the deployment kill switch rather than profile sync when it stops the producer', () => {
+    const off = creativeLifecycle(evidence({}, { producerEligible: false, reason: 'deployment_disabled' }));
+    expect(off).toMatchObject({
+      state: 'inactive',
+      counts: [],
+      title: 'Creative sync is switched off for this deployment',
+    });
+    expect(off.body).toContain('OPENSPELL_CREATIVE_SYNC_DISABLED=1');
+  });
+
+  it('derives eligibility and its reason from one shared policy', () => {
+    expect(producerEligibility({ enabled: true, reason: null }))
+      .toEqual({ producerEligible: true, reason: null });
+    expect(producerEligibility({ enabled: false, reason: 'deployment_disabled' }))
+      .toEqual({ producerEligible: false, reason: 'deployment_disabled' });
+    expect(producerEligibility({ enabled: false, reason: 'profile_sync_disabled' }))
+      .toEqual({ producerEligible: false, reason: 'profile_sync_disabled' });
   });
 
   it('surfaces queued and running work before the first snapshot exists', () => {
@@ -151,10 +172,11 @@ describe('creative lifecycle', () => {
 });
 
 function evidence(
-  overrides: Partial<CreativeLifecycleEvidence> = {},
+  overrides: Partial<Pick<CreativeLifecycleEvidence, 'latestJob' | 'snapshot'>> = {},
+  eligibility: CreativeProducerEligibility = { producerEligible: true, reason: null },
 ): CreativeLifecycleEvidence {
   return {
-    producerEligible: true,
+    ...eligibility,
     latestJob: null,
     snapshot: null,
     ...overrides,

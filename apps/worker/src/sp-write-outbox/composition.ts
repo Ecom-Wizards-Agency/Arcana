@@ -3,6 +3,9 @@ import { mergeKeywordMirror, readKeywordMirrorStart, reconcileSpWriteObservation
 import { PostgresWorkerStore, type KeywordMirrorCapability } from '../store.js';
 import { createSpWriteOutboxLoop } from './loop.js';
 import { createSpWriteProviderPreparation } from './providers.js';
+import { createCampaignCreationLedger } from '@wizard-ads/db/worker';
+import { createCampaignCreationWorker } from '../campaign-creation/loop.js';
+import { createCampaignCreationProvider } from '../campaign-creation/providers.js';
 
 /** Configure on every entity-sync owner before enabling the first native bid write. */
 export function createKeywordMirrorCapability(database: DbHandle): KeywordMirrorCapability {
@@ -21,6 +24,8 @@ export function createSpWriteWorker(
   store.assertKeywordMirrorConfigured();
   const database = store.handle;
   return createSpWriteOutboxLoop({ database, ...options,
+    creation: createCampaignCreationWorker({ ledger: createCampaignCreationLedger(database), ...options,
+      provider: createCampaignCreationProvider(database, env) }),
     prepareProviders: createSpWriteProviderPreparation(database, env),
     reconcileObservation: async (observation) => {
       await reconcileSpWriteObservation(database, observation);

@@ -1,25 +1,33 @@
 'use client';
-import { orderCampaignCreationNodes, CAMPAIGN_CREATION_UNAVAILABLE, CampaignBuilderCheck, type CampaignBuilderResult, type CampaignCreationPlan } from '@wizard-ads/shared';
+import { orderCampaignCreationNodes, CAMPAIGN_CREATION_UNAVAILABLE, CampaignBuilderCheck, type CampaignCreationBatch, type CampaignBuilderResult, type CampaignCreationPlan } from '@wizard-ads/shared';
 import type { CampaignCreationApprovalView } from '@wizard-ads/shared/campaign-creation-approval';
 import { Button, CampaignPage, DetailsTable, Notice, quantity } from '../campaigns/ui';
+import { BatchCreationResult, BatchCreationRetry, useReviewExpired } from './batch-creation-states';
 
 export type CreationExecutor = { available: false } | { available: true; create: () => void; retry: () => void };
-export function CreationConfirm({ review, checks, executor, onExport, onBack, marketplaceLabel }: {
+/** The displayed checks are the persisted evidence admission binds; they expire while displayed. */
+export function CreationConfirm({ review, checks, executor, onExport, onBack, onRefresh, marketplaceLabel }: {
   marketplaceLabel?: string; review: CampaignCreationApprovalView; checks: CampaignBuilderCheck[]; executor: CreationExecutor; onExport: () => void; onBack: () => void;
+  /** Records fresh evidence at a new revision before this confirmation is shown again. */
+  onRefresh?: () => void;
 }) {
   const nodes = orderCampaignCreationNodes(review.plan.nodes).filter((node) => node.effect === 'irreversible_create');
   const count = review.plan.counts.byKind['campaign.create'];
   const currency = review.plan.nodes.find((node) => node.kind === 'campaign.create')?.payload.budget.currencyCode ?? '';
-  const completeChecks = CampaignBuilderCheck.shape.id.options.every((id) => checks.filter((check) => check.id === id).length === 1);
-  const available = executor.available && completeChecks && !checks.some((check) => check.blocking) && review.freshness.status === 'current';
+  const completeChecks = checks.length === CampaignBuilderCheck.shape.id.options.length
+    && CampaignBuilderCheck.shape.id.options.every((id) => checks.filter((check) => check.id === id).length === 1);
+  const expired = useReviewExpired(review);
+  const available = executor.available && completeChecks && !checks.some((check) => check.blocking || check.status === 'blocked') && review.freshness.status === 'current' && !expired;
   const labels = { 'campaign.create': 'Campaign', 'ad_group.create': 'Ad group', 'ad.create': 'Product ad', 'target.create': 'Keyword', 'creative.create': 'Creative' };
   return <CampaignPage layout="review" title="Confirm campaign creation"><section className="campaign-rationale"><h2>Create {quantity(count, 'campaign')} in Amazon</h2><p className="wa-hint">{review.profile.label} · {marketplaceLabel ?? 'Marketplace label unavailable'} · {currency} · Campaign starts paused</p></section>
     <DetailsTable columnWidths={['34%', '18%', '48%']} headings={['Resource', 'Count', 'After creation']} rows={nodes.map((node) => [labels[node.kind as keyof typeof labels] ?? node.kind, 1, node.kind === 'campaign.create' ? 'Paused' : node.kind === 'target.create' ? 'Using the reviewed bid' : node.kind === 'ad.create' ? 'In the new ad group' : 'In the new campaign'])} />
     <p>{nodes.length} resources will be created in order. Validation must pass for the exact draft you approve.</p><p>Payload fingerprint <code>{review.plan.fingerprint}</code></p>
     <Notice kind="warn"><strong>Created resources cannot be deleted through rollback.</strong><p>Pausing or archiving them requires a separate reviewed action.</p></Notice>
-    {checks.some((check) => check.status === 'not_measured') && <Notice><strong>Checks not measured</strong><ul>{checks.filter((check) => check.status === 'not_measured').map((check) => <li key={check.id}>{check.label} · {check.source}</li>)}</ul></Notice>}
+    {checks.some((check) => check.status === 'not_measured') && <Notice><strong>Checks not measured</strong><ul>{checks.filter((check) => check.status === 'not_measured').map((check) => <li key={check.id}>{check.label} · {check.source}: Arcana has no measured evidence for this check. Review this condition in Amazon.</li>)}</ul><p>These checks have not passed or failed. They do not block this explicit creation approval.</p></Notice>}
     {!executor.available && <Notice>{CAMPAIGN_CREATION_UNAVAILABLE}</Notice>}
-    {executor.available && !available && <Notice kind="warn">The current approval evidence is unavailable or stale. Review this draft again.</Notice>}
+    {executor.available && !available && <Notice kind="warn">The current approval evidence is unavailable or stale. Review this draft again.
+      {expired && <p>Review checks are valid for five minutes. Expired evidence cannot be approved.</p>}
+      {onRefresh && <Button onClick={onRefresh}>Refresh review evidence</Button>}</Notice>}
     <div className="wa-actions"><Button onClick={onBack}>Back to draft</Button><Button variant="primary" disabled={!available} onClick={() => { if (available && executor.available) executor.create(); }}>Yes, create {count} {count === 1 ? 'campaign' : 'campaigns'} in Amazon</Button><Button onClick={onExport}>Export bulk sheet</Button></div>
   </CampaignPage>;
 }
@@ -31,15 +39,23 @@ function keywordRetryCount(result: CampaignBuilderResult): number {
     || result.resources.some((row) => row.status !== 'created' && !(row.kind === 'keyword' && row.status === 'failed'))) return 0;
   return result.resources.filter((row) => row.kind === 'keyword' && row.status === 'failed').reduce((sum, row) => sum + row.requested - row.succeeded, 0);
 }
-export function CreationResult({ result, onRetry, onBack }: { result: CampaignBuilderResult; onRetry: () => void; onBack: () => void }) {
+export function CreationResult({ result, batch, onRetry, onBack }: { result?: CampaignBuilderResult; batch?: CampaignCreationBatch; onRetry: () => void; onBack: () => void }) {
+  if (batch) return <BatchCreationResult batch={batch} onRetry={onRetry} onBack={onBack} />;
+  if (!result) return <Notice>Creation result unavailable.</Notice>;
   const count = result.snapshot.accounting;
   const complete = result.snapshot.status === 'succeeded';
+  const active = false;
   const unresolvedKeywords = keywordRetryCount(result);
   const retryable = unresolvedKeywords > 0;
   const campaignObserved = result.resources.some((row) => row.kind === 'campaign' && row.status === 'created') && count.observed === count.succeeded;
-  const resourceDetails = <details open={!complete}><summary>Resource details</summary><DetailsTable columnWidths={['35%', '18%', '18%', '29%']} headings={['Resource', 'Requested', 'Succeeded', 'Status']} rows={result.resources.map((row) => [({ campaign: 'Campaign', ad_group: 'Ad group', product_ad: 'Product ad', keyword: 'Keyword' })[row.kind], row.requested, row.succeeded, row.status === 'created' ? `Created${row.kind === 'campaign' ? ' · Paused' : ''}` : row.status === 'failed' ? `Failed · ${row.responseCode ?? 'Reason not recorded'}` : row.status === 'pending' ? 'Pending' : 'Unknown'])} />
+  const resourceStatus = (row: CampaignBuilderResult['resources'][number]) => {
+    return row.status === 'created' ? `Created${row.kind === 'campaign' ? ' · Paused' : ''}`
+      : row.status === 'failed' ? `Failed · ${row.responseCode ?? 'Reason not recorded'}` : row.status === 'pending' ? 'Pending' : 'Unknown';
+  };
+  const resourceDetails = <details open={!complete}><summary>Resource details</summary><DetailsTable columnWidths={['35%', '18%', '18%', '29%']} headings={['Resource', 'Requested', 'Succeeded', 'Status']} rows={result.resources.map((row) => [({ campaign: 'Campaign', ad_group: 'Ad group', product_ad: 'Product ad', keyword: 'Keyword' })[row.kind], row.requested, row.succeeded, resourceStatus(row)])} />
     <p className="campaign-accounting">Requested {count.operatorApproved} · Attempted {count.attempted} · Succeeded {count.succeeded} · Failed {count.failed}</p></details>;
-  return <CampaignPage layout="review" title={complete ? 'Campaign created' : count.succeeded > 0 ? 'Campaign partially created' : 'Campaign creation unresolved'} subtitle={`${count.succeeded} of ${count.operatorApproved} resources created · Initial state paused`}>
+  return <CampaignPage layout="review" title={active ? 'Campaign creation in progress' : complete ? 'Campaign created' : count.succeeded > 0 ? 'Campaign partially created' : 'Campaign creation unresolved'} subtitle={`${count.succeeded} of ${count.operatorApproved} resources created · Initial state paused`}>
+    {active && <p role="status" aria-busy="true">Waiting for the worker and Amazon observation. This page checks the recorded batch every two seconds.</p>}
     <Notice kind={complete ? 'good' : 'warn'}><strong>{complete ? `All ${count.succeeded} resources are created` : campaignObserved ? retryable ? `The campaign is paused. ${unresolvedKeywords === 1 ? 'The keyword failed.' : `${unresolvedKeywords} keywords failed.`}` : 'The campaign is paused. Review the unresolved resources.' : 'The campaign state is not confirmed. Review the unresolved resources.'}</strong><p>{complete ? `${result.retry ? 'The keyword retry succeeded. ' : ''}The campaign remains paused while you review it.` : result.resources.find((row) => row.status === 'failed')?.message ?? 'Provider completion is not confirmed.'}</p></Notice>
     {!complete && resourceDetails}
     {complete && <p className="campaign-accounting">Original request: {count.operatorApproved} resources · Created: {count.succeeded} · Failed: {count.failed}</p>}
@@ -49,7 +65,10 @@ export function CreationResult({ result, onRetry, onBack }: { result: CampaignBu
     <div className="wa-actions">{!complete && <Button variant="primary" disabled={!retryable} onClick={onRetry}>Review keyword retry</Button>}<Button onClick={onBack}>{complete ? 'Return to campaign draft' : 'Return to draft'}</Button></div>
   </CampaignPage>;
 }
-export function KeywordRetry({ result, plan, executor, onBack }: { result: CampaignBuilderResult; plan: CampaignCreationPlan; executor: CreationExecutor; onBack: () => void }) {
+export function KeywordRetry({ result, plan, batch, executor, onBack, review, onRefresh }: { result?: CampaignBuilderResult; batch?: CampaignCreationBatch; plan: CampaignCreationPlan; executor: CreationExecutor; onBack: () => void;
+  review?: CampaignCreationApprovalView; onRefresh?: () => void }) {
+  if (batch) return <BatchCreationRetry batch={batch} executor={executor} onBack={onBack} {...(review ? { review } : {})} {...(onRefresh ? { onRefresh } : {})} />;
+  if (!result) return <Notice>Retry result unavailable.</Notice>;
   const count = keywordRetryCount(result);
   const namesResolved = result.resources.filter((row) => row.kind === 'keyword' && row.status === 'failed').every((row) => plan.nodes.some((node) => node.nodeId === row.nodeId && node.kind === 'target.create' && node.payload.targetType === 'keyword'));
   const unresolved = result.resources.filter((row) => row.kind === 'keyword' && row.status === 'failed').map((row) => {
@@ -57,7 +76,8 @@ export function KeywordRetry({ result, plan, executor, onBack }: { result: Campa
     return node?.kind === 'target.create' && node.payload.targetType === 'keyword' ? `“${node.payload.text}”` : `Keyword name unavailable (resource ${row.nodeId})`;
   });
   return <CampaignPage layout="review" title="Review keyword retry" subtitle={`Campaign paused · ${quantity(result.snapshot.accounting.succeeded, 'resource')} already created`}><section className="campaign-rationale"><strong>{count > 0 ? 'Retry the keyword only' : 'Keyword retry is unavailable'}</strong><p>{count > 0 ? 'The campaign, ad group and product ad already exist. The campaign remains paused.' : 'Resolve resource and observation conflicts before reviewing a retry.'}</p></section>
-    <DetailsTable headings={['Resource', 'Action']} rows={result.resources.map((row) => [({ campaign: 'Campaign', ad_group: 'Ad group', product_ad: 'Product ad', keyword: 'Keyword' })[row.kind], row.status === 'created' ? row.kind === 'product_ad' ? 'Keep the created product ad' : `Reuse the created ${row.kind === 'ad_group' ? 'ad group' : row.kind}` : row.kind === 'keyword' && row.status === 'failed' ? 'Retry after checking current state' : 'Requires separate review'])} />
+    <ul><li>Reuse the created campaign</li><li>Reuse the created ad group</li><li>Keep the created product ad</li></ul>
+    <DetailsTable headings={['Resource', 'Action']} rows={unresolved.map((name) => [namesResolved ? name : 'Keyword identity unresolved', 'Retry after checking current state'])} />
     <p>This approval covers {quantity(count, 'unresolved keyword creation')}. Successful resources will not be created again.</p>
     {!executor.available && <Notice>Retry in Amazon is not available yet. The campaign remains paused.</Notice>}
     {!namesResolved && <Notice kind="warn">The unresolved keyword does not match this draft. Return to the recorded result before reviewing a retry.</Notice>}

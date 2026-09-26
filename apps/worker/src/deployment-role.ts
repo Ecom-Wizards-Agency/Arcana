@@ -1,5 +1,5 @@
 import { ingestionLaneJobTypes } from './ingestion-sources.js';
-import { Uuid, type JobType } from '@wizard-ads/shared';
+import { Uuid, type JobType, type CreativeSyncPolicy } from '@wizard-ads/shared';
 
 /**
  * The queue types Vercel owns until the report-lane handoff is explicitly
@@ -32,13 +32,11 @@ export interface WorkerDeploymentPolicy {
   claimProtocol: WorkerClaimProtocol;
   /** The effective claim policy. Undefined retains the general all-queue mode. */
   jobTypes: readonly JobType[] | undefined;
-  /** The exclusive report runtime is a queue consumer, not a timer host. */
+  /** General passes stay off on the report runtime; Creative production is gated separately. */
   startsBackgroundPasses: boolean;
 }
 
-export type CreativeSyncPilotPolicy =
-  | { enabled: false; profileIds: readonly [] }
-  | { enabled: true; profileIds: readonly string[] };
+export type { CreativeSyncPolicy } from '@wizard-ads/shared';
 
 export type UnifiedReportingDualRunPolicy =
   | { enabled: false; profileIds: readonly [] }
@@ -63,26 +61,18 @@ export function parseUnifiedReportingProfileAllowlist(
   );
 }
 
-/**
- * Source stays inert unless the producer, exclusive report lane, and a
- * non-empty bounded cohort all agree. Values unrelated to the disabled
- * producer are deliberately ignored so an absent/zero gate performs no work.
- */
-export function resolveCreativeSyncPilotPolicy(
+/** Creative observations follow profile sync; lane ownership is resolved separately. */
+export function resolveCreativeSyncPolicy(
   env: Readonly<Record<string, string | undefined>>,
-): CreativeSyncPilotPolicy {
-  const producer = env['OPENSPELL_CREATIVE_SYNC_PRODUCER_READY'];
-  if (producer === undefined || producer === '0') return { enabled: false, profileIds: [] };
-  if (producer !== '1') {
-    throw new Error('OPENSPELL_CREATIVE_SYNC_PRODUCER_READY must be 0 or 1');
+  profileSyncEnabled = true,
+): CreativeSyncPolicy {
+  const disabled = env['OPENSPELL_CREATIVE_SYNC_DISABLED'];
+  if (disabled === '1') return { enabled: false, reason: 'deployment_disabled' };
+  if (disabled !== undefined && disabled !== '0') {
+    throw new Error('OPENSPELL_CREATIVE_SYNC_DISABLED must be 0 or 1');
   }
-  if (env['OPENSPELL_EVO_REPORT_LANE_READY'] !== '1') {
-    throw new Error('Creative sync producer requires the exclusive Evo report lane');
-  }
-  return {
-    enabled: true,
-    profileIds: parseCreativeSyncProfileAllowlist(env[CREATIVE_SYNC_PROFILE_ALLOWLIST_ENV]),
-  };
+  if (!profileSyncEnabled) return { enabled: false, reason: 'profile_sync_disabled' };
+  return { enabled: true, reason: null };
 }
 
 /**

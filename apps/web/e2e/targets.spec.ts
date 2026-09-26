@@ -102,15 +102,22 @@ test('target page and goto restore the complete shared grid analysis', async ({ 
       await mappingDb.sql`delete from public.ad_group_product_assignments where org_id=${orgId} and profile_id=${fixtureProfileId} and ad_group_id='ag-1'`;
       await mappingDb.sql`insert into public.product_ads(org_id,profile_id,amazon_id,ad_product,state,campaign_id,ad_group_id,asin)
         values(${orgId},${fixtureProfileId},'synthetic-mapping-second','SP','enabled','c-1','ag-1','B000000272')`;
+      // The worker's derivation for two unrelated products: a proposal the operator confirms or changes.
+      const derivation = { adGroupId: 'ag-1', assignedAsin: 'B000000272', source: 'proposed', ambiguous: true,
+        reason: 'Products do not share a known parent; mature product spend is unavailable.',
+        candidates: ['B000000272', 'B0TEST0001'].map((asin) => ({ asin, skus: [], parentAsin: null, spend: null })) };
+      await mappingDb.sql`insert into public.ad_group_product_assignments(org_id,profile_id,ad_group_id,asin,source,derivation,derived_at)
+        values(${orgId},${fixtureProfileId},'ag-1','B000000272','proposed',${JSON.stringify(derivation)}::jsonb,now())`;
       await mappingDb.sql`insert into public.fact_sp_target_daily(org_id,profile_id,date,campaign_id,ad_group_id,target_id,target_kind,ad_product,cost)
         values(${orgId},${fixtureProfileId},${date},'c-1','ag-1','synthetic-mapping-target','keyword','SP',20)`;
       await page.goto(route);
       const banner = page.getByTestId('grid-unattributed');
-      await expect(banner).toContainText('1 ad group advertises');
-      await expect(banner).toContainText('over 1 day needs');
+      await expect(banner).toContainText('1 ad group needs a product check');
+      await expect(banner).toContainText('of spend over 1 day');
       await banner.getByRole('button',{ name: 'Link them' }).click();
       const mapping = page.getByRole('dialog',{ name: 'Assign products to ad groups' });
       await expect(mapping.getByTestId('product-assignment-row')).toHaveCount(1);
+      await expect(mapping.getByRole('combobox')).toHaveValue('B000000272');
       await mapping.getByRole('combobox').selectOption('B000000272');
       await mapping.getByRole('button',{ name: 'Save assignment' }).click();
       await expect(mapping).toContainText('Assigned: B000000272');

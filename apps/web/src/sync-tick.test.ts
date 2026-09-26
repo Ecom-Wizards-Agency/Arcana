@@ -16,7 +16,7 @@ import { createTestDatabase, databaseAvailable } from '@wizard-ads/db/testing';
 import type { TestDatabase } from '@wizard-ads/db/testing';
 import {
   CRON_SYNC_JOB_TYPES,
-  creativeSyncPilotFromEnv,
+  creativeSyncPolicyFromEnv,
   cronSyncJobTypesFromEnv,
   runSyncTick,
   SYNC_TICK_LOCK_KEY,
@@ -31,6 +31,7 @@ describe('cron claim filter', () => {
   it('enumerates Amazon jobs and recommendations, excluding integration work', () => {
     expect(CRON_SYNC_JOB_TYPES).toEqual([
       'entity.sync',
+      'creative.sync',
       'report.request',
       'report.poll',
       'report.fetch',
@@ -52,6 +53,7 @@ describe('cron claim filter', () => {
     };
     expect(cronSyncJobTypesFromEnv(recommendationReady)).toEqual([
       'entity.sync',
+      'creative.sync',
       'report.request',
       'report.poll',
       'report.fetch',
@@ -79,33 +81,19 @@ describe('cron claim filter', () => {
     })).toThrow(/OPENSPELL_RECOMMENDATION_LANE_REVISION/);
   });
 
-  it('keeps the Creative producer inert until both exact activation flags are set', () => {
-    expect(creativeSyncPilotFromEnv({})).toEqual({ enabled: false, profileIds: [] });
-    expect(creativeSyncPilotFromEnv({
-      OPENSPELL_EVO_REPORT_LANE_READY: '1',
-      OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '0',
-      OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST: 'malformed-but-ignored',
-    })).toEqual({ enabled: false, profileIds: [] });
-    expect(creativeSyncPilotFromEnv({
-      OPENSPELL_EVO_REPORT_LANE_READY: '1',
-      OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '1',
-      OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST: PROFILE_ONE,
-    })).toEqual({ enabled: true, profileIds: [PROFILE_ONE] });
+  it('enables creative observations independently of report ownership', () => {
+    for (const env of [{}, { OPENSPELL_EVO_REPORT_LANE_READY: '1' }]) {
+      expect(creativeSyncPolicyFromEnv(env)).toEqual({ enabled: true, reason: null });
+      expect(creativeSyncPolicyFromEnv(env, false))
+        .toEqual({ enabled: false, reason: 'profile_sync_disabled' });
+    }
   });
 
-  it('refuses malformed or premature Creative producer activation', () => {
-    expect(() => creativeSyncPilotFromEnv({
-      OPENSPELL_EVO_REPORT_LANE_READY: '1',
-      OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: 'true',
-    })).toThrow(/OPENSPELL_CREATIVE_SYNC_PRODUCER_READY/);
-    expect(() => creativeSyncPilotFromEnv({
-      OPENSPELL_EVO_REPORT_LANE_READY: '0',
-      OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '1',
-    })).toThrow(/exclusive Evo report lane/);
-    expect(() => creativeSyncPilotFromEnv({
-      OPENSPELL_EVO_REPORT_LANE_READY: '1',
-      OPENSPELL_CREATIVE_SYNC_PRODUCER_READY: '1',
-    })).toThrow(/OPENSPELL_CREATIVE_SYNC_PROFILE_ALLOWLIST/);
+  it('honors only the creative deployment kill switch', () => {
+    expect(creativeSyncPolicyFromEnv({ OPENSPELL_CREATIVE_SYNC_DISABLED: '1' }))
+      .toEqual({ enabled: false, reason: 'deployment_disabled' });
+    expect(() => creativeSyncPolicyFromEnv({ OPENSPELL_CREATIVE_SYNC_DISABLED: 'true' }))
+      .toThrow(/OPENSPELL_CREATIVE_SYNC_DISABLED/);
   });
 });
 

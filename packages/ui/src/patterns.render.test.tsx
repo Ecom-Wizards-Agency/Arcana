@@ -19,20 +19,41 @@ import { isGroupedRow } from './aggregate.js';
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 const available = columnsFor('targets');
 const view: SavedView = { id: 'synthetic', name: 'Synthetic view', entity: 'targets', columns: ['targeting', 'bid', 'spend'], pinned: ['targeting'], widths: {}, filter: { groups: [] }, groupBy: [], sort: [], dateRange: null, updatedAt: '2026-08-29' };
-it('opens the SIGNALS legend by hover and click, closes with Escape and returns focus', () => {
+// WP-316 (V23): the legend no longer opens on hover as a large panel over the
+// rows; it opens on request as a compact popover and is dismissible four ways.
+it('opens the compact SIGNALS legend on request only and dismisses it without losing an explanation', () => {
   render(<SignalsLegend />);
   const trigger = screen.getByRole('button', { name: 'SIGNALS legend' });
   fireEvent.mouseEnter(trigger.parentElement!);
-  const legend = screen.getByRole('dialog');
-  expect(legend.querySelectorAll('p strong')).toHaveLength(SIGNAL_AXES.length);
+  fireEvent.mouseEnter(trigger);
+  expect(screen.queryByRole('dialog')).toBeNull();
+  fireEvent.click(trigger);
+  const legend = screen.getByRole('dialog', { name: 'SIGNALS legend' });
+  expect(trigger.getAttribute('aria-expanded')).toBe('true');
+  expect(legend.querySelectorAll('[data-signal-axis]')).toHaveLength(SIGNAL_AXES.length);
+  for (const axis of SIGNAL_AXES) expect(legend.textContent).toContain(axis.description);
   expect(legend.textContent).toContain('unknown');
+  expect(legend.textContent).toContain('never means zero');
+  expect(legend.style.width).toBe('320px');
+  expect(legend.style.maxHeight).toBe('360px');
+  expect(legend.style.overflowY).toBe('auto');
   fireEvent.keyDown(legend, { key: 'Escape' });
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(document.activeElement).toBe(trigger);
   fireEvent.click(trigger);
   expect(screen.getByRole('dialog')).toBeTruthy();
+  fireEvent.mouseDown(document.body);
+  expect(screen.queryByRole('dialog')).toBeNull();
+  fireEvent.click(trigger);
+  fireEvent.scroll(document);
+  expect(screen.queryByRole('dialog')).toBeNull();
+  fireEvent.click(trigger);
   fireEvent.click(screen.getByRole('button', { name: 'Close legend' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
   expect(document.activeElement).toBe(trigger);
+  fireEvent.click(trigger);
+  fireEvent.click(trigger);
+  expect(screen.queryByRole('dialog')).toBeNull();
 });
 it('never shows an overflowing numeric prefix without its marker and full accessible value', () => {
   vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockReturnValue(120);

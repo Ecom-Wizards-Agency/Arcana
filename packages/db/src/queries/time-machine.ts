@@ -507,12 +507,18 @@ export async function listReversionBatches(
   const rows = await handle.sql<ReversionBatchHeaderRow[]>`
     with native_roots as (${nativeTimelineRoots(handle.sql, input)})
     select id, source_batch_id,
-           (select child.id from public.apply_batches child
+           coalesce((select child.id from public.apply_batches child
              where child.org_id = apply_batches.org_id
                and child.profile_id = apply_batches.profile_id
                and child.source_batch_id = apply_batches.id
                and child.status <> 'abandoned'
-             order by child.exported_at desc limit 1) as active_reversion_batch_id,
+             order by child.exported_at desc limit 1),
+             (select proposal.plan_id from public.sp_write_restore_proposals proposal
+               join public.sp_write_cycle_plans cycle on cycle.org_id=proposal.org_id and cycle.profile_id=proposal.profile_id and cycle.plan_id=proposal.plan_id
+               join public.sp_write_plans restore_plan on restore_plan.org_id=proposal.org_id and restore_plan.profile_id=proposal.profile_id and restore_plan.plan_id=proposal.plan_id
+                 and restore_plan.artifact#>>'{source,restoreProposal,kind}'='restore_proposal'
+               where proposal.org_id=apply_batches.org_id and proposal.profile_id=apply_batches.profile_id and proposal.source_batch_id=apply_batches.id
+               order by proposal.created_at desc,proposal.plan_id desc limit 1)) as active_reversion_batch_id,
            profile_id, tag, opt_group, lever, note,
            status::text as status, exported_at, applied_at, artifact_sha256,
            exported_proposals, reversible_rows, unsupported_rows, dependency_sets_count
@@ -521,6 +527,7 @@ export async function listReversionBatches(
        and profile_id = ${input.profileId}
        and source_kind = 'legacy_export'
        and not exists(select 1 from native_roots n where n.direction = 'forward'
+         and not exists(select 1 from public.sp_write_restore_proposals restore where restore.org_id=n.org_id and restore.profile_id=n.profile_id and restore.plan_id=n.plan_id)
          and n.preview_artifact #>> '{provenance,applyBatchId}' = apply_batches.id::text)
      order by exported_at desc, id desc
      limit ${limit}
@@ -548,12 +555,18 @@ export async function getReversionBatchPreview(
 ): Promise<ReversionBatchPreviewType | null> {
   const [header] = await handle.sql<ReversionBatchHeaderRow[]>`
     select id, source_batch_id,
-           (select child.id from public.apply_batches child
+           coalesce((select child.id from public.apply_batches child
              where child.org_id = apply_batches.org_id
                and child.profile_id = apply_batches.profile_id
                and child.source_batch_id = apply_batches.id
                and child.status <> 'abandoned'
-             order by child.exported_at desc limit 1) as active_reversion_batch_id,
+             order by child.exported_at desc limit 1),
+             (select proposal.plan_id from public.sp_write_restore_proposals proposal
+               join public.sp_write_cycle_plans cycle on cycle.org_id=proposal.org_id and cycle.profile_id=proposal.profile_id and cycle.plan_id=proposal.plan_id
+               join public.sp_write_plans restore_plan on restore_plan.org_id=proposal.org_id and restore_plan.profile_id=proposal.profile_id and restore_plan.plan_id=proposal.plan_id
+                 and restore_plan.artifact#>>'{source,restoreProposal,kind}'='restore_proposal'
+               where proposal.org_id=apply_batches.org_id and proposal.profile_id=apply_batches.profile_id and proposal.source_batch_id=apply_batches.id
+               order by proposal.created_at desc,proposal.plan_id desc limit 1)) as active_reversion_batch_id,
            profile_id, tag, opt_group, lever, note,
            status::text as status, exported_at, applied_at, artifact_sha256,
            exported_proposals, reversible_rows, unsupported_rows, dependency_sets_count
@@ -872,6 +885,7 @@ export async function listChangeQueue(
       from public.apply_rows ar join public.apply_batches b on b.org_id=ar.org_id and b.profile_id=ar.profile_id and b.id=ar.batch_id
       where ar.org_id=${input.orgId}::uuid and ar.profile_id=${input.profileId}::uuid and b.source_kind='legacy_export'
         and not exists(select 1 from visible_native_roots n where n.direction='forward'
+          and not exists(select 1 from public.sp_write_restore_proposals restore where restore.org_id=n.org_id and restore.profile_id=n.profile_id and restore.plan_id=n.plan_id)
           and n.preview_artifact #>> '{provenance,applyBatchId}'=b.id::text)
       union all
       select 'queued:'||q.id::text,q.created_at,'target',q.target_id,coalesce(q.context->>'targetLabel',q.target_id),'bid',
@@ -883,20 +897,56 @@ export async function listChangeQueue(
       union all
       select 'restore:'||p.plan_id::text,p.created_at,'keyword',p.plan_id::text,
         'Restore proposal · '||plan.provider_rows::text||' changes','bid',null::jsonb,null::jsonb,'restore',
-        case when review.plan_id is null then 'awaiting review' else 'approved' end,
+        case when accounting.observed_requested=plan.provider_rows then 'observed'
+          when accounting.provider_rejected+accounting.refused_before_dispatch+accounting.observation_conflict+accounting.observation_missing>0 then 'failed'
+          when accounting.provider_accepted=plan.provider_rows then 'succeeded'
+          when accounting.intent_committed>0 then 'attempted'
+          when accounting.execution_id is not null then 'admitted'
+          when review.plan_id is null then 'awaiting review' else 'approved' end,
         p.source_batch_id,b.tag,plan.provider_rows,false,0,null::timestamptz,null::uuid,
-        '/change-queue?profile='||p.profile_id::text||'&proposal='||p.plan_id::text
+        case when cycle.execution_id is null then '/optimizer/confirm/' else '/optimizer/run/' end||p.source_batch_id::text||'?profile='||p.profile_id::text||'&plan='||p.plan_id::text
+          ||case when cycle.execution_id is null then '' else '&execution='||cycle.execution_id::text end
       from public.sp_write_restore_proposals p
       join public.sp_write_plans plan on plan.org_id=p.org_id and plan.profile_id=p.profile_id and plan.plan_id=p.plan_id
       left join public.apply_batches b on b.org_id=p.org_id and b.profile_id=p.profile_id and b.id=p.source_batch_id
+      left join public.sp_write_cycle_plans cycle on cycle.org_id=p.org_id and cycle.profile_id=p.profile_id and cycle.plan_id=p.plan_id
+      left join public.sp_write_execution_accounting accounting on accounting.org_id=cycle.org_id and accounting.profile_id=cycle.profile_id
+        and accounting.execution_id=cycle.execution_id and accounting.plan_id=cycle.plan_id
       left join public.sp_write_restore_reviews review on review.org_id=p.org_id and review.profile_id=p.profile_id and review.plan_id=p.plan_id
       where p.org_id=${input.orgId}::uuid and p.profile_id=${input.profileId}::uuid
         and plan.artifact #>> '{source,restoreProposal,kind}'='restore_proposal'
+      union all
+      select 'amazon:'||e.id::text,e.occurred_at,lower(e.entity_type),e.entity_id,e.entity_id,e.change_type,
+        e.sanitized_payload->'previousValue',e.sanitized_payload->'newValue','amazon','observed',
+        null::uuid,null::text,null::integer,false,0,null::timestamptz,null::uuid,null::text
+      from public.amazon_change_events e
+      where e.org_id=${input.orgId}::uuid and e.profile_id=${input.profileId}::uuid
+      union all
+      select 'creation:'||b.id::text,b.admitted_at,'campaign_creation',b.id::text,
+        coalesce((select node->'payload'->>'name' from jsonb_array_elements(b.artifact->'plan'->'nodes') node
+          where node->>'kind'='campaign.create' limit 1),'Campaign creation'),'creation',null::jsonb,
+        to_jsonb(b.node_count::text||' resources · Initial state paused'),
+        case when b.parent_batch_id is null then 'campaign_creation' else 'campaign_creation_retry' end,
+        app.campaign_creation_batch_state(b.id),b.id,
+        case when b.parent_batch_id is null then 'Campaign creation' else 'Retry of '||b.parent_batch_id::text end,
+        b.node_count,false,0,null::timestamptz,null::uuid,
+        '/campaigns/draft?profile='||b.profile_id::text||'&draft='||b.draft_id::text||'&batch='||b.id::text||'&step=result'
+      from public.campaign_creation_batches b where b.org_id=${input.orgId}::uuid and b.profile_id=${input.profileId}::uuid
+        and b.artifact->'plan'->>'schemaVersion'='openspell.campaign-creation-plan.v2'
     ) select jsonb_build_object('id',id,'when',to_char(at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
       'entity',entity,'entityType',entity_type,'entityId',entity_id,'field',field,'oldValue',old_value,'newValue',new_value,
       'source',source,'state',state,'batchId',batch_id,'batchLabel',batch_label,'batchCount',batch_count,
       'experimentStart',experiment_start,'candidateCount',candidate_count,'acknowledgedAt',acknowledged_at,
-      'acknowledgedBy',acknowledged_by,'reviewHref',review_href) as artifact
+      'acknowledgedBy',acknowledged_by,'reviewHref',review_href,
+      'amazonObservation',case when source='amazon' then (
+        select jsonb_build_object('marketplaceId',e.marketplace_id,'retrievedAt',to_char(e.retrieved_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+          'identityQuality','derived','identityAmbiguity','provider_id_unavailable',
+          'identityConflict',exists(select 1 from public.amazon_change_events conflict where conflict.org_id=e.org_id and conflict.profile_id=e.profile_id and conflict.marketplace_id=e.marketplace_id and conflict.source_namespace=e.source_namespace and conflict.source_event_key=e.source_event_key and conflict.payload_digest<>e.payload_digest),
+          'resolution',case when resolved.event_id is null then 'unresolved' else 'resolved' end,
+          'resolvedEntityType',resolved.resolved_entity_type,'resolvedAmazonId',resolved.resolved_amazon_id)
+        from public.amazon_change_events e left join lateral(select event_id,resolved_entity_type,resolved_amazon_id from public.amazon_change_event_resolutions where org_id=e.org_id and profile_id=e.profile_id and event_id=e.id order by resolved_at desc,id desc limit 1) resolved on true
+        where 'amazon:'||e.id::text=entries.id and e.org_id=${input.orgId}::uuid and e.profile_id=${input.profileId}::uuid
+      ) else null end) as artifact
     from entries where (${input.source ?? null}::text is null or source=${input.source ?? null})
       and (${input.state ?? null}::text is null or state=${input.state ?? null})
       and (${input.field ?? null}::text is null or field=${input.field ?? null})
@@ -920,9 +970,14 @@ export async function listChangeQueue(
       const window = await listNativeTimeline(handle.sql, { orgId: input.orgId, profileId: input.profileId,
         from: input.from, to: input.to, field: input.field, entityTypes: input.entityType ? [input.entityType] : null,
         before, limit });
+      const restorePlans = window.length === 0 ? [] : await handle.sql<{ plan_id: string }[]>`select plan_id::text
+        from public.sp_write_restore_proposals where org_id=${input.orgId}::uuid and profile_id=${input.profileId}::uuid
+          and plan_id=any(${window.flatMap((entry) => entry.write ? [entry.write.execution.operation.planId] : [])}::uuid[])`;
+      const restoreIds = new Set(restorePlans.map((row) => row.plan_id));
       for (const entry of window) {
         const write = entry.write;
         if (write === null) throw new Error('Native history evidence missing');
+        if (restoreIds.has(write.execution.operation.planId)) continue;
         const state: ChangeQueueState = write.phase === 'observed_requested' ? 'observed'
           : write.phase === 'awaiting_observation' ? 'succeeded'
           : write.phase === 'awaiting_result' || write.phase === 'ambiguous' ? 'attempted'
@@ -947,9 +1002,15 @@ export async function countChangeQueue(handle: TimeMachineReadHandle, scope: { o
     (select count(*) from public.queued_changes q where q.org_id=${scope.orgId}::uuid and q.profile_id=${scope.profileId}::uuid
       and not exists(select 1 from public.queued_change_approvals a where a.org_id=q.org_id and a.profile_id=q.profile_id and a.change_id=q.id))
     +(select count(*) from public.sp_write_restore_proposals p where p.org_id=${scope.orgId}::uuid and p.profile_id=${scope.profileId}::uuid
-      and not exists(select 1 from public.sp_write_restore_reviews r where r.org_id=p.org_id and r.profile_id=p.profile_id and r.plan_id=p.plan_id))
+      and not exists(select 1 from public.sp_write_restore_reviews r where r.org_id=p.org_id and r.profile_id=p.profile_id and r.plan_id=p.plan_id)
+      and not exists(select 1 from public.sp_write_cycle_plans c where c.org_id=p.org_id and c.profile_id=p.profile_id and c.plan_id=p.plan_id))
+    +(select count(*) from public.campaign_creation_batches b where b.org_id=${scope.orgId}::uuid and b.profile_id=${scope.profileId}::uuid
+      and b.artifact->'plan'->>'schemaVersion'='openspell.campaign-creation-plan.v2'
+      and app.campaign_creation_batch_state(b.id)<>'observed'
+      and not exists(select 1 from public.campaign_creation_batches child where child.parent_batch_id=b.id))
     +(select count(*) from public.entity_changes ec where ec.org_id=${scope.orgId}::uuid and ec.profile_id=${scope.profileId}::uuid
-      and ec.source='sync' and ec.acknowledged_at is null))::int as count`;
+      and ec.source='sync' and ec.acknowledged_at is null)
+    +(select count(*) from public.amazon_change_events e where e.org_id=${scope.orgId}::uuid and e.profile_id=${scope.profileId}::uuid))::int as count`;
   if (row === undefined) throw new Error('Change queue count unavailable');
   return row.count;
 }

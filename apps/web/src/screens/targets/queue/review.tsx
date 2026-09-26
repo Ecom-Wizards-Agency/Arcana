@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { corridorMaxCpc } from '@wizard-ads/core';
-import type { QueuedBidChange } from '@wizard-ads/shared';
+import { placementLabel, type QueuedBidChange } from '@wizard-ads/shared';
 import styles from '../target360.module.css';
 export function QueueReview({ change, back }: { change: QueuedBidChange; back: string }) {
   const [approval, setApproval] = useState<Pick<QueuedBidChange, 'id' | 'approvedAt' | 'approvedBy'> | null>(change.approvedAt === null ? null : change);
@@ -28,7 +28,7 @@ export function QueueReview({ change, back }: { change: QueuedBidChange; back: s
     <p>Profile: {change.context.profileLabel} · {change.context.profileId}</p>
     <table><thead><tr><th>Target / Campaign</th><th>Current</th><th>Proposed</th><th>Status</th></tr></thead><tbody><tr><td>{change.context.targetLabel} / {change.context.campaignLabel}<small> · {change.context.targetId}</small></td><td>{change.request.expectedBid.amount} {change.request.expectedBid.currencyCode}</td><td>{change.request.newBid.amount} {change.request.newBid.currencyCode}</td><td>{approved ? 'Approved' : 'Awaiting review'}</td></tr></tbody></table>
     <p>Amazon bid last read: {change.request.expectedReadAt}</p>
-    <p>Placement exposure: {change.context.placementModifiers === null ? 'Not measured' : Object.entries(change.context.placementModifiers).map(([name,pct]) => `${name}: ${pct === null ? 'not measured' : `${pct}%`}`).join(' · ')}</p>
+    <p>Placement exposure: {change.context.placementModifiers === null ? 'Not measured' : Object.entries(change.context.placementModifiers).map(([name,pct]) => `${placementLabel(name) ?? name}: ${pct === null ? 'not measured' : `${pct}%`}`).join(' · ')}</p>
     <p>Current max CPC {money(corridorMaxCpc(Number(change.request.expectedBid.amount),components))} · Proposed max CPC {money(corridorMaxCpc(Number(change.request.newBid.amount),components))}</p>
     <h2>Review before approval</h2><p>Check the latest bid, placement exposure and campaign limits. If the proposal is outside a limit, fix it before approving.</p>
     <ul className={styles.checks}>{change.checks.map((c) => <li key={c.key}><strong>{c.passed ? 'Pass' : 'Fail'} · {c.key.replaceAll('_',' ')}</strong><p>{c.reason}</p><small>{c.source}</small></li>)}</ul>

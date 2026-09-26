@@ -9,6 +9,8 @@ import SharedError from '../shared-error';
 import { descriptor } from './descriptor';
 import { ready } from './render-fixture';
 import Screen from './view';
+import { ready as operationReady } from '../optimizer-run/render-fixture';
+import { restoreOperationFixture } from '../../writes/approval-fixtures';
 
 verifyScreen(descriptor, [
   { state: 'loading', name: 'renders review loading', render: () => <Loading />, text: '' },
@@ -16,6 +18,8 @@ verifyScreen(descriptor, [
   { state: 'gated', name: 'explains unavailable database', render: () => <Screen data={{ view: 'gated', props: { entry: { state: 'no-database' } } }} />, text: 'database' },
   { state: 'empty', name: 'explains absent profiles', render: () => <Screen data={{ view: 'empty', props: {} }} />, text: 'No profiles yet' },
   { state: 'not-measured', name: 'keeps absent immutable evidence unavailable', render: () => <Screen data={{ ...ready, props: { ...ready.props, details: true } }} />, text: 'Unavailable' },
+  { state: 'stale', name: 'renders a restore observation conflict', render: () => <Screen data={{ view: 'observation', props: { ...operationReady.props, operation: restoreOperationFixture('conflict') } }} />, text: 'Observed state conflicts with the request' },
+  { state: 'refused', name: 'renders a restore refusal without an apply claim', render: () => <Screen data={{ view: 'observation', props: { ...operationReady.props, operation: restoreOperationFixture('refused') } }} />, text: 'Refused · Fresh preview required' },
   { state: 'ready', name: 'renders two saved suggestions with zero selected', render: () => <Screen data={ready} />, text: 'Select changes to continue' },
 ]);
 

@@ -10,7 +10,7 @@ export const descriptor = {
   guard: { "kind": "requested", "canonicalProfile": true },
   prefetch: "expensive",
   rollout: { "enabled": true },
-  states: ["loading", "error", "gated", "empty", "not-measured"],
+  states: ["loading", "error", "gated", "empty", "not-measured", "derived", "derived-parent", "proposed", "manual", "unassigned"],
   entry: "gate-message",
   specs: [{ file: "grid-layout.spec.ts", suite: "auth" }, { "file": "grid-performance.spec.ts", "suite": "grid-performance" }, { "file": "grid.spec.ts", "suite": "auth" }],
   load: (actor, params) => import('./load').then((module) => module.load(actor, params)),

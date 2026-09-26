@@ -74,6 +74,7 @@ import type { GridCellEnvironment } from './grid/GridCell.js';
 import { GridHeader } from './grid/GridHeader.js';
 import { GridTotals } from './grid/GridTotals.js';
 import {
+  GRID_HEADER_BACKGROUND,
   footer,
   footerNote,
   footerSelection,
@@ -539,8 +540,8 @@ export function DataGrid({
   return (
     <div data-grouped-headers={columns.some((column) => column.id === 'rank_grid')} className={presentation === 'performance' ? 'wa-performance-grid' : undefined} style={{ ...(fill ? shellFill : shell), ...style }} data-testid="grid-shell" data-density={density}>
       {presentation === 'performance' ? <style>{`
-        .wa-performance-grid [role="columnheader"][aria-sort] { padding-inline: 6px !important; font-size: 9px !important; text-transform: uppercase; }
-        .wa-performance-grid [role="columnheader"] > button { position: absolute; right: 2px; top: 1px; opacity: 0 !important; background: ${tokens.color.surfaceAlt} !important; }
+        .wa-performance-grid [role="columnheader"][aria-sort] { padding-inline: 6px 10px !important; font-size: 10px !important; letter-spacing: 0.04em !important; text-transform: uppercase; }
+        .wa-performance-grid [role="columnheader"] > button { position: absolute; right: 10px; top: 1px; opacity: 0 !important; background: ${GRID_HEADER_BACKGROUND} !important; }
         .wa-performance-grid [role="columnheader"]:hover > button, .wa-performance-grid [role="columnheader"]:focus-within > button { opacity: 1 !important; }
         .wa-performance-grid [data-testid^="sorted-column-aggregate-"] { display: none; }
         .wa-performance-grid [role="row"]:has(> [role="columnheader"][aria-sort]) + [role="row"],
@@ -566,7 +567,7 @@ export function DataGrid({
         }}
       >
         <div style={{ width: totalWidth, minWidth: '100%' }}>
-          {columns.some((column) => column.id === 'rank_grid') ? <div role="row" data-testid="grid-subject-headers" style={{ display: 'flex', height: 26, background: tokens.color.surfaceAlt, color: tokens.color.textMuted, fontSize: 9 }}>
+          {columns.some((column) => column.id === 'rank_grid') ? <div role="row" data-testid="grid-subject-headers" style={{ display: 'flex', height: 26, background: GRID_HEADER_BACKGROUND, color: tokens.color.textMuted, fontSize: 10, fontWeight: 600 }}>
             {leafColumns.map((column, index) => {
               const definition = columns.find((item) => item.id === column.id);
               const prior = columns.find((item) => item.id === leafColumns[index - 1]?.id);

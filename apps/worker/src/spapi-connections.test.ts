@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { NotConfigured, type SpApiConnectionClaim, type SpApiConnectionOperation } from '@wizard-ads/shared';
 import type { DbHandle } from '@wizard-ads/db';
-import { exchangeSpApiAuthorizationCode, runSpApiConnectionPass } from './spapi-connections.js';
+import { exchangeSpApiAuthorizationCode, runSpApiConnectionPass, spApiConnectionPass, type SpApiConnectionSettings } from './spapi-connections.js';
 import { SpApiCodeExchangeError } from '@wizard-ads/sp-api';
 import { ProviderConnectionLoop } from './provider-connection-loop.js';
 
@@ -113,5 +113,61 @@ describe('SP-API provider connection implementation', () => {
     expect(f.operation()).toMatchObject({ state: 'reconnect_required',reason: 'exchange_uncertain',attachedBindings: 0 });
     expect(loop.status()).toMatchObject({ inFlight: 0,stopping: true,running: false });
     expect(exchange).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('SP-API connection pass wiring shared by the worker and the command', () => {
+  const applicationKey = ['synthetic', 'application', 'key'].join('-');
+  const settings: SpApiConnectionSettings = { spApiClientId: installation.clientId, spApiClientSecret: applicationKey,
+    spApiApplicationId: installation.applicationId, spApiConsentRegion: installation.region,
+    spApiConnectionRedirects: ['https://example.test/other', installation.redirectUri] };
+  const gateOpen = (): NodeJS.ProcessEnv => ({ OPENSPELL_SPAPI_CONNECTIONS_ENABLED: '1' });
+  const token = () => vi.fn(async (_input: string, _init?: RequestInit) =>
+    new Response(JSON.stringify({ refresh_token: 'synthetic-grant' }), { status: 200 }));
+
+  it('exchanges with both deployment credentials when every installation field matches', async () => {
+    const f = fixture(); const fetch = token();
+    const result = await spApiConnectionPass(f.handle, settings, gateOpen(), fetch)(new AbortController().signal);
+    expect(result).toMatchObject({ outcome: 'observed', operation: { state: 'completed', attachedBindings: 1 } });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const body = new URLSearchParams(String(fetch.mock.calls[0]![1]!.body));
+    expect({ client: body.get('client_id'), secret: body.get('client_secret'), redirect: body.get('redirect_uri'), code: body.get('code') })
+      .toEqual({ client: installation.clientId, secret: applicationKey, redirect: installation.redirectUri, code: 'synthetic-consent' });
+  });
+
+  it.each([
+    ['client id', { spApiClientId: 'other-client' }],
+    ['application id', { spApiApplicationId: 'other-application' }],
+    ['region', { spApiConsentRegion: 'EU' as const }],
+    ['redirect', { spApiConnectionRedirects: ['https://example.test/other'] }],
+  ])('refuses an installation whose %s differs, without an exchange', async (_field, change) => {
+    const f = fixture(); const fetch = token();
+    const result = await spApiConnectionPass(f.handle, { ...settings, ...change }, gateOpen(), fetch)(new AbortController().signal);
+    expect(result).toMatchObject({ outcome: 'observed', operation: { state: 'reconnect_required', reason: 'not_configured' } });
+    expect(fetch).toHaveBeenCalledTimes(0);
+  });
+
+  it.each([
+    ['secret', { spApiClientSecret: undefined }],
+    ['client id', { spApiClientId: undefined }],
+  ])('passes no credentials when the %s is absent', async (_field, change) => {
+    const f = fixture(); const fetch = token();
+    const result = await spApiConnectionPass(f.handle, { ...settings, ...change }, gateOpen(), fetch)(new AbortController().signal);
+    expect(result).toMatchObject({ outcome: 'observed', operation: { state: 'reconnect_required', reason: 'not_configured' } });
+    expect(fetch).toHaveBeenCalledTimes(0);
+  });
+
+  it('reads the gate at pass time, not when the pass is built', async () => {
+    const f = fixture(); const fetch = token(); const env: NodeJS.ProcessEnv = { OPENSPELL_SPAPI_CONNECTIONS_ENABLED: '0' };
+    const pass = spApiConnectionPass(f.handle, settings, env, fetch);
+    expect(await pass(new AbortController().signal)).toEqual({ outcome: 'idle', operation: null });
+    expect(f.sql).toHaveBeenCalledTimes(0);
+    env['OPENSPELL_SPAPI_CONNECTIONS_ENABLED'] = '1';
+    expect(await pass(new AbortController().signal)).toMatchObject({ outcome: 'observed', operation: { state: 'completed' } });
+    env['OPENSPELL_SPAPI_CONNECTIONS_ENABLED'] = '0';
+    const calls = f.sql.mock.calls.length;
+    expect(await pass(new AbortController().signal)).toEqual({ outcome: 'idle', operation: null });
+    expect(f.sql).toHaveBeenCalledTimes(calls);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

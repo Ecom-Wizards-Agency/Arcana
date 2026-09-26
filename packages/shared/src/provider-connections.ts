@@ -62,6 +62,38 @@ export const SpApiConsentRefusal = z.enum([
   'submission_uncertain', 'provider_refused',
 ]);
 export type SpApiConsentRefusal = z.infer<typeof SpApiConsentRefusal>;
+/**
+ * Consent-start refusal classes. They never share a value with a callback
+ * refusal, so one `spapi_error` query parameter can carry either.
+ */
+export const SpApiStartRefusalClass = z.enum([
+  'origin', 'unavailable', 'session', 'role', 'configuration', 'selection', 'signing_key', 'database', 'unexpected',
+]);
+export type SpApiStartRefusalClass = z.infer<typeof SpApiStartRefusalClass>;
+/**
+ * A deployment setting's name, never its value. The web runtime that reads the
+ * settings owns the exact allowlist: worker artifacts bundle this package and
+ * refuse provider setting names.
+ */
+export const SpApiStartSetting = z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/);
+export type SpApiStartSetting = z.infer<typeof SpApiStartSetting>;
+/** The submitted form part a selection refusal names; `form` is an oversized submission. */
+export const SpApiStartField = z.enum(['org', 'label', 'bindings', 'form']);
+export type SpApiStartField = z.infer<typeof SpApiStartField>;
+/** Exact `raise exception` refusals of `app.begin_spapi_connection` and its manager lock. */
+export const SpApiStartDatabaseRefusal = z.enum([
+  'manager_required', 'invalid_installation', 'request_reused', 'invalid_selection', 'duplicate_profiles',
+  'association_refused', 'reconnect_scope', 'reconnect_bindings', 'profile_taken',
+]);
+export type SpApiStartDatabaseRefusal = z.infer<typeof SpApiStartDatabaseRefusal>;
+/** One refusal and its only admissible detail; unlisted database errors carry none. */
+export const SpApiStartRefusal = z.discriminatedUnion('refusal', [
+  z.object({ refusal: z.literal('configuration'), detail: SpApiStartSetting }).strict(),
+  z.object({ refusal: z.literal('selection'), detail: SpApiStartField }).strict(),
+  z.object({ refusal: z.literal('database'), detail: SpApiStartDatabaseRefusal.nullable() }).strict(),
+  z.object({ refusal: z.enum(['origin', 'unavailable', 'session', 'role', 'signing_key', 'unexpected']), detail: z.null() }).strict(),
+]);
+export type SpApiStartRefusal = z.infer<typeof SpApiStartRefusal>;
 export const SpApiConnectionOperation = z.object({
   operationId: Uuid, orgId: Uuid, connectionId: Uuid.nullable(),
   state: z.enum(['awaiting_consent', 'queued', 'exchanging', 'completed', 'reconnect_required', 'cancelled']),

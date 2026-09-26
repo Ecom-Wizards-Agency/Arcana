@@ -18,6 +18,7 @@ import type { FormatContext } from './format.js';
 import type { GridModel } from './pipeline.js';
 import type { GridRow } from './rows.js';
 import { resolveField } from './rows.js';
+import { displayValue } from './value-labels.js';
 import { bodyCellStyle, bodyRowStyle, emptyState } from './grid/styles.js';
 
 export interface DataGridPerformanceBodyProps {
@@ -161,6 +162,6 @@ function groupRowLabel(
 ): string {
   const column = columns.find((candidate) => candidate.id === row.groupColumnId);
   const label = column?.header ?? row.groupColumnId;
-  const value = formatValue(resolveField(row, row.groupColumnId), column?.scale ?? 'text', context);
+  const value = formatValue(displayValue(column, resolveField(row, row.groupColumnId), row), column?.scale ?? 'text', context);
   return `Grouping level ${row.groupDepth + 1} of ${row.groupBy.length}: ${label} ${value}; ${formatInteger(row.groupSize, context.locale)} source rows`;
 }

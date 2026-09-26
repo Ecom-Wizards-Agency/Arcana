@@ -93,8 +93,12 @@ export const targetKind = pgEnum('target_kind', ['keyword', 'target']);
 
 // PostgreSQL appends these labels in migration order, independently of UI ordering.
 const appendedJobs = [
+  'own_bids.collect', 'own_listings.collect', 'prompts.collect',
+  'budget_usage.collect', 'budget_usage.stream',
   'retail.report.request', 'aba.report.request', 'catalogue.report.request',
-  'provider.evidence.collect',
+  'ads.product_metadata.sync', 'ads.product_eligibility.sync',
+  'ads.validation_configurations.sync', 'ads.change_history.sync',
+  'provider.evidence.collect', 'marketing_stream.extensions.project',
 ] as const satisfies readonly JobType[];
 const appendedJobSet = new Set<string>(appendedJobs);
 export const syncJobType = pgEnum('sync_job_type', tuple([
