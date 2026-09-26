@@ -14,12 +14,82 @@ import { CreativeThumbnail } from './presentation';
 verifyScreen(descriptor, [
   { state: 'loading', name: 'renders the route loading boundary', render: () => <Loading />, text: '' },
   { state: 'error', name: 'renders the shared error boundary with its reference', render: () => <SharedError error={Object.assign(new Error('Synthetic failure'), { digest: 'synthetic-reference' })} reset={() => { }} />, text: 'synthetic-reference' },
-  { state: 'ready', name: 'renders the screen with synthetic data', render: () => <Screen data={ready} />, text: "Creative Performance · 0 Sponsored Brands video creatives · 1 Aug 2026 – 29 Aug 2026" },
+  { state: 'ready', name: 'renders the screen with synthetic data', render: () => <Screen data={ready} />, text: "Sponsored Brands video creatives · 1 Aug 2026 – 29 Aug 2026" },
   { state: 'gated', name: 'explains an unavailable database', render: () => <Screen data={{ view: 'gated', props: { entry: { state: 'no-database' } } }} />, text: 'database' },
   { state: 'gated', name: 'explains missing organization membership', render: () => <Screen data={{ view: 'gated', props: { entry: { state: 'no-org', context: { ...context, active: null, memberships: [] } } } }} />, text: 'organisation' },
   { state: 'empty', name: 'shows an empty profile roster without invented data', render: () => <Screen data={{ view: 'empty', props: {} }} />, text: "profiles" },
   { state: 'not-measured', name: 'does not substitute measured results for absent evidence', render: () => <Screen data={ready} />, text: "Creative performance is not measured until the first creative sync completes" }
 ]);
+
+describe('Creatives leads with its state', () => {
+  /** The element straight after the page header, and whether it precedes every evidence panel. */
+  const pageHeader = () => screen.getByTestId('creative-screen').querySelector<HTMLElement>(':scope > header')!;
+  function lead() {
+    const header = pageHeader();
+    expect(header.textContent).toContain('Creatives');
+    const first = header.nextElementSibling as HTMLElement;
+    const evidence = screen.getByRole('region', { name: 'Amazon provider evidence' });
+    expect(first.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    return first;
+  }
+  it('not connected: no profile leads with connecting Amazon Ads', () => {
+    render(<Screen data={{ view: 'empty', props: {} }} />);
+    const header = screen.getByRole('heading', { name: 'Creatives' }).closest('header')!;
+    const first = header.nextElementSibling as HTMLElement;
+    expect(first.textContent).toContain('No profiles yet');
+    expect(within(first).getByRole('link', { name: 'Connect Amazon Ads' }).getAttribute('href')).toBe('/settings/connections');
+  });
+  it('not measured: leads with the missing first sync and says nobody has to start it', () => {
+    render(<Screen data={ready} />);
+    const first = lead();
+    expect(first.getAttribute('data-testid')).toBe('creative-not-measured');
+    expect(within(first).getByRole('heading', { level: 2 }).textContent).toBe('Not measured yet');
+    expect(first.textContent).toContain('Creative performance is not measured until the first creative sync completes. Creative sync runs by default for every synced profile, so Arcana queues it on its own; nobody needs to start it.');
+    expect(within(first).getByRole('link', { name: 'Sync status →' }).getAttribute('href')).toContain('/sync-status?profile=');
+    expect(screen.getByTestId('creative-screen').getAttribute('data-lead')).toBe('not_measured');
+    expect(pageHeader().textContent).not.toContain('Creative Performance');
+    expect(screen.getAllByTestId('creative-not-measured')).toHaveLength(1);
+  });
+  it('profile sync off: leads with who turns it back on and where', () => {
+    const data = visualFixture('selected-asset');
+    if (data.view !== 'ready') throw new Error('Expected ready fixture');
+    data.props.evidence = { ...data.props.evidence, producerEligible: false, reason: 'profile_sync_disabled' };
+    render(<Screen data={data} />);
+    const first = lead();
+    expect(first.getAttribute('data-testid')).toBe('creative-profile-sync-disabled');
+    expect(first.textContent).toContain("Creative sync runs by default for every synced profile, but this profile's sync is off, so no creative observations are scheduled. An owner or admin turns it back on in Settings → Profiles; Sync status shows when the first run is queued.");
+    expect(within(first).getByRole('link', { name: 'Settings → Profiles' }).getAttribute('href')).toBe('/settings/profiles');
+    expect(within(first).getByRole('link', { name: 'Sync status →' }).getAttribute('href')).toContain('/sync-status?profile=');
+    expect(screen.getByTestId('creative-screen').getAttribute('data-lead')).toBe('profile_sync_disabled');
+  });
+  it('deployment flag: leads with the flag and who can remove it', () => {
+    render(renderVisualFixture('sync-off'));
+    const first = lead();
+    expect(first.getAttribute('data-testid')).toBe('creative-sync-disabled');
+    expect(first.textContent).toContain('The deployment flag OPENSPELL_CREATIVE_SYNC_DISABLED=1 stops new creative observations for every profile. Whoever runs this deployment has to remove the flag; nothing on this page turns it back on.');
+    expect(first.textContent).toContain('Evidence already collected stays visible below.');
+    expect(screen.getByTestId('creative-screen').getAttribute('data-lead')).toBe('deployment_disabled');
+  });
+  it('deployment flag without any measured asset does not promise retained evidence', () => {
+    const data = visualFixture('sync-off');
+    if (data.view !== 'ready') throw new Error('Expected ready fixture');
+    for (const asset of data.props.workspace.assets) asset.performance = null;
+    data.props.evidence = { ...data.props.evidence, snapshot: null };
+    render(<Screen data={data} />);
+    const first = lead();
+    expect(first.getAttribute('data-testid')).toBe('creative-sync-disabled');
+    expect(first.textContent).toContain('Whoever runs this deployment has to remove the flag; nothing on this page turns it back on.');
+    expect(first.textContent).not.toContain('stays visible below');
+  });
+  it('measured: keeps the performance lead and shows no state notice', () => {
+    render(renderVisualFixture('selected-asset'));
+    expect(screen.getByTestId('creative-screen').getAttribute('data-lead')).toBe('measured');
+    expect(pageHeader().textContent).toContain('Creative Performance · 2 Sponsored Brands video creatives · 1 Aug 2026 – 29 Aug 2026');
+    const first = pageHeader().nextElementSibling!;
+    expect(first.getAttribute('aria-label')).toBe('Amazon provider evidence');
+    for (const id of ['creative-not-measured', 'creative-profile-sync-disabled', 'creative-sync-disabled']) expect(screen.queryByTestId(id)).toBeNull();
+  });
+});
 
 describe('Creatives list and overview evidence', () => {
   it('formats the window, first observation and sync evidence in words', () => {

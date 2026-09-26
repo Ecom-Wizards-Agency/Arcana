@@ -1,4 +1,4 @@
-import type { SpEvidence } from '@wizard-ads/shared';
+import type { CoreReportEvidence, ProviderEvidenceReadResult, SpEvidence } from '@wizard-ads/shared';
 import { readProviderEvidence } from '@wizard-ads/db';
 import type { ScreenActor } from '../../server/page-read';
 import { readCoreReportEvidence } from '@wizard-ads/db';
@@ -23,14 +23,23 @@ import { requireOrgRole } from '../../server/org-role';
 
 import { pageReadErrorMessage } from '../../server/authenticated-page-read';
 
-import { listOrgProfiles } from '../../recommendations/data';
+import { listOrgProfiles, type OrgProfile } from '../../recommendations/data';
 
 import {
   listQueryIntelligenceScopes,
   loadQueryIntelligenceSource,
 } from '../../query-intelligence/data';
 
-import { buildQueryIntelligenceModel } from '../../query-intelligence/model';
+import { buildQueryIntelligenceModel, type QueryIntelligenceModel } from '../../query-intelligence/model';
+
+/** No weekly SQP scope exists for the profile: the page leads with that and keeps the vocabulary workbench below. */
+export interface QueryNotMeasuredProps {
+  profile: OrgProfile;
+  providerEvidence?: ProviderEvidenceReadResult;
+  coreEvidence?: CoreReportEvidence[];
+  aba?: SpEvidence;
+  research?: { marketplaceId: string; weekStart: string; category: QueryCategory | null; search: string; model: QueryIntelligenceModel };
+}
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -74,8 +83,8 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       });
 
       const researchProfile = await readResearchProfile(snapshot, profile.id);
-      const { periodFromParams, todayIso } = await import('../../../app/_lib/periods');
-      const period = periodFromParams({from:one(query['from']),to:one(query['to'])},todayIso());
+      const { screenPeriod, todayIso } = await import('../../../app/_lib/periods');
+      const period = screenPeriod('query-intelligence', {from:one(query['from']),to:one(query['to'])},todayIso());
       const inWindow = one(query['from']) || one(query['to']) ? scopes.filter(s => s.weekStart >= period.start && s.weekEnd <= period.end) : scopes;
       const selected = selectedScope(inWindow, one(query['scope']));
       const scope = selected ?? {marketplaceId:researchProfile.marketplaceId,weekStart:period.start,weekEnd:period.end,factRows:0,asinCount:0,queryCount:0,loadedAt:new Date().toISOString()};
@@ -105,6 +114,12 @@ export async function load(access: ScreenActor, input: ScreenParams) {
       const model = buildQueryIntelligenceModel(source);
       const aba = await readSpReportEvidence(snapshot, { orgId: actor.orgId, profileId: profile.id, family: 'aba', start: scope.weekStart, end: scope.weekEnd });
 
+      if (scopes.length === 0) {
+        const props: QueryNotMeasuredProps = { ...(providerEvidence ? { providerEvidence } : {}), ...(aba ? { aba } : {}), profile,
+          research: { marketplaceId: scope.marketplaceId, weekStart: scope.weekStart, category, search, model },
+          ...(coreEvidence.length ? { coreEvidence } : {}) };
+        return { view: 'not-measured' as const, props };
+      }
       return { view: 'ready' as const, props: { ...(providerEvidence ? { providerEvidence } : {}), ...({ aba } as { aba?: SpEvidence }), profile, scope, scopes, category, search, model, contextualReview, contextualExports, role, ...(coreEvidence.length ? { coreEvidence } : {}) } };
     });
   } catch (error) {

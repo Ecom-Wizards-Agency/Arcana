@@ -1,6 +1,6 @@
 import { readBrandLens } from '@wizard-ads/db';
 import { listProfiles } from '../../../app/_lib/profiles';
-import { periodFromParams, todayIso } from '../../../app/_lib/periods';
+import { screenPeriod, todayIso } from '../../../app/_lib/periods';
 import type { ScreenActor } from '../../server/page-read';
 import type { ScreenParams } from '../types';
 export async function load(access: ScreenActor, input: ScreenParams) {
@@ -9,7 +9,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
     return await access.snapshot(async snapshot => {
       const profiles = await listProfiles(snapshot, snapshot.actor.orgId), profile = access.selectProfile(profiles);
       if (!profile) return { view: 'empty' as const };
-      const period = periodFromParams({
+      const period = screenPeriod('brand-lens', {
         from: typeof input.searchParams['from'] === 'string' ? input.searchParams['from'] : undefined,
         to: typeof input.searchParams['to'] === 'string' ? input.searchParams['to'] : undefined
       }, todayIso());

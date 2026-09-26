@@ -7,7 +7,7 @@ export const descriptor = {
   path: "/queries",
   route: "page",
   nav: { "group": "research", "label": "Queries", "icon": "icon/queries", "order": 1 },
-  guard: { "kind": "requested", "heading": "Query Intelligence" },
+  guard: { "kind": "requested", "heading": "Search query performance (SQP)" },
   prefetch: "expensive",
   rollout: { "enabled": true },
   states: ["loading", "error", "empty", "not-measured"],

@@ -51,7 +51,7 @@ import { FreshnessBanner, tokens } from '@wizard-ads/ui';
 import { buildPerformanceModel, scopeRows } from '../../src/screens/grid/performance-model';
 import type { GridPayload } from '../_lib/grid-data';
 import { PerformanceSummary, PerformanceToolbar } from '../../src/screens/grid/performance-chrome';
-import { useTranslationColumn } from '../../src/screens/grid/translation-column';
+import { TranslationFailureNotice, useTranslationColumn } from '../../src/screens/grid/translation-column';
 
 interface GridWorkspaceBaseProps {
   /** Identity supplied by the authenticated server page, never an API override. */
@@ -794,6 +794,7 @@ function ReadyGridWorkspace(props: ReadyGridWorkspaceProps): ReactNode {
             Restoring your saved grid layout…
           </p>
         )}
+        {viewReady && view.columns.includes('translation') ? <TranslationFailureNotice failure={translation.failure} /> : null}
       </div>
 
 

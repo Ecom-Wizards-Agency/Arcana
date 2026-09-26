@@ -26,7 +26,7 @@ import { resolveOneTimePreviewReadiness } from '../../optimizer/readiness';
 
 import { loadOptimizerPageData } from '../../../app/_lib/optimizer-page-data';
 
-import { periodFromParams, settledComparisonWindows, todayIso } from '../../../app/_lib/periods';
+import { screenPeriod, settledComparisonWindows, todayIso } from '../../../app/_lib/periods';
 
 import { listProfiles } from '../../../app/_lib/profiles';
 
@@ -55,7 +55,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   const params = await searchParams;
   const profileId = await Promise.resolve(access.requestedProfile);
   const today = todayIso();
-  const period = periodFromParams(params, today);
+  const period = screenPeriod('optimizer', params, today);
   const settled = settledComparisonWindows(period, today);
 
   const profiles = await access.readSql((sql) => listProfiles({ sql }, orgId));

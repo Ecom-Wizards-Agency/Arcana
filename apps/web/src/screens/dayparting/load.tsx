@@ -5,7 +5,7 @@ import type { ScreenActor } from '../../server/page-read';
 
 import type { ScreenParams } from '../types';
 
-import { addDays, todayIso } from '../../../app/_lib/periods';
+import { screenPeriod, screenToday } from '../../../app/_lib/periods';
 
 import { listProfiles } from '../../../app/_lib/profiles';
 
@@ -44,12 +44,13 @@ export async function load(access: ScreenActor, input: ScreenParams) {
     return { view: 'empty' as const, props: {} };
   }
 
-  const today = todayIso();
-  const requestedFrom = validDate(params.from) ? params.from : addDays(today, -55);
-  const requestedTo = validDate(params.to) ? params.to : today;
+  // A missing or invalid end keeps the rule's default for that end alone; an inverted pair falls back whole.
+  const fallback = screenPeriod('dayparting', {}, screenToday('dayparting', profile.timezone));
+  const requestedFrom = validDate(params.from) ? params.from : fallback.start;
+  const requestedTo = validDate(params.to) ? params.to : fallback.end;
   const [from, to] = requestedFrom <= requestedTo
     ? [requestedFrom, requestedTo]
-    : [addDays(today, -55), today];
+    : [fallback.start, fallback.end];
   const metric = isDaypartingMetric(params.metric) ? params.metric : 'roas';
   const showAllEvidence = params.evidence === 'all';
   const campaignId = nonempty(params.campaign);

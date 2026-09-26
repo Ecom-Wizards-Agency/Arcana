@@ -1,5 +1,3 @@
-import type { OrgProfile } from '../../recommendations/data';
-import type { CoreReportEvidence, ProviderEvidenceReadResult } from '@wizard-ads/shared';
 import { formatResearchPeriod } from './research-format';
 import { QueryResearch } from './research-view';
 import { AbaEvidencePanel } from '../grid/spapi-evidence';
@@ -25,7 +23,20 @@ import styles from '../../../app/query-intelligence/query-intelligence.module.cs
 
 import type { load } from './load';
 
-export type ScreenData = Awaited<ReturnType<typeof load>> | {view:'not-measured';props:{profile:OrgProfile;coreEvidence?:CoreReportEvidence[];providerEvidence?:ProviderEvidenceReadResult}};
+export type ScreenData = Awaited<ReturnType<typeof load>>;
+
+/** The page title; the descriptor's guard heading repeats it so the signed-in guard finds the same heading. */
+export const SQP_TITLE = 'Search query performance (SQP)';
+/** One line under the title: what the data is and where it comes from. */
+export const SQP_EXPLANATION = 'Amazon Brand Analytics search query performance, reported weekly for each marketplace. It arrives through the Seller Central connection.';
+
+function SqpTitle({ sub }: { sub: string }) {
+  return (<div>
+    <h1 className="wa-page-title">{SQP_TITLE}</h1>
+    <p className="wa-page-sub" data-testid="sqp-explanation">{SQP_EXPLANATION}</p>
+    <p className="wa-page-sub">{sub}</p>
+  </div>);
+}
 
 export default function ScreenView({ data }: { data: ScreenData; }) {
   switch (data.view) {
@@ -39,35 +50,30 @@ export default function ScreenView({ data }: { data: ScreenData; }) {
 function renderEmpty(_props: Extract<ScreenData, { view: 'empty'; }>['props']) {
   return (<main className="wa-stack">
     <header className="wa-page-head">
-      <div>
-        <h1 className="wa-page-title">Query Intelligence</h1>
-        <p className="wa-page-sub">This organisation has no advertising profiles yet.</p>
-      </div>
+      <SqpTitle sub="This organisation has no advertising profiles yet." />
     </header>
   </main>);
 }
 
-function renderNotMeasured({ providerEvidence, profile, coreEvidence }: Extract<ScreenData, { view: 'not-measured'; }>['props']) {
+function renderNotMeasured({ providerEvidence, profile, coreEvidence, aba, research }: Extract<ScreenData, { view: 'not-measured'; }>['props']) {
   return (<main className="wa-stack">
-    <ProviderEvidencePanel evidence={providerEvidence} consumer="query-intelligence" />
-    {coreEvidence ? <CoreReportEvidencePanel evidence={coreEvidence} title="Sponsored Brands paid queries" /> : null}
     <header className="wa-page-head">
-      <div>
-        <h1 className="wa-page-title">Query Intelligence</h1>
-        <p className="wa-page-sub">
-          {profile.label} · SP-API Brand Analytics Search Query Performance
-        </p>
-      </div>
+      <SqpTitle sub={profile.label} />
     </header>
     <div className="wa-empty" data-state="not-measured">
-      <p className="wa-empty__title">No authoritative weekly SQP data</p>
+      <p className="wa-empty__title">No weekly SQP data yet</p>
       <p className="wa-empty__body">
-        Search Query Performance is not connected for this profile. No marketplace/week has a complete Query Intelligence contract yet. The worker must
-        promote a Sunday–Saturday SP-API Brand Analytics report before this page can compare
-        search demand, shares, and PPC attribution.
+        Next step: connect Seller Central in Settings → Connections. Once it is connected, Amazon's weekly search query performance report arrives on its own, and this page fills in once the first full week (Sunday to Saturday) is in.
       </p>
+      <a className="wa-btn wa-btn--sm" href="/settings/connections">Connect Seller Central</a>
       <p className="wa-empty__meta">No report was requested and no Amazon change was made.</p>
     </div>
+    <ProviderEvidencePanel evidence={providerEvidence} consumer="query-intelligence" />
+    {coreEvidence ? <CoreReportEvidencePanel evidence={coreEvidence} title="Sponsored Brands paid queries" /> : null}
+    {research ? <>
+      <AbaEvidencePanel evidence={aba} />
+      <QueryResearch key={`${profile.id}:${research.weekStart}:${research.category}:${research.search}`} initialCategory={research.category} initialSearch={research.search} profileId={profile.id} marketplaceId={research.marketplaceId} facts={research.model.queryRows} ppc={research.model.ppcRows} vocabulary={research.model.vocabulary}/>
+    </> : null}
   </main>);
 }
 
@@ -76,12 +82,7 @@ function renderReady({ providerEvidence, aba, profile, scope, scopes, category, 
     <ProviderEvidencePanel evidence={providerEvidence} consumer="query-intelligence" />
     {coreEvidence ? <CoreReportEvidencePanel evidence={coreEvidence} title="Sponsored Brands paid queries" /> : null}
     <header className="wa-page-head">
-      <div>
-        <h1 className="wa-page-title">Query Intelligence</h1>
-        <p className="wa-page-sub">
-          {profile.label} · {scope.marketplaceId} · {formatResearchPeriod({ start: scope.weekStart, end: scope.weekEnd })}
-        </p>
-      </div>
+      <SqpTitle sub={`${profile.label} · ${scope.marketplaceId} · ${formatResearchPeriod({ start: scope.weekStart, end: scope.weekEnd })}`} />
       <span className="wa-badge wa-badge--info">Review and evidence only · Amazon not updated</span>
     </header>
 
@@ -165,10 +166,7 @@ function renderReady({ providerEvidence, aba, profile, scope, scopes, category, 
 function renderError({ message }: Extract<ScreenData, { view: 'error'; }>['props']) {
   return (<main className="wa-stack">
     <header className="wa-page-head">
-      <div>
-        <h1 className="wa-page-title">Query Intelligence</h1>
-        <p className="wa-page-sub">Weekly SQP and PPC evidence could not be loaded.</p>
-      </div>
+      <SqpTitle sub="Weekly SQP and PPC evidence could not be loaded." />
     </header>
     <p className="wa-banner wa-banner--bad" role="alert">{message}</p>
   </main>);

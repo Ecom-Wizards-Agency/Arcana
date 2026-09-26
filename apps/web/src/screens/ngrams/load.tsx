@@ -26,7 +26,7 @@ import { listOrgProfiles } from '../../recommendations/data';
 
 import { loadScopes, loadSearchTermRows } from '../../ngrams/data';
 
-import { periodFromParams, todayIso } from '../../../app/_lib/periods';
+import { screenPeriod, todayIso } from '../../../app/_lib/periods';
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -49,7 +49,7 @@ export async function load(access: ScreenActor, input: ScreenParams) {
 
       const from = one(query['from']);
       const to = one(query['to']);
-      const period = periodFromParams(
+      const period = screenPeriod('ngrams',
         { ...(from === undefined ? {} : { from }), ...(to === undefined ? {} : { to }) },
         todayIso(),
       );
