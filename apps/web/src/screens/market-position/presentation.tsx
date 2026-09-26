@@ -29,7 +29,8 @@ export function MarketPositionPresentation({ data, category, threshold, onProduc
           {data.products.map((product) => <option key={product.asin} value={product.asin}>{product.name ?? product.asin}</option>)}
         </select><span>·</span><a href={productUrl(data.selectedAsin, data.countryCode)} target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>{data.selectedAsin}</a><span>·</span>
         {categories.length > 1 ? <select aria-label="Category" value={category} onChange={(event) => onCategory?.(event.target.value)} style={{ font: 'inherit', color: 'inherit', background: 'transparent', border: 0 }}>{categories.map((series) => <option key={series.category}>{series.category}</option>)}</select> : <span>{category || 'Category not measured'}</span>}
-        <span>· BSR from Keepa, read daily · {model.links.length} competitors tracked</span>
+        <span>· {data.marketSignalsAsOf === undefined ? 'BSR from Keepa, read daily'
+          : `BSR from Keepa via wizards-ai, data as of ${data.marketSignalsAsOf ? `${data.marketSignalsAsOf.slice(0, 10)} ${data.marketSignalsAsOf.slice(11, 16)} UTC` : 'not reported'}`} · {model.links.length} competitors tracked</span>
       </div>
       <section aria-label="Proximity status" data-testid={alert ? 'proximity-alert' : 'proximity-status'} style={{ padding: '0.6875rem 0.8125rem', border: `1px solid var(--wa-${alert ? 'bad-border' : 'border'})`, borderRadius: 'var(--wa-radius)', background: alert ? 'color-mix(in srgb, var(--wa-bad) 10%, var(--wa-bg))' : 'var(--wa-surface)', color: alert ? 'color-mix(in srgb, var(--wa-bad-text) 80%, var(--wa-accent-text))' : 'var(--wa-text-muted)', display: 'grid', gap: '0.375rem' }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.625rem', alignItems: 'center' }}>

@@ -65,3 +65,4 @@ export * from './product-assignment.js';
 export * from './campaign-creation-batch.js';
 export * from './campaign-creation-admission.js';
 export * from './campaign-creation-screen.js';
+export * from './market-signals/market-signals.js';

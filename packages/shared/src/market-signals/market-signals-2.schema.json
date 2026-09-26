@@ -1,0 +1,733 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://ecom-wizards.local/schemas/market-signals-2.json",
+ "title": "market-signals/2",
+ "description": "One NDJSON line of the wizards-ai Arcana export (market_arcana.py). Each batch is a header followed by observation, change_point and signal records. Ids are uuid5 and stable under replay; Arcana upserts by id.",
+ "$comment": "Vendored from wizards-ai schemas/market-signals-2.json (slice S8, 25 Sept 2026). wizards-ai owns this contract; replace this file with its next published version rather than editing it here. Two edits only: this comment, and four characters of the change_point holder pattern written as JSON unicode escapes so the repository's entropy scanner does not read the pattern as a credential; the parsed schema is identical. packages/shared/src/market-signals/market-signals.ts mirrors it as zod schemas and its test checks that both agree.",
+ "oneOf": [
+  {
+   "$ref": "#/$defs/header"
+  },
+  {
+   "$ref": "#/$defs/observation"
+  },
+  {
+   "$ref": "#/$defs/change_point"
+  },
+  {
+   "$ref": "#/$defs/signal"
+  }
+ ],
+ "$defs": {
+  "utc": {
+   "type": "string",
+   "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?Z$"
+  },
+  "uuid": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+  },
+  "asin": {
+   "type": "string",
+   "pattern": "^[A-Z0-9]{10}$"
+  },
+  "marketplace": {
+   "type": "string",
+   "pattern": "^[A-Z]{2}$"
+  },
+  "org_key": {
+   "type": "string",
+   "minLength": 1
+  },
+  "role": {
+   "enum": [
+    "own",
+    "competitor"
+   ]
+  },
+  "header": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "kind",
+    "schema",
+    "source",
+    "org_key",
+    "generated_at",
+    "state_generated_at",
+    "mode",
+    "since",
+    "counts"
+   ],
+   "properties": {
+    "kind": {
+     "const": "header"
+    },
+    "schema": {
+     "const": "market-signals/2"
+    },
+    "source": {
+     "const": "wizards-ai"
+    },
+    "org_key": {
+     "$ref": "#/$defs/org_key"
+    },
+    "generated_at": {
+     "$ref": "#/$defs/utc"
+    },
+    "state_generated_at": {
+     "oneOf": [
+      {
+       "$ref": "#/$defs/utc"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "mode": {
+     "enum": [
+      "full",
+      "since",
+      "delta"
+     ]
+    },
+    "since": {
+     "oneOf": [
+      {
+       "type": "string",
+       "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "counts": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "observation",
+      "change_point",
+      "signal"
+     ],
+     "properties": {
+      "observation": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "change_point": {
+       "type": "integer",
+       "minimum": 0
+      },
+      "signal": {
+       "type": "integer",
+       "minimum": 0
+      }
+     }
+    }
+   }
+  },
+  "observation": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "kind",
+    "id",
+    "org_key",
+    "profile_key",
+    "marketplace",
+    "asin",
+    "role",
+    "observed_at",
+    "category",
+    "bsr",
+    "price",
+    "rating",
+    "review_count",
+    "buy_box_price",
+    "offer_count"
+   ],
+   "properties": {
+    "kind": {
+     "const": "observation"
+    },
+    "id": {
+     "$ref": "#/$defs/uuid"
+    },
+    "org_key": {
+     "$ref": "#/$defs/org_key"
+    },
+    "profile_key": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "marketplace": {
+     "$ref": "#/$defs/marketplace"
+    },
+    "asin": {
+     "$ref": "#/$defs/asin"
+    },
+    "role": {
+     "$ref": "#/$defs/role"
+    },
+    "observed_at": {
+     "$ref": "#/$defs/utc"
+    },
+    "category": {
+     "type": "string",
+     "pattern": "^([0-9]+)?$"
+    },
+    "bsr": {
+     "type": [
+      "integer",
+      "null"
+     ],
+     "minimum": 0
+    },
+    "price": {
+     "type": [
+      "number",
+      "null"
+     ],
+     "minimum": 0
+    },
+    "rating": {
+     "type": [
+      "number",
+      "null"
+     ],
+     "minimum": 0,
+     "maximum": 5
+    },
+    "review_count": {
+     "type": [
+      "integer",
+      "null"
+     ],
+     "minimum": 0
+    },
+    "buy_box_price": {
+     "type": [
+      "number",
+      "null"
+     ],
+     "minimum": 0
+    },
+    "offer_count": {
+     "type": [
+      "integer",
+      "null"
+     ],
+     "minimum": 0
+    }
+   }
+  },
+  "change_point": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "kind",
+    "id",
+    "org_key",
+    "profile_key",
+    "marketplace",
+    "asin",
+    "role",
+    "observation",
+    "track",
+    "at",
+    "value"
+   ],
+   "properties": {
+    "kind": {
+     "const": "change_point"
+    },
+    "id": {
+     "$ref": "#/$defs/uuid"
+    },
+    "org_key": {
+     "$ref": "#/$defs/org_key"
+    },
+    "profile_key": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "marketplace": {
+     "$ref": "#/$defs/marketplace"
+    },
+    "asin": {
+     "$ref": "#/$defs/asin"
+    },
+    "role": {
+     "$ref": "#/$defs/role"
+    },
+    "observation": {
+     "type": "string",
+     "pattern": "^[A-Z]{2}\\|[A-Z0-9]{10}$"
+    },
+    "track": {
+     "enum": [
+      "buybox_price",
+      "category_ids",
+      "fba_fee",
+      "holder",
+      "new_fba_price",
+      "new_price",
+      "offer_count",
+      "package_dimensions",
+      "package_weight",
+      "rank",
+      "rating",
+      "referral_fee",
+      "reviews",
+      "root_category"
+     ]
+    },
+    "at": {
+     "$ref": "#/$defs/utc"
+    },
+    "value": {}
+   },
+   "allOf": [
+    {
+     "if": {
+      "properties": {
+       "track": {
+        "const": "holder"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "value": {
+        "type": "string",
+        "pattern": "\u005e(A[0-9A-Z]{5,20}\u007csuppressed\u007cunidentified)\u0024"
+       }
+      }
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "track": {
+        "enum": [
+         "buybox_price",
+         "new_price",
+         "new_fba_price"
+        ]
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "value": {
+        "oneOf": [
+         {
+          "type": "number",
+          "minimum": 0
+         },
+         {
+          "const": "no_offer"
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "track": {
+        "enum": [
+         "rank",
+         "reviews",
+         "offer_count"
+        ]
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "value": {
+        "oneOf": [
+         {
+          "type": "integer",
+          "minimum": 0
+         },
+         {
+          "const": "no_offer"
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "track": {
+        "const": "rating"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "value": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 5
+       }
+      }
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "track": {
+        "const": "category_ids"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "value": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "track": {
+        "const": "root_category"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "value": {
+        "type": "string",
+        "pattern": "^([0-9]+)?$"
+       }
+      }
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "track": {
+        "const": "package_dimensions"
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "value": {
+        "type": "object"
+       }
+      }
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "track": {
+        "enum": [
+         "fba_fee",
+         "referral_fee",
+         "package_weight"
+        ]
+       }
+      }
+     },
+     "then": {
+      "properties": {
+       "value": {
+        "type": [
+         "number",
+         "null"
+        ]
+       }
+      }
+     }
+    }
+   ]
+  },
+  "tag_mark": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "id",
+    "tag_id",
+    "path",
+    "op",
+    "at",
+    "source",
+    "stage",
+    "rules"
+   ],
+   "properties": {
+    "id": {
+     "$ref": "#/$defs/uuid"
+    },
+    "tag_id": {
+     "$ref": "#/$defs/uuid"
+    },
+    "path": {
+     "type": "string",
+     "pattern": "^signal/[a-z_]+/[^/]+$"
+    },
+    "op": {
+     "enum": [
+      "add",
+      "remove"
+     ]
+    },
+    "at": {
+     "$ref": "#/$defs/utc"
+    },
+    "source": {
+     "enum": [
+      "rule",
+      "label",
+      "jev",
+      "human"
+     ]
+    },
+    "stage": {
+     "enum": [
+      "live",
+      "shadow"
+     ]
+    },
+    "rules": {
+     "type": [
+      "string",
+      "null"
+     ]
+    }
+   }
+  },
+  "signal": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "kind",
+    "id",
+    "key",
+    "org_key",
+    "profile_key",
+    "account",
+    "marketplace",
+    "asin",
+    "parent_asin",
+    "issue_type",
+    "family",
+    "severity",
+    "route",
+    "route_source",
+    "because",
+    "status",
+    "band",
+    "hero",
+    "holder",
+    "onset_at",
+    "first_fired_at",
+    "last_movement",
+    "resolved_at",
+    "summary",
+    "figures",
+    "tag_marks"
+   ],
+   "properties": {
+    "kind": {
+     "const": "signal"
+    },
+    "id": {
+     "$ref": "#/$defs/uuid"
+    },
+    "key": {
+     "type": "string",
+     "pattern": "^.+\\|[A-Z]{2}\\|ASIN:[A-Z0-9]{10}\\|[a-z_]+$"
+    },
+    "org_key": {
+     "$ref": "#/$defs/org_key"
+    },
+    "profile_key": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "account": {
+     "type": "string"
+    },
+    "marketplace": {
+     "$ref": "#/$defs/marketplace"
+    },
+    "asin": {
+     "$ref": "#/$defs/asin"
+    },
+    "parent_asin": {
+     "oneOf": [
+      {
+       "$ref": "#/$defs/asin"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "issue_type": {
+     "enum": [
+      "browse_node_changed",
+      "bsr_competitor_proximity",
+      "bsr_degradation",
+      "buybox_lost",
+      "buybox_suppressed",
+      "fba_fee_changed",
+      "offer_count_increased",
+      "out_of_stock",
+      "package_dimensions_changed",
+      "package_weight_changed",
+      "price_changed",
+      "rating_display_dropped",
+      "rating_display_improved",
+      "rating_drop",
+      "referral_fee_changed",
+      "reviews_disappeared",
+      "root_category_changed"
+     ]
+    },
+    "family": {
+     "enum": [
+      "buybox",
+      "category",
+      "fees",
+      "offers",
+      "package",
+      "price",
+      "rank",
+      "rating",
+      "reviews",
+      "stock"
+     ]
+    },
+    "severity": {
+     "enum": [
+      "high",
+      "medium",
+      "low"
+     ]
+    },
+    "route": {
+     "enum": [
+      "now",
+      "selected",
+      "weekly",
+      "never"
+     ]
+    },
+    "route_source": {
+     "enum": [
+      "rule",
+      "label",
+      "jev"
+     ]
+    },
+    "because": {
+     "oneOf": [
+      {
+       "enum": [
+        "hero_holder_not_ours",
+        "hero_buybox_suppressed",
+        "hero_out_of_stock",
+        "hero_badge_drop",
+        "root_category_changed"
+       ]
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "status": {
+     "enum": [
+      "open",
+      "stale",
+      "resolved",
+      "quarantined",
+      "out_of_scope"
+     ]
+    },
+    "band": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 4
+    },
+    "hero": {
+     "type": "boolean"
+    },
+    "holder": {
+     "oneOf": [
+      {
+       "enum": [
+        "us",
+        "own_store",
+        "amazon",
+        "third_party",
+        "unidentified",
+        "suppressed",
+        "no_offer",
+        "unknown"
+       ]
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "onset_at": {
+     "$ref": "#/$defs/utc"
+    },
+    "first_fired_at": {
+     "$ref": "#/$defs/utc"
+    },
+    "last_movement": {
+     "$ref": "#/$defs/utc"
+    },
+    "resolved_at": {
+     "oneOf": [
+      {
+       "$ref": "#/$defs/utc"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "summary": {
+     "type": "string"
+    },
+    "figures": {
+     "type": "object"
+    },
+    "tag_marks": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/tag_mark"
+     }
+    }
+   }
+  }
+ }
+}

@@ -61,3 +61,17 @@ it('renders eight disabled bindings without inventing rejection or dead-letter c
   expect(screen.getAllByText('missing confirmation')).toHaveLength(8);
   expect(screen.getAllByText('unmeasured / unmeasured / unmeasured')).toHaveLength(8);
 });
+
+it('shows the market signals import totals and data-as-of only once the import has run', () => {
+  const before = render(<Screen data={ready} />).container;
+  expect(before.querySelectorAll('[data-testid="market-signals-import-row"]')).toHaveLength(0);
+  expect(before.textContent).toContain('The wizards-ai market signals import has not run');
+  const after = render(<Screen data={{ view: 'ready', props: { ...ready.props, marketSignals: {
+    files: 2, batchesImported: 3, observations: 20, changePoints: 24, signals: 5, tagMarks: 30,
+    invalidRecords: 1, unmappedSignals: 2, dataAsOf: '2026-09-25T01:00:00.000Z', lastImportedAt: null,
+  } } }} />).container;
+  const cells = [...after.querySelectorAll('[data-testid="market-signals-import-row"] td')].map((cell) => cell.textContent);
+  expect(cells).toHaveLength(10);
+  expect(cells.slice(1)).toEqual(['Not reported', '2', '3', '20', '24', '5', '30', '1', '2']);
+  expect(cells[0]).toContain('01:00 UTC');
+});

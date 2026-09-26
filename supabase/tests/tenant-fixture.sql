@@ -430,6 +430,17 @@ begin
   insert into public.tags (org_id, name, slug) values (v_org, 'Client', 'client') returning id into v_tag;
   insert into public.entity_tags (tag_id, org_id, profile_id, entity_type, entity_id)
   values (v_tag, v_org, v_profile, 'campaign', 'c-1');
+  -- Market signals import (WP-331): profile key map, a folded tag mark on the
+  -- insight above, and an inert per-file import position.
+  if to_regclass('public.market_signals_import_state') is not null then
+    insert into public.market_signals_profile_map (org_id, profile_key, profile_id)
+    values (v_org, p_slug || '-us', v_profile);
+    insert into public.insight_tag_marks (id, org_id, insight_id, tag_id, path, op, at, source, stage)
+    select gen_random_uuid(), v_org, i.id, v_tag, 'signal/family/buybox', 'add', now(), 'rule', 'live'
+      from public.insights i where i.org_id = v_org order by i.created_at, i.id limit 1;
+    insert into public.market_signals_import_state (org_id, file_name, file_bytes, last_generated_at)
+    values (v_org, 'fixture-2000-01-01.ndjson', 0, '2000-01-01T00:00:00Z');
+  end if;
   insert into public.dashboards (org_id, name) values (v_org, 'Overview');
   insert into public.goto_links (org_id, token, route)
   values (v_org, p_slug || '-token', '/grid');

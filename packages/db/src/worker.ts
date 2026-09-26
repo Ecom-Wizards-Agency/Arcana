@@ -7,3 +7,4 @@ export { importScheduledPrompts } from './queries/sponsored-prompts.js';
 export { catalogueDigest, catalogueSourceEnabled, persistCatalogueCollection, recordCatalogueCursorFailure, resolveAmazonChangeEvents } from './queries/ads-catalogue.js';
 export { prepareProviderEvidenceRun, authorizeProviderEvidencePage, persistProviderEvidencePage, failProviderEvidenceRun } from './queries/provider-evidence.js';
 export { createCampaignCreationLedger } from './queries/campaign-creation-worker.js';
+export * from './queries/market-signals.js';

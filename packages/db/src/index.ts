@@ -115,4 +115,5 @@ export * from './queries/campaign-drafts.js';
 export * from './queries/naming-presets.js';
 export * from './queries/keyword-sets.js';
 export * from './queries/asset-library.js';
+export { readMarketSignalsImportStatus } from './queries/market-signals.js';
 export { readCampaignCreationBatch, findCampaignCreationAdmission, listCampaignCreationBatches, readCampaignCreationProviderScope, readCampaignCreationGate, admitCampaignCreation, recordCampaignCreationRetryReview, CampaignCreationAdmissionError } from './queries/campaign-creation-batches.js';
