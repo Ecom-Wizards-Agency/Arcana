@@ -112,6 +112,11 @@ export class FulfillmentOutboundClient {
   }
 
   /**
+   * @deprecated Unwired; no worker calls it. Creator sample orders are created by
+   * `FulfillmentOutboundWriter.create` (fulfillment-outbound-writer.ts), which
+   * returns address-free outcomes. Do not wire this method: it compares
+   * recipient addresses and throws on 4xx answers.
+   *
    * Caller must atomically claim the reserved intent and durably save uncertainty
    * before returning from persistUncertain. Replays of uncertainty only read by ID.
    * This callback does not confer worker/operator authority.
@@ -133,6 +138,11 @@ export class FulfillmentOutboundClient {
     }
   }
 
+  /**
+   * @deprecated Unwired; no worker calls it. It compares the destination address
+   * read back from Amazon. Read orders through `FulfillmentOutboundReader.getOrder`,
+   * which copies an address-free allowlist.
+   */
   async status(raw: FulfillmentRequest, persistedIntent: FulfillmentIntent): Promise<FulfillmentResult> {
     const input = request(raw);
     verify(input, persistedIntent);

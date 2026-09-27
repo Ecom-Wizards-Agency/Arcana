@@ -70,6 +70,16 @@ ORG_KEY_ENTRY = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}="
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
+# WP-334's read-only MCF observation (WP-338b). Optional and non-secret; absent
+# or 0 leaves it off. Only the worker mode passes them on, after validation. The
+# worker (apps/worker/src/mcf-observe.ts) enables it only on exactly "1" with both
+# SP-API LWA credentials, and reads the interval as whole minutes from 5 to 1440
+# (30 when absent).
+MCF_OBSERVE_GATE = "OPENSPELL_MCF_OBSERVE_ENABLED"
+MCF_OBSERVE_INTERVAL = "OPENSPELL_MCF_OBSERVE_INTERVAL_MINUTES"
+MCF_OBSERVE_KEYS = frozenset({MCF_OBSERVE_GATE, MCF_OBSERVE_INTERVAL})
+MCF_OBSERVE_MINUTES = (5, 1440)
+WHOLE_MINUTES = re.compile(r"^[1-9][0-9]{0,3}$")
 CREDENTIAL_VALUE = re.compile(r"^[\x21-\x7e]{1,4096}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 MCP_UPSTREAM = "http://127.0.0.1:18787"
@@ -117,11 +127,14 @@ WORKER_ENV_KEYS = {
     *SPAPI_SETTINGS,
     *AMAZON_KEYS,
     *IMPORT_KEYS,
+    *MCF_OBSERVE_KEYS,
 }
 
 
 # The Evo general worker's exact claim surface. sqp.request is the weekly
 # Brand Analytics report request; the Vercel cron tick never claims it.
+# mcf.observe is WP-334's read-only MCF observation (WP-338b); claiming it does
+# nothing until OPENSPELL_MCF_OBSERVE_ENABLED is 1.
 GENERAL_WORKER_JOB_TYPES = frozenset({
     "keepa.sync",
     "rank.sync",
@@ -129,6 +142,7 @@ GENERAL_WORKER_JOB_TYPES = frozenset({
     "sqp.categorize",
     "sqp.request",
     "recommendations.run",
+    "mcf.observe",
 })
 
 
@@ -184,7 +198,7 @@ def public_config() -> dict[str, str]:
 
 
 def general_worker_job_types(config: dict[str, str]) -> None:
-    """The worker mode claims exactly the six types; the connection-only mode claims none."""
+    """The worker mode claims exactly the seven types; the connection-only modes claim none."""
     job_types = config.get("WORKER_JOB_TYPES", "").split(",")
     if len(job_types) != len(set(job_types)) or set(job_types) != GENERAL_WORKER_JOB_TYPES:
         raise RuntimeError(
@@ -215,6 +229,19 @@ def market_signals_settings(config: dict[str, str]) -> None:
         raise RuntimeError(
             f"{MARKET_SIGNALS_ORG_KEYS} must be key=uuid[,key=uuid] with unique keys"
         )
+
+
+def mcf_observe_settings(config: dict[str, str]) -> bool:
+    """Refuse an observation setting the worker would read differently; name the key, never the value."""
+    if config.get(MCF_OBSERVE_GATE, "0") not in {"0", "1"}:
+        raise RuntimeError(f"{MCF_OBSERVE_GATE} must be 0 or 1")
+    minutes = config.get(MCF_OBSERVE_INTERVAL)
+    low, high = MCF_OBSERVE_MINUTES
+    if minutes is not None and not (WHOLE_MINUTES.fullmatch(minutes) and low <= int(minutes) <= high):
+        raise RuntimeError(
+            f"{MCF_OBSERVE_INTERVAL} must be a whole number of minutes from {low} to {high}"
+        )
+    return config.get(MCF_OBSERVE_GATE) == "1"
 
 
 def release_revision() -> str:
@@ -300,6 +327,7 @@ def run_worker() -> None:
     config = public_config()
     general_worker_job_types(config)
     market_signals_settings(config)
+    observe_enabled = mcf_observe_settings(config)
     revision = release_revision()
     spapi_enabled = config.get(SPAPI_GATE) == "1"
     if spapi_enabled and any(not config.get(name) for name in SPAPI_SETTINGS):
@@ -309,7 +337,14 @@ def run_worker() -> None:
     env = base_environment()
     env.update({key: value for key, value in config.items() if key not in AMAZON_KEYS})
     env["OPENSPELL_WORKER_REVISION"] = revision
-    env.update(spapi_credentials(required=spapi_enabled))
+    spapi = spapi_credentials(required=spapi_enabled)
+    if observe_enabled and not spapi:
+        # The worker would stay off silently; refuse instead so the flag means what it says.
+        raise RuntimeError(
+            f"{MCF_OBSERVE_GATE}=1 requires the SP-API LWA credentials: "
+            + ", ".join(sorted(SPAPI_CREDENTIALS))
+        )
+    env.update(spapi)
     env["DATABASE_URL"] = database_url()
     exec_release("worker", revision, spapi_enabled, "src/main.ts", env)
 

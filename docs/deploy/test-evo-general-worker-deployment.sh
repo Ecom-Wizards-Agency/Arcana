@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Static deployment proof for the Evo general worker release (WP-326) and its
-# connection-only Amazon Ads unit (WP-330).
+# Static deployment proof for the Evo general worker release (WP-326), its
+# connection-only Amazon Ads unit (WP-330) and its mcf.observe claim (WP-338b).
 # Needs no privileges, credentials, host configuration or database.
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
@@ -174,30 +174,37 @@ if config.get("WORKER_ID") != "<worker-id>":
     fail("WORKER_ID must stay a placeholder")
 if not re.fullmatch(r"<[^<>]+>", config.get("SP_API_APPLICATION_ID", "")):
     fail("SP_API_APPLICATION_ID must stay a placeholder")
-six = "keepa.sync,rank.sync,economics.sync,sqp.categorize,sqp.request,recommendations.run"
-if config.get("WORKER_JOB_TYPES") != six:
+prior_six = "keepa.sync,rank.sync,economics.sync,sqp.categorize,sqp.request,recommendations.run"
+seven = prior_six + ",mcf.observe"
+if config.get("WORKER_JOB_TYPES") != seven:
     fail("the general worker job types changed")
-if module.GENERAL_WORKER_JOB_TYPES != frozenset(six.split(",")) \
-        or len(module.GENERAL_WORKER_JOB_TYPES) != 6:
-    fail("the runtime job-type set differs from the six template job types")
+if module.GENERAL_WORKER_JOB_TYPES != frozenset(seven.split(",")) \
+        or len(module.GENERAL_WORKER_JOB_TYPES) != 7:
+    fail("the runtime job-type set differs from the seven template job types")
 class Config:
     def __init__(self, job_types):
         self.text = json.dumps({"WORKER_ID": "fixture-worker", "WORKER_JOB_TYPES": job_types})
     def read_text(self, encoding):
         return self.text
-five = six.replace(",sqp.request", "")
-seven = six + ",report.fetch"
+# The set before WP-338b, a set without sqp.request, keepa.sync's prepared (not
+# applied) retirement, and one extra type: the runtime refuses each.
+without_sqp = seven.replace("sqp.request,", "")
+without_keepa = seven.replace("keepa.sync,", "")
+eight = seven + ",report.fetch"
 verdicts = {}
-for label, job_types in (("six", six), ("five", five), ("seven", seven)):
+for label, job_types in (("seven", seven), ("prior six", prior_six), ("without sqp.request", without_sqp),
+                         ("without keepa.sync", without_keepa), ("eight", eight)):
     module.WORKER_CONFIG = Config(job_types)
     try:
         module.general_worker_job_types(module.public_config())
         verdicts[label] = "accepted"
     except RuntimeError as exc:
         verdicts[label] = "refused" if "WORKER_JOB_TYPES must list exactly" in str(exc) else str(exc)
-if len(five.split(",")) != 5 or len(set(seven.split(","))) != 7 \
-        or verdicts != {"six": "accepted", "five": "refused", "seven": "refused"}:
-    fail(f"the runtime must accept only the six job types (got {verdicts})")
+if any(len(set(value.split(","))) != 6 for value in (prior_six, without_sqp, without_keepa)) \
+        or len(set(eight.split(","))) != 8 \
+        or verdicts != {"seven": "accepted", "prior six": "refused", "without sqp.request": "refused",
+                        "without keepa.sync": "refused", "eight": "refused"}:
+    fail(f"the runtime must accept only the seven job types (got {verdicts})")
 if config.get(module.SPAPI_GATE) != "1":
     fail("the general worker must own the SP-API connection loop")
 if config.get(module.AMAZON_GATE) != "1" or not re.fullmatch(
@@ -210,6 +217,13 @@ if module.AMAZON_KEYS != frozenset({module.AMAZON_GATE, "AMAZON_OAUTH_ALLOWED_RE
 if module.IMPORT_KEYS != frozenset({"OPENSPELL_MARKET_SIGNALS_DIR", "OPENSPELL_MARKET_SIGNALS_ORG_KEYS"}) \
         or not module.IMPORT_KEYS <= module.WORKER_ENV_KEYS or set(config) & module.IMPORT_KEYS:
     fail("the optional import keys must be allowlisted and absent from the template")
+# WP-338b: the observe keys are optional and documented in always-on-worker.md,
+# absent from the template like the import keys; they are the only MCF keys the
+# general worker accepts.
+if module.MCF_OBSERVE_KEYS != frozenset({"OPENSPELL_MCF_OBSERVE_ENABLED", "OPENSPELL_MCF_OBSERVE_INTERVAL_MINUTES"}) \
+        or not module.MCF_OBSERVE_KEYS <= module.WORKER_ENV_KEYS or set(config) & module.MCF_OBSERVE_KEYS \
+        or {key for key in module.WORKER_ENV_KEYS if "MCF" in key} != module.MCF_OBSERVE_KEYS:
+    fail("the optional observe keys must be the only allowlisted MCF keys and absent from the template")
 secret_shapes = [r"postgres(ql)?://", r"amzn1\.oa2-cs", r"amzn1\.application-oa2-client\.",
                  "op" + r":/" + "/", r"/(home|Users)/", r"[A-Za-z0-9+=_-]{24,}"]
 for value in config.values():
@@ -239,6 +253,14 @@ write_token=SP_
 write_token+=WRITE
 if rg -n -F -- "$write_token" "$script_dir"; then
   echo "docs/deploy names the SP write surface" >&2
+  exit 1
+fi
+# The general worker's only MCF surface is WP-334's read-only observation; no
+# MCF send key belongs anywhere in the deployment directory yet.
+mcf_keys="$(rg -o --no-filename -- 'OPENSPELL_MCF_[A-Z0-9_]+' "$script_dir" | LC_ALL=C sort -u || true)"
+if [[ "$mcf_keys" != $'OPENSPELL_MCF_OBSERVE_ENABLED\nOPENSPELL_MCF_OBSERVE_INTERVAL_MINUTES' ]]; then
+  echo "docs/deploy names an MCF key other than the two observe keys" >&2
+  printf '%s\n' "$mcf_keys" >&2
   exit 1
 fi
 private_locator_pattern='op:/''/'
