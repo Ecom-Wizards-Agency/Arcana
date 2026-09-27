@@ -281,6 +281,8 @@ Each systemd credential populates exactly one variable:
 | `spapi-lwa-client-secret-value` | `SP_API_LWA_CLIENT_SECRET` |
 | `ads-lwa-client-id` | `LWA_CLIENT_ID` (Amazon Ads unit only) |
 | `ads-lwa-client-secret-value` | `LWA_CLIENT_SECRET` (Amazon Ads unit only) |
+| `mcf-alert-webhook` | `OPENSPELL_MCF_ALERT_WEBHOOK_URL` (general worker only, optional; WP-338f) |
+| `mcf-recipient-<keyId8>` | none: `mcf-main.ts` reads the file itself (MCF unit only; WP-338f) |
 
 The secret's ID ends in `-value` because `pnpm hygiene` reads a unit line whose
 credential ID ends in `secret` followed by `:<path>` as a credential assignment.
@@ -427,7 +429,7 @@ enqueue pass skips any other organisation without creating a job; the only sign 
 permanently, naming the reason, only if the connections or the binding change
 between enqueue and run. The general worker accepts no
 other MCF key: the flags that let Arcana send an order belong to the separate MCF
-unit only, and this runtime refuses them as unsupported keys.
+unit only, and this runtime refuses them by name (WP-338f, below).
 
 With the flag on, the worker enqueues one `mcf.observe` job per organisation with a
 lane to observe when it starts and then once per interval. The dedupe key carries
@@ -515,6 +517,423 @@ reads show:
 
 After a 400 or 403, set the flag to `0` (rollback step 1) and report the error
 before turning on anything that depends on MCF reads.
+
+## MCF send unit on the Evo (WP-338f)
+
+`wizard-ads-mcf.service` is the only process that can place or cancel an Amazon
+MCF order for a creator sample, and the only one that can open a sealed creator
+address. It runs `credential_runtime.py mcf`, which execs
+`apps/worker/src/mcf-main.ts` from the same release as the general worker
+(`worker-current`). Everything ships off: the install writes a configuration with
+both flags at `0` and no scope, and the unit then only writes its heartbeat, runs
+the custody expiry sweep and purges masks.
+
+| | General worker | MCF unit |
+|---|---|---|
+| Unit | `wizard-ads-worker.service` | `wizard-ads-mcf.service` |
+| User | `wizard-ads-runtime` | a dynamic user (`DynamicUser=yes`) |
+| Public configuration | `/etc/wizard-ads/worker.json` | `/etc/wizard-ads-mcf/mcf.json` |
+| Credentials | `database-url`, the SP-API LWA pair, optional `mcf-alert-webhook` | `database-url`, the SP-API LWA pair, one `mcf-recipient-<keyId8>` per recipient key |
+| Entry | `src/main.ts` | `src/mcf-main.ts` |
+| Listener | `/healthz` on `PORT` | none; its health is the heartbeat row |
+
+The two units read the same `database-url` and LWA files in
+`/etc/credstore.encrypted`; systemd decrypts a separate copy for each unit into
+`/run/credentials/<unit>/`, readable only by that unit's user. The recipient key
+files are loaded by the MCF unit alone. Its processes are hidden from other users
+(`ProtectProc=invisible`, `ProcSubset=pid`), never write a core file
+(`LimitCORE=0`, and `CoredumpFilter=elf-headers` keeps memory out of any dump a
+pipe handler might still take) and never swap (`MemorySwapMax=0`). A stop waits up
+to 150 seconds (`TimeoutStopSec`), so a create already sent is recorded before the
+process exits.
+
+The release built by `build-evo-general-worker-artifact.sh` carries the runtime
+with the mcf mode and `app/src/mcf-main.ts`, but not this unit, its template or
+the scripts: the artifact normalizer pins the release's two unit files. The
+install takes them from a clean checkout of the release revision and binds that
+checkout to the running release by checking that the release's
+`credential_runtime.py` is byte-identical to the checkout's and that
+`app/src/mcf-main.ts` exists (the Amazon Ads unit is installed the same way).
+
+Key ids never enter a tracked file, so the tracked unit loads only the three
+static credentials. `install-mcf-evo-systemd.sh` writes
+`/etc/systemd/system/wizard-ads-mcf.service.d/recipient-keys.conf` with one line
+per key file it finds in the store:
+
+```
+LoadCredentialEncrypted=mcf-recipient-<keyId8>:/etc/credstore.encrypted/wizard-ads-mcf-recipient-<keyId8>.cred
+```
+
+`<keyId>` is the lower-case hex SHA-256 of the public key's SPKI DER and
+`<keyId8>` its first 8 characters. `mcf-main.ts` reads each key file from
+`$CREDENTIALS_DIRECTORY` at every open; the runtime lists their names and never
+opens them, so no key enters an environment variable.
+
+### Configuration and refusals
+
+`/etc/wizard-ads-mcf/mcf.json` (template `wizard-ads-mcf.TEMPLATE.json`) accepts
+these keys and no other:
+
+| Key | Accepted values | Absent |
+|---|---|---|
+| `OPENSPELL_MCF_PREVIEW_ENABLED` | exactly `0` or `1` | off |
+| `OPENSPELL_MCF_DISPATCH_ENABLED` | exactly `0` or `1` | off |
+| `OPENSPELL_MCF_SCOPE` | 1 to 50 distinct `<lower-case connection uuid>:<marketplace id>` entries, comma-separated, no spaces | empty: nothing is claimed |
+| `OPENSPELL_MCF_POLL_INTERVAL_MS` | a whole number from `1000` to `60000` | 5000 |
+| `WORKER_ID` | 1 to 70 letters, digits, `.`, `_`, `:` or `-` | `wizard-ads-mcf` |
+
+The mcf mode refuses, naming the key and never the value: any general-worker key
+(`<key> belongs to the general worker, never the MCF unit's configuration`), any
+other key, a template placeholder, a flag of `1` without a scope, a scope without
+both LWA credentials (settlement reads need them with both flags off), a flag of
+`1` without a recipient key credential, and any credential other than its three
+and the recipient keys (an Ads credential, the webhook or the MCP token included).
+It also refuses to run outside its unit (no `$CREDENTIALS_DIRECTORY`, or a
+`$STATE_DIRECTORY` other than `/var/lib/wizard-ads-mcf`). It sets `HOME` to the
+state directory, passes `CREDENTIALS_DIRECTORY` and never passes `NODE_OPTIONS`.
+
+The general worker, SP-API and Amazon Ads modes refuse each of the four MCF unit
+keys in `worker.json` by name, and refuse to start if their unit loads any
+`mcf-recipient-*` credential.
+
+### General worker alert settings (WP-338n)
+
+The general worker's housekeeping pass posts MCF alerts to a webhook when one is
+configured. The webhook URL is a secret, so it arrives only as the optional
+credential `mcf-alert-webhook`, mapped to `OPENSPELL_MCF_ALERT_WEBHOOK_URL`.
+`wizard-ads-worker.service` loads it by credential store name
+(`LoadCredentialEncrypted=mcf-alert-webhook:wizard-ads-mcf-alert-webhook.cred`),
+so the unit starts without the file. That behaviour was verified on systemd 259
+only; Ubuntu 24.04 ships 255. The general worker's release upgrade is therefore
+the check: after it, and before any webhook file exists, confirm the general
+worker started (its runtime start line and `/healthz`). If it fails with a
+credential error (exit status 243/CREDENTIALS in `systemctl status`), roll the
+general release back and report; do not create an empty webhook file to work
+around it. The install script prints the Evo's systemd version. The runtime refuses a
+webhook that is not an https URL with a lower-case host and no credentials or
+fragment, and refuses `OPENSPELL_MCF_ALERT_WEBHOOK_URL` as a `worker.json` key.
+`WIZARD_ADS_APP_URL` is an optional `worker.json` key for the absolute samples
+link: an https origin with no path, query, fragment or credentials. Neither
+reaches the connection-only modes.
+
+### Lockstep order
+
+1. Upgrade the general worker to the release (the general upgrade runbook). Its
+   `systemd/wizard-ads-worker.service` carries the optional webhook line.
+2. Install the MCF unit from a checkout of the same revision. The install refuses
+   unless `worker-current` points at `worker-releases/<revision>`.
+3. Only then add `WIZARD_ADS_APP_URL` to `worker.json` or the webhook credential.
+   An older runtime refuses `WIZARD_ADS_APP_URL` as an unsupported key.
+
+Rollback runs the other way: take the MCF unit out first with
+`bash docs/deploy/rollback-mcf-evo-systemd.sh --remove` (one step: stop, disable,
+and move the unit, drop-in and configuration into
+`/etc/wizard-ads-mcf/backups/<UTC time>-removed/`), remove `WIZARD_ADS_APP_URL`
+from `worker.json`, then roll the general release back. A
+runtime older than WP-338f has no mcf mode, and the MCF unit would fail to start
+on it. The webhook credential file may stay; an older unit never loads it.
+Neither step touches the database.
+
+### Steps on the Evo
+
+Run these as the operator on the Evo, from a clean checkout of the release
+revision (`REV` below is its full Git object id). Each `sudo` step prompts once.
+Nothing here needs a credential pasted except the webhook in step 9. Run the
+commands from the rendered page or the scripts, not from indented raw text.
+
+1. **Install, flags off.** Preview, then install:
+
+   ```bash
+   cd <checkout-of-REV>
+   bash docs/deploy/install-mcf-evo-systemd.sh --revision "$REV" --dry-run
+   bash docs/deploy/install-mcf-evo-systemd.sh --revision "$REV"
+   ```
+
+   The dry run performs every check and prints each change as
+   `dry-run: would run: …`. The install refuses if the release does not verify,
+   a static credential is missing or not root-owned with mode 0400 or 0600, a key
+   file name is not `wizard-ads-mcf-recipient-<keyId8>.cred`, any other unit names
+   a recipient key, the configuration is invalid, a flag is on without a key, or a
+   dynamic user cannot read the release.
+
+2. **Verify.**
+
+   ```bash
+   bash docs/deploy/verify-mcf-evo-systemd.sh --revision "$REV"
+   ```
+
+   Check that it prints `Max core file size 0 0 bytes` and `coredump_filter
+   00000010` for every process, `memory.swap.max: 0`, the kernel `core_pattern`
+   line, and `heartbeat: age <N> s, revision <REV>, preview off, dispatch off`. It
+   exits 1 on any mismatch. The heartbeat age comes from a transient dynamic-user
+   unit that loads only the database credential, so the URL never reaches your
+   shell. The same row, read as the migration owner in the SQL editor:
+
+   ```sql
+   select worker_id, now() - beat_at as age, preview_enabled, dispatch_enabled,
+          cardinality(scope) as scope_entries, worker_revision, last_authorization_failure_at
+     from app.creator_mcf_worker_heartbeats order by beat_at desc;
+   ```
+
+   If the verify prints `code 42501`, the database role cannot read the heartbeat
+   table; use this SQL instead.
+
+3. **Rehearse the rollback once, then reinstall.**
+
+   ```bash
+   bash docs/deploy/rollback-mcf-evo-systemd.sh --dry-run
+   bash docs/deploy/rollback-mcf-evo-systemd.sh
+   bash docs/deploy/install-mcf-evo-systemd.sh --revision "$REV"
+   bash docs/deploy/verify-mcf-evo-systemd.sh --revision "$REV"
+   ```
+
+   After the first install the rollback stops and disables the unit and moves the
+   unit, drop-in and configuration into the backup; the unit is gone. The reinstall
+   writes a fresh flags-off configuration.
+
+4. **Generate the recipient key pair on the Evo.**
+
+   ```bash
+   sudo bash docs/deploy/generate-mcf-recipient-key-evo.sh
+   ```
+
+   It refuses without a usable TPM2 (`systemd-creds has-tpm2`). The private key
+   exists only in the script's memory and, encrypted with `--with-key=host+tpm2`
+   under the credential name `mcf-recipient-<keyId8>`, in
+   `/etc/credstore.encrypted/wizard-ads-mcf-recipient-<keyId8>.cred`; nothing else
+   keeps a copy. The script derives the keyId (the hex SHA-256 of the public key's
+   SPKI DER, the value the web app and the worker compute) and the public JWK and
+   checks both before it encrypts anything, encrypts to a staging name, proves the
+   staged credential decrypts to the same keyId, and only then renames it into
+   place and writes the public value to `recipient-<keyId8>.public.json` under
+   `/etc/wizard-ads-mcf`. It prints the keyId and both paths. A failure before the
+   rename leaves no credential and no public file.
+
+5. **Check the credential again** at any later time (the key passes through a
+   pipe only):
+
+   ```bash
+   sudo systemd-creds decrypt --name=mcf-recipient-<keyId8> \
+     /etc/credstore.encrypted/wizard-ads-mcf-recipient-<keyId8>.cred - \
+     | openssl pkey -inform DER -pubout -outform DER | sha256sum
+   ```
+
+   The first 64 characters must equal the keyId.
+
+6. **Load the key and set the scope, flags still off.** Rerun the install so the
+   drop-in lists the key and the unit restarts, then write the scope:
+
+   ```bash
+   bash docs/deploy/install-mcf-evo-systemd.sh --revision "$REV"
+   sudo python3 - '<spapi-connection-uuid>:<marketplace-id>' <<'PY'
+   import json, os, sys
+   path = "/etc/wizard-ads-mcf/mcf.json"
+   config = json.load(open(path))
+   config.update({"OPENSPELL_MCF_PREVIEW_ENABLED": "0", "OPENSPELL_MCF_DISPATCH_ENABLED": "0",
+                  "OPENSPELL_MCF_SCOPE": sys.argv[1]})
+   open(path + ".new", "w").write(json.dumps(config, indent=2) + "\n")
+   os.chmod(path + ".new", 0o644)
+   os.replace(path + ".new", path)
+   PY
+   sudo systemctl restart wizard-ads-mcf.service
+   bash docs/deploy/verify-mcf-evo-systemd.sh --revision "$REV"
+   ```
+
+   Verify must show `recipient keys loaded by the drop-in: 1` and `scope entries
+   1`. The scope is the SP-API connection's id and marketplace from the private
+   records, never from a tracked file.
+
+7. **Vercel.** Set the production variable `OPENSPELL_MCF_RECIPIENT_PUBLIC_KEY` to
+   the one line in `recipient-<keyId8>.public.json` under `/etc/wizard-ads-mcf` (it is
+   public: a JWK and the keyId, no private member) and redeploy the web app.
+
+8. **Seed the grant** from the untracked copy of the template, in an operator
+   checkout:
+
+   ```bash
+   cp packages/db/src/testing/creator-mcf-grant-seed.TEMPLATE.sql _local/creator-mcf-grant-seed.sql
+   ```
+
+   Replace every placeholder: the org, the SP-API connection and marketplace, the
+   action classes `send,cancel`, `__RECIPIENT_KEY_IDS__` with the full 64-character
+   keyId, `1` unit per day (UTC) for the first week, the fee cap in minor units and
+   its currency, an operator label, an expiry 30 days out, an authorization window
+   end, and an empty expected prior. Run the file as the migration owner in the SQL
+   editor: as written it ends with `rollback;`, which is the rehearsal and must
+   finish without an error. Then change the last line to `commit;` and run it
+   again. Check it:
+
+   ```sql
+   select id, action_classes, cardinality(recipient_key_ids) as keys, max_units_per_day,
+          max_fee_minor, currency, expires_at
+     from app.creator_mcf_grants where revoked_at is null;
+   ```
+
+   `/creators/samples` then names only `dispatch_disabled` as missing while the
+   heartbeat is fresh, because dispatch is off.
+
+9. **Alert webhook.** Encrypt the webhook as the general worker's credential and
+   restart it:
+
+   ```bash
+   read -rsp 'Paste the alert webhook URL, then Enter: ' V; echo
+   printf '%s' "$V" | sudo systemd-creds encrypt --with-key=host+tpm2 --name=mcf-alert-webhook - \
+     /etc/credstore.encrypted/wizard-ads-mcf-alert-webhook.cred; unset V
+   sudo chmod 0600 /etc/credstore.encrypted/wizard-ads-mcf-alert-webhook.cred
+   sudo systemctl restart wizard-ads-worker.service
+   ```
+
+   Add `"WIZARD_ADS_APP_URL": "<https-web-origin>"` to `worker.json` in the same
+   stop if the alerts should carry an absolute link. To see one alert arrive,
+   stop the MCF unit while the grant is active
+   (`sudo systemctl stop wizard-ads-mcf.service`). Its heartbeat is stale after 5
+   minutes, and the next housekeeping pass (every 5 minutes) posts
+   `heartbeat_stale`, so the alert arrives within about 10 minutes. Start the unit
+   again and run the verify.
+
+Turning a flag on is a separate, authorized step (the WP-338k sandbox and the
+scoped live test): edit the flag in `mcf.json`, restart the unit and run the
+verify, which checks that the heartbeat reports the flags the file sets.
+
+### Kill switch
+
+1. **Flags off and restart.** Set both flags to `0` in
+   `/etc/wizard-ads-mcf/mcf.json` (keep the scope) and run
+   `sudo systemctl restart wizard-ads-mcf.service`. The stop waits for a create
+   already sent to be recorded; after the restart no new preview, create or cancel
+   starts. Settlement reads keep running for the scope, so orders that may exist are
+   still observed.
+2. **Revoke the grant.** As the migration owner:
+
+   ```sql
+   update app.creator_mcf_grants set revoked_at = now()
+    where id = '<grant-id>' and revoked_at is null;
+   ```
+
+   Seals, approvals and reservations are refused from then on, and an approval
+   pressed under the grant expires at reservation.
+3. **What stays in flight.** A create already posted is settled by the unit's
+   reads and by `mcf.observe` in the general worker; nothing is cancelled in Amazon
+   automatically. Custody rows expire within 2 hours through pg_cron or the general
+   worker's housekeeping pass, whether or not the MCF unit runs.
+4. Stop the unit itself (`sudo systemctl stop wizard-ads-mcf.service`) only if the
+   unit or its host is suspect: its settlement reads stop too, and `mcf.observe`
+   keeps reading.
+5. **Resume in reverse order:** start the unit if it was stopped and run the
+   verify, seed a new grant (a revoked grant never becomes active again), then turn
+   the flags on, restart and verify.
+
+### Rotation
+
+Rotate the recipient key every 30 days, and at once on suspicion:
+
+1. Generate the new pair (step 4).
+2. Rerun the install: the drop-in now lists both keys and the unit restarts.
+   Verify shows `recipient keys loaded by the drop-in: 2`.
+3. Seed a new grant naming the current grant as the expected prior, with both
+   keyIds in `__RECIPIENT_KEY_IDS__` (`<old keyId>,<new keyId>`). The seed revokes
+   the prior grant in the same transaction, so an approval pressed under it expires
+   at reservation and the operator seals again.
+4. Set the new public value in Vercel and redeploy. New seals use the new key.
+5. Wait until no live custody row uses the old key (at most 2 hours):
+
+   ```sql
+   select count(*) from app.creator_mcf_recipient_custody where key_id = '<old keyId>';
+   select * from app.creator_mcf_custody_residue();
+   ```
+
+   The count must be 0 and both residue values 0.
+6. Destroy the old key (below), then, if wanted, seed a grant with the new keyId
+   only.
+
+### Destruction
+
+1. Confirm the count in rotation step 5 is 0.
+2. Remove the old key file and reload the drop-in:
+
+   ```bash
+   sudo shred -u /etc/credstore.encrypted/wizard-ads-mcf-recipient-<old keyId8>.cred
+   bash docs/deploy/install-mcf-evo-systemd.sh --revision "$REV"
+   bash docs/deploy/verify-mcf-evo-systemd.sh --revision "$REV"
+   ```
+
+   The file is sealed to this host's TPM, so a copy in a host backup of `/etc`
+   could still be opened on this host: keep `/etc/credstore.encrypted` out of host
+   backups. Removing the key makes ciphertext in database backups and WAL
+   unreadable.
+3. Record the destruction date and the old keyId in the private runbook. The
+   public file `/etc/wizard-ads-mcf/recipient-<old keyId8>.public.json` may be
+   removed.
+
+### Install, verify and rollback scripts
+
+All four source `mcf-evo-systemd-lib.sh`. Install and rollback take a lock
+(`/run/lock/wizard-ads-mcf-deployment.lock`). Install, verify and rollback never
+touch the database, another unit or a credential file; the key generator writes
+only the new key's credential and public file.
+
+- `install-mcf-evo-systemd.sh --revision <REV> [--dry-run]` runs from a clean
+  checkout of `REV`. It checks the release (link, checksums, root ownership, the
+  runtime and `mcf-main.ts` equal to the checkout's), the unit (`systemd-analyze
+  verify`, any warning about the unit refuses), the credentials and their
+  isolation (no unit in `/etc/systemd/system`, `/run/systemd/system` or
+  `/usr/lib/systemd/system` other than the MCF unit names a recipient key or has an
+  `ImportCredential=` glob that matches one), the configuration (with the
+  release's own runtime code) and that a
+  transient dynamic-user unit can read the release. It then backs up the unit,
+  drop-in, configuration and unit state into
+  `/etc/wizard-ads-mcf/backups/<UTC time>-<REV>/`, places each file atomically,
+  reloads systemd, enables the unit and starts it (or restarts it if it runs).
+  Rerun it after adding or removing a key file.
+- `verify-mcf-evo-systemd.sh --revision <REV>` changes nothing and exits 1 on any
+  mismatch: the installed unit equals the checkout's, the drop-in lists exactly the
+  store's keys, the unit is enabled and active with `DynamicUser=yes`,
+  `ProtectProc=invisible`, `ProcSubset=pid`, `LimitCORE=0`, `MemorySwapMax=0` and
+  `CoredumpFilter=0x10`, every process has a core limit of 0, a coredump filter of
+  `00000010` and a dynamic user id, no process listens on a TCP or UDP port, the
+  control group's `memory.swap.max` is 0, the journal's last runtime start line is
+  mode `mcf` at `REV` followed by `mcf_start` and no `mcf_start_refused`, and the
+  heartbeat row is at most 120 seconds old with the release revision, the
+  configured flags and the configured scope size. It prints the kernel
+  `core_pattern`: systemd-coredump stores nothing for a process whose core limit is
+  0; any other pipe handler must be checked by hand (DESIGN section 19).
+- `rollback-mcf-evo-systemd.sh [--dry-run]` steps back one install. It restores
+  the newest backup that has not been rolled back: it checks first that the
+  backup is complete, that no earlier rollback of it stopped partway (any
+  `*.replaced` file refuses), and that its configuration passes the current
+  runtime with a key for any flag it sets. It then stops the unit (waiting for a
+  create already sent), disables it, moves the current unit, drop-in and
+  configuration into that backup as `*.replaced`, restores the unit and
+  configuration, rebuilds the drop-in from the key files now in the store (so a
+  destroyed key is never named), reloads systemd, and re-enables and restarts the
+  unit if it ran before that install. The backup is then renamed `*.rolled-back`.
+  After the first install's backup it leaves no unit.
+- `rollback-mcf-evo-systemd.sh --remove [--dry-run]` takes the unit out in one
+  step: stop, disable, and move the unit, drop-in and configuration into
+  `/etc/wizard-ads-mcf/backups/<UTC time>-removed/`. A later install writes a
+  fresh flags-off configuration; copy the scope back from that directory.
+- `generate-mcf-recipient-key-evo.sh` (run with sudo) is step 4.
+
+`bash docs/deploy/test-evo-mcf-deployment.sh` is the static and dry-run proof:
+the mcf runtime tests (`test-evo-mcf-runtime.py`, every declared test run), the
+unit's exact shape including the report worker's 30 hardening lines, credential
+lines equal to the mcf mapping, isolation between the units, the template,
+`systemd-analyze verify` with no output, and the three scripts run against a
+fixture root with stubbed `sudo`, `systemctl`, `systemd-run`, `systemd-analyze`,
+`journalctl` and `ss`.
+
+### Static user fallback
+
+The install refuses with `a dynamic user cannot read the release` when a transient
+dynamic-user unit cannot read or traverse the release. The release files are built
+world-readable (mode 0644 and 0755), so the usual cause is a parent directory: check
+`stat -c '%a %U %G' /usr/local/lib/wizard-ads-runtime /usr/local/lib/wizard-ads-runtime/worker-releases`.
+That tree holds code and no credential, so `sudo chmod 0755` on the directory that
+lacks `o+rx` is the preferred fix; rerun the install afterwards. If the directory
+must stay closed, the fallback is a static system user `wizard-ads-mcf` (not
+`wizard-ads-runtime`) with `DynamicUser=no`, `User=wizard-ads-mcf` and
+`Group=wizard-ads-mcf`. That is a reviewed change to the unit, its proof and the
+verify's user check, not a hand edit on the host.
 
 ## Report fetch reliability (WP-323)
 
