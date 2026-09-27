@@ -24,6 +24,7 @@ import { asAnon, asServiceRole, asUser } from '../testing/rls.js';
 import { AgencyAccessDenied, withAuthenticatedActor } from './authenticated-actor.js';
 import { creatorSampleOrderKey, persistCreatorImport, readCreatorSampleShipments, writeCreatorMcpRows, type CreatorShipmentWrite } from './creators.js';
 import { recordCreatorMcfObservation } from './creators-samples.js';
+import { createRequestDatabase } from './request-client.js';
 import {
   approveCreatorMcfSend, claimCreatorMcfOutbox, expireCreatorMcfCustody, markCreatorMcfLadderExhausted, purgeCreatorMcfMasks,
   readCreatorMcfAlertSummary, readCreatorMcfCustody, readCreatorMcfCustodyResidue, readCreatorMcfLane, readCreatorMcfSendGate,
@@ -107,7 +108,7 @@ describe.skipIf(!available)('Creator MCF send ledger', () => {
         required_next_state, detail, started_at, completed_at, source, source_digest)
       values (${org.id}, ${`preflight-${hex(6)}`}, 'preflight', ${record}, ${asin}, ${result},
         ${result === 'PASS' ? [] : ['selected_sku_not_mcf_fulfillable']}::text[], ${result === 'PASS' ? 'Locked for MCF' : 'Conflict or Held'},
-        ${JSON.stringify({ sku, quantity: 1 })}::jsonb, date_trunc('milliseconds', now()) - ${completedAgo}::interval - interval '5 seconds',
+        ${JSON.stringify({ sku, quantity: 1 })}::text::jsonb, date_trunc('milliseconds', now()) - ${completedAgo}::interval - interval '5 seconds',
         date_trunc('milliseconds', now()) - ${completedAgo}::interval, 'mcp', ${hex(32)})`;
   }
 
@@ -124,7 +125,7 @@ describe.skipIf(!available)('Creator MCF send ledger', () => {
   }
   async function sealRaw(lane: Lane, request: unknown): Promise<Record<string, unknown>> {
     const [row] = await asUser(db, OWNER, (sql) => sql<{ result: Record<string, unknown> }[]>`select app.seal_creator_mcf_recipient(
-      ${lane.org.id}::uuid, ${lane.record}, ${lane.asin}, ${JSON.stringify(request)}::jsonb) as result`);
+      ${lane.org.id}::uuid, ${lane.record}, ${lane.asin}, ${JSON.stringify(request)}::text::jsonb) as result`);
     return row!.result;
   }
 
@@ -292,6 +293,43 @@ describe.skipIf(!available)('Creator MCF send ledger', () => {
       await fresh.drop();
     }
   }, 240_000);
+
+  it('binds jsonb through the web request client (default serializers) as objects, not double-encoded strings', async () => {
+    // The web's handle is createRequestDatabase (openWebDatabase), which keeps postgres' default serializers.
+    const web = createRequestDatabase(db.connectionString);
+    try {
+      const org = await newOrg('mcf-request-client');
+      const lane = await newLane(org);
+      const sealed = await sealCreatorMcfRecipient(web, actor(org), { creatorRecordId: lane.record, asin: lane.asin,
+        request: { binding: binding(lane), envelope: envelope() } });
+      expect(sealed).toMatchObject({ outcome: 'sealed', state: 'sealed' });
+      const sendId = sealed.outcome === 'sealed' ? sealed.sendId : '';
+      const [stored] = await db.sql<{ mask: string; mask_country: string }[]>`select jsonb_typeof(mask) as mask, mask->>'countryCode' as mask_country
+        from public.creator_mcf_sends where id = ${sendId}`;
+      expect(stored).toEqual({ mask: 'object', mask_country: 'US' });
+      // Service-role jsonb binds: the outcome and the settlement read, through the same client.
+      const claim = await claimFor(org, sendId, 'preview');
+      expect((await recordCreatorMcfPreview(web, sendId, claim.leaseId, preview(claim, lane))).decision).toBe('preview_ready');
+      const ready = await readCreatorMcfLane(web, actor(org), lane.record, lane.asin);
+      const approval = await approveCreatorMcfSend(web, actor(org), { sendId, previewId: ready!.send!.latestPreview!.previewId,
+        previewFingerprint: ready!.send!.latestPreview!.fingerprint, totalUnits: 1, confirmation: ONE, requestId: randomUUID() });
+      expect(approval.outcome).toBe('approved');
+      const dispatch = await claimFor(org, sendId, 'dispatch');
+      expect((await reread(dispatch)).decision).toBe('same');
+      expect((await reserveCreatorMcfDispatch(web, sendId, dispatch.leaseId, hex(32))).decision).toBe('dispatch_once');
+      expect(await recordCreatorMcfOutcome(web, sendId, dispatch.leaseId, { outcome: 'rejected', status: 400, codes: ['DuplicateOrder'],
+        reason: 'validation' }, found(lane, 'New'))).toEqual({ decision: 'recorded', state: 'accepted' });
+      const shipments = [{ amazonShipmentId: 'shipment-9', status: 'PENDING', shippedAt: null, estimatedArrivalAt: null,
+        packages: [{ packageNumber: 9, carrierCode: 'Synthetic carrier', trackingNumber: 'SYN-TRACK-9', estimatedArrivalAt: null }] }];
+      expect(await recordCreatorMcfSettlement(web, sendId, found(lane, 'Received', { shipments } as never))).toMatchObject({ state: 'placed' });
+      const reads = await db.sql<{ shipments: string | null; status: string | null }[]>`select jsonb_typeof(shipments) as shipments, mcf_status as status
+        from public.creator_mcf_observations where org_id = ${org.id} and observation_key like ${`mcf-send:${sendId}:%`} order by recorded_at, observation_key`;
+      expect(reads).toEqual([{ shipments: 'array', status: 'New' }, { shipments: 'array', status: 'Received' }]);
+      expect(await sendRow(sendId)).toMatchObject({ state: 'placed', provider_outcome: 'rejected', amazon_status: 'Received' });
+    } finally {
+      await web.close();
+    }
+  });
 
   it('(1) gives anon, authenticated and service_role no privilege on custody, grants or heartbeats, with RLS on', async () => {
     const rows = await db.sql<{ relation: string; role: string; privileged: boolean; columns: boolean; rls: boolean }[]>`

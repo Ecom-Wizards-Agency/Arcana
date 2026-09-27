@@ -8,3 +8,4 @@ export * from './sales-traffic.js';
 export * from './aba-search-terms.js';
 export * from './catalogue-listings.js';
 export * from './fulfillment-outbound.js';
+export * from './fulfillment-outbound-writer.js';
