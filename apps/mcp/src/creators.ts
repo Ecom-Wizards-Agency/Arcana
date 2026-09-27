@@ -10,12 +10,14 @@
  * refused for, and a draft body is not the audit log's to keep.
  *
  * Nothing here calls Amazon, sends a message or places an order. Creator status
- * written into Arcana is not an Amazon write.
+ * written into Arcana is not an Amazon write. `creators.sample_send_outcome`
+ * (WP-338h) only reads: what became of the Arcana send on one sample lane. No
+ * tool here can seal, preview, approve, send, resolve or cancel an MCF order.
  */
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
-  CreatorAppendActionInput, CreatorPreflightResultInput, CreatorQueueSnapshotInput, CreatorRecordScoreInput, CreatorRegisterRecordInput, CreatorRunnerQueueItem,
+  CreatorAppendActionInput, CreatorAsin, CreatorMcfSendOutcome, CreatorPreflightResultInput, CreatorRecordId, CreatorSampleOrderKey, CreatorQueueSnapshotInput, CreatorRecordScoreInput, CreatorRegisterRecordInput, CreatorRunnerQueueItem,
   CreatorSubmitDraftInput, CreatorSweepCheckpointInput, CreatorSweepThread, findCreatorContactData,
   type CreatorRunnerRegistryRecord, type CreatorRunnerResolution,
 } from '@wizard-ads/shared';
@@ -23,14 +25,15 @@ import {
   CreatorWriteRefusal, appendCreatorActions, creatorContentDigest, creatorPreflightRow, creatorQueueRows, creatorRegistryRows, creatorSweepRow,
   readCreatorWriteBaseline, recordCreatorScore, submitCreatorDraft, writeCreatorMcpRows, writeCreatorPreflights, type CreatorEventWrite,
 } from '@wizard-ads/db/mcp-writes';
+import { readCreatorMcfSendOutcome } from '@wizard-ads/db';
 import { writeAuditEntry } from './audit.js';
 import { ToolError } from './errors.js';
 import { withCreatorWriteOperation, type CreatorWriteOperationContext, type ServerContext } from './operation.js';
 
-/** Every tool a `creator:write` key may call, and nothing else. */
+/** Every tool a `creator:write` key may call, and nothing else. The last one only reads. */
 export const CREATOR_WRITE_TOOLS = [
   'creators.register_record', 'creators.record_score', 'creators.append_action', 'creators.submit_draft',
-  'creators.queue_snapshot', 'creators.sweep_checkpoint', 'creators.preflight_result',
+  'creators.queue_snapshot', 'creators.sweep_checkpoint', 'creators.preflight_result', 'creators.sample_send_outcome',
 ] as const;
 export type CreatorWriteTool = typeof CREATOR_WRITE_TOOLS[number];
 
@@ -106,9 +109,12 @@ type CreatorHandler = (args: unknown, operation: CreatorWriteOperationContext) =
 
 /**
  * Run one creator tool, write its audit row on every path, and turn a refusal
- * into a result a model can act on. A failed audit write fails the call.
+ * into a result a model can act on. A failed audit write fails the call. A
+ * `read` tool runs under the same re-authorization and audit; only its
+ * fallback message differs.
  */
-function auditedCreatorWrite(context: ServerContext, tool: CreatorWriteTool, expected: readonly string[], handler: CreatorHandler) {
+function auditedCreatorWrite(context: ServerContext, tool: CreatorWriteTool, expected: readonly string[], handler: CreatorHandler,
+  kind: 'write' | 'read' = 'write') {
   return async (args: unknown): Promise<McpToolResult> => {
     const started = Date.now();
     try {
@@ -130,17 +136,34 @@ function auditedCreatorWrite(context: ServerContext, tool: CreatorWriteTool, exp
         durationMs: Date.now() - started,
       });
       return result({ error: known?.code ?? 'internal',
-        message: known?.message ?? 'The write could not be completed. This has been logged; nothing was written.' }, true);
+        message: known?.message ?? `The ${kind} could not be completed. This has been logged; nothing was written.` }, true);
     }
   };
 }
 
 // ---------------------------------------------------------------------------
-// The seven tools
+// The eight tools
 // ---------------------------------------------------------------------------
 
 const any = (description: string) => z.unknown().describe(description);
 const WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
+const READ = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
+
+/**
+ * One sample lane: its derived order key (the `CCS-` key `creators.preflight_result`
+ * returned) or its record and ASIN. Exactly one form; both at once is refused
+ * rather than guessed between.
+ */
+const SendOutcomeByKey = z.object({ derivedOrderKey: CreatorSampleOrderKey }).strict();
+const SendOutcomeByLane = z.object({ creatorRecordId: CreatorRecordId, asin: CreatorAsin }).strict();
+function sendOutcomeTarget(args: unknown): z.infer<typeof SendOutcomeByKey> | z.infer<typeof SendOutcomeByLane> {
+  const keyed = args !== null && typeof args === 'object' && !Array.isArray(args) && 'derivedOrderKey' in args;
+  const laned = args !== null && typeof args === 'object' && !Array.isArray(args) && ('creatorRecordId' in args || 'asin' in args);
+  if (keyed && laned) {
+    throw invalid([{ path: [], code: 'custom', message: 'give either derivedOrderKey or creatorRecordId with asin, not both' }]);
+  }
+  return keyed ? parse(SendOutcomeByKey, args) : parse(SendOutcomeByLane, args);
+}
 
 export function registerCreatorWriteTools(server: McpServer, context: ServerContext): void {
   server.registerTool('creators.register_record', {
@@ -307,4 +330,28 @@ export function registerCreatorWriteTools(server: McpServer, context: ServerCont
       summary: { creatorRecordId: row.creatorRecordId, command: row.command, result: row.result, counts },
     };
   }));
+
+  server.registerTool('creators.sample_send_outcome', {
+    title: 'Read a sample send outcome',
+    description: 'Read what became of the newest Arcana MCF send on one sample lane: {derivedOrderKey, state, class, escalated, mcfStatus, '
+      + 'acceptedAt, placedAt, reservationId}. class is pending | placed | failed | uncertain | cancelled; record the order only on placed. '
+      + 'Read-only: this key cannot place, change or cancel an Amazon order; a send happens only when an operator presses the button on '
+      + 'the Arcana lane screen. No address, mask or fingerprint is returned. not_found when the lane has no Arcana send.',
+    inputSchema: z.looseObject({
+      derivedOrderKey: any('The lane\'s CCS- key, exactly as creators.preflight_result returned it in derived_order_key. Or give creatorRecordId and asin instead.').optional(),
+      creatorRecordId: any('CCR-{BRAND}-{YY}-{NNNN}, with asin, when not giving derivedOrderKey').optional(),
+      asin: any('The lane\'s 10-character ASIN, with creatorRecordId').optional(),
+    }),
+    annotations: READ,
+  }, auditedCreatorWrite(context, 'creators.sample_send_outcome', ['derivedOrderKey', 'creatorRecordId', 'asin'], async (args, operation) => {
+    const target = sendOutcomeTarget(args);
+    const outcome = await readCreatorMcfSendOutcome(operation.sql, operation.actor.orgId, target);
+    if (outcome === null) {
+      throw new ToolError('not_found', 'This lane has no Arcana send: an operator has not sealed an address for it on the Arcana lane screen, '
+        + 'or the lane is not registered for this organisation. Nothing was written.');
+    }
+    // Re-parsed strictly at the boundary: exactly the eight outcome fields leave this tool, never a mask, fee or fingerprint.
+    const payload = CreatorMcfSendOutcome.parse(outcome);
+    return { payload, summary: { state: payload.state, class: payload.class, escalated: payload.escalated } };
+  }, 'read'));
 }

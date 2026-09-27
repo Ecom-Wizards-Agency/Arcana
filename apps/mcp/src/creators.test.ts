@@ -5,7 +5,7 @@
  * audit row per call that never holds the arguments. Synthetic values only;
  * contact-shaped strings are assembled from fragments at run time.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -13,6 +13,7 @@ import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizar
 import { persistCreatorImport } from '@wizard-ads/db/worker';
 import { creatorQueueRows, creatorRegistryRows, legacyReservationId } from '@wizard-ads/db/mcp-writes';
 import { creatorSampleOrderKey } from '@wizard-ads/db';
+import { CreatorMcfSendState } from '@wizard-ads/shared';
 import { readAuditEntries } from './audit.js';
 import { DEFAULT_MAX_DOWNLOAD_BYTES, DEFAULT_MAX_ROWS, type McpConfig } from './config.js';
 import { CREATOR_WRITE_TOOLS, creatorIdentityEvent } from './creators.js';
@@ -130,7 +131,10 @@ describe.skipIf(!available)('the creator:write key class', () => {
     expect((await verifyApiKey(database, readToken)).scope).toBe('read');
   });
 
-  it('lists exactly the six creator tools for a creator:write key and none of them for a read key', async () => {
+  it('lists exactly the eight creator tools for a creator:write key and none of them for a read key', async () => {
+    // Pinned by name, so dropping a tool from the constant under test fails here.
+    expect([...CREATOR_WRITE_TOOLS].sort()).toEqual(['creators.append_action', 'creators.preflight_result', 'creators.queue_snapshot',
+      'creators.record_score', 'creators.register_record', 'creators.sample_send_outcome', 'creators.submit_draft', 'creators.sweep_checkpoint']);
     const creator = await connect(server, creatorToken);
     const read = await connect(server, readToken);
     try {
@@ -437,9 +441,255 @@ describe.skipIf(!available)('the creator:write key class', () => {
     await expect(connect(server, demoted.token)).rejects.toThrow();
   });
 
+  // -------------------------------------------------------------------------
+  // creators.sample_send_outcome (WP-338h): read-only, on this key class only.
+  // -------------------------------------------------------------------------
+
+  /** Every send state with the class a skill must see for it: an oracle written out, not derived from the code under test. */
+  const SEND_STATES: readonly [state: string, outcomeClass: string][] = [
+    ['sealed', 'pending'], ['previewing', 'pending'], ['preview_ready', 'pending'], ['stale', 'pending'], ['approved', 'pending'],
+    ['dispatching', 'pending'], ['accepted', 'pending'], ['placed', 'placed'], ['uncertain', 'uncertain'], ['conflict', 'uncertain'],
+    ['cancel_requested', 'uncertain'], ['cancel_dispatching', 'uncertain'], ['preview_refused', 'failed'], ['withdrawn', 'failed'],
+    ['expired', 'failed'], ['expired_unclaimed', 'failed'], ['rejected', 'failed'], ['not_created', 'failed'], ['failed_by_amazon', 'failed'],
+    ['failed_after_placement', 'failed'], ['cancelled', 'cancelled'],
+  ];
+  const BEFORE_APPROVAL = ['sealed', 'previewing', 'preview_ready', 'stale', 'preview_refused', 'withdrawn', 'expired'];
+  const AFTER_ACCEPT = ['accepted', 'placed', 'conflict', 'cancel_requested', 'cancel_dispatching', 'failed_after_placement', 'cancelled'];
+  const AFTER_PLACE = ['placed', 'cancel_requested', 'cancel_dispatching', 'failed_after_placement', 'cancelled'];
+  const AMAZON_STATUS: Record<string, string> = { placed: 'Received', cancelled: 'Cancelled', failed_by_amazon: 'Invalid', conflict: 'Planning' };
+  /** A mask whose postal prefix appears nowhere else in a response, so a leak is visible. */
+  const MASK = { countryCode: 'GB', postalPrefix: 'Z7', lines: 2 };
+  let laneNumber = 5000;
+
+  interface SeededLane { record: string; asin: string; key: string; reservation: string; keyId: string; ciphertext: string }
+
+  /** A runner-owned lane with a passing pre-flight, as the import and creators.preflight_result leave it. */
+  async function seedLane(): Promise<SeededLane> {
+    const record = `CCR-SW-26-${laneNumber++}`;
+    const asin = `B0${randomBytes(4).toString('hex').toUpperCase()}`;
+    const reservation = `MCFR-${randomBytes(8).toString('hex').toUpperCase()}`;
+    await database.sql`insert into public.creator_records(org_id, creator_record_id, brand, campaign_id, thread_fp, record_state, lock_state,
+        runner_version, created_on, source, source_digest)
+      values (${orgId}, ${record}, 'Synthetic brand', 'campaign-synthetic-1', ${fp(`${record}:thread`)}, 'Active', 'Locked for MCF', 1,
+        '2026-09-01', 'control-runner', ${fp(`${record}:digest`)})`;
+    await database.sql`insert into public.creator_sample_shipments(org_id, creator_record_id, asin, sku, campaign_id, reservation_id, lane_state,
+        fee_cents, fee_cap_cents, reserved_at, source, source_digest)
+      values (${orgId}, ${record}, ${asin}, 'SYN-SAMPLE-1', 'campaign-synthetic-1', ${reservation}, 'Reserved', 620, 800,
+        now() - interval '10 minutes', 'control-runner', ${fp(`${record}:lane`)})`;
+    return { record, asin, key: creatorSampleOrderKey(orgId, record, asin), reservation, keyId: randomBytes(32).toString('hex'),
+      ciphertext: randomBytes(32).toString('hex') };
+  }
+
+  /**
+   * One send in `state`, written directly with triggers off (the ledger's functions need a grant, a sealed envelope and a
+   * worker lease; WP-338d's own suite drives those). Every CHECK constraint of the table still applies, so the row is a
+   * shape the ledger can hold. Foreign keys and the lane guard are triggers and are off: the approval and grant ids point
+   * at nothing, and the lane stays runner-owned and Reserved whatever the send's state. That is enough for a read.
+   */
+  async function seedSend(lane: SeededLane, state: string, change: { escalation?: 'ladder_exhausted' | 'conflict'; createdAgo?: string } = {}) {
+    const [binding] = await database.sql<{ connection_id: string; marketplace_id: string }[]>`select connection_id, marketplace_id
+      from public.spapi_profile_bindings where org_id = ${orgId} limit 1`;
+    const approved = !BEFORE_APPROVAL.includes(state);
+    await database.sql.begin(async (sql) => {
+      await sql`set local session_replication_role = replica`;
+      const [preflight] = await sql<{ id: string }[]>`insert into public.creator_sample_preflights(org_id, run_id, command, creator_record_id, asin,
+          result, errors, required_next_state, detail, started_at, completed_at, source, source_digest)
+        values (${orgId}, ${`preflight-${randomBytes(6).toString('hex')}`}, 'preflight', ${lane.record}, ${lane.asin}, 'PASS', '{}'::text[],
+          'Locked for MCF', ${JSON.stringify({ sku: 'SYN-SAMPLE-1', quantity: 1 })}::jsonb, now() - interval '6 minutes', now() - interval '5 minutes',
+          'mcp', ${randomBytes(32).toString('hex')}) returning id`;
+      await sql`insert into public.creator_mcf_sends(org_id, creator_record_id, asin, sku, reservation_id, preflight_id, spapi_connection_id,
+          marketplace_id, key_id, envelope_id, ciphertext_sha256, created_by, membership_created_at, state, mask, escalated_at, escalation_reason,
+          approved_preview_id, approved_by, approved_membership_created_at, approved_at, confirmation_text, approval_request_id, approved_grant_id,
+          approved_units, claim_deadline, lease_id, lease_until, intent_reserved_at, request_digest, posts, amazon_status, accepted_at, placed_at,
+          custody_destroyed_at, custody_destroyed_reason, created_at)
+        select ${orgId}, ${lane.record}, ${lane.asin}, 'SYN-SAMPLE-1', ${lane.reservation}, ${preflight!.id}, ${binding!.connection_id},
+          ${binding!.marketplace_id}, ${lane.keyId}, ${randomUUID()}, ${lane.ciphertext}, ${OWNER}, now() - interval '30 days', ${state},
+          ${JSON.stringify(MASK)}::jsonb, ${change.escalation === undefined ? null : new Date().toISOString()}::timestamptz, ${change.escalation ?? null},
+          ${approved ? randomUUID() : null}::uuid, ${approved ? OWNER : null}::uuid,
+          ${approved ? new Date(Date.now() - 30 * 86_400_000).toISOString() : null}::timestamptz, a.at,
+          case when a.at is null then null else app.creator_mcf_send_confirmation(1) end, ${approved ? randomUUID() : null}::uuid,
+          ${approved ? randomUUID() : null}::uuid, case when a.at is null then null else 1 end, a.at + interval '15 minutes',
+          ${randomUUID()}::uuid, now() + interval '1 minute', case when a.at is null then null else a.at + interval '1 minute' end,
+          case when a.at is null then null else ${randomBytes(32).toString('hex')} end, case when a.at is null then 0 else 1 end,
+          ${AMAZON_STATUS[state] ?? null}, case when ${AFTER_ACCEPT.includes(state)} then a.at + interval '2 minutes' end,
+          case when ${AFTER_PLACE.includes(state)} then a.at + interval '5 minutes' end,
+          case when app.creator_mcf_custody_held(${state}) then null else now() end,
+          case when app.creator_mcf_custody_held(${state}) then null else 'post_outcome' end,
+          now() - ${change.createdAgo ?? '0 seconds'}::interval
+        from (select case when ${approved} then date_trunc('milliseconds', now()) - interval '20 minutes' end as at) a`;
+    });
+  }
+
+  it('reads the outcome of every send state by key and by lane, with the class the skill acts on and nothing about the recipient', async () => {
+    const client = await connect(server, creatorToken);
+    const before = await tableCounts();
+    const seeded: [string, string, SeededLane][] = [];
+    for (const [state, outcomeClass] of SEND_STATES) {
+      const lane = await seedLane();
+      await seedSend(lane, state);
+      seeded.push([state, outcomeClass, lane]);
+    }
+    // The oracle names every state the contract has, so a new state fails here until it is given a class.
+    expect(SEND_STATES.map(([state]) => state).sort()).toEqual([...CreatorMcfSendState.options].sort());
+    const afterSeed = await tableCounts();
+    let read = 0;
+    try {
+      for (const [state, outcomeClass, lane] of seeded) {
+        const byKey = await call(client, 'creators.sample_send_outcome', { derivedOrderKey: lane.key });
+        const byLane = await call(client, 'creators.sample_send_outcome', { creatorRecordId: lane.record, asin: lane.asin });
+        for (const answer of [byKey, byLane]) {
+          expect(answer.isError, state).toBe(false);
+          expect(Object.keys(answer.payload).sort(), state).toEqual(['acceptedAt', 'class', 'derivedOrderKey', 'escalated', 'mcfStatus', 'placedAt',
+            'reservationId', 'state']);
+          expect(answer.payload, state).toMatchObject({ derivedOrderKey: lane.key, state, class: outcomeClass, escalated: false,
+            mcfStatus: AMAZON_STATUS[state] ?? null, reservationId: lane.reservation });
+          expect(answer.payload['acceptedAt'] === null, state).toBe(!AFTER_ACCEPT.includes(state));
+          expect(answer.payload['placedAt'] === null, state).toBe(!AFTER_PLACE.includes(state));
+          // No mask, fingerprint, key id, digest, fee or address field, by name (as a JSON key) or by value.
+          for (const absent of ['"mask', '"countryCode', '"postalPrefix', '"fingerprint', '"recipient', '"address', '"keyId', '"sku', '"fee',
+            MASK.postalPrefix, lane.keyId, lane.ciphertext]) {
+            expect(answer.text, `${state}: ${absent}`).not.toContain(absent);
+          }
+          read++;
+        }
+      }
+    } finally { await client.close(); }
+    expect(read).toBe(SEND_STATES.length * 2);
+    expect(new Set(seeded.map(([, outcomeClass]) => outcomeClass))).toEqual(new Set(['pending', 'placed', 'failed', 'uncertain', 'cancelled']));
+    // Reading wrote nothing but audit rows.
+    expect(await tableCounts()).toEqual(afterSeed);
+    expect(afterSeed['creator_sample_shipments']).toBe(before['creator_sample_shipments']! + SEND_STATES.length);
+  });
+
+  it('flags a send escalated by the ledger in any state, and WP-334\'s not-found escalation only while the send is uncertain', async () => {
+    const client = await connect(server, creatorToken);
+    const cases: [label: string, state: string, change: { escalation?: 'ladder_exhausted' | 'conflict' }, laneEscalated: boolean, expected: boolean][] = [
+      ['ladder exhausted while uncertain', 'uncertain', { escalation: 'ladder_exhausted' }, false, true],
+      ['conflict escalation', 'conflict', { escalation: 'conflict' }, false, true],
+      ['lane not-found escalation while uncertain', 'uncertain', {}, true, true],
+      ['lane not-found escalation after placement', 'placed', {}, true, false],
+      ['lane not-found escalation after a failure', 'rejected', {}, true, false],
+      ['nothing escalated while uncertain', 'uncertain', {}, false, false],
+    ];
+    let checked = 0;
+    try {
+      for (const [label, state, change, laneEscalated, expected] of cases) {
+        const lane = await seedLane();
+        await seedSend(lane, state, change);
+        if (laneEscalated) {
+          await database.sql`update public.creator_sample_shipments set mcf_settlement = 'escalated', mcf_probed_at = now()
+            where org_id = ${orgId} and creator_record_id = ${lane.record} and asin = ${lane.asin}`;
+        }
+        const answer = await call(client, 'creators.sample_send_outcome', { derivedOrderKey: lane.key });
+        expect(answer.isError, label).toBe(false);
+        expect(answer.payload, label).toMatchObject({ state, escalated: expected });
+        checked++;
+      }
+    } finally { await client.close(); }
+    expect(checked).toBe(cases.length);
+  });
+
+  it('answers with the lane\'s newest send, and not_found for a lane without one', async () => {
+    const client = await connect(server, creatorToken);
+    try {
+      const lane = await seedLane();
+      await seedSend(lane, 'rejected', { createdAgo: '1 hour' });
+      await seedSend(lane, 'placed');
+      expect((await call(client, 'creators.sample_send_outcome', { creatorRecordId: lane.record, asin: lane.asin })).payload)
+        .toMatchObject({ state: 'placed', class: 'placed' });
+      const empty = await seedLane();
+      for (const args of [{ derivedOrderKey: empty.key }, { creatorRecordId: empty.record, asin: empty.asin },
+        { derivedOrderKey: creatorSampleOrderKey(orgId, 'CCR-SW-26-9997', 'B0AAAAAAAA') }]) {
+        const missing = await call(client, 'creators.sample_send_outcome', args);
+        expect(missing.isError).toBe(true);
+        expect(missing.payload['error']).toBe('not_found');
+        expect(missing.text).toContain('no Arcana send');
+      }
+    } finally { await client.close(); }
+  });
+
+  it('refuses a malformed, mixed or contact-bearing lane before reading, naming the path and never the value', async () => {
+    const client = await connect(server, creatorToken);
+    const cases: [Record<string, unknown>, RegExp][] = [
+      [{}, /creatorRecordId \(invalid_type\)/],
+      [{ derivedOrderKey: 'CCS-NOTHEX' }, /derivedOrderKey \(invalid_format\)/],
+      [{ creatorRecordId: 'CCR-SW-26-0072' }, /asin \(invalid_type\)/],
+      [{ derivedOrderKey: creatorSampleOrderKey(orgId, 'CCR-SW-26-0072', 'B0D9K3M2QP'), creatorRecordId: 'CCR-SW-26-0072', asin: 'B0D9K3M2QP' },
+        /not both/],
+      [{ derivedOrderKey: creatorSampleOrderKey(orgId, 'CCR-SW-26-0072', 'B0D9K3M2QP'), note: 'x' }, /unrecognized_keys/],
+      [{ creatorRecordId: 'CCR-SW-26-0072', asin: 'B0D9K3M2QP', shipping_address: street }, /shipping_address \(contact_key\)/],
+    ];
+    try {
+      for (const [args, where] of cases) {
+        const refused = await call(client, 'creators.sample_send_outcome', args);
+        expect(refused.isError, JSON.stringify(Object.keys(args))).toBe(true);
+        expect(refused.payload['error']).toBe('invalid_argument');
+        expect(refused.text).toMatch(where);
+        expect(refused.text).not.toContain(street);
+      }
+    } finally { await client.close(); }
+  });
+
+  it('refuses the outcome read to a read key, and to a creator:write key once it is expired or revoked', async () => {
+    const lane = await seedLane();
+    await seedSend(lane, 'placed');
+    const read = await connect(server, readToken);
+    try {
+      const refused = await call(read, 'creators.sample_send_outcome', { derivedOrderKey: lane.key });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toMatch(/not found/);
+      expect(refused.text).not.toContain(lane.key);
+    } finally { await read.close(); }
+    // The database refuses a read key on this tool's authorization too, whatever a server registered.
+    await expect(withCreatorWriteOperation({ handle: database, config: testConfig(database.connectionString), actor: { orgId, userId: OWNER },
+      keyId: readKeyId }, async () => 'outcome')).rejects.toMatchObject({ code: 'forbidden' });
+
+    for (const ending of ['expired', 'revoked'] as const) {
+      const key = await issue(ADMIN);
+      const client = await connect(server, key.token);
+      try {
+        expect((await call(client, 'creators.sample_send_outcome', { derivedOrderKey: lane.key })).payload).toMatchObject({ class: 'placed' });
+        if (ending === 'expired') await database.sql`update mcp.api_keys set expires_at = now() - interval '1 second' where id = ${key.record.id}`;
+        else await database.sql`update mcp.api_keys set revoked_at = now() where id = ${key.record.id}`;
+        const answer = await call(client, 'creators.sample_send_outcome', { derivedOrderKey: lane.key }).catch((error: unknown) => ({
+          payload: {} as Record<string, unknown>, text: String(error), isError: true }));
+        // The HTTP token check refuses it first; the database re-authorization would refuse it as well.
+        expect(answer.isError, ending).toBe(true);
+        expect(answer.text, ending).toContain('invalid or revoked API key');
+        expect(answer.text, ending).not.toContain(lane.reservation);
+        await expect(withCreatorWriteOperation({ handle: database, config: testConfig(database.connectionString), actor: { orgId, userId: ADMIN },
+          keyId: key.record.id }, async () => 'outcome'), ending).rejects.toMatchObject({ code: 'forbidden' });
+      } finally { await client.close(); }
+      await expect(connect(server, key.token), ending).rejects.toThrow();
+    }
+  });
+
+  it('audits every outcome read with a digest, a size and the outcome class, never the arguments or the answer', async () => {
+    const lane = await seedLane();
+    await seedSend(lane, 'uncertain', { escalation: 'ladder_exhausted' });
+    const before = (await readAuditEntries(database, orgId, 5_000)).filter((entry) => entry.actorId === creatorKeyId).length;
+    const client = await connect(server, creatorToken);
+    try {
+      expect((await call(client, 'creators.sample_send_outcome', { derivedOrderKey: lane.key })).isError).toBe(false);
+      expect((await call(client, 'creators.sample_send_outcome', { creatorRecordId: lane.record, asin: 'B0NOTALANE' })).isError).toBe(true);
+    } finally { await client.close(); }
+    const entries = (await readAuditEntries(database, orgId, 5_000)).filter((entry) => entry.actorId === creatorKeyId);
+    expect(entries.length - before).toBe(2);
+    const [missed, found] = entries;
+    expect(found).toMatchObject({ action: 'mcp.creators.sample_send_outcome', actorType: 'mcp' });
+    expect(found!.payload).toMatchObject({ outcome: 'ok', summary: { state: 'uncertain', class: 'uncertain', escalated: true } });
+    expect(Object.keys(found!.payload['params'] as object).sort()).toEqual(['bytes', 'digest', 'keys', 'otherKeys']);
+    expect((found!.payload['params'] as { digest: string }).digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(missed!.payload).toMatchObject({ outcome: 'error', summary: { code: 'not_found' } });
+    const text = JSON.stringify([found, missed]);
+    for (const value of [lane.key, lane.record, lane.reservation, lane.keyId, lane.ciphertext, MASK.postalPrefix, 'B0NOTALANE']) {
+      expect(text).not.toContain(value);
+    }
+  });
+
   async function tableCounts(): Promise<Record<string, number>> {
     const tables = ['creator_records', 'creator_action_log', 'creator_daily_queue', 'creator_sweep_runs', 'creator_sample_shipments', 'creator_drafts',
-      'creator_import_runs'];
+      'creator_import_runs', 'creator_mcf_sends', 'creator_mcf_send_events', 'creator_sample_preflights'];
     const counts: Record<string, number> = {};
     for (const table of tables) {
       const [row] = await database.sql<{ n: number }[]>`select count(*)::int as n from ${database.sql(table)} where org_id = ${orgId}`;
