@@ -31,6 +31,7 @@ import { createMarketingStreamSqsConsumer } from './marketing-stream-sqs.js';
 import { createMarketingStreamNormalizeHandler } from './marketing-stream-normalize.js';
 import { createSpApiSqpRequestHandler } from './spapi-sqp.js';
 import { createMcfObserveHandler, createMcfObservePass, mcfObserveEnabled, registerMcfObserve } from './mcf-observe.js';
+import { createMcfHousekeepingPass } from './mcf-housekeeping.js';
 import { PostgresWeeklySqpScheduler } from './sqp-scheduler.js';
 import { PostgresRecommendationRunStore, createRecommendationsRunner } from './recommendations-run.js';
 import { RecommendationObservationPass } from './recommendation-observer.js';
@@ -191,6 +192,8 @@ const spWritePolling = spWriteLoop ? startSpWritePolling(spWriteLoop, config.pol
 const marketSignalsImport = createMarketSignalsImportPass(handle, process.env, config.startsBackgroundPasses);
 const mcfObservePass = createMcfObservePass(handle, store, process.env,
   { enabled: mcfObserve, startsBackgroundPasses: config.startsBackgroundPasses, jobTypes: config.jobTypes });
+// WP-338n: MCF custody expiry, mask purge and alerts; posts only with OPENSPELL_MCF_ALERT_WEBHOOK_URL set.
+const mcfHousekeeping = createMcfHousekeepingPass(handle, process.env, config.startsBackgroundPasses);
 marketingStream?.start();
 amazonConnections?.start();
 spApiConnections?.start();
@@ -236,6 +239,7 @@ bidSeries?.start();
 recommendationObserver?.start();
 marketSignalsImport?.start();
 mcfObservePass?.start();
+mcfHousekeeping?.start();
 
 const CUSTODY_EXIT_CODE = 78;
 let shutdownPromise: Promise<WorkerShutdownEvidence> | null = null;
@@ -254,6 +258,7 @@ async function performShutdown(): Promise<WorkerShutdownEvidence> {
   recommendationObserver?.stop();
   await marketSignalsImport?.stop();
   await mcfObservePass?.stop();
+  await mcfHousekeeping?.stop();
   await evidenceRecovery?.stop();
   await creativeSync?.stop();
   await spWritePolling?.stop();

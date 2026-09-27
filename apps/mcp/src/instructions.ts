@@ -107,7 +107,7 @@ rather than as a separate step you have to remember.
 }
 
 /**
- * The bootstrap document for a `creator:write` key: what each of the seven tools
+ * The bootstrap document for a `creator:write` key: what each of the eight tools
  * takes, in the control runner's shapes, and what each refuses. Written for the
  * author of the `amazon-creator-connections` skill.
  */
@@ -116,12 +116,16 @@ export function creatorWriteInstructionsDocument(orgSlug: string): string {
   return `# Arcana MCP — creator:write
 
 You are connected to **${orgSlug}** with a \`creator:write\` key. ${MCP_KEY_SCOPE_DESCRIPTIONS['creator:write']}
-It can call the seven tools below and read this document; it cannot call an analytics tool, and an
+It can call the eight tools below and read this document; it cannot call an analytics tool, and an
 analytics (read) key cannot call these. Every call writes one audit row holding a digest of the
 arguments and their size, never the arguments.
 
 Creator status written here is **not** an Amazon write. Nothing here sends a message, places an
 order or changes an Amazon account. A reply draft is text an operator sends by hand.
+
+This key **cannot place, change or cancel an Amazon order**. An Arcana MCF sample send happens only
+on the Arcana lane screen, when an operator enters the address there and presses the send button; no tool here can seal an address, preview, approve, send, resolve or cancel. The key reads
+what became of a send with \`creators.sample_send_outcome\`.
 
 ## Fingerprints only
 
@@ -184,6 +188,17 @@ ${templates}
    \`inventory\` is the \`product_catalog\` entry the runner checked. Never the recipient block:
    \`recipient_binding\` is its fingerprint. Returns the lane's \`derived_order_key\`. Arcana places no
    order and changes no lane or lock. Reusing a \`run_id\` for another result is refused.
+8. \`creators.sample_send_outcome\` — read-only. \`{derivedOrderKey}\` or \`{creatorRecordId, asin}\`, not
+   both (camelCase, unlike the tools above). Take \`derivedOrderKey\` exactly as \`creators.preflight_result\`
+   returned it in \`derived_order_key\`; never compute it yourself. Returns the lane's newest Arcana send:
+   \`{derivedOrderKey, state, class, escalated, mcfStatus, acceptedAt, placedAt, reservationId}\`, where
+   \`class\` is \`pending\` (not yet sent, or sent and not yet read back), \`placed\` (Amazon has the order
+   under that key: the only class on which to record it), \`failed\` (never record it: no order was placed,
+   because the send was refused, withdrawn, expired or rejected, or Amazon later cancelled a placed order or
+   found it unfulfillable), \`uncertain\` (the outcome is not yet known, a conflict, or a cancel in
+   flight: wait, never re-send) or \`cancelled\`. \`escalated\` means an operator must look at the lane.
+   \`mcfStatus\` is Amazon's order status as last read, or null before any read; times are null until they
+   happen. No address, mask or fingerprint is returned. \`not_found\` means the lane has no Arcana send.
 
 ## Errors
 
