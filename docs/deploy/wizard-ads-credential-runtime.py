@@ -17,6 +17,11 @@ configuration, /etc/wizard-ads-mcf/mcf.json, never worker.json. It passes
 CREDENTIALS_DIRECTORY to node so apps/worker/src/mcf-main.ts can read the
 recipient private key files itself; this runtime lists their names and never
 opens them, so a key never enters an environment variable.
+
+The mcf-sandbox mode (WP-338k) runs only in wizard-ads-mcf-sandbox.service, a
+oneshot unit with the MCF unit's database and LWA credentials. It reads
+/etc/wizard-ads/mcf-sandbox.json, whose endpoint must be the NA SP-API sandbox,
+and execs apps/worker/src/mcf-sandbox-cli.ts once.
 """
 from __future__ import annotations
 
@@ -124,6 +129,22 @@ MCF_WORKER_ID = re.compile(r"^[A-Za-z0-9._:-]{1,70}$")
 # systemd exports StateDirectory= as $STATE_DIRECTORY; with DynamicUser=yes the
 # directory may be reported under /var/lib/private.
 MCF_STATE_DIRECTORIES = ("/var/lib/wizard-ads-mcf", "/var/lib/private/wizard-ads-mcf")
+# The one-shot MCF sandbox harness (WP-338k). It runs only in
+# wizard-ads-mcf-sandbox.service, with the MCF unit's database and LWA
+# credentials and nothing else, and execs src/mcf-sandbox-cli.ts once. Its
+# configuration names the synthetic recipient, the scope and the one endpoint
+# it may call; the CLI reads the file itself, so no recipient value enters an
+# environment variable.
+MCF_SANDBOX_CONFIG = Path("/etc/wizard-ads/mcf-sandbox.json")
+MCF_SANDBOX_ENDPOINT = "https://sandbox.sellingpartnerapi-na.amazon.com"
+MCF_SANDBOX_KEYS = frozenset({"endpoint", "orgId", "scope", "sellerSku", "recipient"})
+MCF_SANDBOX_RECIPIENT_KEYS = frozenset({
+    "name", "addressLine1", "addressLine2", "addressLine3", "city", "districtOrCounty", "stateOrRegion",
+    "postalCode", "countryCode",
+})
+MCF_SANDBOX_CREDENTIALS = {DATABASE_CREDENTIAL: "DATABASE_URL", **SPAPI_CREDENTIALS}
+MCF_SANDBOX_STATE_DIRECTORIES = ("/var/lib/wizard-ads-mcf-sandbox", "/var/lib/private/wizard-ads-mcf-sandbox")
+LOWER_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 CREDENTIAL_VALUE = re.compile(r"^[\x21-\x7e]{1,4096}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 MCP_UPSTREAM = "http://127.0.0.1:18787"
@@ -612,6 +633,74 @@ def run_mcf() -> None:
     })
 
 
+def mcf_sandbox_config() -> dict[str, Any]:
+    """The sandbox harness's configuration: exactly its five keys, the NA sandbox endpoint, no placeholder.
+
+    Messages name a key at most, never a value. The CLI parses the file again,
+    recipient rules included, before it opens the database.
+    """
+    try:
+        config = json.loads(MCF_SANDBOX_CONFIG.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("MCF sandbox configuration is unavailable") from exc
+    if not isinstance(config, dict):
+        raise RuntimeError("MCF sandbox configuration is invalid")
+    if config.get("endpoint") != MCF_SANDBOX_ENDPOINT:
+        raise RuntimeError(f"the mcf-sandbox mode calls only the NA SP-API sandbox endpoint ({MCF_SANDBOX_ENDPOINT})")
+    for key in sorted(set(config) - MCF_SANDBOX_KEYS):
+        if key in MCF_ENV_KEYS or key in WORKER_ENV_KEYS or key == MCF_ALERT_WEBHOOK:
+            raise RuntimeError(f"{key} is a worker or MCF unit key, never the MCF sandbox configuration")
+        raise RuntimeError("MCF sandbox configuration contains unsupported keys")
+    if set(config) != MCF_SANDBOX_KEYS:
+        raise RuntimeError("MCF sandbox configuration must hold exactly " + ", ".join(sorted(MCF_SANDBOX_KEYS)))
+    recipient = config["recipient"]
+    if not isinstance(recipient, dict) or not recipient or set(recipient) - MCF_SANDBOX_RECIPIENT_KEYS:
+        raise RuntimeError("MCF sandbox configuration is invalid")
+    values = [config["orgId"], config["scope"], config["sellerSku"], *recipient.values()]
+    if not all(isinstance(value, str) for value in values):
+        raise RuntimeError("MCF sandbox configuration is invalid")
+    if any("<" in value or ">" in value for value in values):
+        raise RuntimeError("MCF sandbox configuration still contains a template placeholder")
+    if not LOWER_UUID.fullmatch(config["orgId"]) or not MCF_SCOPE_ENTRY.fullmatch(config["scope"]):
+        raise RuntimeError("MCF sandbox configuration needs a lower-case orgId and one "
+                           "<lower-case connection uuid>:<marketplace id> scope")
+    return config
+
+
+def run_mcf_sandbox() -> None:
+    """The one-shot sandbox harness (WP-338k). Refuses anything it does not need.
+
+    Requires the MCF unit's three credentials and no other (no recipient key,
+    webhook, Ads or MCP credential). Passes DATABASE_URL, the SP-API LWA pair
+    and the revision; never CREDENTIALS_DIRECTORY, NODE_OPTIONS or a
+    configuration value. HOME is the unit's StateDirectory. Execs
+    src/mcf-sandbox-cli.ts, which runs its probes once and exits.
+    """
+    config = mcf_sandbox_config()
+    revision = release_revision()
+    directory = os.environ.get("CREDENTIALS_DIRECTORY", "")
+    if not directory.startswith("/") or not Path(directory).is_dir():
+        raise RuntimeError("the mcf-sandbox mode runs only under systemd with its credentials directory")
+    state = os.environ.get("STATE_DIRECTORY", "")
+    if state not in MCF_SANDBOX_STATE_DIRECTORIES:
+        raise RuntimeError(
+            "the mcf-sandbox mode runs only in wizard-ads-mcf-sandbox.service (StateDirectory=wizard-ads-mcf-sandbox)"
+        )
+    unexpected = sorted(credential_names() - set(MCF_SANDBOX_CREDENTIALS))
+    if unexpected:
+        raise RuntimeError("wizard-ads-mcf-sandbox.service loads a credential the mcf-sandbox mode does not use: "
+                           + ", ".join(unexpected))
+    spapi = spapi_credentials(required=True)
+    env = base_environment()
+    env["HOME"] = state
+    env["OPENSPELL_WORKER_REVISION"] = revision
+    env.update(spapi)
+    env["DATABASE_URL"] = database_url()
+    exec_release("mcf-sandbox", revision, False, "src/mcf-sandbox-cli.ts", env, extra={
+        "mcfSandboxHost": urllib.parse.urlsplit(config["endpoint"]).hostname or "",
+    })
+
+
 def jsonrpc_error(request: Any, message: str) -> dict[str, Any] | None:
     if not isinstance(request, dict) or "id" not in request:
         return None
@@ -836,13 +925,15 @@ def run_mcp() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("worker", "spapi-connections", "amazon-connections", "mcf", "mcp"))
+    parser.add_argument("mode", choices=("worker", "spapi-connections", "amazon-connections", "mcf", "mcf-sandbox", "mcp"))
     args = parser.parse_args()
     os.umask(0o007)
     if args.mode == "worker":
         run_worker()
     elif args.mode == "mcf":
         run_mcf()
+    elif args.mode == "mcf-sandbox":
+        run_mcf_sandbox()
     elif args.mode == "spapi-connections":
         run_spapi_connections()
     elif args.mode == "amazon-connections":

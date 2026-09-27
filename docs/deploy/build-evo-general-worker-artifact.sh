@@ -67,6 +67,15 @@ stage_evo_general_worker_release() {
     return 1
   fi
 
+  # The MCF unit and the one-shot MCF sandbox harness (WP-338k) exec these
+  # entries from this release; their units are installed from a checkout of the
+  # same revision, because the normalizer pins the release's two unit files.
+  for entry in src/mcf-main.ts src/mcf-sandbox-cli.ts; do
+    [[ -f "$stage/app/$entry" ]] || {
+      echo "refusing staging: release lacks app/$entry" >&2; return 1;
+    }
+  done
+
   private_locator_pattern='op:/''/'
   if rg --hidden --no-ignore -I -q -F "$repo_root" "$stage" \
     || rg --hidden --no-ignore -I -q "/(home|Users)/|$private_locator_pattern" "$stage" \
