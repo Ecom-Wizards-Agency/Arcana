@@ -11,6 +11,14 @@
  * value anywhere but in `requests` has found a leak. `requests` is the positive
  * control: it holds the bodies as sent, recipient included, in memory only.
  *
+ * Echo mode (WP-338j, `echo: true`) is the privacy suite's adversary: every
+ * answer that can carry text carries the last destination the fake was sent,
+ * in bodies, in a response header, in 404, 429 and 5xx bodies, in the text of
+ * an undecodable answer and in the message of a transport failure; the order
+ * list and package tracking answer as well. A `hang` create answer waits for
+ * the request's abort signal (the writer's timeout) and then fails with the
+ * destination in its message. Without echo mode the fake answers as before.
+ *
  * Synthetic data only. No network: `fetch` is a function the worker is given.
  */
 import type { FetchLike, SpApiAccessTokenProvider } from '@wizard-ads/sp-api';
@@ -35,13 +43,15 @@ export type FakePreviewAnswer =
 
 /**
  * createFulfillmentOrder answers. `creates` says whether the order exists at
- * Amazon afterwards (a 5xx or a lost answer may still have created it).
+ * Amazon afterwards (a 5xx or a lost answer may still have created it). `hang`
+ * never answers: it fails when the request's signal aborts (a timeout).
  */
 export type FakeCreateAnswer =
   | { kind: 'ok'; status?: FakeOrderStatus }
   | { kind: 'http'; status: number; codes?: string[]; creates?: boolean; createdStatus?: FakeOrderStatus }
   | { kind: 'transport'; creates?: boolean; createdStatus?: FakeOrderStatus }
-  | { kind: 'undecodable'; creates?: boolean };
+  | { kind: 'undecodable'; creates?: boolean }
+  | { kind: 'hang'; creates?: boolean; createdStatus?: FakeOrderStatus };
 
 /**
  * cancelFulfillmentOrder answers (WP-338i). `cancels` says whether the order is
@@ -65,7 +75,7 @@ export interface FakeRequest {
   body: string | null;
   /** The fake's clock when the request arrived. */
   at: number;
-  operation: 'preview' | 'create' | 'get' | 'cancel' | 'other';
+  operation: 'preview' | 'create' | 'get' | 'cancel' | 'list' | 'track' | 'other';
 }
 
 export interface FakeFulfillmentOutboundOptions {
@@ -73,9 +83,9 @@ export interface FakeFulfillmentOutboundOptions {
   now?: () => number;
   /** Called with each request before it is answered: tests turn flags off "between steps" here. */
   onRequest?: (request: FakeRequest) => void | Promise<void>;
+  /** Echo mode: every answer that can carry text carries the last destination sent (see the file comment). */
+  echo?: boolean;
 }
-
-const json = (status: number, body: unknown): Response => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
 function echoText(destination: Record<string, unknown> | null): string {
   return destination === null ? '' : Object.values(destination).filter((value) => typeof value === 'string').join(', ');
@@ -83,6 +93,8 @@ function echoText(destination: Record<string, unknown> | null): string {
 
 export class FakeFulfillmentOutbound {
   readonly requests: FakeRequest[] = [];
+  /** The last destination any request carried (echo mode repeats it everywhere). */
+  private lastDestination: Record<string, unknown> | null = null;
   readonly orders = new Map<string, FakeOrder>();
   /** Queued preview answers; the last one repeats. */
   previewAnswers: FakePreviewAnswer[] = [{ kind: 'ok' }];
@@ -95,9 +107,26 @@ export class FakeFulfillmentOutbound {
 
   /** Called with each request before it is answered: tests turn flags off "between steps" here. */
   onRequest: FakeFulfillmentOutboundOptions['onRequest'];
+  readonly echo: boolean;
 
   constructor(private readonly options: FakeFulfillmentOutboundOptions = {}) {
     this.onRequest = options.onRequest;
+    this.echo = options.echo === true;
+  }
+
+  /** The last destination as text, in echo mode only. */
+  private echoed(): string {
+    return this.echo ? echoText(this.lastDestination) : '';
+  }
+
+  private json(status: number, body: unknown): Response {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.echo && this.lastDestination !== null) headers['x-synthetic-echo'] = encodeURIComponent(this.echoed());
+    return new Response(JSON.stringify(body), { status, headers });
+  }
+
+  private failure(what: string): TypeError {
+    return new TypeError(this.echo ? `fake ${what} failure while shipping to ${this.echoed()}` : `fake ${what} failure`);
   }
 
   get posts(): number { return this.requests.filter((request) => request.operation === 'create').length; }
@@ -126,32 +155,49 @@ export class FakeFulfillmentOutbound {
     const operation: FakeRequest['operation'] = method === 'POST' && path === `${BASE}/preview` ? 'preview'
       : method === 'POST' && path === BASE ? 'create'
         : method === 'GET' && path.startsWith(`${BASE}/`) ? 'get'
-          : method === 'PUT' && path.endsWith('/cancel') ? 'cancel' : 'other';
+          : method === 'PUT' && path.endsWith('/cancel') ? 'cancel'
+            : method === 'GET' && path === BASE ? 'list'
+              : method === 'GET' && path === '/fba/outbound/2020-07-01/tracking' ? 'track' : 'other';
     const request: FakeRequest = { method, path, body, at: this.options.now?.() ?? Date.now(), operation };
     this.requests.push(request);
+    if (body !== null && (operation === 'preview' || operation === 'create')) {
+      const sent = JSON.parse(body) as { address?: Record<string, unknown>; destinationAddress?: Record<string, unknown> };
+      this.lastDestination = sent.address ?? sent.destinationAddress ?? this.lastDestination;
+    }
     await this.onRequest?.(request);
     switch (operation) {
       case 'preview': return this.preview(body);
-      case 'create': return this.create(body);
+      case 'create': return this.create(body, init?.signal ?? null);
       case 'get': return this.get(decodeURIComponent(path.slice(BASE.length + 1)));
       case 'cancel': return this.cancel(decodeURIComponent(path.slice(BASE.length + 1, -'/cancel'.length)));
-      default: return json(404, { errors: [{ code: 'NotFound', message: 'no such operation' }] });
+      case 'list': return this.list();
+      case 'track': return this.json(404, { errors: [{ code: 'NotFound', message: this.echo ? `no package for ${this.echoed()}` : 'no such operation' }] });
+      default: return this.json(404, { errors: [{ code: 'NotFound', message: 'no such operation' }] });
     }
   };
+
+  /** listAllFulfillmentOrders: every order held, destination included (echo mode); 404 as before otherwise. */
+  private list(): Response {
+    if (!this.echo) return this.json(404, { errors: [{ code: 'NotFound', message: 'no such operation' }] });
+    return this.json(200, { payload: { fulfillmentOrders: [...this.orders.values()].map((order) => ({
+      sellerFulfillmentOrderId: order.sellerFulfillmentOrderId, displayableOrderId: order.sellerFulfillmentOrderId,
+      fulfillmentOrderStatus: order.status, receivedDate: '2026-09-28T12:00:00Z', statusUpdatedDate: '2026-09-28T12:00:00Z',
+      destinationAddress: order.destination ?? this.lastDestination, displayableOrderComment: `for ${this.echoed()}` })) } });
+  }
 
   private preview(body: string | null): Response {
     const answer = this.previewAnswers.length > 1 ? this.previewAnswers.shift()! : this.previewAnswers[0] ?? { kind: 'ok' };
     const sent = JSON.parse(body ?? '{}') as { marketplaceId: string; address: Record<string, unknown>; items: { sellerSku: string; sellerFulfillmentOrderItemId: string; quantity: number }[] };
-    if (answer.kind === 'transport') throw new TypeError('fake transport failure');
+    if (answer.kind === 'transport') throw this.failure('transport');
     if (answer.kind === 'http') {
-      return json(answer.status, { errors: (answer.codes ?? ['InvalidInput']).map((code) => ({ code, message: `Could not ship to ${echoText(sent.address)}`,
+      return this.json(answer.status, { errors: (answer.codes ?? ['InvalidInput']).map((code) => ({ code, message: `Could not ship to ${echoText(sent.address)}`,
         details: echoText(sent.address) })) });
     }
     const fulfillable = answer.fulfillable ?? true;
     const item = sent.items[0]!;
     const earliest = answer.earliestArrival ?? '2026-10-02T07:00:00Z';
     const latest = answer.latestArrival ?? '2026-10-05T07:00:00Z';
-    return json(200, { payload: { fulfillmentPreviews: [{
+    return this.json(200, { payload: { fulfillmentPreviews: [{
       shippingSpeedCategory: 'Standard', isFulfillable: fulfillable, isCODCapable: false, marketplaceId: sent.marketplaceId,
       // Amazon echoes the address it priced; the writer copies an allowlist and must drop it.
       address: sent.address,
@@ -173,33 +219,44 @@ export class FakeFulfillmentOutbound {
       sellerSku: sent.items[0]!.sellerSku, quantity: sent.items[0]!.quantity, destination: sent.destinationAddress });
   }
 
-  private create(body: string | null): Response {
+  private async create(body: string | null, signal: AbortSignal | null): Promise<Response> {
     const answer = this.createAnswers.shift() ?? { kind: 'ok' };
     const sent = JSON.parse(body ?? '{}') as { sellerFulfillmentOrderId: string; destinationAddress: Record<string, unknown> };
     switch (answer.kind) {
       case 'ok':
         this.store(body, answer.status ?? 'Received');
-        return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+        return this.json(200, this.echo ? { payload: {}, echo: this.echoed() } : {});
       case 'http':
         if (answer.creates) this.store(body, answer.createdStatus ?? 'Received');
-        return json(answer.status, { errors: (answer.codes ?? ['InvalidInput']).map((code) => ({ code,
+        return this.json(answer.status, { errors: (answer.codes ?? ['InvalidInput']).map((code) => ({ code,
           message: `Order ${sent.sellerFulfillmentOrderId} for ${echoText(sent.destinationAddress)} was not accepted`, details: echoText(sent.destinationAddress) })) });
       case 'transport':
         if (answer.creates) this.store(body, answer.createdStatus ?? 'Received');
-        throw new TypeError('fake transport failure');
+        throw this.failure('transport');
       case 'undecodable':
         if (answer.creates) this.store(body, 'Received');
-        return new Response('<html>not json</html>', { status: 200 });
+        return new Response(`<html>not json${this.echo ? ` ${this.echoed()}` : ''}</html>`, { status: 200 });
+      case 'hang':
+        if (answer.creates) this.store(body, answer.createdStatus ?? 'Received');
+        if (signal === null) throw new TypeError('a hanging answer needs a request signal');
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        throw new DOMException(this.echo ? `request to ship to ${echoText(sent.destinationAddress)} timed out` : 'fake request timed out', 'TimeoutError');
     }
   }
 
   private get(id: string): Response {
     const failure = this.readFailures.shift();
-    if (failure?.kind === 'transport') throw new TypeError('fake transport failure');
-    if (failure?.kind === 'http') return json(failure.status, { errors: [{ code: failure.status === 429 ? 'QuotaExceeded' : 'InternalFailure', message: 'synthetic' }] });
+    if (failure?.kind === 'transport') throw this.failure('transport');
+    if (failure?.kind === 'http') {
+      return this.json(failure.status, { errors: [{ code: failure.status === 429 ? 'QuotaExceeded' : 'InternalFailure',
+        message: this.echo ? `synthetic failure reading the order for ${this.echoed()}` : 'synthetic' }] });
+    }
     const order = this.orders.get(id);
-    if (order === undefined) return json(404, { errors: [{ code: 'NotFound', message: `No order ${id}` }] });
-    return json(200, { payload: {
+    if (order === undefined) return this.json(404, { errors: [{ code: 'NotFound', message: `No order ${id}${this.echo ? ` for ${this.echoed()}` : ''}` }] });
+    return this.json(200, { payload: {
       fulfillmentOrder: { sellerFulfillmentOrderId: order.sellerFulfillmentOrderId, displayableOrderId: order.sellerFulfillmentOrderId,
         fulfillmentOrderStatus: order.status, receivedDate: '2026-09-28T12:00:00Z', statusUpdatedDate: '2026-09-28T12:00:00Z',
         // Amazon returns the destination; the reader must drop it.
@@ -215,27 +272,27 @@ export class FakeFulfillmentOutbound {
     const answer = this.cancelAnswers.shift();
     const cancellable = order !== undefined && (order.status === 'Received' || order.status === 'Planning');
     const settle = (cancels: boolean | undefined, fallback: boolean) => { if (order !== undefined && cancellable && (cancels ?? fallback)) order.status = 'Cancelled'; };
-    const refusal = (status: number, codes: string[]) => json(status, { errors: codes.map((code) => ({ code,
+    const refusal = (status: number, codes: string[]) => this.json(status, { errors: codes.map((code) => ({ code,
       message: `Order ${id} for ${echoText(order?.destination ?? null)} cannot be cancelled`, details: echoText(order?.destination ?? null) })) });
     if (answer === undefined) {
-      if (order === undefined) return json(404, { errors: [{ code: 'NotFound', message: `No order ${id}` }] });
+      if (order === undefined) return this.json(404, { errors: [{ code: 'NotFound', message: `No order ${id}${this.echo ? ` for ${this.echoed()}` : ''}` }] });
       if (!cancellable) return refusal(400, ['InvalidInput']);
       order.status = 'Cancelled';
-      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return this.json(200, this.echo ? { payload: {}, echo: this.echoed() } : {});
     }
     switch (answer.kind) {
       case 'ok':
         settle(answer.cancels, true);
-        return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+        return this.json(200, this.echo ? { payload: {}, echo: this.echoed() } : {});
       case 'http':
         settle(answer.cancels, false);
         return refusal(answer.status, answer.codes ?? ['InvalidInput']);
       case 'transport':
         settle(answer.cancels, false);
-        throw new TypeError('fake transport failure');
+        throw this.failure('transport');
       case 'undecodable':
         settle(answer.cancels, false);
-        return new Response('<html>not json</html>', { status: 200 });
+        return new Response(`<html>not json${this.echo ? ` ${this.echoed()}` : ''}</html>`, { status: 200 });
     }
   }
 }
