@@ -197,10 +197,10 @@ export const CreatorSampleShipment = z.object({
 export type CreatorSampleShipment = z.infer<typeof CreatorSampleShipment>;
 
 /** What one import wrote, per kind of row. */
-export const CreatorImportKind = z.enum(['records', 'action_log', 'queue_items', 'sweep_runs', 'sample_shipments']);
+export const CreatorImportKind = z.enum(['records', 'action_log', 'queue_items', 'sweep_runs', 'sample_shipments', 'preflights']);
 export type CreatorImportKind = z.infer<typeof CreatorImportKind>;
-/** The runner files the import reads from its directory. */
-export const CreatorImportFile = z.enum(['registry', 'queue', 'sweep_checkpoint', 'mcf_reservations']);
+/** The runner files the import reads from its directory. `preflight_results` is a proposed file (WP-334). */
+export const CreatorImportFile = z.enum(['registry', 'queue', 'sweep_checkpoint', 'mcf_reservations', 'preflight_results']);
 export type CreatorImportFile = z.infer<typeof CreatorImportFile>;
 /** read = valid + invalid; valid = inserted + updated + unchanged. `removed` is queue rows a newer run dropped. */
 export const CreatorImportCounts = z.object({
@@ -223,8 +223,14 @@ export const CreatorImportRun = z.object({
   files: z.array(CreatorImportFile),
   /** The run date of the queue file read; null when no queue file was read. */
   queueRunDate: z.iso.date().nullable(),
-  /** Null for a kind whose file was absent, and for every kind of a failed run. */
-  counts: z.record(CreatorImportKind, CreatorImportCounts.nullable()),
+  /**
+   * Null for a kind whose file was absent, and for every kind of a failed run.
+   * A run recorded before `preflights` existed (WP-334) reads it as null: that
+   * file was not read. Every other kind must be present.
+   */
+  counts: z.preprocess((value) => value !== null && typeof value === 'object' && !Array.isArray(value) && !('preflights' in value)
+    ? { ...value, preflights: null } : value,
+  z.record(CreatorImportKind, CreatorImportCounts.nullable())),
   source: CreatorSource,
 }).strict().refine((run) => (run.status === 'failed') === (run.failure !== null), 'a failure code belongs to a failed run only');
 export type CreatorImportRun = z.infer<typeof CreatorImportRun>;

@@ -21,7 +21,7 @@ import { listMcpKeyMetadata } from './mcp-key-metadata.js';
 /** A write the rules refuse. The code is safe to show a caller; no value is echoed. */
 export type CreatorWriteRefusalCode =
   | 'record_not_found' | 'record_conflict_locked' | 'thread_mismatch' | 'approved_draft_open' | 'event_key_reused'
-  | 'draft_not_found' | 'transition_refused' | 'older_than_held';
+  | 'draft_not_found' | 'transition_refused' | 'older_than_held' | 'run_id_reused' | 'lane_not_found';
 export class CreatorWriteRefusal extends Error {
   constructor(readonly code: CreatorWriteRefusalCode, message: string) {
     super(message);

@@ -18,8 +18,11 @@ import { descriptor as creative_eligibility } from './creative-eligibility/descr
 import { descriptor as creators_conflict } from './creators-conflict/descriptor';
 import { descriptor as creators_daily_queue } from './creators-daily-queue/descriptor';
 import { descriptor as creators_drafts } from './creators-drafts/descriptor';
+import { descriptor as creators_fulfillment } from './creators-fulfillment/descriptor';
 import { descriptor as creators_inbox_sweep } from './creators-inbox-sweep/descriptor';
+import { descriptor as creators_product_switch } from './creators-product-switch/descriptor';
 import { descriptor as creators_record } from './creators-record/descriptor';
+import { descriptor as creators_sample_preflight } from './creators-sample-preflight/descriptor';
 import { descriptor as creators_sample_shipments } from './creators-sample-shipments/descriptor';
 import { descriptor as crosscheck } from './crosscheck/descriptor';
 import { descriptor as dashboard } from './dashboard/descriptor';
@@ -91,8 +94,11 @@ export const SCREEN_REGISTRY: readonly ScreenMetadata[] = [
   creators_conflict,
   creators_daily_queue,
   creators_drafts,
+  creators_fulfillment,
   creators_inbox_sweep,
+  creators_product_switch,
   creators_record,
+  creators_sample_preflight,
   creators_sample_shipments,
   crosscheck,
   dashboard,

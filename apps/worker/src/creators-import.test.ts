@@ -151,3 +151,43 @@ describe('one mapping for the import and the creator:write MCP tools', () => {
     expect(invalid.filter((entry) => entry.kind === 'action_log')).toEqual([]);
   });
 });
+
+describe('pre-flight results (WP-334, proposed preflight-results.json)', () => {
+  const email = ['creator.synthetic', '@', 'example', '.test'].join('');
+  const result = (runId: string, change: Record<string, unknown> = {}) => ({
+    command: 'preflight', run_id: runId, started_at: '2026-09-09T06:31:02Z', completed_at: '2026-09-09T06:31:11Z',
+    result: { result: 'HOLD', creator_record_id: 'CCR-SW-26-0151', computed_score: 10, errors: ['selected_sku_not_mcf_fulfillable'],
+      required_next_state: 'Conflict or Held', quantity: 1, visible_fee_cents: null, approved_fee_cap_cents: 800, selected_asin: 'B0D7Q1V8LM',
+      selected_sku: 'SW-DERMA-03-FBM', product_title: 'Synthetic roller', campaign_id: 'campaign-synthetic-1', tracker_source_ref: 'tracker:synthetic:row-118',
+      recipient_binding: '', ...change },
+    inventory: null, preview: null, reads: [],
+  });
+
+  it('maps valid entries like creators.preflight_result, and counts a drifted entry, contact data and a repeated run id as invalid by position', async () => {
+    const dir = await scratch();
+    await writeFile(join(dir, 'preflight-results.json'), JSON.stringify({ schema_version: 1, results: [result('preflight-0151-1'),
+      result('preflight-0151-2', { errors: ['moon_phase_wrong'] }), result('preflight-0151-3', { product_title: `Roller ${email}` }), result('preflight-0151-1')] }));
+    const read = await readCreatorRunnerDirectory(dir);
+    expect(read).toMatchObject({ ok: true, files: ['preflight_results'], preflightsNotProduced: false });
+    if (!read.ok) throw new Error('unreachable');
+    const built = buildCreatorImport(ORG, '2026-09-09T06:40:00.000Z', read.files, read.content, read.sweepNotProduced, read.preflightsNotProduced);
+    expect(built.batch.preflights).toMatchObject({ read: 4, invalid: 3 });
+    expect(built.batch.preflights?.rows.map((row) => [row.runId, row.command, row.asin, row.result])).toEqual([['preflight-0151-1', 'preflight', 'B0D7Q1V8LM', 'HOLD']]);
+    expect(built.invalid.map((entry) => [entry.kind, entry.index, entry.issues[0]?.code])).toEqual([
+      ['preflights', 1, 'invalid_value'], ['preflights', 2, 'contact_data_email'], ['preflights', 3, 'duplicate']]);
+    expect(JSON.stringify(built.invalid)).not.toContain(email);
+    expect(built.batch.records).toBeNull();
+  });
+
+  it('counts a pre-flight file in another shape as not produced and still reads the runner files', async () => {
+    const dir = await scratch();
+    await writeRunnerFiles(dir, { registry: syntheticRunnerFiles().registry });
+    await writeFile(join(dir, 'preflight-results.json'), JSON.stringify({ schema_version: 2, results: [] }));
+    const read = await readCreatorRunnerDirectory(dir);
+    expect(read).toMatchObject({ ok: true, files: ['registry', 'preflight_results'], preflightsNotProduced: true });
+    if (!read.ok) throw new Error('unreachable');
+    const built = buildCreatorImport(ORG, '2026-09-09T06:40:00.000Z', read.files, read.content, read.sweepNotProduced, read.preflightsNotProduced);
+    expect(built.batch.preflights).toEqual({ read: 1, invalid: 1, rows: [] });
+    expect(built.batch.records?.rows.length).toBeGreaterThan(0);
+  });
+});

@@ -107,7 +107,7 @@ rather than as a separate step you have to remember.
 }
 
 /**
- * The bootstrap document for a `creator:write` key: what each of the six tools
+ * The bootstrap document for a `creator:write` key: what each of the seven tools
  * takes, in the control runner's shapes, and what each refuses. Written for the
  * author of the `amazon-creator-connections` skill.
  */
@@ -116,7 +116,7 @@ export function creatorWriteInstructionsDocument(orgSlug: string): string {
   return `# Arcana MCP — creator:write
 
 You are connected to **${orgSlug}** with a \`creator:write\` key. ${MCP_KEY_SCOPE_DESCRIPTIONS['creator:write']}
-It can call the six tools below and read this document; it cannot call an analytics tool, and an
+It can call the seven tools below and read this document; it cannot call an analytics tool, and an
 analytics (read) key cannot call these. Every call writes one audit row holding a digest of the
 arguments and their size, never the arguments.
 
@@ -174,6 +174,15 @@ ${templates}
    brand, started_at, completed_at, evidence_reference, counts, threads}\` with the nine counts and one
    \`{thread_key, creator_record_id, sender_role, amazon_timestamp, body_hash, outcome, reason}\` per
    thread. Arcana computes whether the sweep reconciled; the file cannot claim it.
+7. \`creators.preflight_result\` — one \`creator_control.py\` \`preflight\` or \`preflight-switch\` result:
+   \`{command, run_id, started_at, completed_at, result, inventory, ...}\`. For \`preflight\`, \`result\` is the
+   \`mcf_preflight\` output, \`preview\` the getFulfillmentPreview read (or null) and \`reads\` up to eight
+   \`{check, read_at, evidence_reference}\`; Arcana files each error code under one of the eight checks and
+   refuses a code it does not know. For \`preflight-switch\`, \`result\` is the \`product_switch_preflight\`
+   output for one alternate, with \`original_unavailable_reason\` and \`original_blocker_evidence_reference\`.
+   \`inventory\` is the \`product_catalog\` entry the runner checked. Never the recipient block:
+   \`recipient_binding\` is its fingerprint. Returns the lane's \`derived_order_key\`. Arcana places no
+   order and changes no lane or lock. Reusing a \`run_id\` for another result is refused.
 
 ## Errors
 

@@ -18,12 +18,13 @@ const counts = (read: number) => ({ read, valid: read, invalid: 0, inserted: 0, 
 export const lastImport: CreatorImportRun = {
   id: '33200000-0000-4000-8000-0000000000a1', startedAt: '2026-09-09T06:13:58.000Z', finishedAt: AS_OF.trackerRead, status: 'succeeded',
   failure: null, failedFile: null, files: ['registry', 'queue', 'sweep_checkpoint', 'mcf_reservations'], queueRunDate: AS_OF.date,
-  counts: { records: counts(272), action_log: counts(0), queue_items: counts(34), sweep_runs: counts(1), sample_shipments: counts(2) },
+  counts: { records: counts(272), action_log: counts(0), queue_items: counts(34), sweep_runs: counts(1), sample_shipments: counts(2),
+    preflights: null },
   source: 'control-runner',
 };
 export const failedImport: CreatorImportRun = {
   ...lastImport, id: '33200000-0000-4000-8000-0000000000a2', status: 'failed', failure: 'file_shape_invalid', failedFile: 'queue', queueRunDate: null,
-  counts: { records: null, action_log: null, queue_items: null, sweep_runs: null, sample_shipments: null },
+  counts: { records: null, action_log: null, queue_items: null, sweep_runs: null, sample_shipments: null, preflights: null },
 };
 
 /** `sweep` in the fixture: 359 + 37 + 9 + 7 = 412, and seven unmatched, so it did not reconcile. */

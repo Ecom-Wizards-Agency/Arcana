@@ -5,6 +5,7 @@
  */
 import { createHash } from 'node:crypto';
 import { expect, test } from '@playwright/test';
+import { CreatorSampleLaneState } from '@wizard-ads/shared';
 import { createDb } from '@wizard-ads/db';
 import { signIn } from './support/auth';
 import { readState } from './support/fixture';
@@ -54,6 +55,44 @@ test('sample shipments: derived keys, an ambiguous submit, and a package the car
     const path = testInfo.outputPath('creators-samples-1440x1024.png');
     await page.screenshot({ path, animations: 'disabled', style: 'nextjs-portal { display: none; }' });
     await testInfo.attach('creators-samples', { path, contentType: 'image/png' });
+    await expect(shipped.locator('[data-lane-link="preflight"]')).toHaveAttribute('href', `/creators/samples/${expectedKey('CCR-E2-26-0088')}/preflight`);
+    await expect(ambiguous.locator('[data-lane-link="fulfillment"]')).toHaveAttribute('href', `/creators/samples/fulfillment/${expectedKey('CCR-E2-26-0072')}`);
+
+    // The daily report opens from a link, server-rendered: it shows what would be posted and posts nothing.
+    await expect(page.getByTestId('daily-report')).toHaveCount(0);
+    await page.getByTestId('daily-report-link').click();
+    await expect(page).toHaveURL(/\/creators\/samples\?report=daily$/);
+    const report = page.getByRole('dialog', { name: 'Daily report' });
+    await expect(report.getByTestId('daily-report-nothing-posted')).toContainText('Nothing is posted from Arcana.');
+    await expect(report.getByTestId('daily-report-text')).toContainText('Creator Connections daily report');
+    // Every count the report states, counted from the rows the organisation holds (other specs add lanes too).
+    const lanes = await db.sql<{ lane_state: string; runner_order_id: string | null; mcf_settlement: string | null; tracked: number }[]>`
+      select lane_state, runner_order_id, mcf_settlement, (select count(*)::int from jsonb_array_elements(coalesce(packages, '[]'::jsonb)) p
+        where p->>'trackingNumber' is not null) as tracked
+      from public.creator_sample_shipments where org_id = ${org}`;
+    expect(lanes.length).toBeGreaterThanOrEqual(2);
+    const byState = CreatorSampleLaneState.options.map((laneState) => [laneState, lanes.filter((lane) => lane.lane_state === laneState).length] as const)
+      .filter(([, n]) => n > 0).map(([laneState, n]) => `${n} ${laneState}`).join(', ');
+    await expect(report.getByTestId('daily-report-text')).toContainText(`Sample lanes: ${lanes.length} (${byState}).`);
+    const settled = (kind: string) => lanes.filter((lane) => lane.mcf_settlement === kind).length;
+    const reads = [[settled('found'), 'found'], [settled('not_found'), 'not found yet'], [settled('escalated'), 'escalated after 3 empty reads'],
+      [lanes.filter((lane) => lane.mcf_settlement === null).length, 'not read yet']]
+      .filter(([n]) => (n as number) > 0).map(([n, words]) => `${n} ${words}`).join(', ');
+    await expect(report.getByTestId('daily-report-text')).toContainText(`Amazon order reads: ${reads}.`);
+    await expect(report.getByTestId('daily-report-text')).not.toContainText('SYNTHETIC-TRACK-E2E');
+    await expect(report.getByTestId('daily-report-text')).not.toContainText('synthetic-order-e2e');
+    await expect(report.locator('[data-testid="daily-report-removed"] li')).toHaveCount(3);
+    const tracked = lanes.reduce((sum, lane) => sum + lane.tracked, 0);
+    expect(tracked).toBeGreaterThanOrEqual(1);
+    await expect(report.locator('[data-removed="Tracking numbers"]')).toContainText(`Tracking numbers: ${tracked} withheld`);
+    await expect(report.locator('[data-removed="Runner order ids"]'))
+      .toContainText(`Runner order ids: ${lanes.filter((lane) => lane.runner_order_id !== null).length} withheld`);
+    await expect(report.getByTestId('daily-report-close')).toBeFocused();
+    await expect(page.getByTestId('behind-daily-report')).toHaveAttribute('inert', '');
+    await expect(report.locator('button')).toHaveCount(0);
+    await report.getByTestId('daily-report-close').click();
+    await expect(page).toHaveURL(/\/creators\/samples$/);
+    await expect(page.getByTestId('daily-report')).toHaveCount(0);
   } finally {
     await db.close();
   }

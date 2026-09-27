@@ -40,6 +40,7 @@ describe('runtime job coverage', () => {
       'ads.product_eligibility.sync': 'registerCatalogueSources(',
       'ads.validation_configurations.sync': 'registerCatalogueSources(',
       'ads.change_history.sync': 'registerCatalogueSources(',
+      'mcf.observe': 'registerMcfObserve(',
       'sqp.categorize': null,
       'history.bootstrap': null,
       'report.promote': null,

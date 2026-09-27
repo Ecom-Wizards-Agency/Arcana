@@ -30,6 +30,7 @@ import { createMarketSignalsImportPass } from './market-signals-import.js';
 import { createMarketingStreamSqsConsumer } from './marketing-stream-sqs.js';
 import { createMarketingStreamNormalizeHandler } from './marketing-stream-normalize.js';
 import { createSpApiSqpRequestHandler } from './spapi-sqp.js';
+import { createMcfObserveHandler, createMcfObservePass, mcfObserveEnabled, registerMcfObserve } from './mcf-observe.js';
 import { PostgresWeeklySqpScheduler } from './sqp-scheduler.js';
 import { PostgresRecommendationRunStore, createRecommendationsRunner } from './recommendations-run.js';
 import { RecommendationObservationPass } from './recommendation-observer.js';
@@ -138,6 +139,8 @@ const sqpSchedules = sqpRequest
   ? new PostgresWeeklySqpScheduler(handle, store)
   : undefined;
 const budgetUsageStore = createBudgetUsageStore(handle);
+// WP-334: read-only MCF observation, only with OPENSPELL_MCF_OBSERVE_ENABLED=1 and the SP-API client credentials.
+const mcfObserve = mcfObserveEnabled(process.env, config.spApiClientId, config.spApiClientSecret);
 const integrations = {
     economicsSync: createMrpEconomicsSync(handle),
     rankSync: createDataDiveRankSyncHandler({ handle }),
@@ -170,6 +173,8 @@ const worker = new SyncWorker({
     if (spApiClientId && lwaKey) registerSpApiReportSources(registry, postgresSpReportDependencies({ handle, clientId: spApiClientId, clientSecret: lwaKey }));
     registerOwnCollectors(registry, postgresOwnCollectors(handle, config.ownCollectorDropRoot, config.ownCollectorsEnabled));
     registerTargetTranslation(registry, handle);
+    registerMcfObserve(registry, { enabled: mcfObserve, handler: () => createMcfObserveHandler({
+      handle, lwaClientId: config.spApiClientId ?? '', lwaClientSecret: config.spApiClientSecret ?? '' }) });
     registerStreamExtensionProjection(registry, handle, () => extensionPolicy.enabled && config.jobTypes?.includes('marketing_stream.extensions.project') === true);
     registerProviderEvidence(registry, postgresProviderEvidenceDependencies(handle));
     registerBudgetUsageSources(registry, { store: budgetUsageStore, provider: createBudgetUsageProvider(handle),
@@ -184,6 +189,8 @@ const worker = new SyncWorker({
 const spWritePolling = spWriteLoop ? startSpWritePolling(spWriteLoop, config.pollIntervalMs) : undefined;
 // WP-331: only with OPENSPELL_MARKET_SIGNALS_DIR set, on a runtime that runs background passes.
 const marketSignalsImport = createMarketSignalsImportPass(handle, process.env, config.startsBackgroundPasses);
+const mcfObservePass = createMcfObservePass(handle, store, process.env,
+  { enabled: mcfObserve, startsBackgroundPasses: config.startsBackgroundPasses, jobTypes: config.jobTypes });
 marketingStream?.start();
 amazonConnections?.start();
 spApiConnections?.start();
@@ -228,6 +235,7 @@ provisioner?.start();
 bidSeries?.start();
 recommendationObserver?.start();
 marketSignalsImport?.start();
+mcfObservePass?.start();
 
 const CUSTODY_EXIT_CODE = 78;
 let shutdownPromise: Promise<WorkerShutdownEvidence> | null = null;
@@ -245,6 +253,7 @@ async function performShutdown(): Promise<WorkerShutdownEvidence> {
   bidSeries?.stop();
   recommendationObserver?.stop();
   await marketSignalsImport?.stop();
+  await mcfObservePass?.stop();
   await evidenceRecovery?.stop();
   await creativeSync?.stop();
   await spWritePolling?.stop();

@@ -15,13 +15,13 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
-  CreatorAppendActionInput, CreatorQueueSnapshotInput, CreatorRecordScoreInput, CreatorRegisterRecordInput, CreatorRunnerQueueItem,
+  CreatorAppendActionInput, CreatorPreflightResultInput, CreatorQueueSnapshotInput, CreatorRecordScoreInput, CreatorRegisterRecordInput, CreatorRunnerQueueItem,
   CreatorSubmitDraftInput, CreatorSweepCheckpointInput, CreatorSweepThread, findCreatorContactData,
   type CreatorRunnerRegistryRecord, type CreatorRunnerResolution,
 } from '@wizard-ads/shared';
 import {
-  CreatorWriteRefusal, appendCreatorActions, creatorContentDigest, creatorQueueRows, creatorRegistryRows, creatorSweepRow,
-  readCreatorWriteBaseline, recordCreatorScore, submitCreatorDraft, writeCreatorMcpRows, type CreatorEventWrite,
+  CreatorWriteRefusal, appendCreatorActions, creatorContentDigest, creatorPreflightRow, creatorQueueRows, creatorRegistryRows, creatorSweepRow,
+  readCreatorWriteBaseline, recordCreatorScore, submitCreatorDraft, writeCreatorMcpRows, writeCreatorPreflights, type CreatorEventWrite,
 } from '@wizard-ads/db/mcp-writes';
 import { writeAuditEntry } from './audit.js';
 import { ToolError } from './errors.js';
@@ -30,7 +30,7 @@ import { withCreatorWriteOperation, type CreatorWriteOperationContext, type Serv
 /** Every tool a `creator:write` key may call, and nothing else. */
 export const CREATOR_WRITE_TOOLS = [
   'creators.register_record', 'creators.record_score', 'creators.append_action', 'creators.submit_draft',
-  'creators.queue_snapshot', 'creators.sweep_checkpoint',
+  'creators.queue_snapshot', 'creators.sweep_checkpoint', 'creators.preflight_result',
 ] as const;
 export type CreatorWriteTool = typeof CREATOR_WRITE_TOOLS[number];
 
@@ -121,6 +121,7 @@ function auditedCreatorWrite(context: ServerContext, tool: CreatorWriteTool, exp
       return result(outcome.payload);
     } catch (error) {
       const refusal = error instanceof CreatorWriteRefusal ? new ToolError(error.code === 'record_not_found' || error.code === 'draft_not_found'
+        || error.code === 'lane_not_found'
         ? 'not_found' : 'invalid_argument', `${error.message} Nothing was written.`) : null;
       const known = refusal ?? (error instanceof ToolError ? error : null);
       await writeAuditEntry(context.handle, {
@@ -135,7 +136,7 @@ function auditedCreatorWrite(context: ServerContext, tool: CreatorWriteTool, exp
 }
 
 // ---------------------------------------------------------------------------
-// The six tools
+// The seven tools
 // ---------------------------------------------------------------------------
 
 const any = (description: string) => z.unknown().describe(description);
@@ -274,5 +275,36 @@ export function registerCreatorWriteTools(server: McpServer, context: ServerCont
     });
     const counts = await writeCreatorMcpRows(operation.sql, operation.actor.orgId, { sweeps: [creatorSweepRow(checkpoint, threads)] });
     return { payload: { run_id: checkpoint.run_id, counts }, summary: { runId: checkpoint.run_id, threads: threads.length, counts } };
+  }));
+  server.registerTool('creators.preflight_result', {
+    title: 'Record a sample pre-flight',
+    description: 'Record one creator_control.py `preflight` (mcf_preflight: the eight checks for one record and ASIN) or `preflight-switch` '
+      + '(product_switch_preflight: one alternate ASIN) result, with the stock read, the fulfillability preview and the time each check read '
+      + 'its value. Stored per sample lane under its derived order key. Never an address or a name: recipient_binding is the runner\'s '
+      + 'fingerprint. Arcana places no order and changes no lane or lock. Idempotent by run_id; a run_id reused for another result is refused.',
+    inputSchema: z.looseObject({
+      command: any('"preflight" or "preflight-switch"'),
+      run_id: any('The run identity: letters, digits and : _ . -, at most 80'),
+      started_at: any('ISO timestamp the run started'), completed_at: any('ISO timestamp the run ended'),
+      result: any('The runner output: mcf_preflight {result, creator_record_id, computed_score, errors, required_next_state, quantity, visible_fee_cents, '
+        + 'approved_fee_cap_cents, selected_asin, selected_sku, product_title, campaign_id, tracker_source_ref, recipient_binding} or '
+        + 'product_switch_preflight {result, phase, creator_record_id, errors, required_next_state, original_asin, alternate_asin, alternate_sku}'),
+      inventory: any('The product_catalog entry for the selected (or alternate) ASIN: {asin, sku, fulfillment_channel, mcf_fulfillable, '
+        + 'fulfillable_quantity, inventory_checked_at, fulfillment_evidence_reference}, or null'),
+      preview: any('preflight only: {operation: "getFulfillmentPreview", read_at, valid_until, is_fulfillable, fee_cents, currency, constraints}, or null').optional(),
+      reads: any('preflight only: up to eight {check, read_at, evidence_reference}, one per check').optional(),
+      original_unavailable_reason: any('preflight-switch only: not_mcf_fulfillable | out_of_stock | not_found, or null').optional(),
+      original_blocker_evidence_reference: any('preflight-switch only: the evidence reference for the original blocker, or null').optional(),
+    }),
+    annotations: WRITE,
+  }, auditedCreatorWrite(context, 'creators.preflight_result', ['command', 'run_id', 'started_at', 'completed_at', 'result', 'inventory', 'preview',
+    'reads', 'original_unavailable_reason', 'original_blocker_evidence_reference'], async (args, operation) => {
+    const input = parse(CreatorPreflightResultInput, args);
+    const row = creatorPreflightRow(input);
+    const { derivedOrderKeys, ...counts } = await writeCreatorPreflights(operation.sql, operation.actor.orgId, 'mcp', [row], operation.actor.userId);
+    return {
+      payload: { run_id: row.runId, command: row.command, result: row.result, derived_order_key: derivedOrderKeys[0] ?? null, counts },
+      summary: { creatorRecordId: row.creatorRecordId, command: row.command, result: row.result, counts },
+    };
   }));
 }

@@ -18,6 +18,7 @@ import {
   type CreatorSource, type CreatorSweepSnapshot,
 } from '@wizard-ads/shared';
 import type { DbHandle, QueryHandle, QuerySql } from '../client.js';
+import { partitionCreatorPreflights, writeCreatorPreflights, type CreatorPreflightWrite } from './creators-samples.js';
 
 export type CreatorRecordWrite = Omit<CreatorRecord, 'importedAt' | 'source' | 'status' | 'qualification' | 'qualifiedOn'>;
 export type CreatorActionWrite = Omit<CreatorActionLogEntry, 'recordedAt' | 'source'>;
@@ -44,6 +45,8 @@ export interface CreatorImportBatch {
   queue: (CreatorImportSection<CreatorQueueWrite> & { runDate: string }) | null;
   sweeps: CreatorImportSection<CreatorSweepWrite> | null;
   shipments: CreatorImportSection<CreatorShipmentWrite> | null;
+  /** `preflight-results.json` (WP-334); optional, so a batch built before it existed stays valid. */
+  preflights?: CreatorImportSection<CreatorPreflightWrite> | null;
 }
 export interface CreatorImportFailureInput {
   orgId: string;
@@ -71,7 +74,7 @@ export function creatorSampleOrderKey(orgId: string, creatorRecordId: string, as
   return `CCS-${createHash('sha256').update(`${orgId}|${creatorRecordId}|${asin}`).digest('hex').slice(0, 32)}`;
 }
 
-const KINDS = ['records', 'action_log', 'queue_items', 'sweep_runs', 'sample_shipments'] as const satisfies readonly CreatorImportKind[];
+const KINDS = ['records', 'action_log', 'queue_items', 'sweep_runs', 'sample_shipments', 'preflights'] as const satisfies readonly CreatorImportKind[];
 const nullCounts = (): Record<CreatorImportKind, CreatorImportCounts | null> =>
   Object.fromEntries(KINDS.map((kind) => [kind, null])) as Record<CreatorImportKind, CreatorImportCounts | null>;
 const iso = (value: Date | string | null): string | null => value === null ? null : new Date(value).toISOString();
@@ -245,6 +248,13 @@ export async function persistCreatorImport(handle: DbHandle, batch: CreatorImpor
     }
     if (batch.sweeps) counts.sweep_runs = tally('sweep_runs', batch.sweeps, await upsertSweeps(sql, batch.orgId, batch.source, batch.sweeps.rows));
     if (batch.shipments) counts.sample_shipments = tally('sample_shipments', batch.shipments, await upsertShipments(sql, batch.orgId, batch.source, batch.shipments.rows));
+    if (batch.preflights) {
+      // A pre-flight for an unregistered record, or a run id held with another result, is counted invalid, not fatal.
+      const { writable, refused } = await partitionCreatorPreflights(sql, batch.orgId, batch.preflights.rows);
+      const { inserted, updated } = await writeCreatorPreflights(sql, batch.orgId, batch.source, writable, null);
+      counts.preflights = tally('preflights', { read: batch.preflights.read, invalid: batch.preflights.invalid + refused.length, rows: writable },
+        { inserted, updated });
+    }
     const [row] = await sql<ImportRunRow[]>`
       insert into public.creator_import_runs(org_id, started_at, finished_at, status, files, queue_run_date, counts, source)
       values (${batch.orgId}, ${batch.startedAt}, clock_timestamp(), 'succeeded', ${batch.files}::text[], ${batch.queue?.runDate ?? null},
