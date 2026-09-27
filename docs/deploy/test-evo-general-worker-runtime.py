@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Credential mapping and mode tests for wizard-ads-credential-runtime.py (WP-326, WP-330).
+"""Credential mapping and mode tests for wizard-ads-credential-runtime.py (WP-326, WP-330, WP-336).
 
 Runs against synthetic credentials in a temporary directory. os.execve is
 replaced, so no worker, database or network is ever reached.
@@ -497,6 +497,81 @@ class AmazonConnectionTests(RuntimeCase):
                 mock.patch.object(runtime.os, "umask"):
             runtime.main()
         run.assert_called_once_with()
+
+
+IMPORT_DIRECTORY = "/var/lib/wizard-ads-imports/market-signals"
+ORG_ID = "0f0e0d0c-0b0a-4908-8706-050403020100"
+IMPORT_CONFIG = {
+    "OPENSPELL_MARKET_SIGNALS_DIR": IMPORT_DIRECTORY,
+    "OPENSPELL_MARKET_SIGNALS_ORG_KEYS": "synthetic-org=" + ORG_ID + ",other.key=" + ORG_ID.upper(),
+}
+
+DIRECTORY_REFUSAL = ("OPENSPELL_MARKET_SIGNALS_DIR must be a normalized absolute path outside "
+                     "/home, /root, /run/user")
+ORG_KEYS_REFUSAL = "OPENSPELL_MARKET_SIGNALS_ORG_KEYS must be key=uuid[,key=uuid] with unique keys"
+
+
+class MarketSignalsImportTests(RuntimeCase):
+    def refuse_import(self, config: dict[str, str], expected: str) -> None:
+        # The whole message is fixed text naming the key, so no value can appear in it.
+        self.write({**BASE_CONFIG, **config}, {"database-url": DATABASE})
+        self.assertEqual(self.refuse(runtime.run_worker, expected), expected)
+
+    def test_import_keys_are_allowlisted_and_never_credentials(self) -> None:
+        self.assertEqual(runtime.IMPORT_KEYS, frozenset(IMPORT_CONFIG))
+        self.assertLessEqual(runtime.IMPORT_KEYS, runtime.WORKER_ENV_KEYS)
+        self.assertFalse(runtime.IMPORT_KEYS & (set(runtime.WORKER_CREDENTIALS.values())
+                                               | set(runtime.AMAZON_CONNECTION_CREDENTIALS.values())))
+
+    def test_worker_passes_valid_import_settings_exactly(self) -> None:
+        for config in (IMPORT_CONFIG, {"OPENSPELL_MARKET_SIGNALS_DIR": "/srv/market-signals"}):
+            with self.subTest(config=config):
+                self.write({**BASE_CONFIG, **config}, {"database-url": DATABASE})
+                launched, lines = self.launch(runtime.run_worker)
+                for key, value in config.items():
+                    self.assertEqual(launched.env[key], value)
+                self.assertEqual(set(launched.env), {
+                    "PATH", "HOME", "NODE_ENV", "DATABASE_URL", "OPENSPELL_WORKER_REVISION",
+                    *BASE_CONFIG, *config,
+                })
+                self.assertNotIn(IMPORT_DIRECTORY, json.dumps(lines))
+
+    def test_absent_directory_leaves_the_import_off(self) -> None:
+        self.write(BASE_CONFIG, {"database-url": DATABASE})
+        launched, _ = self.launch(runtime.run_worker)
+        self.assertFalse(set(launched.env) & runtime.IMPORT_KEYS)
+
+    def test_directory_must_be_absolute_normalized_and_outside_hidden_roots(self) -> None:
+        home = "/home"  # joined below: the deployment files may not name a home path literally
+        for value in ("", " ", "relative/market-signals", "/", home, f"{home}/operator/exports",
+                      "/root", "/root/exports", "/run/user/1000/exports", "/var/lib/wizard-ads-imports/",
+                      f"/var/lib/..{home}/operator", "/var/lib/./wizard-ads-imports",
+                      "/var//lib/wizard-ads-imports", " /srv/market-signals", "/srv/market signals",
+                      "/srv/market-signals\n"):
+            with self.subTest(value=value):
+                self.refuse_import({"OPENSPELL_MARKET_SIGNALS_DIR": value}, DIRECTORY_REFUSAL)
+
+    def test_org_key_map_shape_is_exact(self) -> None:
+        for value in ("", "synthetic-org", f"synthetic-org={ORG_ID}x", f"={ORG_ID}",
+                      f"synthetic-org={ORG_ID},", f" synthetic-org={ORG_ID}",
+                      f"synthetic-org={ORG_ID},synthetic-org={ORG_ID}", "synthetic-org=not-a-uuid",
+                      f"-leading={ORG_ID}", f"two words={ORG_ID}"):
+            with self.subTest(value=value):
+                self.refuse_import({"OPENSPELL_MARKET_SIGNALS_DIR": IMPORT_DIRECTORY,
+                                    "OPENSPELL_MARKET_SIGNALS_ORG_KEYS": value},
+                                   ORG_KEYS_REFUSAL)
+
+    def test_org_key_map_without_directory_is_refused(self) -> None:
+        self.refuse_import({"OPENSPELL_MARKET_SIGNALS_ORG_KEYS": IMPORT_CONFIG["OPENSPELL_MARKET_SIGNALS_ORG_KEYS"]},
+                           "OPENSPELL_MARKET_SIGNALS_ORG_KEYS requires OPENSPELL_MARKET_SIGNALS_DIR")
+
+    def test_connection_modes_never_pass_import_settings(self) -> None:
+        self.write({**BASE_CONFIG, **SPAPI_CONFIG, **AMAZON_CONFIG, **IMPORT_CONFIG,
+                    "OPENSPELL_SPAPI_CONNECTIONS_ENABLED": "0"}, {**ALL_CREDENTIALS, **ADS_CREDENTIALS})
+        for run in (runtime.run_spapi_connections, runtime.run_amazon_connections):
+            with self.subTest(mode=run.__name__):
+                launched, _ = self.launch(run)
+                self.assertFalse(set(launched.env) & runtime.IMPORT_KEYS)
 
 
 if __name__ == "__main__":

@@ -341,7 +341,8 @@ restores the previous unit and `worker.json` rather than touching the database.
 
 `bash docs/deploy/test-evo-general-worker-deployment.sh` is the static proof: the
 credential mapping tests, the three units' exact shape (only the command and
-credentials may differ from the host unit) and credential names against the
+credentials may differ from the host unit, and the worker unit adds one
+`ReadOnlyPaths=` line for the import directory) and credential names against the
 runtime mappings (the worker mapping for the worker and SP-API units, the Amazon Ads
 mapping for the Ads unit), the configuration template, the build's revision pinning, and a
 staged release whose checksums and link manifest verify, whose import graph
@@ -365,6 +366,34 @@ no profile and are counted. `pnpm --filter @wizard-ads/worker run
 market-signals:import -- --once` runs one pass for a runbook (exit 0 clean, 3 with
 findings, 2 usage, 1 failure). `/healthz` and `/sync-status` show the counters and
 the export's "data as of". `keepa.sync` keeps running until a later step.
+
+On the Evo (WP-336), `worker.json` may carry both keys; they are optional, and
+without `OPENSPELL_MARKET_SIGNALS_DIR` the import is off. They are not in
+`wizard-ads-worker.TEMPLATE.json`: JSON has no comments, so an optional
+placeholder cannot be written there, and the template's key set stays exact. Only
+the worker mode passes them on; the connection-only modes never do. The runtime
+refuses, naming the key and never the value, a directory that is not a normalized
+absolute path or lies under `/home`, `/root` or `/run/user` (all hidden by
+`ProtectHome=yes`), an org-key map that is not `key=uuid[,key=uuid]` with unique
+keys (a key is 1 to 64 letters, digits, `.`, `_` or `-`, starting with a letter or
+digit), and an org-key map without the directory. The export lives in
+`/var/lib/wizard-ads-imports/market-signals`: `/var/lib/wizard-ads-imports` is
+owned by root and the `wizard-ads-imports` group, whose members are the wizards-ai
+user (which writes) and `wizard-ads-runtime` (which reads). The worker unit reads it
+through `ReadOnlyPaths=-/var/lib/wizard-ads-imports`; the leading `-` lets the unit
+start before the directory exists. `/var/lib/wizard-ads-imports/creators` is the
+same shape for `creators:import --dir`. A release older than WP-336 refuses a
+`worker.json` with either key, so add them only after `worker-current` points at a
+WP-336 release, and remove them before a rollback to an older one.
+
+Retiring `keepa.sync` is prepared but not applied. After a verified profile-day of
+imported signals and the operator's Keepa key check, one change retires it:
+drop `"keepa.sync"` from `GENERAL_WORKER_JOB_TYPES` in
+`wizard-ads-credential-runtime.py` and from `WORKER_JOB_TYPES` in the template, so
+both hold the five types `rank.sync,economics.sync,sqp.categorize,sqp.request,recommendations.run`.
+The static proof and the runtime tests pin the six types today and refuse a
+five-type set, so the same commit moves their expected set to the five types; the
+live `worker.json` then drops `keepa.sync` in the same release switch.
 
 ## Report fetch reliability (WP-323)
 
