@@ -84,13 +84,17 @@ const nullCounts = (): Record<CreatorImportKind, CreatorImportCounts | null> =>
   Object.fromEntries(KINDS.map((kind) => [kind, null])) as Record<CreatorImportKind, CreatorImportCounts | null>;
 const iso = (value: Date | string | null): string | null => value === null ? null : new Date(value).toISOString();
 
-function tally(kind: CreatorImportKind, section: CreatorImportSection<unknown>, written: { inserted: number; updated: number }, removed = 0): CreatorImportCounts {
+/** What one upsert pass did. `skipped` is rows left untouched on purpose (an Arcana-owned lane). */
+interface Written { inserted: number; updated: number; skipped?: number }
+
+function tally(kind: CreatorImportKind, section: CreatorImportSection<unknown>, written: Written, removed = 0): CreatorImportCounts {
   const valid = section.rows.length;
-  const unchanged = valid - written.inserted - written.updated;
+  const skipped = written.skipped ?? 0;
+  const unchanged = valid - written.inserted - written.updated - skipped;
   if (section.read !== valid + section.invalid || unchanged < 0) {
-    throw new CreatorImportCountError(`${kind}: read ${section.read}, valid ${valid}, invalid ${section.invalid}, written ${written.inserted + written.updated}`);
+    throw new CreatorImportCountError(`${kind}: read ${section.read}, valid ${valid}, invalid ${section.invalid}, written ${written.inserted + written.updated}, skipped ${skipped}`);
   }
-  return { read: section.read, valid, invalid: section.invalid, inserted: written.inserted, updated: written.updated, unchanged, skipped: 0, removed };
+  return { read: section.read, valid, invalid: section.invalid, inserted: written.inserted, updated: written.updated, unchanged, skipped, removed };
 }
 
 async function upsertRecords(sql: QuerySql, orgId: string, source: CreatorSource, rows: readonly CreatorRecordWrite[]) {
@@ -198,8 +202,12 @@ async function upsertSweeps(sql: QuerySql, orgId: string, source: CreatorSource,
   return { inserted, updated };
 }
 
-async function upsertShipments(sql: QuerySql, orgId: string, source: CreatorSource, rows: readonly CreatorShipmentWrite[]) {
-  let inserted = 0, updated = 0;
+/**
+ * A lane Arcana places the order for (order_owner 'arcana') is the send ledger's: the runner's
+ * row is not written and is counted as skipped. The ownership trigger backs this up.
+ */
+async function upsertShipments(sql: QuerySql, orgId: string, source: CreatorSource, rows: readonly CreatorShipmentWrite[]): Promise<Written> {
+  let inserted = 0, updated = 0, skipped = 0;
   for (const row of rows) {
     const result = await sql<{ inserted: boolean }[]>`
       insert into public.creator_sample_shipments(org_id, creator_record_id, asin, sku, campaign_id, reservation_id, lane_state,
@@ -218,11 +226,15 @@ async function upsertShipments(sql: QuerySql, orgId: string, source: CreatorSour
         confirmed_at = excluded.confirmed_at, cancelled_at = excluded.cancelled_at,
         cancellation_reason = excluded.cancellation_reason, reconciliation_reason = excluded.reconciliation_reason,
         source = excluded.source, source_digest = excluded.source_digest, imported_at = now(), updated_at = now()
-      where creator_sample_shipments.source_digest is distinct from excluded.source_digest
+      where creator_sample_shipments.order_owner = 'runner'
+        and creator_sample_shipments.source_digest is distinct from excluded.source_digest
       returning (xmax = 0) as inserted`;
-    if (result.length === 1) { if (result[0]!.inserted) inserted++; else updated++; }
+    if (result.length === 1) { if (result[0]!.inserted) inserted++; else updated++; continue; }
+    const [held] = await sql<{ order_owner: string }[]>`select order_owner from public.creator_sample_shipments
+      where org_id = ${orgId} and creator_record_id = ${row.creatorRecordId} and asin = ${row.asin}`;
+    if (held?.order_owner === 'arcana') skipped++;
   }
-  return { inserted, updated };
+  return { inserted, updated, skipped };
 }
 
 interface ImportRunRow {
@@ -279,10 +291,11 @@ export interface CreatorMcpRows {
 }
 export type CreatorMcpWriteCounts = Partial<Record<'records' | 'action_log' | 'queue_items' | 'sweep_runs' | 'sample_shipments', CreatorWriteCounts & { removed?: number }>>;
 
-const writeCounts = (read: number, written: { inserted: number; updated: number }): CreatorWriteCounts => {
-  const unchanged = read - written.inserted - written.updated;
-  if (unchanged < 0) throw new CreatorImportCountError(`wrote ${written.inserted + written.updated} of ${read} rows`);
-  return { read, inserted: written.inserted, updated: written.updated, unchanged, skipped: 0 };
+const writeCounts = (read: number, written: Written): CreatorWriteCounts => {
+  const skipped = written.skipped ?? 0;
+  const unchanged = read - written.inserted - written.updated - skipped;
+  if (unchanged < 0) throw new CreatorImportCountError(`wrote ${written.inserted + written.updated} and skipped ${skipped} of ${read} rows`);
+  return { read, inserted: written.inserted, updated: written.updated, unchanged, skipped };
 };
 
 /**
@@ -393,12 +406,14 @@ export interface ShipmentRow {
   reserved_at: Date | null; verified_at: Date | null; confirmed_at: Date | null; cancelled_at: Date | null;
   cancellation_reason: string | null; reconciliation_reason: string | null; mcf_status: string | null; mcf_operation: string | null;
   mcf_read_at: Date | null; packages: unknown; source: string; imported_at: Date;
+  /** Absent from reads that predate the column; the shared schema then defaults to 'runner'. */
+  order_owner?: string;
 }
 /** `/creators/samples`: every lane, newest activity first. */
 export async function readCreatorSampleShipments(handle: QueryHandle, orgId: string): Promise<CreatorSampleSnapshot> {
   const rows = await handle.sql<ShipmentRow[]>`select creator_record_id, asin, derived_order_key, sku, campaign_id, reservation_id,
       lane_state, runner_order_id, fee_cents, fee_cap_cents, reserved_at, verified_at, confirmed_at, cancelled_at, cancellation_reason,
-      reconciliation_reason, mcf_status, mcf_operation, mcf_read_at, packages, source, imported_at
+      reconciliation_reason, mcf_status, mcf_operation, mcf_read_at, packages, source, imported_at, order_owner
     from public.creator_sample_shipments where org_id = ${orgId}
     order by greatest(mcf_read_at, confirmed_at, cancelled_at, verified_at, reserved_at, imported_at) desc, creator_record_id, asin`;
   const shipments = rows.map(creatorShipmentFromRow);
@@ -410,7 +425,8 @@ export async function readCreatorSampleShipments(handle: QueryHandle, orgId: str
 export function creatorShipmentFromRow(row: ShipmentRow): CreatorSampleShipment {
   return CreatorSampleShipment.parse({
     creatorRecordId: row.creator_record_id, asin: row.asin, derivedOrderKey: row.derived_order_key, sku: row.sku,
-    campaignId: row.campaign_id, reservationId: row.reservation_id, laneState: row.lane_state, runnerOrderId: row.runner_order_id,
+    campaignId: row.campaign_id, reservationId: row.reservation_id, laneState: row.lane_state, orderOwner: row.order_owner,
+    runnerOrderId: row.runner_order_id,
     feeCents: row.fee_cents, feeCapCents: row.fee_cap_cents, reservedAt: iso(row.reserved_at), verifiedAt: iso(row.verified_at),
     confirmedAt: iso(row.confirmed_at), cancelledAt: iso(row.cancelled_at), cancellationReason: row.cancellation_reason,
     reconciliationReason: row.reconciliation_reason,
