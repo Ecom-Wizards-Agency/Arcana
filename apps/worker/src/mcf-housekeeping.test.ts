@@ -161,11 +161,11 @@ describe('alerts', () => {
     ]);
     expect(h.fetch).toHaveBeenCalledTimes(6);
     expect(h.pass.totals()).toMatchObject({ ticks: 13, alertsSent: 6, alertsLogged: 0, webhookFailures: 0 });
-    const both = ['- uncertain_over_15m: 1; sends: ' + SEND_A, `- conflict: 1; sends: ${SEND_C}`, `Samples: ${SAMPLES}`];
+    const both = ['- uncertain_over_15m (uncertain sends or cancels unsettled for over 15 minutes): 1; sends: ' + SEND_A, `- conflict: 1; sends: ${SEND_C}`, `Samples: ${SAMPLES}`];
     expect(h.posted()).toEqual([
-      ['Arcana MCF alert: 1 condition active (changed)', `- uncertain_over_15m: 1; sends: ${SEND_A}`, `Samples: ${SAMPLES}`].join('\n'),
-      ['Arcana MCF alert: 1 condition active (changed)', `- uncertain_over_15m: 2; sends: ${SEND_A}, ${SEND_B}`, `Samples: ${SAMPLES}`].join('\n'),
-      ['Arcana MCF alert: 1 condition active (changed)', `- uncertain_over_15m: 2; sends: ${SEND_A}, ${SEND_B}`, `Samples: ${SAMPLES}`].join('\n'),
+      ['Arcana MCF alert: 1 condition active (changed)', `- uncertain_over_15m (uncertain sends or cancels unsettled for over 15 minutes): 1; sends: ${SEND_A}`, `Samples: ${SAMPLES}`].join('\n'),
+      ['Arcana MCF alert: 1 condition active (changed)', `- uncertain_over_15m (uncertain sends or cancels unsettled for over 15 minutes): 2; sends: ${SEND_A}, ${SEND_B}`, `Samples: ${SAMPLES}`].join('\n'),
+      ['Arcana MCF alert: 1 condition active (changed)', `- uncertain_over_15m (uncertain sends or cancels unsettled for over 15 minutes): 2; sends: ${SEND_A}, ${SEND_B}`, `Samples: ${SAMPLES}`].join('\n'),
       ['Arcana MCF alert: 2 conditions active (changed)', ...both].join('\n'),
       ['Arcana MCF alert: 2 conditions active (daily reminder, unchanged)', ...both].join('\n'),
       ['Arcana MCF alert: no conditions active (cleared: uncertain_over_15m, conflict)', `Samples: ${SAMPLES}`].join('\n'),
@@ -408,7 +408,7 @@ describe('message building', () => {
       { code: 'authorization_failure', count: 2, sendIds: [SEND_C], sendIdsWithheld: 0 },
     ]);
     expect(formatMcfAlert('changed', active, '/creators/samples', [])).toBe([
-      'Arcana MCF alert: 2 conditions active (changed)', `- uncertain_over_15m: 1; sends: ${SEND_A} (1 malformed ids withheld)`,
+      'Arcana MCF alert: 2 conditions active (changed)', `- uncertain_over_15m (uncertain sends or cancels unsettled for over 15 minutes): 1; sends: ${SEND_A} (1 malformed ids withheld)`,
       `- authorization_failure: 2; sends: ${SEND_C} (1 more not listed)`, 'Samples: /creators/samples'].join('\n'));
   });
 });

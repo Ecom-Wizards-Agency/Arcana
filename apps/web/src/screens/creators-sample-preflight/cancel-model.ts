@@ -2,12 +2,13 @@
  * The guarded Amazon cancel's pure rules (WP-338i): whether cancel is on and
  * what is missing, whether the last known Amazon status still allows a cancel,
  * where a placed or conflicting send's cancel stands, and the words for every
- * cancel ending and refused read. Both the send section and the read-only
- * sample order page use these words.
+ * cancel ending, refused read and refused press. Both the send section and the
+ * read-only sample order page use these words.
  */
-import { CREATOR_MCF_CANCEL_PREVIEW_VALID_MS, CreatorMcfCancellableStatus, type FulfillmentOrderStatus } from '@wizard-ads/shared';
+import { CREATOR_MCF_CANCEL_PREVIEW_VALID_MS, CreatorMcfCancellableStatus, creatorMcfCancelConfirmation, type FulfillmentOrderStatus } from '@wizard-ads/shared';
 import type { CreatorMcfLaneCancel, CreatorMcfLaneSend, CreatorMcfSendGate } from '@wizard-ads/db';
-import { MISSING_WORDS } from './send-model';
+import type { SendActionFailure } from './send-actions';
+import { MISSING_WORDS, REFUSAL_WORDS } from './send-model';
 
 /** Why cancel is off, one entry per missing element. Cancel does not need the recipient key or previews on. */
 export type CancelMissing = 'unread' | 'connection' | 'grant' | 'cancel_class' | 'heartbeat' | 'scope' | 'dispatch_disabled';
@@ -133,6 +134,19 @@ export function cancelReasonWords(reason: string | null): string {
   };
   return words[reason] ?? reason;
 }
+
+/**
+ * The ledger refuses a cancel press with some of the codes it uses for a send press. The send flow's words for these
+ * speak of a send preview and a unit count; these speak of the cancel preview and its one order (WP-338p).
+ */
+export const CANCEL_REFUSAL_WORDS: Readonly<Partial<Record<SendActionFailure, string>>> = {
+  confirmation_mismatch: `The button text did not read "${creatorMcfCancelConfirmation(1)}", so the cancel was not recorded and nothing was sent to Amazon.`,
+  preview_not_latest: 'A newer read of this order replaced the cancel preview on screen. Reload the page and check the new read before cancelling.',
+  fingerprint_mismatch: 'The cancel preview changed after it was shown. Reload the page and check the order again before cancelling.',
+};
+
+/** Why the ledger refused a cancel read or press: the cancel flow's own words, else the words every command uses. */
+export const cancelRefusalWords = (reason: SendActionFailure): string => CANCEL_REFUSAL_WORDS[reason] ?? REFUSAL_WORDS[reason];
 
 /** An unreserved cancel still open. */
 export const cancelOpen = (cancel: CreatorMcfLaneCancel | null): boolean => cancel !== null && cancel.endedAt === null;

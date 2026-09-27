@@ -316,7 +316,9 @@ function PreviewCard({ send, preview, previewAt, title = 'What this will do' }: 
 function useCommand(onDone: () => void) {
   const [pending, setPending] = useState<string | null>(null);
   const [message, setMessage] = useState<{ tone: 'bad' | 'good'; text: string } | null>(null);
-  const run = async (name: string, call: (() => Promise<SendActionResult>) | undefined, done?: string) => {
+  /** `words` puts a refusal into the flow's own words; the cancel controls pass cancelRefusalWords. */
+  const run = async (name: string, call: (() => Promise<SendActionResult>) | undefined, done?: string,
+    words: (reason: SendActionFailure) => string = (reason) => REFUSAL_WORDS[reason]) => {
     setPending(name);
     setMessage(null);
     const result = call === undefined ? { ok: false as const, reason: 'unavailable' as SendActionFailure }
@@ -324,7 +326,7 @@ function useCommand(onDone: () => void) {
     setPending(null);
     if (result.ok) {
       if (done !== undefined) setMessage({ tone: 'good', text: done });
-    } else setMessage({ tone: 'bad', text: REFUSAL_WORDS[result.reason] });
+    } else setMessage({ tone: 'bad', text: words(result.reason) });
     // A refusal can mean the page is out of date (an expired preview, a changed lane): read it again either way.
     onDone();
   };

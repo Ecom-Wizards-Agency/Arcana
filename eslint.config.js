@@ -24,9 +24,10 @@ const forbid = (pairs) => [
 // browser) and read outcomes, never open, import the key or drive the unit.
 const MCF_UNIT_ONLY = 'only the MCF unit (apps/worker/src/mcf-send, wizard-ads-mcf.service) may open a sealed recipient or drive the MCF ledger.';
 const MCF_SERVICE_FUNCTIONS = [
-  'claimCreatorMcfOutbox', 'expireCreatorMcfCustody', 'markCreatorMcfLadderExhausted', 'purgeCreatorMcfMasks', 'readCreatorMcfAlertSummary',
-  'readCreatorMcfCustody', 'readCreatorMcfCustodyResidue', 'recordCreatorMcfHeartbeat', 'recordCreatorMcfOutcome', 'recordCreatorMcfPreview',
-  'recordCreatorMcfSettlement', 'refuseCreatorMcfPreview', 'releaseCreatorMcfClaim', 'reserveCreatorMcfDispatch',
+  'claimCreatorMcfOutbox', 'expireCreatorMcfCustody', 'markCreatorMcfLadderExhausted', 'purgeCreatorMcfMasks', 'readCreatorMcfActiveKeyIds',
+  'readCreatorMcfAlertSummary', 'readCreatorMcfCustody', 'readCreatorMcfCustodyResidue', 'recordCreatorMcfCancelOutcome',
+  'recordCreatorMcfCancelPreview', 'recordCreatorMcfCancelUnsent', 'recordCreatorMcfHeartbeat', 'recordCreatorMcfOutcome', 'recordCreatorMcfPreview',
+  'recordCreatorMcfSettlement', 'refuseCreatorMcfPreview', 'releaseCreatorMcfClaim', 'reserveCreatorMcfCancel', 'reserveCreatorMcfDispatch',
 ];
 const mcfPaths = [
   { name: '@wizard-ads/shared', importNames: ['openCreatorMcfRecipient', 'importCreatorMcfRecipientKey'], message: MCF_UNIT_ONLY },

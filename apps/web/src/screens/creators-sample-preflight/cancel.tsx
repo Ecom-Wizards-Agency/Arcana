@@ -14,10 +14,10 @@ import { creatorMcfCancelConfirmation, type CreatorMcfCancelPreview } from '@wiz
 import type { CreatorMcfLaneCancel, CreatorMcfLaneSend, CreatorMcfLaneView } from '@wizard-ads/db';
 import { Badge } from '../../ui/primitives';
 import { formatTimestamp } from '../../ui/date-format';
-import type { SendActionResult } from './send-actions';
+import type { SendActionFailure, SendActionResult } from './send-actions';
 import {
   CANCEL_ENDING_LABEL, CANCEL_MISSING_WORDS, CANCEL_ORIGINS, cancelAnswerWords, cancelEndingWords, cancelMissing, cancelOpen, cancelPreviewCurrent,
-  cancelReasonWords, endingOf, notSentCause, statusClass, statusWords,
+  cancelReasonWords, cancelRefusalWords, endingOf, notSentCause, statusClass, statusWords,
 } from './cancel-model';
 import { hhmm, type SendData } from './send-model';
 
@@ -27,10 +27,14 @@ export interface CancelActions {
   approveCancel(approval: unknown): Promise<SendActionResult>;
 }
 
-/** The send card's command runner, shared so one message line and one pending flag cover every control. */
+/**
+ * The send card's command runner, shared so one message line and one pending flag cover every control. `words` turns a
+ * refusal into the sentence shown; the cancel controls pass cancelRefusalWords so a refused cancel press is not described
+ * in the send flow's words.
+ */
 export interface CancelCommand {
   pending: string | null;
-  run(name: string, call: (() => Promise<SendActionResult>) | undefined, done?: string): Promise<void>;
+  run(name: string, call: (() => Promise<SendActionResult>) | undefined, done?: string, words?: (reason: SendActionFailure) => string): Promise<void>;
 }
 
 const grid = { display: 'grid', gridTemplateColumns: 'minmax(10rem, max-content) 1fr', gap: '0.25rem 1.5rem', margin: 0 } as const;
@@ -123,7 +127,7 @@ export function CancelControls({ send, view, data, actions, command, now }: {
   const busy = command.pending !== null;
   const ask = (label: string, testid: string) => <button type="button" className="wa-btn" data-testid={testid} disabled={busy}
     onClick={() => { void command.run('cancel-read', actions && (() => actions.requestCancelPreview(send.sendId)),
-      'The MCF worker will read this order from Amazon before a cancel.'); }}>{label}</button>;
+      'The MCF worker will read this order from Amazon before a cancel.', cancelRefusalWords); }}>{label}</button>;
   /** The offer the rule allows now: the read button, why cancel is off, or why the status no longer allows one. */
   const offer = (label: string, testid: string) => {
     if (!act) return null;
@@ -175,7 +179,7 @@ export function CancelControls({ send, view, data, actions, command, now }: {
           if (approveRequest.current?.previewId !== latest.previewId) approveRequest.current = { previewId: latest.previewId, id: globalThis.crypto.randomUUID() };
           const approval = { sendId: send.sendId, previewId: latest.previewId, previewFingerprint: latest.fingerprint, confirmation,
             requestId: approveRequest.current.id };
-          void command.run('cancel', actions && (() => actions.approveCancel(approval)));
+          void command.run('cancel', actions && (() => actions.approveCancel(approval)), undefined, cancelRefusalWords);
         };
         return <PreviewCard preview={latest} current>
           {!act ? null : !on ? <CancelOff data={data} /> : !allowed
@@ -196,7 +200,10 @@ export function CancelControls({ send, view, data, actions, command, now }: {
 /** A send the worker is cancelling, or cancelled: what happened so far, with no control. */
 export function CancelProgress({ send, view }: { send: CreatorMcfLaneSend; view: CreatorMcfLaneView }) {
   const cancel = send.cancel;
-  /** A cancel from a conflict whose request did not take stays cancel_dispatching until a read settles it. */
+  /**
+   * A cancel from a conflict whose request did not take stayed cancel_dispatching until a read settled it under WP-338i.
+   * Since WP-338p such a send returns to conflict at once, so only a cancel recorded before then shows this note.
+   */
   const notSent = (cancel !== null && endingOf(cancel) === 'not_sent')
     || send.events.some((event) => event.event === 'cancel_not_sent' && (cancel === null || Date.parse(event.at) >= Date.parse(cancel.approvedAt)));
   switch (send.state) {
@@ -213,8 +220,8 @@ export function CancelProgress({ send, view }: { send: CreatorMcfLaneSend; view:
         <p style={{ margin: 0 }}>The worker sent the one cancel request. Arcana waits for a read of this order that shows Cancelled, and never sends the request
           a second time. This page refreshes on its own.</p>
         {notSent ? <p style={{ margin: 0 }} data-testid="cancel-not-sent" data-reason={cancel?.endingReason ?? 'none'}>{cancel !== null && endingOf(cancel) === 'not_sent'
-          ? notSentCause(cancel.endingReason) : 'The cancel request did not take, so nothing changed at Amazon.'} This send came from a conflict, so it stays
-          here until a read of the order settles it: ask Amazon for this order id.</p> : null}
+          ? notSentCause(cancel.endingReason) : 'The cancel request did not take, so nothing changed at Amazon.'} This cancel was recorded before a conflict
+          whose cancel did not take went straight back to conflict, so this send waits here for a read of the order: ask Amazon for this order id.</p> : null}
       </div>;
     case 'cancelled':
       return <p style={{ margin: 0 }} data-testid="cancel-note">Cancelled in Amazon at Arcana&apos;s request
