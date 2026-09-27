@@ -92,7 +92,7 @@ export async function sealCreatorMcfRecipient(handle: Pick<DbHandle, 'sql'>, act
   if (!parsed.success) return { outcome: 'refused', reason: 'envelope_invalid' };
   return asActor(handle, actor, async (sql, verified) => {
     const raw = await one(sql<{ result: unknown }[]>`select app.seal_creator_mcf_recipient(${verified.orgId}::uuid, ${input.creatorRecordId},
-      ${input.asin}, ${JSON.stringify(parsed.data)}::jsonb) as result`);
+      ${input.asin}, ${JSON.stringify(parsed.data)}::text::jsonb) as result`);
     const result = command(raw, 'sealed');
     return result.outcome === 'sealed' && typeof raw['custodyExpiresAt'] === 'string'
       ? { ...result, custodyExpiresAt: iso(raw['custodyExpiresAt'])! } : result;
@@ -480,14 +480,14 @@ export async function recordCreatorMcfOutcome(handle: Pick<DbHandle, 'sql'>, sen
   lookup: CreatorMcfOrderRead | null = null): Promise<CreatorMcfWorkerDecision> {
   const parsed = CreatorMcfProviderOutcome.parse(outcome);
   return decision(await serviceCall(handle, (sql) => sql<{ result: unknown }[]>`select app.record_creator_mcf_outcome(${sendId}::uuid,
-    ${leaseId}::uuid, ${JSON.stringify(parsed)}::jsonb, ${lookup === null ? null : JSON.stringify(lookup)}::jsonb) as result`));
+    ${leaseId}::uuid, ${JSON.stringify(parsed)}::text::jsonb, ${lookup === null ? null : JSON.stringify(lookup)}::text::jsonb) as result`));
 }
 
 /** One settlement read (or the read before the POST, under the dispatch lease), classified. */
 export async function recordCreatorMcfSettlement(handle: Pick<DbHandle, 'sql'>, sendId: string, lookup: CreatorMcfOrderRead,
   leaseId: string | null = null): Promise<CreatorMcfWorkerDecision> {
   return decision(await serviceCall(handle, (sql) => sql<{ result: unknown }[]>`select app.record_creator_mcf_settlement(${sendId}::uuid,
-    ${JSON.stringify(lookup)}::jsonb, ${leaseId}::uuid) as result`));
+    ${JSON.stringify(lookup)}::text::jsonb, ${leaseId}::uuid) as result`));
 }
 
 /** Escalates an accepted or uncertain send Amazon has not settled in 7 days. */
