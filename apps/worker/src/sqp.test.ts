@@ -178,7 +178,7 @@ describe('weekly SQP worker workflow', () => {
       logger: { error: (message, details) => { logged.push({ message, details }); } },
     }).then(() => null, (error: unknown) => error);
 
-    const summaryLine = 'parser v2 refused 2 of 5 rows: ' +
+    const summaryLine = 'parser v3 refused 2 of 5 rows: ' +
       'SQP row asinClickShare disagrees with asinClickCount and totalClickCount x1; ' +
       'SQP row has no impressionData x1; ' +
       'first refused row: missing [], 23 schema fields present, 0 unrecognized';
@@ -190,7 +190,7 @@ describe('weekly SQP worker workflow', () => {
     expect(saved?.completed).toBeNull();
     expect(saved?.batches.map((batch) => batch.status)).toEqual(['ready']);
     expect(saved?.refusalSummary).toEqual({
-      parserVersion: 2,
+      parserVersion: 3,
       sourceRows: 5,
       refusedRows: 2,
       distinctReasons: 2,
@@ -215,6 +215,37 @@ describe('weekly SQP worker workflow', () => {
     const rendered = JSON.stringify([(failure as Error).message, logged, saved?.refusalSummary]).toLowerCase();
     for (const value of ['marker', '55.5', 'b000000001']) expect(rendered).not.toContain(value);
     expect(data.promotions).toHaveLength(0);
+  });
+
+  it('promotes a week whose zero-purchase and zero-cart-add rows carry null shares', async () => {
+    const quiet = document();
+    const rows = quiet['dataByAsin'] as Array<Record<string, unknown>>;
+    rows.push({
+      ...sqpRow('Synthetic Quiet Query', 30),
+      cartAddData: { totalCartAddCount: 0, asinCartAddCount: 0, asinCartAddShare: null },
+      purchaseData: { totalPurchaseCount: 0, asinPurchaseCount: 0 },
+    });
+    const data = new FakeDataStore(vocabulary(), []);
+    const completed = await runSqpRequestWorkflow(job(), {
+      api: new FakeSqpApi(['DONE'], quiet),
+      data,
+      providerGate: new RecordingGate(),
+      checkpoints: new InMemorySqpWorkflowCheckpoints(),
+    });
+    expect(completed).toMatchObject({
+      status: 'completed',
+      ingestion: { sourceRows: 4, parsedRows: 4, refusedRows: 0, promotedRows: 4, upserts: 4, canonicalRows: 4 },
+    });
+    expect(data.promotions).toHaveLength(1);
+    expect(data.promotions[0]?.counts).toMatchObject({ sourceRows: 4, parsedRows: 4, refusedRows: 0, upserts: 4 });
+    expect(data.promotions[0]?.rows.map((row) => [
+      row.normalizedQuery, row.asinClickShare, row.asinCartAddShare, row.asinPurchaseShare,
+    ])).toEqual([
+      ['synthetic brand mug', 0.2, 0.2, 0.4],
+      ['travel mug', 0.2, 0.2, 0.4],
+      ['broad household item', 0.2, 0.2, 0.4],
+      ['synthetic quiet query', 0.2, null, null],
+    ]);
   });
 
   it('treats an owned automatic cancellation as authoritative no-data without downloading', async () => {

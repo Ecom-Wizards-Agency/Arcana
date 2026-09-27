@@ -239,6 +239,26 @@ describe('parser-version re-offer of a refused week', () => {
     expect([...jobs.keys()]).toEqual([baseKey, retryKey]);
   });
 
+  it('re-offers a week parser v2 refused under the parser-v3 key', async () => {
+    const { jobs, offered, scheduler, statements } = harness();
+    jobs.set(baseKey, {
+      dedupe_key: baseKey,
+      status: 'dead',
+      last_error: 'SQP report refused 190 rows; canonical promotion is blocked; parser v2 refused 190 of 844 rows: ' +
+        'SQP row has invalid asinPurchaseShare x98; SQP row has invalid asinCartAddShare x92',
+      result: { checkpoint: { refusalSummary: { parserVersion: 2 } } },
+    });
+    expect(SQP_PARSER_VERSION).toBe(3);
+    await expect(scheduler.enqueueDueSqpRequests()).resolves.toMatchObject({
+      offeredJobs: 1, enqueuedJobs: 1, alreadyPresentJobs: 0, reofferedRefusedJobs: 1,
+    });
+    expect(offered).toEqual([baseKey]);
+    expect(statements).toEqual([
+      'begin', `lock ${sqpWeekLockKey(scope.profile_id, '2026-08-23')}`, `insert ${baseKey}:parser-v3`,
+    ]);
+    expect([...jobs.keys()]).toEqual([baseKey, `${baseKey}:parser-v3`]);
+  });
+
   it('inserts no re-offer while any job for the week is live', async () => {
     const { jobs, offered, scheduler, statements } = harness();
     jobs.set(baseKey, {

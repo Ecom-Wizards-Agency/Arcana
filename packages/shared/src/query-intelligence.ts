@@ -41,6 +41,17 @@ export const QueryVocabularyEntry = z.object({
 });
 export type QueryVocabularyEntry = z.infer<typeof QueryVocabularyEntry>;
 
+/**
+ * A share is null only when its funnel stage had nothing to share that week:
+ * its total and ASIN counts are both 0. A null share is never a 0 % share.
+ */
+const SQP_SHARE_TOTALS = [
+  ['asinImpressionShare', 'totalImpressions', 'asinImpressions'],
+  ['asinClickShare', 'totalClicks', 'asinClicks'],
+  ['asinCartAddShare', 'totalCartAdds', 'asinCartAdds'],
+  ['asinPurchaseShare', 'totalPurchases', 'asinPurchases'],
+] as const;
+
 export const SqpWeeklyFact = z.object({
   profileId: Uuid,
   marketplaceId: AmazonId,
@@ -54,16 +65,26 @@ export const SqpWeeklyFact = z.object({
   searchQueryVolume: count,
   totalImpressions: count,
   asinImpressions: count,
-  asinImpressionShare: ratio,
+  asinImpressionShare: ratio.nullable(),
   totalClicks: count,
   asinClicks: count,
-  asinClickShare: ratio,
+  asinClickShare: ratio.nullable(),
   totalCartAdds: count,
   asinCartAdds: count,
-  asinCartAddShare: ratio,
+  asinCartAddShare: ratio.nullable(),
   totalPurchases: count,
   asinPurchases: count,
-  asinPurchaseShare: ratio,
+  asinPurchaseShare: ratio.nullable(),
+}).superRefine((fact, context) => {
+  for (const [share, total, asin] of SQP_SHARE_TOTALS) {
+    if (fact[share] === null && (fact[total] !== 0 || fact[asin] !== 0)) {
+      context.addIssue({
+        code: 'custom',
+        path: [share],
+        message: `${share} may be null only when ${total} and ${asin} are 0`,
+      });
+    }
+  }
 });
 export type SqpWeeklyFact = z.infer<typeof SqpWeeklyFact>;
 

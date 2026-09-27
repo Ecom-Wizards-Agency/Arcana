@@ -31,8 +31,17 @@ const ROLE_LABELS = {
   shield: 'Shield',
 } as const;
 
-function percent(value: number | null): string {
-  return value === null ? '—' : PERCENT.format(value);
+/** Why a share is empty: its funnel stage had no events that week, so there is nothing to share. */
+const NO_EVENTS_TITLE = {
+  impression: 'No impressions that week',
+  click: 'No clicks that week',
+  purchase: 'No purchases that week',
+} as const;
+
+/** A null share renders as a titled dash, never as 0 %. */
+function Share({ value, stage }: { value: number | null; stage: keyof typeof NO_EVENTS_TITLE }): ReactNode {
+  if (value === null) return <span title={NO_EVENTS_TITLE[stage]}>—</span>;
+  return PERCENT.format(value);
 }
 
 function barWidth(value: number | null): string {
@@ -154,14 +163,14 @@ export function QueryIntelligenceWorkspace({
               </div>
               <div className={styles.primaryShare}>
                 <span>Weighted purchase share</span>
-                <strong>{percent(summary.purchaseShare)}</strong>
+                <strong><Share value={summary.purchaseShare} stage="purchase" /></strong>
                 <span className={styles.bar} aria-hidden="true">
                   <span style={{ width: barWidth(summary.purchaseShare) }} />
                 </span>
               </div>
               <div className={styles.primaryShare}>
                 <span>Weighted click share</span>
-                <strong>{percent(summary.clickShare)}</strong>
+                <strong><Share value={summary.clickShare} stage="click" /></strong>
                 <span className={styles.bar} aria-hidden="true">
                   <span style={{ width: barWidth(summary.clickShare) }} />
                 </span>
@@ -173,7 +182,7 @@ export function QueryIntelligenceWorkspace({
                 </div>
                 <div>
                   <dt>Impression share</dt>
-                  <dd>{percent(summary.impressionShare)}</dd>
+                  <dd><Share value={summary.impressionShare} stage="impression" /></dd>
                 </div>
               </dl>
             </article>
@@ -376,10 +385,10 @@ function QueryTable({ rows }: { rows: readonly QueryEvidenceRow[] }): ReactNode 
               <td><span className={badgeClass(row.category)}>{row.categoryLabel}</span></td>
               <td>{row.asin}</td>
               <td data-numeric="true">{INTEGER.format(row.searchQueryVolume)}</td>
-              <td data-numeric="true"><strong>{percent(row.asinPurchaseShare)}</strong></td>
-              <td data-numeric="true"><strong>{percent(row.asinClickShare)}</strong></td>
+              <td data-numeric="true"><strong><Share value={row.asinPurchaseShare} stage="purchase" /></strong></td>
+              <td data-numeric="true"><strong><Share value={row.asinClickShare} stage="click" /></strong></td>
               <td data-numeric="true" className={styles.secondaryMetric}>
-                {percent(row.asinImpressionShare)}
+                <Share value={row.asinImpressionShare} stage="impression" />
               </td>
             </tr>
           ))}
