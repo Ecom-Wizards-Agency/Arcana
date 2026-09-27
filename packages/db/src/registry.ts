@@ -22,6 +22,10 @@ export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
   { domain: 'queries/creators-records', contract: null, schema: null, queries: 'queries/creators-records.ts', migrationPrefix: '20260927100000', exports: [
     { barrel: 'index.ts', order: 122, clause: '{ CreatorWriteRefusal, creatorIdentityOverlap, issueManagedMcpCreatorWriteKey, readCreatorConflict, readCreatorDrafts, readCreatorRecord, transitionCreatorDraft, type CreatorWriteKeyIssue, type CreatorWriteRefusalCode }', after: '' },
     { barrel: 'mcp-writes.ts', order: 3, clause: '{ CreatorWriteRefusal, appendCreatorActions, readCreatorWriteBaseline, recordCreatorScore, submitCreatorDraft, type CreatorAppendEntry, type CreatorWriteRefusalCode }', after: '' }] },
+  { domain: 'queries/creators-samples', contract: null, schema: null, queries: 'queries/creators-samples.ts', migrationPrefix: '20260927120000', exports: [
+    { barrel: 'index.ts', order: 122, clause: '{ readCreatorFulfillmentDetail, readCreatorMcfSettlements, readCreatorPreflightDetail, readCreatorProductSwitch }', after: '' },
+    { barrel: 'worker.ts', order: 124, clause: '{ CREATOR_OBSERVABLE_LANE_STATES, countActiveCreatorSpApiConnections, creatorPreflightRow, listCreatorMcfObserveScopes, readCreatorObservableLanes, readCreatorObservedKeys, recordCreatorMcfObservation, type CreatorObservableLane, type CreatorPreflightWrite }', after: '' },
+    { barrel: 'mcp-writes.ts', order: 5, clause: '{ creatorPreflightRow, writeCreatorPreflights, type CreatorPreflightWrite }', after: '' }] },
   { domain: 'queries/product-assignment', contract: null, schema: null, queries: 'queries/product-assignment.ts', migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 120, clause: '*', after: '' }] },
   {domain: 'schema/report-families', contract: null, schema: 'schema/report-families.ts', queries: null, migrationPrefix: '20260915330000', exports: [{barrel: 'schema/index.ts', order: 120, clause: '*', after: ''}]},
   {domain: 'queries/report-families', contract: null, schema: null, queries: 'queries/report-families.ts', migrationPrefix: '20260915330000', exports: [{barrel: 'index.ts', order: 120, clause: '*', after: ''}]},

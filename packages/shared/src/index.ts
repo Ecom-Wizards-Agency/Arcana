@@ -64,6 +64,7 @@ export * from './spapi-fulfillment.js';
 export * from './creators/runner.js';
 export * from './creators/model.js';
 export * from './creators/records.js';
+export * from './creators/samples.js';
 export * from './creators/mcf-send.js';
 export { CREATOR_MCF_HPKE_SUITE, CREATOR_MCF_HPKE_INFO, CreatorMcfEnvelopeErrorCode, CreatorMcfEnvelopeError, creatorMcfEnvelopeSupported, creatorMcfRecipientKeyId, importCreatorMcfRecipientKey, sealCreatorMcfRecipient, openCreatorMcfRecipient, creatorMcfEnvelopeSha256, type CreatorMcfRecipientKey, type CreatorMcfOpenResult } from './creators/mcf-envelope.js';
 export * from './product-assignment.js';

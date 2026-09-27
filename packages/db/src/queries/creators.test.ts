@@ -87,6 +87,8 @@ describe.skipIf(!available)('Creator Connections persistence', () => {
       queue_items: { read: 3, valid: 3, invalid: 0, inserted: 3, updated: 0, unchanged: 0, removed: 0 },
       sweep_runs: { read: 1, valid: 1, invalid: 0, inserted: 1, updated: 0, unchanged: 0, removed: 0 },
       sample_shipments: { read: 1, valid: 1, invalid: 0, inserted: 1, updated: 0, unchanged: 0, removed: 0 },
+      // No pre-flight results file in this batch: not read, so null rather than zero.
+      preflights: null,
     });
     const [scored] = await db.sql`select status, computed_score, missing_checks, qualified_on::text as qualified_on from public.creator_records
       where org_id = ${orgId} and creator_record_id = 'CCR-SW-26-0134'`;
@@ -96,7 +98,10 @@ describe.skipIf(!available)('Creator Connections persistence', () => {
   it('replays the same files without writing a row, and updates only what changed', async () => {
     const before = await Promise.all(TABLES.map(async (table) => (await db.sql`select count(*)::int as n from ${db.sql(table)} where org_id = ${orgId}`)[0]!['n']));
     const replay = await persistCreatorImport(db, batch(orgId));
-    for (const counts of Object.values(replay.counts)) expect(counts).toMatchObject({ inserted: 0, updated: 0, removed: 0 });
+    expect(replay.counts.preflights).toBeNull();
+    const replayed = Object.values(replay.counts).filter((counts) => counts !== null);
+    expect(replayed).toHaveLength(5);
+    for (const counts of replayed) expect(counts).toMatchObject({ inserted: 0, updated: 0, removed: 0 });
     expect(replay.counts.records?.unchanged).toBe(3);
     const after = await Promise.all(TABLES.map(async (table) => (await db.sql`select count(*)::int as n from ${db.sql(table)} where org_id = ${orgId}`)[0]!['n']));
     expect(after).toEqual(before.map((count, index) => TABLES[index] === 'creator_import_runs' ? Number(count) + 1 : count));

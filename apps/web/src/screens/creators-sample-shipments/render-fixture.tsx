@@ -6,7 +6,7 @@
  * placeholders for the "Amazon has the package, the carrier does not" state.
  */
 import type { CreatorSampleShipment } from '@wizard-ads/shared';
-import { failedImport, lastImport } from '../creators-daily-queue/render-fixture';
+import { failedImport, lastImport, snapshot as queue } from '../creators-daily-queue/render-fixture';
 import type { ScreenData } from './view';
 
 const base = { campaignId: null, runnerOrderId: null, feeCapCents: 800, reservedAt: null, verifiedAt: null, confirmedAt: null, cancelledAt: null,
@@ -23,9 +23,17 @@ export const ambiguous: CreatorSampleShipment = {
   reservationId: 'MCFR-9f2c41ab77e0d3b5', laneState: 'Reconciliation Required', feeCents: 620, verifiedAt: '2026-09-08T06:44:00.000Z',
   reconciliationReason: 'outcome_unknown',
 };
-export const ready = { view: 'ready', props: { snapshot: { lastImport, shipments: [shipped, ambiguous] } } } satisfies ScreenData;
-export const refused = { view: 'ready', props: { snapshot: { lastImport: failedImport, shipments: [shipped, ambiguous] } } } satisfies ScreenData;
-export const empty = { view: 'ready', props: { snapshot: { lastImport, shipments: [] } } } satisfies ScreenData;
-export const notImported = { view: 'ready', props: { snapshot: { lastImport: null, shipments: [] } } } satisfies ScreenData;
+export const ready = { view: 'ready', props: { snapshot: { lastImport, shipments: [shipped, ambiguous] }, report: null } } satisfies ScreenData;
+export const refused = { view: 'ready', props: { snapshot: { lastImport: failedImport, shipments: [shipped, ambiguous] }, report: null } } satisfies ScreenData;
+export const empty = { view: 'ready', props: { snapshot: { lastImport, shipments: [] }, report: null } } satisfies ScreenData;
+export const notImported = { view: 'ready', props: { snapshot: { lastImport: null, shipments: [] }, report: null } } satisfies ScreenData;
 /** An import that read only the queue: nothing that records a sample lane was read. */
-export const queueOnly = { view: 'ready', props: { snapshot: { lastImport: { ...lastImport, files: ['queue'] }, shipments: [] } } } satisfies ScreenData;
+export const queueOnly = { view: 'ready', props: { snapshot: { lastImport: { ...lastImport, files: ['queue'] }, shipments: [] }, report: null } } satisfies ScreenData;
+/**
+ * `?report=daily`: the fixture queue (34 items) and sweep (did not reconcile),
+ * with 0088's order found by a read and 0072 read twice with nothing found.
+ */
+export const reported = { view: 'ready', props: { snapshot: ready.props.snapshot, report: { queue, settlements: {
+  [shipped.derivedOrderKey]: { settlement: 'found', notFoundProbes: 0, lastProbeAt: '2026-09-09T11:02:41.000Z' },
+  [ambiguous.derivedOrderKey]: { settlement: 'not_found', notFoundProbes: 2, lastProbeAt: '2026-09-09T11:02:43.000Z' },
+} } } } satisfies ScreenData;

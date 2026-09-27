@@ -9,6 +9,7 @@
  *   daily-queue.json       the `queue` command's output file
  *   sweep-checkpoint.json  the skill's per-client message-watermark checkpoint
  *   mcf-reservations.json  `list-mcf` output
+ *   preflight-results.json the skill's `preflight` / `preflight-switch` results (proposed, WP-334)
  *
  * Every record is validated; an invalid one is counted and skipped, and only its
  * position and the failing field paths are logged, never a value. A file that
@@ -24,11 +25,13 @@ import { pathToFileURL } from 'node:url';
 import {
   CreatorRunnerActiveReservation, CreatorRunnerQueueItem, CreatorRunnerQueueResult, CreatorRunnerRegistry,
   CreatorRunnerRegistryRecord, CreatorRunnerReservationList, CreatorSweepCheckpoint, CreatorSweepThread, Uuid,
+  CreatorPreflightResultInput, CreatorPreflightResultsFile, findCreatorContactData,
   type CreatorImportFailure, type CreatorImportFile, type CreatorImportKind, type CreatorImportRun,
 } from '@wizard-ads/shared';
 import { connectionStringFromEnv, createDb, type DbHandle } from '@wizard-ads/db';
 import {
-  creatorQueueRows, creatorRegistryRows, creatorSweepRow, persistCreatorImport, recordFailedCreatorImport, type CreatorActionWrite,
+  creatorPreflightRow, creatorQueueRows, creatorRegistryRows, creatorSweepRow, persistCreatorImport, recordFailedCreatorImport,
+  type CreatorActionWrite, type CreatorPreflightWrite,
   type CreatorImportBatch, type CreatorImportSection, type CreatorRecordWrite, type CreatorShipmentWrite, type CreatorSweepWrite,
 } from '@wizard-ads/db/worker';
 /** The runner's legacy reservation id, shared with the creator:write MCP tools. */
@@ -41,6 +44,7 @@ export const CREATOR_IMPORT_FILES = {
   queue: 'daily-queue.json',
   sweep_checkpoint: 'sweep-checkpoint.json',
   mcf_reservations: 'mcf-reservations.json',
+  preflight_results: 'preflight-results.json',
 } as const satisfies Record<CreatorImportFile, string>;
 const FILE_ORDER = Object.keys(CREATOR_IMPORT_FILES) as CreatorImportFile[];
 
@@ -76,7 +80,8 @@ type Issues = { issues: readonly { path: readonly PropertyKey[]; code: string }[
 const issuesOf = (error: Issues) => error.issues.map((issue) => ({ path: issue.path.map(String).join('.'), code: issue.code }));
 
 export type CreatorDirectoryRead =
-  | { ok: true; files: CreatorImportFile[]; content: Partial<Record<CreatorImportFile, unknown>>; sweepNotProduced: boolean }
+  | { ok: true; files: CreatorImportFile[]; content: Partial<Record<CreatorImportFile, unknown>>; sweepNotProduced: boolean;
+      preflightsNotProduced?: boolean }
   | { ok: false; files: CreatorImportFile[]; failure: CreatorImportFailure; failedFile: CreatorImportFile | null };
 
 /**
@@ -92,25 +97,28 @@ export async function readCreatorRunnerDirectory(dir: string): Promise<CreatorDi
   if (files.length === 0) return { ok: false, files, failure: 'no_runner_files', failedFile: null };
   const content: Partial<Record<CreatorImportFile, unknown>> = {};
   let sweepNotProduced = false;
+  let preflightsNotProduced = false;
   const envelopes = {
     registry: CreatorRunnerRegistry, queue: CreatorRunnerQueueResult, sweep_checkpoint: CreatorSweepCheckpoint,
-    mcf_reservations: CreatorRunnerReservationList,
+    mcf_reservations: CreatorRunnerReservationList, preflight_results: CreatorPreflightResultsFile,
   } as const;
   for (const file of files) {
     let raw: unknown;
     try { raw = JSON.parse(await readFile(join(dir, CREATOR_IMPORT_FILES[file]), 'utf8')); }
     catch {
       if (file === 'sweep_checkpoint') { sweepNotProduced = true; continue; }
+      if (file === 'preflight_results') { preflightsNotProduced = true; continue; }
       return { ok: false, files, failure: 'file_unreadable', failedFile: file };
     }
     const parsed = envelopes[file].safeParse(raw);
     if (!parsed.success) {
       if (file === 'sweep_checkpoint') { sweepNotProduced = true; continue; }
+      if (file === 'preflight_results') { preflightsNotProduced = true; continue; }
       return { ok: false, files, failure: 'file_shape_invalid', failedFile: file };
     }
     content[file] = parsed.data;
   }
-  return { ok: true, files, content, sweepNotProduced };
+  return { ok: true, files, content, sweepNotProduced, preflightsNotProduced };
 }
 
 const nullable = (value: string) => value === '' ? null : value;
@@ -120,7 +128,7 @@ interface Built { batch: CreatorImportBatch; invalid: CreatorInvalidRecord[] }
 
 /** Map validated runner content to rows. Pure: no clock, no I/O. */
 export function buildCreatorImport(orgId: string, startedAt: string, files: CreatorImportFile[],
-  content: Partial<Record<CreatorImportFile, unknown>>, sweepNotProduced = false): Built {
+  content: Partial<Record<CreatorImportFile, unknown>>, sweepNotProduced = false, preflightsNotProduced = false): Built {
   const invalid: CreatorInvalidRecord[] = [];
   /** Invalid counts come from the positions logged, independent of the rows kept. */
   const invalidOf = (kind: CreatorImportKind) => invalid.filter((entry) => entry.kind === kind).length;
@@ -229,8 +237,32 @@ export function buildCreatorImport(orgId: string, startedAt: string, files: Crea
     }
   }
 
+  // Pre-flight results (proposed file): the same validation, contact-data refusal and mapping as `creators.preflight_result`.
+  let preflights: CreatorImportSection<CreatorPreflightWrite> | null = null;
+  const preflightFile = content.preflight_results as CreatorPreflightResultsFile | undefined;
+  if (preflightsNotProduced) {
+    invalid.push({ kind: 'preflights', index: 0, issues: [{ path: '', code: 'preflight_file_not_produced' }] });
+    preflights = { read: 1, invalid: invalidOf('preflights'), rows: [] };
+  } else if (preflightFile) {
+    const rows: CreatorPreflightWrite[] = [];
+    const runs = new Set<string>();
+    preflightFile.results.forEach((raw, index) => {
+      const contact = findCreatorContactData(raw);
+      if (contact.length > 0) {
+        invalid.push({ kind: 'preflights', index, issues: contact.map((hit) => ({ path: hit.path, code: `contact_data_${hit.shape}` })) });
+        return;
+      }
+      const parsed = CreatorPreflightResultInput.safeParse(raw);
+      if (!parsed.success) { invalid.push({ kind: 'preflights', index, issues: issuesOf(parsed.error) }); return; }
+      if (runs.has(parsed.data.run_id)) { invalid.push({ kind: 'preflights', index, issues: [{ path: 'run_id', code: 'duplicate' }] }); return; }
+      runs.add(parsed.data.run_id);
+      rows.push(creatorPreflightRow(parsed.data));
+    });
+    preflights = { read: preflightFile.results.length, invalid: invalidOf('preflights'), rows };
+  }
+
   return {
-    batch: { orgId, startedAt, source: 'control-runner', files, records, actions, queue: queueSection, sweeps, shipments },
+    batch: { orgId, startedAt, source: 'control-runner', files, records, actions, queue: queueSection, sweeps, shipments, preflights },
     invalid,
   };
 }
@@ -245,7 +277,7 @@ export async function importCreatorDirectory(handle: DbHandle, args: Pick<Creato
       failure: read.failure, failedFile: read.failedFile });
     return { run, invalid: [] };
   }
-  const built = buildCreatorImport(args.orgId, startedAt, read.files, read.content, read.sweepNotProduced);
+  const built = buildCreatorImport(args.orgId, startedAt, read.files, read.content, read.sweepNotProduced, read.preflightsNotProduced === true);
   try {
     return { run: await persistCreatorImport(handle, built.batch), invalid: built.invalid };
   } catch (error) {

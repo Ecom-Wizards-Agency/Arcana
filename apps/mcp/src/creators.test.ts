@@ -12,6 +12,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
 import { persistCreatorImport } from '@wizard-ads/db/worker';
 import { creatorQueueRows, creatorRegistryRows, legacyReservationId } from '@wizard-ads/db/mcp-writes';
+import { creatorSampleOrderKey } from '@wizard-ads/db';
 import { readAuditEntries } from './audit.js';
 import { DEFAULT_MAX_DOWNLOAD_BYTES, DEFAULT_MAX_ROWS, type McpConfig } from './config.js';
 import { CREATOR_WRITE_TOOLS, creatorIdentityEvent } from './creators.js';
@@ -311,6 +312,78 @@ describe.skipIf(!available)('the creator:write key class', () => {
     const keyed = audit.filter((entry) => (entry.payload['params'] as { otherKeys: number }).otherKeys > 0);
     expect(keyed).toHaveLength(4);
     for (const entry of keyed) expect((entry.payload['params'] as { keys: string[] }).keys).not.toContain('email_address');
+  });
+
+  it('records a pre-flight and a product-switch pre-flight per lane, replays them unchanged, and refuses a reused run id', async () => {
+    const client = await connect(server, creatorToken);
+    const preflight = (change: Record<string, unknown> = {}) => ({
+      command: 'preflight', run_id: 'preflight-0088-20260909-063304', started_at: '2026-09-09T06:33:04Z', completed_at: '2026-09-09T06:33:19Z',
+      result: { result: 'PASS', creator_record_id: 'CCR-SW-26-0088', computed_score: 10, errors: [], required_next_state: 'Locked for MCF',
+        quantity: 1, visible_fee_cents: 620, approved_fee_cap_cents: 800, selected_asin: 'B0D9K3M2QP', selected_sku: 'SW-DERMA-05-FBA',
+        product_title: 'Synthetic roller, 0.5mm', campaign_id: 'campaign-synthetic-1', tracker_source_ref: 'tracker:synthetic:row-87',
+        recipient_binding: fp('recipient-0088'), ...change },
+      inventory: { asin: 'B0D9K3M2QP', sku: 'SW-DERMA-05-FBA', fulfillment_channel: 'AFN', mcf_fulfillable: true, fulfillable_quantity: 37,
+        inventory_checked_at: '2026-09-09T06:33:17Z', fulfillment_evidence_reference: 'ev:mcf-inv-16' },
+      preview: { operation: 'getFulfillmentPreview', read_at: '2026-09-09T06:33:17Z', valid_until: null, is_fulfillable: true, fee_cents: 620,
+        currency: 'EUR', constraints: [] },
+      reads: [{ check: 'identity', read_at: '2026-09-09T06:33:04Z', evidence_reference: 'ev:idn-0088' },
+        { check: 'fulfillable_stock', read_at: '2026-09-09T06:33:17Z', evidence_reference: 'ev:mcf-inv-16' }],
+    });
+    const count = async () => (await database.sql<{ n: number }[]>`select count(*)::int as n from public.creator_sample_preflights
+      where org_id = ${orgId}`)[0]!.n;
+    try {
+      expect((await call(client, 'creators.register_record', { record: registry('CCR-SW-26-0088'),
+        resolution: { result: 'RESOLVED', creator_record_id: 'CCR-SW-26-0088', match_method: 'storefront' } })).isError).toBe(false);
+      const before = await count();
+      const first = await call(client, 'creators.preflight_result', preflight());
+      expect(first.isError).toBe(false);
+      expect(first.payload).toEqual({ run_id: 'preflight-0088-20260909-063304', command: 'preflight', result: 'PASS',
+        derived_order_key: creatorSampleOrderKey(orgId, 'CCR-SW-26-0088', 'B0D9K3M2QP'), counts: { read: 1, inserted: 1, updated: 0, unchanged: 0 } });
+      expect((await call(client, 'creators.preflight_result', preflight())).payload['counts']).toEqual({ read: 1, inserted: 0, updated: 0, unchanged: 1 });
+      const reused = await call(client, 'creators.preflight_result', preflight({ visible_fee_cents: 790 }));
+      expect(reused.isError).toBe(true);
+      expect(reused.payload['error']).toBe('invalid_argument');
+      expect(reused.text).toContain('already recorded with a different result');
+      expect(await count()).toBe(before + 1);
+      const [stored] = await database.sql`select command, result, errors, recipient_binding_fp,
+          preview_read_at = '2026-09-09T06:33:17Z'::timestamptz as preview_read, source, actor_user_id,
+          detail->'checks'->6->>'readAt' as stock_read
+        from public.creator_sample_preflights where org_id = ${orgId} and run_id = 'preflight-0088-20260909-063304'`;
+      expect(stored).toEqual({ command: 'preflight', result: 'PASS', errors: [], recipient_binding_fp: fp('recipient-0088'),
+        preview_read: true, source: 'mcp', actor_user_id: ADMIN, stock_read: '2026-09-09T06:33:17Z' });
+      const [logged] = await database.sql`select action, reason_code, asin from public.creator_action_log
+        where org_id = ${orgId} and event_key = 'preflight:preflight-0088-20260909-063304'`;
+      expect(logged).toEqual({ action: 'preflight_recorded', reason_code: 'preflight_pass', asin: 'B0D9K3M2QP' });
+
+      const switched = await call(client, 'creators.preflight_result', { command: 'preflight-switch', run_id: 'switch-0088-20260909-063600',
+        started_at: '2026-09-09T06:36:00Z', completed_at: '2026-09-09T06:36:09Z',
+        result: { result: 'HOLD', phase: 'offer', creator_record_id: 'CCR-SW-26-0088', errors: ['selected_sku_not_mcf_fulfillable',
+          'insufficient_mcf_fulfillable_quantity'], required_next_state: 'Conflict or Held', original_asin: 'B0D9K3M2QP', alternate_asin: 'B0D6H9YY41',
+          alternate_sku: 'SW-DERMA-01-FBM' },
+        inventory: { asin: 'B0D6H9YY41', sku: 'SW-DERMA-01-FBM', fulfillment_channel: 'MFN', mcf_fulfillable: false, fulfillable_quantity: 0,
+          inventory_checked_at: '2026-09-09T06:36:05Z', fulfillment_evidence_reference: 'ev:mcf-inv-17' },
+        original_unavailable_reason: 'not_mcf_fulfillable', original_blocker_evidence_reference: 'ev:mcf-inv-17' });
+      expect(switched.payload).toMatchObject({ command: 'preflight-switch', result: 'HOLD',
+        derived_order_key: creatorSampleOrderKey(orgId, 'CCR-SW-26-0088', 'B0D6H9YY41'), counts: { inserted: 1 } });
+
+      // Runner drift, an unregistered record and contact data are refused before anything is written.
+      const drift = await call(client, 'creators.preflight_result', { ...preflight({ result: 'HOLD', errors: ['moon_phase_wrong'],
+        required_next_state: 'Conflict or Held' }), run_id: 'preflight-drift' });
+      expect(drift.isError).toBe(true);
+      expect(drift.text).toContain('result.errors.0');
+      const unknown = await call(client, 'creators.preflight_result', { ...preflight({ creator_record_id: 'CCR-SW-26-9998' }), run_id: 'preflight-unknown' });
+      expect(unknown.payload['error']).toBe('not_found');
+      const titled = await call(client, 'creators.preflight_result', { ...preflight({ product_title: `Roller for ${email}` }), run_id: 'preflight-email' });
+      expect(titled.text).toMatch(/result\.product_title \(email\)/);
+      const block = await call(client, 'creators.preflight_result', { ...preflight(), run_id: 'preflight-block',
+        recipient: { full_name: 'x', address_line1: 'x' } });
+      expect(block.text).toMatch(/recipient\.full_name \(contact_key\)/);
+      for (const refused of [titled, block]) {
+        expect(refused.isError).toBe(true);
+        for (const value of [email, street]) expect(refused.text).not.toContain(value);
+      }
+      expect(await count()).toBe(before + 2);
+    } finally { await client.close(); }
   });
 
   it('refuses a draft whose name placeholder was rendered, and says why without the name', async () => {

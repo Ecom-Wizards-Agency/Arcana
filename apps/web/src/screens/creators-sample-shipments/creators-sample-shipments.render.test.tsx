@@ -5,7 +5,9 @@ import SharedError from '../../../app/creators/samples/error';
 import { rendered } from '../render-test-support';
 import { verifyScreen } from '../settings/render-support';
 import { descriptor } from './descriptor';
-import { ambiguous, empty, notImported, queueOnly, ready, refused, shipped } from './render-fixture';
+import { snapshot as queue } from '../creators-daily-queue/render-fixture';
+import { dailyReport } from './daily-report';
+import { ambiguous, empty, notImported, queueOnly, ready, refused, reported, shipped } from './render-fixture';
 import Screen, { carrierHasNoScan } from './view';
 
 verifyScreen(descriptor, [
@@ -43,8 +45,67 @@ describe('sample shipments', () => {
     expect(carrierHasNoScan({ ...shipped, packages: [{ ...shipped.packages![0]!, carrierStatus: 'IN_TRANSIT', carrierStatusReadAt: '2026-09-10T08:00:00.000Z' }] })).toBe(false);
     expect(carrierHasNoScan({ ...shipped, mcf: { ...shipped.mcf!, status: 'Planning' } })).toBe(false);
     const scanned = rendered(<Screen data={{ view: 'ready', props: { snapshot: { ...ready.props.snapshot, shipments: [{ ...shipped,
-      packages: [{ ...shipped.packages![0]!, carrierStatus: 'IN_TRANSIT', carrierStatusReadAt: '2026-09-10T08:00:00.000Z' }] }] } } }} />);
+      packages: [{ ...shipped.packages![0]!, carrierStatus: 'IN_TRANSIT', carrierStatusReadAt: '2026-09-10T08:00:00.000Z' }] }] }, report: null } }} />);
     expect(scanned.querySelector('[data-testid="carrier-no-scan"]')).toBeNull();
     expect(scanned.textContent).toContain('IN_TRANSIT · Amazon · getPackageTrackingDetails · 08:00:00');
+  });
+
+  it('links every lane to its pre-flight, order and product switch by the derived key', () => {
+    const host = rendered(<Screen data={ready} />);
+    const links = [...host.querySelectorAll('[data-testid="lane-links"] a')].map((link) => link.getAttribute('href'));
+    expect(links).toHaveLength(6);
+    expect(links).toEqual([shipped, ambiguous].flatMap((lane) => [`/creators/samples/${lane.derivedOrderKey}/preflight`,
+      `/creators/samples/fulfillment/${lane.derivedOrderKey}`, `/creators/samples/${lane.derivedOrderKey}/product-switch`]));
+    expect(host.querySelector('[data-testid="daily-report-link"]')?.getAttribute('href')).toBe('/creators/samples?report=daily');
+    expect(host.querySelector('[data-testid="daily-report"]')).toBeNull();
+  });
+});
+
+describe('daily report', () => {
+  it('renders the text that would be posted, says nothing is posted, and counts what it withheld', () => {
+    const host = rendered(<Screen data={reported} />);
+    const modal = host.querySelector('[data-testid="daily-report"] [role="dialog"]')!;
+    expect(modal.getAttribute('aria-labelledby')).toBe('daily-report-title');
+    expect(modal.querySelector('#daily-report-title')?.textContent).toBe('Daily report');
+    // The screen behind it is inert; the report is not.
+    expect(host.querySelectorAll('[inert]')).toHaveLength(1);
+    expect(host.querySelector('[inert] [data-testid="creator-samples"]')).not.toBeNull();
+    expect(host.querySelector('[inert] [data-testid="daily-report"]')).toBeNull();
+    expect(rendered(<Screen data={ready} />).querySelectorAll('[inert]')).toHaveLength(0);
+    expect(modal.querySelector('[data-testid="daily-report-nothing-posted"]')?.textContent).toContain('Nothing is posted from Arcana.');
+    const gate = (value: string) => queue.items.filter((item) => item.gateResult === value).length;
+    const lines = modal.querySelector('[data-testid="daily-report-text"]')!.textContent!.split('\n');
+    expect(lines).toHaveLength(5);
+    expect(lines[0]).toMatch(/^Creator Connections daily report · 9 Sept? 2026$/);
+    expect(queue.items).toHaveLength(34);
+    expect(lines[1]).toContain(`34 items (${gate('BLOCKED')} blocked, ${gate('HOLD')} on hold, ${gate('PENDING_APPROVAL')} awaiting approval)`);
+    expect(lines[2]).toContain('412 threads enumerated, 37 changed, 9 held or escalated, 7 unmatched; it did not reconcile.');
+    expect(lines[3]).toBe('Sample lanes: 2 (1 Reconciliation Required, 1 Confirmed).');
+    expect(lines[4]).toBe('Amazon order reads: 1 found, 1 not found yet.');
+    const removed = [...modal.querySelectorAll('[data-testid="daily-report-removed"] li')].map((item) => item.textContent);
+    expect(removed).toHaveLength(3);
+    expect(removed[0]).toContain('Tracking numbers: 1 withheld');
+    expect(removed[1]).toContain('Runner order ids: 1 withheld');
+    expect(removed[2]).toContain('Arcana holds none of these');
+    // Nothing withheld reaches the text.
+    for (const value of ['SYNTHETIC-TRACK-0088', 'synthetic-order-0088', 'CCR-SW-26-0088', shipped.derivedOrderKey]) {
+      expect(modal.querySelector('[data-testid="daily-report-text"]')?.textContent).not.toContain(value);
+    }
+    expect(modal.querySelector('a[data-testid="daily-report-close"]')?.getAttribute('href')).toBe('/creators/samples');
+    expect(modal.querySelectorAll('button, form')).toHaveLength(0);
+  });
+
+  it('says what it could not measure rather than reporting zero', () => {
+    const none = dailyReport(notImported.props.snapshot, { queue: { ...queue, runDate: null, items: [], sweep: null, lastImport: null }, settlements: {} });
+    expect(none.lines.slice(1)).toEqual(['Queue: not measured, because no queue file has been read.',
+      'Inbox sweep: not measured, because none came with the last import.',
+      'Sample lanes: not measured, because no registry or reservation list has been read.']);
+    expect(none.removed.map((entry) => entry.count)).toEqual([0, 0, null]);
+    const unread = dailyReport(ready.props.snapshot, { queue, settlements: {} });
+    expect(unread.lines[4]).toBe('Amazon order reads: 2 not read yet.');
+    const failed = dailyReport(refused.props.snapshot, { queue, settlements: {} });
+    expect(failed.lines).toHaveLength(2);
+    expect(failed.lines[1]).toContain('failed, so nothing here would read as current.');
+    expect(dailyReport(empty.props.snapshot, { queue, settlements: {} }).lines[3]).toBe('Sample lanes: none recorded.');
   });
 });

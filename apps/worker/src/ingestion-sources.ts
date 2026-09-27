@@ -27,6 +27,8 @@ export const INGESTION_SOURCES: readonly IngestionSource[] = [
   { jobType: 'rank.sync', source: 'datadive', laneAffinity: ['integrations'], counts: ['observations', 'loaded'] },
   { jobType: 'economics.sync', source: 'mrp', laneAffinity: ['integrations'], counts: ['asinsSelected', 'rowsLoaded'] },
   { jobType: 'sqp.request', source: 'amazon_spapi', reportType: 'GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT', laneAffinity: ['integrations'], counts: ['sourceRows', 'parsedRows', 'refusedRows', 'upserts'] },
+  // WP-334: read-only MCF observation. No lane affinity: an Evo job type candidate, not in any deployed lane yet.
+  { jobType: 'mcf.observe', source: 'amazon_spapi', laneAffinity: [], counts: ['lanes', 'found', 'notFound', 'inconsistent', 'written', 'unchanged', 'packages'] },
   { jobType: 'crosscheck.ingest', source: 'secondary_import', laneAffinity: [], counts: ['rowsParsed', 'rowsKept', 'written'] },
   { jobType: 'marketing_stream.normalize', source: 'amazon_marketing_stream', laneAffinity: ['integrations'], counts: ['offered', 'normalized'] },
   { jobType: 'marketing_stream.extensions.project', source: 'amazon_marketing_stream', laneAffinity: ['integrations'], counts: ['received', 'undecodable', 'decoded', 'accepted', 'deduplicated', 'stored', 'rejected', 'deadLettered', 'verifiedStored'] },

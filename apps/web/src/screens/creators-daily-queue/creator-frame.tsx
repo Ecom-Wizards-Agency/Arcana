@@ -23,10 +23,11 @@ export function CreatorHeader({ title, subtitle, children }: { title: string; su
 
 const FILE_LABEL: Record<CreatorImportFile, string> = {
   registry: 'registry cache', queue: 'queue output', sweep_checkpoint: 'sweep checkpoint', mcf_reservations: 'MCF reservation list',
+  preflight_results: 'pre-flight results',
 };
 const FAILURE: Record<CreatorImportFailure, string> = {
   directory_unreadable: 'the import could not open its directory',
-  no_runner_files: 'the directory held none of the four runner files',
+  no_runner_files: 'the directory held none of the runner files',
   file_unreadable: 'a runner file could not be read as JSON',
   file_shape_invalid: 'a runner file did not have the shape the runner writes',
   database_write_failed: 'the files were read, but writing them failed and nothing was kept',
