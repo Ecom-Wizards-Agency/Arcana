@@ -939,6 +939,34 @@ begin
       values(v_org,'CCR-FX-26-0001',repeat('a',64),'awaiting_content_follow_up','Hi {first name}, fixture draft text.',p_date-30,repeat('0',64),p_user_id,
         'mcp','mcp');
   end if;
+  -- MCF sends (WP-338d): one sealed send with its custody row, a preview and an event. The
+  -- envelope bytes are zeros and the mask is a placeholder; nothing here is contact data.
+  if to_regclass('public.creator_mcf_sends') is not null then
+    declare
+      v_mcf_send uuid := gen_random_uuid();
+      v_mcf_preview uuid := gen_random_uuid();
+      v_mcf_ciphertext bytea := decode(repeat('00', 32), 'hex');
+      v_mcf_member timestamptz;
+      v_mcf_marketplace text;
+    begin
+      select created_at into v_mcf_member from public.org_members where org_id = v_org and user_id = p_user_id;
+      select marketplace_id into v_mcf_marketplace from public.spapi_profile_bindings where connection_id = v_spapi limit 1;
+      insert into public.creator_mcf_sends(id,org_id,creator_record_id,asin,sku,reservation_id,preflight_id,spapi_connection_id,
+        marketplace_id,key_id,envelope_id,ciphertext_sha256,created_by,membership_created_at,state,mask)
+        values(v_mcf_send, v_org, 'CCR-FX-26-0001', 'B0FIXTURE1', 'FIXTURE-SKU', 'MCFR-00000000000000F1',
+          (select id from public.creator_sample_preflights where org_id = v_org and run_id = 'fixture-preflight'), v_spapi,
+          v_mcf_marketplace, repeat('a', 64), gen_random_uuid(), encode(sha256(v_mcf_ciphertext), 'hex'), p_user_id, v_mcf_member,
+          'sealed', '{"countryCode": "US", "postalPrefix": "00", "lines": 1}'::jsonb);
+      insert into app.creator_mcf_recipient_custody(envelope_id,org_id,send_id,key_id,enc,ciphertext,created_by,membership_created_at,expires_at)
+        select envelope_id,v_org,v_mcf_send,key_id,decode('04' || repeat('00', 64), 'hex'),v_mcf_ciphertext,p_user_id,v_mcf_member,
+          now() + interval '2 hours' from public.creator_mcf_sends where id = v_mcf_send;
+      insert into public.creator_mcf_send_previews(id,org_id,send_id,kind,body,fingerprint,total_units,read_at,valid_until)
+        values(v_mcf_preview,v_org,v_mcf_send,'preview',jsonb_build_object('previewId',v_mcf_preview::text,'sendId',v_mcf_send::text,
+          'kind','preview'),repeat('b',64),1,now(),now() + interval '30 minutes');
+      insert into public.creator_mcf_send_events(org_id,send_id,event,actor_type,after_state)
+        values(v_org,v_mcf_send,'sealed','system','sealed');
+    end;
+  end if;
   if to_regclass('public.queued_changes') is not null then
     insert into public.queued_changes(id,org_id,profile_id,target_id,created_by,context,request,checks)
     values(v_batch,v_org,v_profile,'synthetic-queue-target',p_user_id,
