@@ -48,7 +48,7 @@ files. Keep this map because these boundaries still define where code belongs.
 | `packages/shared` | THE contract package: Zod schemas and inferred types. | Contracts land before dependent implementations. |
 | `packages/db` | Drizzle schema, typed queries, and RLS test helpers. | Persistence only; no Amazon calls. |
 | `packages/ads-api` | Pure Amazon Ads API client. | HTTP client only; no database. |
-| `packages/sp-api` | Pure Selling Partner API report client. | HTTP client only; worker-only at runtime. |
+| `packages/sp-api` | Pure Selling Partner API client: reports, Fulfillment Outbound reads, and the Fulfillment Outbound writer. | HTTP client only; worker-only at runtime. |
 | `packages/core` | Doctrine and decision engine. | Pure functions, zero I/O. |
 | `packages/strategy` | Tenant strategy resolution. | Shape and resolution only; no tenant values in source. |
 | `packages/campaigns` | Campaign planning, validation, and artifacts. | Pure; no database, credentials, or Amazon calls. |
@@ -179,6 +179,14 @@ Amazon writes are allowed only through this contract:
     or any exceeded bound. Never use a live account merely because credentials are available.
     Live delegated tests must also name the exact key/profile/action limits and inverse behavior
     in that scoped authorization. Profile names and ids never enter a tracked file.
+
+Selling Partner API Fulfillment Outbound writes (`createFulfillmentOrder` and
+`cancelFulfillmentOrder` through `packages/sp-api/src/fulfillment-outbound-writer.ts`, with
+`getFulfillmentPreview` as their preview evidence) are Amazon writes under all ten clauses
+above, and nothing here relaxes any of them. The writer is a library that only the worker
+calls. It sends each request once, with no retry, and reports an unknown create outcome
+as uncertain, to be settled by reading the order and never by a second create. Its
+results and errors carry no destination address and no provider free text.
 
 ## Public-repo hygiene
 

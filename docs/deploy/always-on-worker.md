@@ -52,16 +52,18 @@ Both runtimes use the same atomic `FOR UPDATE SKIP LOCKED` claim operation, so a
 cannot be handed to both. Their allowlists also divide responsibility before a claim:
 
 - the always-on service (the Evo general worker) claims `keepa.sync`, `rank.sync`,
-  `economics.sync`, `sqp.categorize`, `sqp.request`, and `recommendations.run`;
+  `economics.sync`, `sqp.categorize`, `sqp.request`, `recommendations.run`, and
+  `mcf.observe`;
 - Vercel cron explicitly claims `entity.sync`, `creative.sync`, `report.request`,
-  `report.poll`, `report.fetch`, and `recommendations.run`. It never claims `sqp.request`.
+  `report.poll`, `report.fetch`, and `recommendations.run`. It never claims `sqp.request`
+  or `mcf.observe`.
 
 `recommendations.run` is in both allowlists until the recommendation lane is enabled;
 the shared claim operation still hands each job to one runtime.
 
 Configure the always-on service as `WORKER_DEPLOYMENT_ROLE=general` with
 `WORKER_JOB_TYPES` set to
-`keepa.sync,rank.sync,economics.sync,sqp.categorize,sqp.request,recommendations.run`.
+`keepa.sync,rank.sync,economics.sync,sqp.categorize,sqp.request,recommendations.run,mcf.observe`.
 The Evo general worker's runtime refuses to start the worker mode with any other set;
 the connection-only mode does not read it.
 `sqp.request` requires both `SP_API_LWA_CLIENT_ID` and `SP_API_LWA_CLIENT_SECRET`,
@@ -292,7 +294,7 @@ the web deployment's `SP_API_OAUTH_REDIRECT_URI`, and the client id and
 application id must equal the web deployment's. The runtime refuses a gate other
 than `0` or `1`, a region other than `NA`, `EU` or `FE`, a template placeholder,
 an enabled gate without every setting and both credentials. The worker mode also
-refuses a `WORKER_JOB_TYPES` that is not exactly the six general-worker job types,
+refuses a `WORKER_JOB_TYPES` that is not exactly the seven general-worker job types,
 each listed once.
 
 `wizard-ads-spapi-connections.service` is a template for the connection-only
@@ -318,9 +320,9 @@ rollback to an older one.
 
 Lanes after the upgrade:
 
-- The Evo general worker claims six job types: `keepa.sync`, `rank.sync`,
-  `economics.sync`, `sqp.categorize`, `sqp.request` and `recommendations.run`. It
-  also runs the SP-API connection loop and, because it claims `sqp.request` and
+- The Evo general worker claims seven job types: `keepa.sync`, `rank.sync`,
+  `economics.sync`, `sqp.categorize`, `sqp.request`, `recommendations.run` and
+  `mcf.observe` (WP-338b, below). It also runs the SP-API connection loop and, because it claims `sqp.request` and
   holds both LWA credentials, the weekly SQP producer. None of its claimed job
   types is an Amazon Ads job, so it builds no Ads client and makes no Amazon Ads
   call. `sqp.categorize` remains declared but unimplemented.
@@ -390,10 +392,129 @@ Retiring `keepa.sync` is prepared but not applied. After a verified profile-day 
 imported signals and the operator's Keepa key check, one change retires it:
 drop `"keepa.sync"` from `GENERAL_WORKER_JOB_TYPES` in
 `wizard-ads-credential-runtime.py` and from `WORKER_JOB_TYPES` in the template, so
-both hold the five types `rank.sync,economics.sync,sqp.categorize,sqp.request,recommendations.run`.
-The static proof and the runtime tests pin the six types today and refuse a
-five-type set, so the same commit moves their expected set to the five types; the
+both hold the six types `rank.sync,economics.sync,sqp.categorize,sqp.request,recommendations.run,mcf.observe`.
+The static proof and the runtime tests pin the seven types today and refuse the set
+without `keepa.sync`, so the same commit moves their expected set to the six types; the
 live `worker.json` then drops `keepa.sync` in the same release switch.
+
+## MCF observation on the Evo (WP-338b)
+
+`mcf.observe` (WP-334) is a read-only job. For each Creator Connections sample lane
+that the control runner reports as submitted, ambiguous or confirmed, it asks Amazon
+whether a fulfillment order exists under the lane's derived order key, reads the
+shipments and each package's carrier status, and appends one row to
+`creator_mcf_observations`. It never creates, updates or cancels an order and never
+changes a lane's state or lock. Nothing in this section places an order or turns on
+any part of the send path.
+
+The Evo general worker claims `mcf.observe` as its seventh job type. The Vercel cron
+tick does not claim it. Two optional, non-secret `worker.json` keys control it:
+
+| Key | Accepted values | Absent |
+|---|---|---|
+| `OPENSPELL_MCF_OBSERVE_ENABLED` | exactly `0` or `1` | off |
+| `OPENSPELL_MCF_OBSERVE_INTERVAL_MINUTES` | a whole number from `5` to `1440`, no sign, leading zero or spaces | 30 minutes |
+
+Like the import keys, they are not in `wizard-ads-worker.TEMPLATE.json`. Only the
+worker mode passes them on; the connection-only modes never do. The runtime refuses a
+flag other than `0` or `1`, an interval outside the range or not written as plain
+digits, and a flag of `1` without both SP-API LWA credentials (the worker would
+otherwise stay off without saying so). Each refusal names the key and never the
+value. With the flag at `1`, an organisation is observed only when it has exactly one
+active SP-API connection and a usable profile, marketplace and SP-API binding. The
+enqueue pass skips any other organisation without creating a job; the only sign is
+`refusedOrgs` in the worker's `mcf.observe enqueue pass` journal line. A job fails
+permanently, naming the reason, only if the connections or the binding change
+between enqueue and run. The general worker accepts no
+other MCF key: the flags that let Arcana send an order belong to the separate MCF
+unit only, and this runtime refuses them as unsupported keys.
+
+With the flag on, the worker enqueues one `mcf.observe` job per organisation with a
+lane to observe when it starts and then once per interval. The dedupe key carries
+the interval slot, so a restart inside a slot does not enqueue twice. Each job reads
+at most 25 lanes, least recently read first, spacing Amazon calls 600 ms apart.
+
+### Lockstep order
+
+A release older than WP-338b refuses `mcf.observe` in `WORKER_JOB_TYPES` and both
+observe keys. A WP-338b release refuses the six-type list without `mcf.observe`. The
+job-type list therefore changes in the same stop as the release switch, and the flag
+comes after it.
+
+1. Confirm the production database has WP-334's migration
+   (`20260927120000_creator_sample_preflight_observation.sql`). The worker exits at
+   startup without it.
+2. Stop `wizard-ads-worker.service`. Point `worker-current` at the WP-338b release
+   (or a later one). In the same stop, append `,mcf.observe` to `WORKER_JOB_TYPES`
+   in `/etc/wizard-ads/worker.json`. Add no observe key yet.
+3. Start the unit. Check the start line (`mode` `worker` and the new revision) and
+   `/healthz`. The worker now claims `mcf.observe`, but with the flag absent it
+   enqueues nothing and registers no handler.
+4. Add `"OPENSPELL_MCF_OBSERVE_ENABLED": "1"` to `worker.json` (and the interval, if
+   30 minutes is not wanted) and restart the unit. The first jobs are enqueued at
+   start.
+
+### Rollback order
+
+1. To stop observing, set `OPENSPELL_MCF_OBSERVE_ENABLED` to `0` or remove the key,
+   and restart. The worker enqueues nothing new. Jobs already queued are claimed and
+   end `dead` with `mcf.observe is declared but unimplemented`, because no handler is
+   registered; no Amazon call is made.
+2. To roll the release back, first do step 1 and wait one interval so queued
+   `mcf.observe` jobs are claimed. Then stop the unit, remove both observe keys, remove
+   `mcf.observe` from `WORKER_JOB_TYPES` (back to the six types), point
+   `worker-current` at the previous release, and start the unit. No runtime claims
+   `mcf.observe` after the rollback, so any job still queued stays queued and runs on
+   a later upgrade.
+
+Neither step touches the database. Observation rows stay as recorded, and the lanes
+keep the settlement the last read gave them.
+
+### Reading the first results
+
+Read the jobs and the observations after the first interval:
+
+```sql
+select status, attempts, last_error, result, finished_at
+  from public.sync_jobs where job_type = 'mcf.observe'
+ order by created_at desc limit 20;
+
+select outcome, operation, count(*)
+  from public.creator_mcf_observations
+ group by outcome, operation;
+```
+
+A succeeded job's `result` counts `lanes`, `found`, `notFound`, `inconsistent`,
+`escalated`, `written`, `packages` and the Amazon calls it made. What the first
+reads show:
+
+- **`found` rows** mean Amazon answered HTTP 200: the seller authorization carries
+  the Amazon Fulfillment role, and the order exists under that id.
+- **`not_found` rows** mean Amazon answered HTTP 404, which the reader records as
+  not found. The role works, and Amazon does not know that id. The job reads the
+  lane's derived order key first and, when the runner recorded an order id, that id
+  next. Lanes whose orders were placed in the browser under `CC-…` ids have a derived
+  key Amazon has never seen, so that first read is the 404-or-400 probe. Such a lane
+  shows `not_found` when no runner id is recorded, and may show `found` with
+  `queried_order_id` equal to the runner's id when one is.
+- **Jobs with `last_error` `Fulfillment Outbound http (400)`** (status `queued`
+  with that `last_error` while they retry, `dead` after the fifth attempt) mean
+  Amazon refused a read. Two operations can raise it: getFulfillmentOrder for every
+  lane, and, for lanes in Reconciliation Required, the listAllFulfillmentOrders read
+  that corroborates a not-found. Check the lanes' states before concluding. If no
+  lane is in Reconciliation Required, the 400 came from getFulfillmentOrder: either
+  Amazon answers an unknown id with 400 rather than 404, in which case WP-334's
+  reader needs a follow-up before the preview flag goes on, or the authorization
+  lacks the role. No observation row is written for those lanes.
+- **`Fulfillment Outbound http (403)`** means the seller authorization does not
+  cover Fulfillment Outbound: re-authorize the SP-API connection with the Amazon
+  Fulfillment role.
+- **`Fulfillment Outbound http (5xx)`, `Fulfillment Outbound transport` or
+  `Fulfillment Outbound authentication`** (the LWA token refresh failed) is a failed
+  read, never a not-found. The job retries; nothing is settled.
+
+After a 400 or 403, set the flag to `0` (rollback step 1) and report the error
+before turning on anything that depends on MCF reads.
 
 ## Report fetch reliability (WP-323)
 
