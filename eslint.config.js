@@ -19,6 +19,29 @@ const forbid = (pairs) => [
   },
 ];
 
+// WP-338e: only the dedicated MCF unit may open a sealed recipient or touch the
+// MCF ledger's service-role functions. apps/web and apps/mcp may seal (the
+// browser) and read outcomes, never open, import the key or drive the unit.
+const MCF_UNIT_ONLY = 'only the MCF unit (apps/worker/src/mcf-send, wizard-ads-mcf.service) may open a sealed recipient or drive the MCF ledger.';
+const MCF_SERVICE_FUNCTIONS = [
+  'claimCreatorMcfOutbox', 'expireCreatorMcfCustody', 'markCreatorMcfLadderExhausted', 'purgeCreatorMcfMasks', 'readCreatorMcfAlertSummary',
+  'readCreatorMcfCustody', 'readCreatorMcfCustodyResidue', 'recordCreatorMcfHeartbeat', 'recordCreatorMcfOutcome', 'recordCreatorMcfPreview',
+  'recordCreatorMcfSettlement', 'refuseCreatorMcfPreview', 'releaseCreatorMcfClaim', 'reserveCreatorMcfDispatch',
+];
+const mcfPaths = [
+  { name: '@wizard-ads/shared', importNames: ['openCreatorMcfRecipient', 'importCreatorMcfRecipientKey'], message: MCF_UNIT_ONLY },
+  { name: '@wizard-ads/db/worker', importNames: MCF_SERVICE_FUNCTIONS, message: MCF_UNIT_ONLY },
+];
+const mcfPatterns = [
+  { group: ['**/mcf-send', '**/mcf-send/**', '**/mcf-main', '**/mcf-main.*', '**/creators/mcf-envelope', '**/creators/mcf-envelope.*',
+    '**/queries/creators-mcf-send', '**/queries/creators-mcf-send.*'], message: MCF_UNIT_ONLY },
+];
+/** forbid() plus the MCF bans, for apps/web and apps/mcp. */
+const forbidWithMcf = (pairs) => [
+  'error',
+  { paths: [...pairs.map(([name, message]) => ({ name, message })), ...mcfPaths], patterns: mcfPatterns },
+];
+
 export default tseslint.config(
   {
     ignores: [
@@ -126,7 +149,7 @@ export default tseslint.config(
     // clients and credential reads remain in the worker, including first setup.
     files: ['apps/web/**/*.{ts,tsx}'],
     rules: {
-      'no-restricted-imports': forbid([
+      'no-restricted-imports': forbidWithMcf([
         ['@wizard-ads/ads-api', 'every Amazon API call lives in apps/worker, never in the web app.'],
         ['@wizard-ads/db/operator', 'installation provisioning is not an application or organization-role capability.'],
         ['@wizard-ads/agency-operator', 'the installation CLI is not an application dependency.'],
@@ -142,9 +165,18 @@ export default tseslint.config(
     },
   },
   {
-    files: ['apps/mcp/**/*.{ts,tsx}', 'apps/worker/**/*.{ts,tsx}'],
+    files: ['apps/worker/**/*.{ts,tsx}'],
     rules: {
       'no-restricted-imports': forbid([
+        ['@wizard-ads/db/operator', 'installation provisioning requires its separate operator command.'],
+        ['@wizard-ads/agency-operator', 'the installation CLI is not an application dependency.'],
+      ]),
+    },
+  },
+  {
+    files: ['apps/mcp/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': forbidWithMcf([
         ['@wizard-ads/db/operator', 'installation provisioning requires its separate operator command.'],
         ['@wizard-ads/agency-operator', 'the installation CLI is not an application dependency.'],
       ]),
