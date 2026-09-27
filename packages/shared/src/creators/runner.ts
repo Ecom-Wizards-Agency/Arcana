@@ -190,6 +190,29 @@ export const CreatorRunnerRegistry = z.object({
 }).strict();
 export type CreatorRunnerRegistry = z.infer<typeof CreatorRunnerRegistry>;
 
+/** `resolve_record` `match_method`: the rung that resolved an existing record, in the runner's order. */
+export const CreatorIdentityMatchMethod = z.enum(['storefront', 'thread', 'contacts']);
+export type CreatorIdentityMatchMethod = z.infer<typeof CreatorIdentityMatchMethod>;
+/** The fingerprint keys `record_fingerprints` returns and a registry row stores. */
+export const CreatorRunnerFingerprintKey = z.enum(['thread_key', 'storefront_key', 'full_name_fp', 'email_fp', 'phone_fp', 'address_fp']);
+export type CreatorRunnerFingerprintKey = z.infer<typeof CreatorRunnerFingerprintKey>;
+const RecordIds = z.array(CreatorRecordId).min(1).max(50).refine((ids) => new Set(ids).size === ids.length, 'a matched record repeats');
+
+/**
+ * `resolve_record` output, the identity decision `register` acts on. RESOLVED
+ * names its rung; NEW carries fingerprints only; CONFLICT names every matched
+ * record, which `lock_conflicting_records` then locks. HOLD registers nothing.
+ */
+export const CreatorRunnerResolution = z.discriminatedUnion('result', [
+  z.object({ result: z.literal('RESOLVED'), creator_record_id: CreatorRecordId, match_method: CreatorIdentityMatchMethod }).strict(),
+  z.object({ result: z.literal('NEW'), fingerprints: z.object(Object.fromEntries(CreatorRunnerFingerprintKey.options.map((key) => [key, RunnerFingerprint])) as
+    Record<CreatorRunnerFingerprintKey, typeof RunnerFingerprint>).strict() }).strict(),
+  z.object({ result: z.literal('CONFLICT'), reason: ReasonCode, matches: RecordIds,
+    conflicting_fields: z.array(z.enum(['storefront_key', 'email_fp', 'phone_fp', 'address_fp'])).max(4).optional() }).strict(),
+  z.object({ result: z.literal('HOLD'), reason: ReasonCode, matches: RecordIds.optional() }).strict(),
+]);
+export type CreatorRunnerResolution = z.infer<typeof CreatorRunnerResolution>;
+
 /** Every `action_type` `queue_item` can emit. */
 export const CreatorQueueAction = z.enum([
   'IDENTITY_RESOLUTION', 'BACKGROUND_CHECK', 'SEND_TAILORED_VERIFICATION_FOLLOW_UP', 'ESCALATE_UNRESPONSIVE',

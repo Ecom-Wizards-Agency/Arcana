@@ -64,10 +64,17 @@ export const CreatorRecord = z.object({
 }).strict();
 export type CreatorRecord = z.infer<typeof CreatorRecord>;
 
-/** Append-only events. The import derives these from registry history, never from a clock. */
+/**
+ * Append-only events. The import derives the first six from registry history,
+ * never from a clock. The rest arrive from a `creator:write` key (identity,
+ * score and the skill's own entries) or from the drafts screen.
+ */
 export const CreatorActionKind = z.enum([
   'identity_conflict_locked', 'mcf_reserved', 'mcf_screen_verified', 'mcf_reconciliation_required',
   'sample_confirmed', 'mcf_reservation_cancelled',
+  'identity_resolved', 'score_recorded',
+  'message_sent_by_hand', 'status_moved', 'content_verified', 'escalated', 'preflight_recorded',
+  'draft_submitted', 'draft_approved', 'draft_sent_by_hand', 'draft_withdrawn',
 ]);
 export type CreatorActionKind = z.infer<typeof CreatorActionKind>;
 export const CreatorActionLogEntry = z.object({
@@ -222,6 +229,21 @@ export const CreatorImportRun = z.object({
 }).strict().refine((run) => (run.status === 'failed') === (run.failure !== null), 'a failure code belongs to a failed run only');
 export type CreatorImportRun = z.infer<typeof CreatorImportRun>;
 
+/** The score typed on the tracker, as `creators.record_score` last reported it. */
+export const CreatorTrackerScore = z.object({
+  creatorRecordId: CreatorRecordId, trackerScore: z.number().int().min(0).max(10), scoredOn: z.iso.date(),
+}).strict();
+export type CreatorTrackerScore = z.infer<typeof CreatorTrackerScore>;
+/**
+ * Registry records the newest queue run did not name, grouped by the tracker
+ * status last reported for them. A null status was never reported: not
+ * measured, not "no status". `recognised` is null with it.
+ */
+export const CreatorIdleGroup = z.object({
+  status: z.string().nullable(), recognised: z.boolean().nullable(), records: Count,
+}).strict().refine((group) => (group.status === null) === (group.recognised === null), 'only an unreported status has no recognition');
+export type CreatorIdleGroup = z.infer<typeof CreatorIdleGroup>;
+
 /** `/creators`: the latest queue run, the records it did not touch, and the last sweep. */
 export const CreatorQueueSnapshot = z.object({
   lastImport: CreatorImportRun.nullable(),
@@ -229,6 +251,10 @@ export const CreatorQueueSnapshot = z.object({
   items: z.array(CreatorDailyQueueItem),
   registryRecords: Count,
   sweep: CreatorSweepRun.nullable(),
+  /** Tracker scores for the records on this run; a record without one has none reported. */
+  trackerScores: z.array(CreatorTrackerScore),
+  /** Registry records not named by this run, by reported status. Empty when there is no run. */
+  idle: z.array(CreatorIdleGroup),
 }).strict();
 export type CreatorQueueSnapshot = z.infer<typeof CreatorQueueSnapshot>;
 /** `/creators/sweep`: the newest sweep and the one before it. */

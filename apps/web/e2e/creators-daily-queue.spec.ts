@@ -33,6 +33,14 @@ test('creator queue: the day\'s work, the refusal, worked to zero, and viewers k
       await db.sql`insert into public.creator_records(org_id, creator_record_id, brand, campaign_id, record_state, lock_state, runner_version, created_on, source, source_digest)
         values (${org}, ${id!}, 'Synthetic brand', 'campaign-e2e', 'Active', ${lock!}, 1, '2026-09-01', 'control-runner', ${DIGEST}) on conflict do nothing`;
     }
+    // The tracker typed 10 where the runner computes 8: the score that disagrees when the row is opened.
+    await db.sql`update public.creator_records set tracker_score = 10, tracker_scored_on = '2026-09-09'
+      where org_id = ${org} and creator_record_id = 'CCR-E2-26-0134'`;
+    // A record the run does not name, under a label outside the tracker's dropdown.
+    await db.sql`insert into public.creator_records(org_id, creator_record_id, brand, campaign_id, record_state, lock_state, runner_version, created_on,
+        status, computed_score, missing_checks, qualified_on, source, source_digest)
+      values (${org}, 'CCR-E2-26-0400', 'Synthetic brand', 'campaign-e2e', 'Active', 'Unlocked', 1, '2026-09-01', 'Awaiting Sample', 10, '{}'::text[],
+        '2026-09-08', 'control-runner', ${DIGEST}) on conflict do nothing`;
     // Every row is a shape creator_control.py queue_item emits.
     const item = (id: string | null, action: string, gate: string, stateName: string, score: number, missing: string[], status: string, reason: string) => db.sql`
       insert into public.creator_daily_queue(org_id, run_date, queue_id, occurrence, creator_record_id, brand, campaign_tab, current_status, computed_score,
@@ -71,6 +79,16 @@ test('creator queue: the day\'s work, the refusal, worked to zero, and viewers k
     await expect(nav.getByRole('link', { name: 'Daily queue' })).toHaveAttribute('href', '/creators');
     await expect(nav.getByRole('link', { name: 'Inbox sweep' })).toHaveAttribute('href', '/creators/sweep');
     await expect(nav.getByRole('link', { name: 'Sample shipments' })).toHaveAttribute('href', '/creators/samples');
+    // The row opened in place (444:301) and the records that produced no action (444:2).
+    const opened = page.locator('[data-testid="queue-row-open"][data-record="CCR-E2-26-0134"]');
+    await opened.locator('summary').click();
+    await expect(opened.locator('[data-check]')).toHaveCount(10);
+    await expect(opened.locator('[data-check][data-passed="false"]')).toHaveCount(2);
+    await expect(opened.getByTestId('score-agreement')).toHaveAttribute('data-agreement', 'disagrees');
+    await expect(opened.getByTestId('score-agreement')).toContainText('the runner computes 8 / 10');
+    await expect(opened.getByTestId('open-record')).toHaveAttribute('href', '/creators/records/CCR-E2-26-0134');
+    await expect(page.locator('[data-testid="queue-row-open"][data-record="CCR-E2-26-0203"]').getByTestId('open-drafts')).toHaveAttribute('href', '/creators/drafts');
+    await expect(page.getByTestId('idle-refused')).toHaveText('Awaiting Sample: 1 record');
     await capture(page, testInfo, 'creators-queue');
 
     await db.sql`insert into public.creator_import_runs(org_id, started_at, finished_at, status, failure, failed_file, files, counts, source)

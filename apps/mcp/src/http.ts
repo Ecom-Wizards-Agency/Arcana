@@ -120,6 +120,7 @@ export async function startHttpServer(options: StartOptions): Promise<RunningSer
       config,
       actor: key.actor,
       keyId: key.id,
+      scope: key.scope,
     });
 
     const transport = new StreamableHTTPServerTransport({

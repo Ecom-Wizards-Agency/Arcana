@@ -12,15 +12,16 @@
  * is the spec (an app is not a library and `apps/web` must not depend on a
  * sibling app), so the constants below — the `wza_` prefix, the 32 random bytes,
  * the SHA-256 hex hash, the 12-character stored prefix — must stay identical to
- * it or a key issued here will not verify there. v1 issues **read-only** keys,
- * exactly as the CLI does.
+ * it or a key issued here will not verify there. It issues **read** keys for a
+ * profile allowlist, and `creator:write` keys that reach no profile and write
+ * Creator Connections records only. A `write` key is never issued here.
  *
  * The plaintext token exists only in `issueMcpKey`'s return value and is never
  * stored — only its hash and a short prefix are — so a lost token is reissued,
  * never recovered.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { issueManagedMcpReadKey, revokeManagedMcpKey, type DbHandle } from '@wizard-ads/db';
+import { issueManagedMcpCreatorWriteKey, issueManagedMcpReadKey, revokeManagedMcpKey, type DbHandle } from '@wizard-ads/db';
 import type { McpKeyMetadata, OrgActor } from '@wizard-ads/shared';
 export { listMcpKeyMetadata as listMcpKeys } from '@wizard-ads/db';
 import {
@@ -51,11 +52,24 @@ export interface IssuedMcpKey {
   token: string;
 }
 
+/** The key classes the web may issue. `write` keys are issued only through their delegation flow. */
+export type IssuableMcpKeyScope = 'read' | 'creator:write';
+
+/** The requested class: absent means read; anything but the two issuable classes is refused (null). */
+export function parseMcpKeyScope(value: unknown): IssuableMcpKeyScope | null {
+  if (value === undefined) return 'read';
+  return value === 'read' || value === 'creator:write' ? value : null;
+}
+
+export const CREATOR_WRITE_PROFILES_REFUSED = 'A Creator Connections write key reaches no profile. Issue it without profiles.';
+
 export interface IssueMcpKeyInput {
   orgId: string;
   label: string;
-  /** A required hard allowlist. Every id is verified against `orgId`. */
+  /** Read keys: a required hard allowlist, every id verified against `orgId`. `creator:write` keys: none. */
   profileIds: readonly string[];
+  /** Defaults to read. */
+  scope?: IssuableMcpKeyScope;
   /** Accepted only when it is one of `MCP_KEY_EXPIRY_DAY_OPTIONS`. */
   expiresInDays?: number;
   /** The auth user issuing it, recorded for the audit trail. */
@@ -65,13 +79,27 @@ export interface IssueMcpKeyInput {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
- * Issue one expiring, read-only key for an explicit profile allowlist.
- * Profile ownership is checked before the credential row is written. The MCP
- * server independently enforces this same allowlist on every tool call.
+ * Issue one expiring key. A read key carries an explicit profile allowlist;
+ * profile ownership is checked before the credential row is written, and the
+ * MCP server enforces the same allowlist on every tool call. A `creator:write`
+ * key carries no profile at all and is refused if one is given.
  */
 export async function issueMcpKey(handle: SqlHandle, input: IssueMcpKeyInput): Promise<IssuedMcpKey> {
   const label = input.label.trim();
   if (label.length === 0) throw new Error('A key needs a label so you can tell your keys apart.');
+  const scope = input.scope ?? 'read';
+  if (scope === 'creator:write') {
+    if (input.profileIds.length > 0) throw new Error(CREATOR_WRITE_PROFILES_REFUSED);
+    const expiresInDays = input.expiresInDays ?? DEFAULT_MCP_KEY_EXPIRY_DAYS;
+    if (!isMcpKeyExpiryDays(expiresInDays)) {
+      throw new Error(`Key expiry must be ${MCP_KEY_EXPIRY_DAY_OPTIONS.join(', ')} days.`);
+    }
+    const token = generateToken();
+    const record = await issueManagedMcpCreatorWriteKey(handle, { orgId: input.orgId, userId: input.createdBy }, {
+      label, expiresInDays, keyPrefix: token.slice(0, STORED_PREFIX_LENGTH), tokenHash: hashToken(token),
+    });
+    return { record, token };
+  }
 
   const profileIds = [...new Set(input.profileIds)];
   if (profileIds.length === 0) throw new Error('Select at least one profile for this key.');

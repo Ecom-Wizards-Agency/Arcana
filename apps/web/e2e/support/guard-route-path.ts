@@ -5,6 +5,7 @@ const routeParameters: Readonly<Record<string, string>> = {
   groupId: '00000000-0000-4000-8000-000000000273',
   assetId: '00000000-0000-4000-8000-000000000274',
   campaignId: '00000000-0000-4000-8000-000000000275',
+  id: '00000000-0000-4000-8000-000000000276',
 };
 
 export function guardRoutePath(template: string): string {

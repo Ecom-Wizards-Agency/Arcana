@@ -12,8 +12,8 @@
  */
 import { createHash } from 'node:crypto';
 import {
-  CreatorImportRun, CreatorSampleShipment, CreatorSweepRun, CreatorDailyQueueItem,
-  type CreatorActionLogEntry, type CreatorImportCounts, type CreatorImportFailure, type CreatorImportFile,
+  CreatorImportRun, CreatorSampleShipment, CreatorSweepRun, CreatorDailyQueueItem, isRecognisedCreatorStatus,
+  type CreatorActionLogEntry, type CreatorIdleGroup, type CreatorTrackerScore, type CreatorWriteCounts, type CreatorImportCounts, type CreatorImportFailure, type CreatorImportFile,
   type CreatorImportKind, type CreatorQueueSnapshot, type CreatorRecord, type CreatorSampleSnapshot,
   type CreatorSource, type CreatorSweepSnapshot,
 } from '@wizard-ads/shared';
@@ -21,6 +21,8 @@ import type { DbHandle, QueryHandle, QuerySql } from '../client.js';
 
 export type CreatorRecordWrite = Omit<CreatorRecord, 'importedAt' | 'source' | 'status' | 'qualification' | 'qualifiedOn'>;
 export type CreatorActionWrite = Omit<CreatorActionLogEntry, 'recordedAt' | 'source'>;
+/** An action-log row with what a `creator:write` key or the web adds: the records it named and who asked. */
+export type CreatorEventWrite = CreatorActionWrite & { relatedRecordIds?: readonly string[]; actorUserId?: string | null };
 export type CreatorQueueWrite = Omit<CreatorDailyQueueItem, 'lockState' | 'source'>;
 export type CreatorSweepWrite = Omit<CreatorSweepRun, 'reconciled' | 'importedAt' | 'source'>;
 export type CreatorShipmentWrite = Omit<CreatorSampleShipment, 'derivedOrderKey' | 'mcf' | 'packages' | 'importedAt' | 'source'>;
@@ -101,6 +103,8 @@ async function upsertRecords(sql: QuerySql, orgId: string, source: CreatorSource
         runner_version = excluded.runner_version, created_on = excluded.created_on, last_verified_on = excluded.last_verified_on,
         source = excluded.source, source_digest = excluded.source_digest, imported_at = now(), updated_at = now()
       where creator_records.source_digest is distinct from excluded.source_digest
+        -- The runner bumps a record's version on every change; an older row never overwrites a newer one.
+        and excluded.runner_version >= creator_records.runner_version
       returning (xmax = 0) as inserted`;
     if (result.length === 1) { if (result[0]!.inserted) inserted++; else updated++; }
   }
@@ -120,14 +124,15 @@ async function applyQualifications(sql: QuerySql, orgId: string, runDate: string
   }
 }
 
-async function insertActions(sql: QuerySql, orgId: string, source: CreatorSource, rows: readonly CreatorActionWrite[]) {
+async function insertActions(sql: QuerySql, orgId: string, source: CreatorSource, rows: readonly CreatorEventWrite[]) {
   let inserted = 0;
   for (const row of rows) {
     const result = await sql`
       insert into public.creator_action_log(org_id, event_key, creator_record_id, action, occurred_at, reservation_id, asin,
-        reason_code, evidence_reference, record_version, source)
+        reason_code, evidence_reference, record_version, source, related_record_ids, actor_user_id)
       values (${orgId}, ${row.eventKey}, ${row.creatorRecordId}, ${row.action}, ${row.occurredAt}, ${row.reservationId}, ${row.asin},
-        ${row.reasonCode}, ${row.evidenceReference}, ${row.recordVersion}, ${source})
+        ${row.reasonCode}, ${row.evidenceReference}, ${row.recordVersion}, ${source}, ${[...(row.relatedRecordIds ?? [])]}::text[],
+        ${row.actorUserId ?? null})
       on conflict (org_id, event_key) do nothing returning id`;
     inserted += result.length;
   }
@@ -249,6 +254,44 @@ export async function persistCreatorImport(handle: DbHandle, batch: CreatorImpor
   });
 }
 
+/** What a `creator:write` MCP call writes: any of the import's row kinds, validated and mapped by the caller. */
+export interface CreatorMcpRows {
+  records?: readonly CreatorRecordWrite[];
+  actions?: readonly CreatorEventWrite[];
+  queue?: { runDate: string; rows: readonly CreatorQueueWrite[] };
+  sweeps?: readonly CreatorSweepWrite[];
+  shipments?: readonly CreatorShipmentWrite[];
+}
+export type CreatorMcpWriteCounts = Partial<Record<'records' | 'action_log' | 'queue_items' | 'sweep_runs' | 'sample_shipments', CreatorWriteCounts & { removed?: number }>>;
+
+const writeCounts = (read: number, written: { inserted: number; updated: number }): CreatorWriteCounts => {
+  const unchanged = read - written.inserted - written.updated;
+  if (unchanged < 0) throw new CreatorImportCountError(`wrote ${written.inserted + written.updated} of ${read} rows`);
+  return { read, inserted: written.inserted, updated: written.updated, unchanged };
+};
+
+/**
+ * Write rows a `creator:write` key submitted, inside the caller's authenticated
+ * transaction, through the same upserts, keys and content digests as the file
+ * import: a row the import already wrote is unchanged, and so is a replay.
+ * It records no import run. The MCP audit row is the record of the call, and the
+ * screens' "last read" stays the control runner's.
+ */
+export async function writeCreatorMcpRows(sql: QuerySql, orgId: string, rows: CreatorMcpRows): Promise<CreatorMcpWriteCounts> {
+  await sql`select pg_advisory_xact_lock(hashtextextended(${`creators-import:${orgId}`}, 0))`;
+  const counts: CreatorMcpWriteCounts = {};
+  if (rows.records) counts.records = writeCounts(rows.records.length, await upsertRecords(sql, orgId, 'mcp', rows.records));
+  if (rows.actions) counts.action_log = writeCounts(rows.actions.length, await insertActions(sql, orgId, 'mcp', rows.actions));
+  if (rows.queue) {
+    const written = await replaceQueueDay(sql, orgId, 'mcp', rows.queue.runDate, rows.queue.rows);
+    counts.queue_items = { ...writeCounts(rows.queue.rows.length, written), removed: written.removed };
+    await applyQualifications(sql, orgId, rows.queue.runDate, rows.queue.rows);
+  }
+  if (rows.sweeps) counts.sweep_runs = writeCounts(rows.sweeps.length, await upsertSweeps(sql, orgId, 'mcp', rows.sweeps));
+  if (rows.shipments) counts.sample_shipments = writeCounts(rows.shipments.length, await upsertShipments(sql, orgId, 'mcp', rows.shipments));
+  return counts;
+}
+
 /** Record that nothing was read. The previous rows stay; the screens refuse to present them as today's. */
 export async function recordFailedCreatorImport(handle: DbHandle, input: CreatorImportFailureInput): Promise<CreatorImportRun> {
   const [row] = await handle.sql<ImportRunRow[]>`
@@ -309,7 +352,18 @@ export async function readCreatorQueue(handle: QueryHandle, orgId: string): Prom
   if (items.length !== rows.length) throw new CreatorImportCountError('Creator queue read count mismatch');
   const [registry] = await handle.sql<{ count: number }[]>`select count(*)::int as count from public.creator_records where org_id = ${orgId}`;
   const [sweep] = await readSweeps(handle, orgId, 1);
-  return { lastImport, runDate, items, registryRecords: registry?.count ?? 0, sweep: sweep ?? null };
+  const named = [...new Set(items.flatMap((item) => item.creatorRecordId === null ? [] : [item.creatorRecordId]))];
+  const trackerScores: CreatorTrackerScore[] = named.length === 0 ? [] : (await handle.sql<{ id: string; score: number; on: string }[]>`
+    select creator_record_id as id, tracker_score as score, tracker_scored_on::text as on from public.creator_records
+    where org_id = ${orgId} and creator_record_id = any(${named}::text[]) and tracker_score is not null order by creator_record_id`)
+    .map((row) => ({ creatorRecordId: row.id, trackerScore: row.score, scoredOn: row.on }));
+  // Records the run did not name, by the status last reported for them. Without a run nothing is "idle".
+  const idle: CreatorIdleGroup[] = runDate === null ? [] : (await handle.sql<{ status: string | null; records: number }[]>`
+    select status, count(*)::int as records from public.creator_records
+    where org_id = ${orgId} and not (creator_record_id = any(${named}::text[]))
+    group by status order by count(*) desc, status nulls last`)
+    .map((row) => ({ status: row.status, recognised: row.status === null ? null : isRecognisedCreatorStatus(row.status), records: row.records }));
+  return { lastImport, runDate, items, registryRecords: registry?.count ?? 0, sweep: sweep ?? null, trackerScores, idle };
 }
 
 /** `/creators/sweep`: the newest sweep and the one before it, for comparison. */
@@ -318,7 +372,7 @@ export async function readCreatorSweeps(handle: QueryHandle, orgId: string): Pro
   return { lastImport: await readLatestCreatorImport(handle, orgId), latest: latest ?? null, previous: previous ?? null };
 }
 
-interface ShipmentRow {
+export interface ShipmentRow {
   creator_record_id: string; asin: string; derived_order_key: string; sku: string | null; campaign_id: string | null;
   reservation_id: string | null; lane_state: string; runner_order_id: string | null; fee_cents: number | null; fee_cap_cents: number | null;
   reserved_at: Date | null; verified_at: Date | null; confirmed_at: Date | null; cancelled_at: Date | null;
@@ -332,7 +386,14 @@ export async function readCreatorSampleShipments(handle: QueryHandle, orgId: str
       reconciliation_reason, mcf_status, mcf_operation, mcf_read_at, packages, source, imported_at
     from public.creator_sample_shipments where org_id = ${orgId}
     order by greatest(mcf_read_at, confirmed_at, cancelled_at, verified_at, reserved_at, imported_at) desc, creator_record_id, asin`;
-  const shipments = rows.map((row) => CreatorSampleShipment.parse({
+  const shipments = rows.map(creatorShipmentFromRow);
+  if (shipments.length !== rows.length) throw new CreatorImportCountError('Creator shipment read count mismatch');
+  return { lastImport: await readLatestCreatorImport(handle, orgId), shipments };
+}
+
+/** One `creator_sample_shipments` row as the screens read it. */
+export function creatorShipmentFromRow(row: ShipmentRow): CreatorSampleShipment {
+  return CreatorSampleShipment.parse({
     creatorRecordId: row.creator_record_id, asin: row.asin, derivedOrderKey: row.derived_order_key, sku: row.sku,
     campaignId: row.campaign_id, reservationId: row.reservation_id, laneState: row.lane_state, runnerOrderId: row.runner_order_id,
     feeCents: row.fee_cents, feeCapCents: row.fee_cap_cents, reservedAt: iso(row.reserved_at), verifiedAt: iso(row.verified_at),
@@ -340,7 +401,5 @@ export async function readCreatorSampleShipments(handle: QueryHandle, orgId: str
     reconciliationReason: row.reconciliation_reason,
     mcf: row.mcf_status === null ? null : { status: row.mcf_status, operation: row.mcf_operation, readAt: iso(row.mcf_read_at) },
     packages: row.packages, source: row.source, importedAt: iso(row.imported_at),
-  }));
-  if (shipments.length !== rows.length) throw new CreatorImportCountError('Creator shipment read count mismatch');
-  return { lastImport: await readLatestCreatorImport(handle, orgId), shipments };
+  });
 }

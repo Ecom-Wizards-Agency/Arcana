@@ -75,11 +75,18 @@ describe.skipIf(!available)('MCP key issue route', () => {
   });
 
   it('issues only a read-only, expiring key for the submitted allowlist', async () => {
-    const response = await request({
+    // A bid-write class is refused outright rather than quietly downgraded.
+    const refused = await request({
       label: 'Synthetic route client',
       profileIds: [profileA],
       expiresInDays: 7,
       scope: 'write',
+    });
+    expect(refused.status).toBe(400);
+    const response = await request({
+      label: 'Synthetic route client',
+      profileIds: [profileA],
+      expiresInDays: 7,
     });
     expect(response.status).toBe(201);
     expect(response.headers.get('cache-control')).toBe('no-store, max-age=0');
