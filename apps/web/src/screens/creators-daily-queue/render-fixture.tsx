@@ -14,7 +14,7 @@ export const AS_OF = { date: '2026-09-09', sweepRun: '2026-09-09T06:12:00.000Z',
 export const BRAND = 'Sonic Wave';
 export const TRACKER_TAB = 'Derma stamp 2026';
 
-const counts = (read: number) => ({ read, valid: read, invalid: 0, inserted: 0, updated: 0, unchanged: read, removed: 0 });
+const counts = (read: number) => ({ read, valid: read, invalid: 0, inserted: 0, updated: 0, unchanged: read, skipped: 0, removed: 0 });
 export const lastImport: CreatorImportRun = {
   id: '33200000-0000-4000-8000-0000000000a1', startedAt: '2026-09-09T06:13:58.000Z', finishedAt: AS_OF.trackerRead, status: 'succeeded',
   failure: null, failedFile: null, files: ['registry', 'queue', 'sweep_checkpoint', 'mcf_reservations'], queueRunDate: AS_OF.date,

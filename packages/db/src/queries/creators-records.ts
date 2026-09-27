@@ -7,7 +7,7 @@
  * enqueues nothing and sends nothing. Nothing here calls Amazon.
  */
 import {
-  CreatorDraft, CreatorRecord, CreatorRecordEvent, CreatorDailyQueueItem, OrgActor, type McpKeyMetadata,
+  CreatorDraft, CreatorRecord, CreatorRecordEvent, CreatorDailyQueueItem, CreatorSource, OrgActor, type McpKeyMetadata,
   type CreatorConflictDetail, type CreatorDraftRow, type CreatorDraftsSnapshot, type CreatorDraftStatus, type CreatorFingerprintClass,
   type CreatorIdentityDecision, type CreatorRecordDetail, type CreatorRecordScoreInput, type CreatorRefusedCandidate,
   type CreatorSubmitDraftInput, type CreatorWriteCounts,
@@ -171,8 +171,9 @@ export async function readCreatorRecord(handle: QueryHandle, orgId: string, id: 
   // A registered conflict is an identity decision too, but it has no rung.
   const decided = events.find((event) => event.action === 'identity_resolved' && event.reasonCode !== null
     && ['storefront', 'thread', 'contacts', 'new'].includes(event.reasonCode));
+  // Only a `creator:write` key registers identity, so a worker source here is a bug and throws.
   const identity: CreatorIdentityDecision | null = decided === undefined ? null
-    : { rung: decided.reasonCode as CreatorIdentityDecision['rung'], recordedAt: decided.recordedAt, source: decided.source };
+    : { rung: decided.reasonCode as CreatorIdentityDecision['rung'], recordedAt: decided.recordedAt, source: CreatorSource.parse(decided.source) };
   const shipmentRows = await sql<ShipmentRow[]>`select creator_record_id, asin, derived_order_key, sku, campaign_id, reservation_id,
       lane_state, runner_order_id, fee_cents, fee_cap_cents, reserved_at, verified_at, confirmed_at, cancelled_at, cancellation_reason,
       reconciliation_reason, mcf_status, mcf_operation, mcf_read_at, packages, source, imported_at
@@ -249,7 +250,7 @@ export async function recordCreatorScore(sql: QuerySql, orgId: string, actorUser
          ${input.tracker_score}::smallint, ${input.tracker_score === null ? null : input.scored_on}::date)
     returning creator_record_id`;
   const older = held.qualified_on !== null && held.qualified_on > input.scored_on;
-  if (older) return { record: 'older_than_held', actionLog: { read: 0, inserted: 0, updated: 0, unchanged: 0 } };
+  if (older) return { record: 'older_than_held', actionLog: { read: 0, inserted: 0, updated: 0, unchanged: 0, skipped: 0 } };
   const digest = creatorContentDigest({ result: input.result, status: input.current_status, tracker: input.tracker_score });
   const logged = await sql`insert into public.creator_action_log(org_id, event_key, creator_record_id, action, occurred_at, reason_code,
       source, actor_user_id)
@@ -258,7 +259,7 @@ export async function recordCreatorScore(sql: QuerySql, orgId: string, actorUser
     on conflict (org_id, event_key) do nothing returning id`;
   return {
     record: updated.length === 1 ? 'updated' : 'unchanged',
-    actionLog: { read: 1, inserted: logged.length, updated: 0, unchanged: 1 - logged.length },
+    actionLog: { read: 1, inserted: logged.length, updated: 0, unchanged: 1 - logged.length, skipped: 0 },
   };
 }
 
@@ -295,7 +296,7 @@ export async function appendCreatorActions(sql: QuerySql, orgId: string, actorUs
       from public.creator_action_log where org_id = ${orgId} and event_key = ${key}`;
     if (held?.same !== true) throw new CreatorWriteRefusal('event_key_reused', `Event key ${entry.eventKey} already names a different entry.`);
   }
-  return { read: entries.length, inserted, updated: 0, unchanged: entries.length - inserted };
+  return { read: entries.length, inserted, updated: 0, unchanged: entries.length - inserted, skipped: 0 };
 }
 
 // ---------------------------------------------------------------------------

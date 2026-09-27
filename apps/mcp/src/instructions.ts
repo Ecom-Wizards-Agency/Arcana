@@ -134,7 +134,8 @@ and nothing is written. Evidence references are opaque references (\`ev:...\`), 
 
 Each takes the runner's own JSON, snake_case, and is idempotent: a replay, or a row the file import
 (\`creators:import\`) already wrote, reports \`unchanged\`. Counts come back as
-\`{read, inserted, updated, unchanged}\` per kind of row.
+\`{read, inserted, updated, unchanged, skipped}\` per kind of row, where
+read = inserted + updated + unchanged + skipped and \`skipped\` is rows left untouched on purpose.
 
 1. \`creators.register_record\` — \`{record, resolution}\`. \`record\` is one Creator Registry row as
    \`issue_record_id\` created it and later commands changed it (\`creator_record_id\`, \`brand\`,

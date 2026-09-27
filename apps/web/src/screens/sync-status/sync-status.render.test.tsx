@@ -30,8 +30,8 @@ function blockedAt(stage: ReportLaneStage, errorClass: ReportLaneErrorClass): Sc
 verifyScreen(descriptor, [
   { state: 'ready', name: 'shows the last Creator Connections import counters per kind, absent files as not measured', render: () => <Screen data={{ ...ready, props: { ...ready.props, creatorImport: {
     id: '33200000-0000-4000-8000-0000000000b1', startedAt: '2026-09-09T06:13:58.000Z', finishedAt: '2026-09-09T06:14:00.000Z', status: 'succeeded', failure: null, failedFile: null,
-    files: ['registry', 'queue'], queueRunDate: '2026-09-09', source: 'control-runner', counts: { records: { read: 273, valid: 272, invalid: 1, inserted: 0, updated: 3, unchanged: 269, removed: 0 },
-      action_log: { read: 4, valid: 4, invalid: 0, inserted: 1, updated: 0, unchanged: 3, removed: 0 }, queue_items: { read: 34, valid: 34, invalid: 0, inserted: 34, updated: 0, unchanged: 0, removed: 2 },
+    files: ['registry', 'queue'], queueRunDate: '2026-09-09', source: 'control-runner', counts: { records: { read: 273, valid: 272, invalid: 1, inserted: 0, updated: 3, unchanged: 269, skipped: 0, removed: 0 },
+      action_log: { read: 4, valid: 4, invalid: 0, inserted: 1, updated: 0, unchanged: 3, skipped: 0, removed: 0 }, queue_items: { read: 34, valid: 34, invalid: 0, inserted: 34, updated: 0, unchanged: 0, skipped: 0, removed: 2 },
       sweep_runs: null, sample_shipments: null, preflights: null } } } }} />, text: 'Sweep runsNot measured: no file for it' },
   { state: 'ready', name: 'says a failed Creator Connections import wrote nothing', render: () => <Screen data={{ ...ready, props: { ...ready.props, creatorImport: {
     id: '33200000-0000-4000-8000-0000000000b2', startedAt: '2026-09-09T06:13:58.000Z', finishedAt: '2026-09-09T06:14:00.000Z', status: 'failed', failure: 'file_unreadable', failedFile: 'queue',

@@ -7,11 +7,11 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
-  CREATOR_REPLY_TEMPLATES, CreatorAppendActionInput, CreatorDraft, CreatorRegisterRecordInput, CreatorReplyTemplateKey, CreatorSubmitDraftInput,
+  CREATOR_REPLY_TEMPLATES, CreatorAppendActionInput, CreatorAppendableAction, CreatorDraft, CreatorRecordEvent, CreatorWriteCounts, CreatorRegisterRecordInput, CreatorReplyTemplateKey, CreatorSubmitDraftInput,
   creatorContactShapes, creatorReplyTemplateName, findCreatorContactData, isRecognisedCreatorStatus,
 } from './records.js';
 import { CreatorRunnerResolution } from './runner.js';
-import { CreatorIdleGroup } from './model.js';
+import { CreatorActionKind, CreatorIdleGroup } from './model.js';
 
 const fp = (label: string) => createHash('sha256').update(`synthetic:${label}`).digest('hex');
 const at = ['@'].join('');
@@ -142,6 +142,33 @@ describe('creator:write inputs', () => {
     expect(CreatorAppendActionInput.safeParse({ entries: [entry, entry] }).success).toBe(false);
     expect(CreatorAppendActionInput.safeParse({ entries: [{ ...entry, action: 'draft_approved' }] }).success).toBe(false);
     expect(CreatorAppendActionInput.safeParse({ entries: [{ ...entry, action: 'mcf_reserved' }] }).success).toBe(false);
+  });
+
+  it('lets no MCP tool append an mcf_send_* entry: the database writes those for a send Arcana placed', () => {
+    const sends = CreatorActionKind.options.filter((kind) => kind.startsWith('mcf_send_'));
+    expect(sends).toEqual(['mcf_send_approved', 'mcf_send_placed', 'mcf_send_failed', 'mcf_send_uncertain', 'mcf_send_cancelled']);
+    const entry = { event_key: 'send-1', creator_record_id: 'CCR-SW-26-0134', occurred_at: '2026-09-09T06:38:00Z' };
+    for (const action of sends) {
+      expect(CreatorAppendableAction.safeParse(action).success, action).toBe(false);
+      expect(CreatorAppendActionInput.safeParse({ entries: [{ ...entry, action }] }).success, action).toBe(false);
+    }
+    expect(CreatorAppendableAction.options).toHaveLength(5);
+  });
+
+  it('reconciles write counts with skipped rows, and reads a count object from before skipped existed as none skipped', () => {
+    expect(CreatorWriteCounts.parse({ read: 4, inserted: 1, updated: 1, unchanged: 2 })).toEqual({ read: 4, inserted: 1, updated: 1, unchanged: 2, skipped: 0 });
+    expect(CreatorWriteCounts.parse({ read: 5, inserted: 1, updated: 1, unchanged: 2, skipped: 1 }).skipped).toBe(1);
+    expect(CreatorWriteCounts.safeParse({ read: 4, inserted: 1, updated: 1, unchanged: 2, skipped: 1 }).success).toBe(false);
+    expect(CreatorWriteCounts.safeParse({ read: 5, inserted: 1, updated: 1, unchanged: 2 }).success).toBe(false);
+    expect(CreatorWriteCounts.safeParse({ read: 5, inserted: 1, updated: 1, unchanged: 2, skipped: -1 }).success).toBe(false);
+  });
+
+  it('lists an action-log event the MCF worker wrote on the record page', () => {
+    const event = { eventKey: 'mcf-send:synthetic-1:placed', action: 'mcf_send_placed', occurredAt: '2026-09-09T06:38:00.000Z',
+      recordedAt: '2026-09-09T06:38:01.000Z', reservationId: 'MCFR-9F2C41AB77E0D3B5', asin: 'B0D9K3M2QP', reasonCode: null,
+      evidenceReference: null, recordVersion: null, relatedRecordIds: [], draftId: null, actorUserId: null, source: 'worker' };
+    expect(CreatorRecordEvent.parse(event).source).toBe('worker');
+    expect(CreatorRecordEvent.safeParse({ ...event, source: 'amazon' }).success).toBe(false);
   });
 
   it('takes a draft from an approved template only, and never a blank one', () => {

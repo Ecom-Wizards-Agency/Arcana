@@ -126,7 +126,7 @@ export async function writeCreatorPreflights(sql: QuerySql, orgId: string, sourc
         ${`${row.command === 'preflight' ? 'preflight' : 'switch'}_${row.result.toLowerCase()}`}, ${source}, ${actorUserId})
       on conflict (org_id, event_key) do nothing`;
   }
-  return { read: rows.length, inserted, updated: 0, unchanged: rows.length - inserted, derivedOrderKeys };
+  return { read: rows.length, inserted, updated: 0, unchanged: rows.length - inserted, skipped: 0, derivedOrderKeys };
 }
 
 /**
