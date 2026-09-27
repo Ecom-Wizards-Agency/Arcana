@@ -15,7 +15,8 @@ import {
   DEFAULT_MCP_KEY_EXPIRY_DAYS,
   MCP_KEY_EXPIRY_DAY_OPTIONS,
 } from '../../src/mcp-key-policy';
-import type { McpKeyRecord } from '../../src/data/mcp-keys';
+import type { IssuableMcpKeyScope, McpKeyRecord } from '../../src/data/mcp-keys';
+import { MCP_KEY_SCOPE_DESCRIPTIONS } from '@wizard-ads/shared';
 
 type Row = McpKeyRecord;
 type Status = 'active' | 'revoked' | 'expired';
@@ -62,7 +63,15 @@ export function codexSnippet(endpoint: string): string {
   ].join('\n');
 }
 
+/** The classes an owner or admin may issue here, in the order offered. */
+export const KEY_CLASSES: readonly { scope: IssuableMcpKeyScope; label: string }[] = [
+  { scope: 'read', label: 'Read analytics' },
+  { scope: 'creator:write', label: 'Creator Connections write' },
+];
+const SCOPE_LABEL: Record<Row['scope'], string> = { read: 'Read analytics', write: 'Write', 'creator:write': 'Creator Connections write' };
+
 function profileScope(key: Row, profiles: readonly McpProfileOption[]): string {
+  if (key.scope === 'creator:write') return 'None: writes creator records only';
   if (key.profileIds === null) return 'Legacy: all profiles';
   if (key.profileIds.length === 0) return 'No profiles';
   return key.profileIds
@@ -130,6 +139,7 @@ export function ConnectClaudeManager({
 }): ReactNode {
   const [list, setList] = useState<Row[]>([...keys]);
   const [label, setLabel] = useState('');
+  const [scope, setScope] = useState<IssuableMcpKeyScope>('read');
   const [profileIds, setProfileIds] = useState<string[]>(
     profiles.length === 1 ? [profiles[0]?.id ?? ''] : [],
   );
@@ -145,7 +155,7 @@ export function ConnectClaudeManager({
       setError('Give the key a label so you can tell your keys apart.');
       return;
     }
-    if (profileIds.length === 0) {
+    if (scope === 'read' && profileIds.length === 0) {
       setError('Select at least one profile for this key.');
       return;
     }
@@ -154,7 +164,10 @@ export function ConnectClaudeManager({
       const response = await fetch('/api/mcp-keys', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ label: label.trim(), profileIds, expiresInDays }),
+        // A creator:write key reaches no profile, so it sends none.
+        body: JSON.stringify(scope === 'read'
+          ? { label: label.trim(), scope, profileIds, expiresInDays }
+          : { label: label.trim(), scope, expiresInDays }),
       });
       const payload = (await response.json()) as { key?: McpKeyRecord; token?: string; error?: string };
       if (!response.ok || payload.key === undefined || payload.token === undefined) {
@@ -169,7 +182,7 @@ export function ConnectClaudeManager({
     } finally {
       setBusy(false);
     }
-  }, [expiresInDays, label, profileIds]);
+  }, [expiresInDays, label, profileIds, scope]);
 
   const toggleProfile = useCallback((profileId: string) => {
     setProfileIds((current) =>
@@ -240,11 +253,37 @@ export function ConnectClaudeManager({
                   ))}
                 </Select>
               </Field>
-              <Button onClick={() => void issue()} disabled={busy || profiles.length === 0} data-testid="issue-key">
+              <Button onClick={() => void issue()} disabled={busy || (scope === 'read' && profiles.length === 0)} data-testid="issue-key">
                 Issue key
               </Button>
             </div>
             <fieldset
+              style={{ margin: 0, padding: '0.625rem 0.75rem', border: '1px solid var(--wa-border)' }}
+              data-testid="key-class"
+            >
+              <legend className="wa-label">Key class</legend>
+              <div className="wa-support-stack" style={{ gap: '0.375rem' }}>
+                {KEY_CLASSES.map((option) => (
+                  <label key={option.scope} className="wa-row" style={{ gap: '0.375rem', alignItems: 'baseline' }}>
+                    <input
+                      type="radio"
+                      name="mcp-key-class"
+                      value={option.scope}
+                      checked={scope === option.scope}
+                      onChange={() => setScope(option.scope)}
+                      disabled={busy}
+                      data-testid={`key-class-${option.scope}`}
+                    />
+                    <span><strong>{option.label}</strong>{' '}
+                      <span className="wa-support-note" data-testid={`key-class-description-${option.scope}`}>
+                        {MCP_KEY_SCOPE_DESCRIPTIONS[option.scope]}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            {scope === 'read' ? <fieldset
               style={{ margin: 0, padding: '0.625rem 0.75rem', border: '1px solid var(--wa-border)' }}
               data-testid="profile-allowlist"
             >
@@ -271,7 +310,11 @@ export function ConnectClaudeManager({
               <p className="wa-support-note" style={{ margin: '0.5rem 0 0' }}>
                 At least one profile is required. The allowlist is enforced on every MCP read.
               </p>
-            </fieldset>
+            </fieldset> : (
+              <p className="wa-support-note" style={{ margin: 0 }} data-testid="creator-write-no-profiles">
+                A Creator Connections write key reaches no advertising profile, so it takes no profile allowlist.
+              </p>
+            )}
           </div>
         ) : (
           <p className="wa-support-note" data-testid="issue-forbidden">
@@ -358,7 +401,10 @@ export function ConnectClaudeManager({
                     <tr key={key.id} data-testid="key-row" data-key-id={key.id}>
                       <td>{key.label}</td>
                       <td><code>{key.keyPrefix}…</code></td>
-                      <td>{key.scope}</td>
+                      <td data-testid="key-scope" data-scope={key.scope}>
+                        {SCOPE_LABEL[key.scope]}
+                        <br /><span className="wa-support-note">{MCP_KEY_SCOPE_DESCRIPTIONS[key.scope]}</span>
+                      </td>
                       <td>{profileScope(key, profiles)}</td>
                       <td>{shortDate(key.expiresAt)}</td>
                       <td>{shortDate(key.createdAt)}</td>

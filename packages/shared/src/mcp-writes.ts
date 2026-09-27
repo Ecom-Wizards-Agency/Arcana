@@ -110,7 +110,12 @@ export const McpWriteKeyIssueRequest = z.object({
 }).strict();
 export type McpWriteKeyIssueRequest = z.infer<typeof McpWriteKeyIssueRequest>;
 
-export const McpApiKeyScope = z.enum(['read', 'write']);
+/**
+ * `read` keys read analytics; `write` keys are WP-217 bid delegations. A
+ * `creator:write` key writes Creator Connections records only: never an Amazon
+ * change, never an analytics read, and it cannot enlarge itself into either.
+ */
+export const McpApiKeyScope = z.enum(['read', 'write', 'creator:write']);
 export type McpApiKeyScope = z.infer<typeof McpApiKeyScope>;
 
 /** Server-minted token material passed to persistence; the plaintext never enters this contract. */

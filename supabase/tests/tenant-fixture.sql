@@ -924,6 +924,12 @@ begin
       values(v_org,(p_date-30)::timestamptz,(p_date-30)::timestamptz,'succeeded','{}',
         '{"records":null,"action_log":null,"queue_items":null,"sweep_runs":null,"sample_shipments":null}'::jsonb,'control-runner');
   end if;
+  if to_regclass('public.creator_drafts') is not null then
+    insert into public.creator_drafts(org_id,creator_record_id,thread_fp,template_key,body,draft_date,submission_digest,created_by,
+      source,status_source)
+      values(v_org,'CCR-FX-26-0001',repeat('a',64),'awaiting_content_follow_up','Hi {first name}, fixture draft text.',p_date-30,repeat('0',64),p_user_id,
+        'mcp','mcp');
+  end if;
   if to_regclass('public.queued_changes') is not null then
     insert into public.queued_changes(id,org_id,profile_id,target_id,created_by,context,request,checks)
     values(v_batch,v_org,v_profile,'synthetic-queue-target',p_user_id,

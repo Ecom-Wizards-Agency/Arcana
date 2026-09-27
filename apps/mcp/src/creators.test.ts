@@ -1,0 +1,399 @@
+/**
+ * The creator:write key class, over Streamable HTTP against a real database:
+ * who may issue one, which tools each key class can reach, raw contact data
+ * refused by shape, replays through the import's keys and digests, and one
+ * audit row per call that never holds the arguments. Synthetic values only;
+ * contact-shaped strings are assembled from fragments at run time.
+ */
+import { createHash } from 'node:crypto';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
+import { persistCreatorImport } from '@wizard-ads/db/worker';
+import { creatorQueueRows, creatorRegistryRows, legacyReservationId } from '@wizard-ads/db/mcp-writes';
+import { readAuditEntries } from './audit.js';
+import { DEFAULT_MAX_DOWNLOAD_BYTES, DEFAULT_MAX_ROWS, type McpConfig } from './config.js';
+import { CREATOR_WRITE_TOOLS, creatorIdentityEvent } from './creators.js';
+import { startHttpServer, type RunningServer } from './http.js';
+import { issueApiKey, verifyApiKey } from './keys.js';
+import { withCreatorWriteOperation, withMcpOperation } from './operation.js';
+
+const available = await databaseAvailable();
+const OWNER = '33310000-0000-4000-8000-000000000001';
+const ADMIN = '33310000-0000-4000-8000-000000000002';
+const ANALYST = '33310000-0000-4000-8000-000000000003';
+const VIEWER = '33310000-0000-4000-8000-000000000004';
+const fp = (label: string) => createHash('sha256').update(`synthetic:${label}`).digest('hex');
+const email = ['creator.synthetic', '@', 'example', '.test'].join('');
+const phone = ['+49', '151', '2345', '6789'].join(' ');
+const street = ['12', 'Synthetic Street'].join(' ');
+const link = ['https', '://', 'example.test/shop/synthetic'].join('');
+/** Every analytics tool a read key reaches; a creator:write key must reach none of them. */
+const READ_TOOLS = ['download_data', 'get_amazon_change_history', 'get_entity_data', 'get_experiment', 'get_flags', 'get_pacing',
+  'get_product_evidence', 'get_provider_evidence', 'get_recommendations', 'get_report_family_facts', 'get_sync_status', 'group_by',
+  'list_experiments', 'list_profiles', 'query'];
+
+const registry = (id: string, change: Record<string, unknown> = {}) => ({
+  creator_record_id: id, brand: 'Synthetic brand', campaign_id: 'campaign-synthetic-1', thread_key: fp(`${id}:thread`),
+  storefront_key: fp(`${id}:storefront`), full_name_fp: '', email_fp: '', phone_fp: '', address_fp: '', record_state: 'Active',
+  lock_state: 'Unlocked', version: 1, created_at: '2026-09-01', ...change,
+});
+const reservation = {
+  reservation_id: 'MCFR-9f2c41ab77e0d3b5', state: 'Reconciliation Required', creator_record_id: 'CCR-SW-26-0072', campaign_id: 'campaign-synthetic-1',
+  asin: 'B0D9K3M2QP', sku: 'SW-DERMA-05-FBA', quantity: 1, visible_fee_cents: 620, approved_fee_cap_cents: 800,
+  reserved_at: '2026-09-08T06:40:00+00:00', verified_at: '2026-09-08T06:43:00+00:00', reconciliation_reason: 'outcome_unknown',
+  preflight_evidence_reference: 'ev:mcf-inv-16',
+};
+const queueItem = (id: string, change: Record<string, unknown> = {}) => ({
+  queue_id: `20260909-${id}`, run_date: '2026-09-09', creator_record_id: id, brand: 'Synthetic brand', campaign_tab: 'Synthetic tab',
+  current_status: 'Verification Confirmed', computed_score: 8, missing: ['recent_post_verified', 'performance_or_revenue'], due_date: '2026-09-09',
+  action_type: 'RECONCILE_QUALIFICATION', gate_result: 'BLOCKED', queue_state: 'Escalated', reason: 'status_score_drift', ...change,
+});
+
+describe('runner shapes map to the import\'s rows and keys', () => {
+  it('derives the same event keys and lanes as creators:import for one registry row', () => {
+    const rows = creatorRegistryRows(registry('CCR-SW-26-0072', { lock_state: 'Locked for MCF', version: 7, mcf_reservation: reservation }) as never);
+    expect(rows.actions.map((action) => action.eventKey)).toEqual([
+      'reserved:MCFR-9F2C41AB77E0D3B5', 'verified:MCFR-9F2C41AB77E0D3B5:2026-09-08T06:43:00+00:00', 'reconciliation:MCFR-9F2C41AB77E0D3B5']);
+    expect(rows.lanes).toHaveLength(1);
+    expect(rows.lanes[0]).toMatchObject({ laneState: 'Reconciliation Required', feeCents: 620, feeCapCents: 800, reservationId: 'MCFR-9F2C41AB77E0D3B5' });
+    expect(rows.record.fingerprints).toEqual({ storefront: fp('CCR-SW-26-0072:storefront'), thread: fp('CCR-SW-26-0072:thread'), fullName: null,
+      email: null, phone: null, address: null });
+    expect(legacyReservationId('CCR-SW-26-0072', 'B0D9K3M2QP', undefined)).toMatch(/^MCFR-LEGACY-[0-9A-F]{12}$/);
+  });
+
+  it('records the rung, or the records a conflict named, under the import\'s conflict key', () => {
+    const conflict = creatorIdentityEvent(registry('CCR-SW-26-0117', { lock_state: 'Conflict', version: 2 }) as never,
+      { result: 'CONFLICT', reason: 'multiple_active_records_match', matches: ['CCR-SW-26-0117', 'CCR-SW-26-0203'] }, OWNER);
+    expect(conflict).toMatchObject({ eventKey: 'identity:CCR-SW-26-0117:2', relatedRecordIds: ['CCR-SW-26-0203'], action: 'identity_resolved',
+      reasonCode: 'conflict' });
+    const resolved = creatorIdentityEvent(registry('CCR-SW-26-0134') as never, { result: 'RESOLVED', creator_record_id: 'CCR-SW-26-0134', match_method: 'storefront' }, OWNER);
+    expect(resolved).toMatchObject({ eventKey: 'identity:CCR-SW-26-0134:1', action: 'identity_resolved', reasonCode: 'storefront' });
+  });
+
+  it('numbers repeated queue ids as the import does', () => {
+    const rows = creatorQueueRows([queueItem('CCR-SW-26-0134'), queueItem('CCR-SW-26-0134'), queueItem('CCR-SW-26-0072')] as never);
+    expect(rows.map((row) => row.occurrence)).toEqual([1, 2, 1]);
+  });
+});
+
+describe.skipIf(!available)('the creator:write key class', () => {
+  let database: TestDatabase;
+  let server: RunningServer;
+  let orgId: string;
+  let profileId: string;
+  let creatorToken: string;
+  let creatorKeyId: string;
+  let readToken: string;
+  let readKeyId: string;
+
+  const issue = (userId: string, change: Record<string, unknown> = {}) => issueApiKey(database, {
+    orgId, createdBy: userId, label: 'synthetic creator key', scope: 'creator:write', profileIds: [],
+    expiresAt: new Date(Date.now() + 86_400_000), ...change,
+  });
+
+  beforeAll(async () => {
+    database = await createTestDatabase('mcp_creators');
+    const [seed] = await database.sql<{ id: string }[]>`select app.seed_tenant_fixture('creator-keys', ${OWNER}, 'owner') as id`;
+    orgId = seed!.id;
+    for (const [user, role] of [[ADMIN, 'admin'], [ANALYST, 'analyst'], [VIEWER, 'viewer']] as const) {
+      await database.sql`select public.auth_user_stub(${user})`;
+      await database.sql`insert into public.org_members(org_id, user_id, role) values (${orgId}, ${user}, ${role})`;
+    }
+    const [profile] = await database.sql<{ id: string }[]>`select id from public.ad_profiles where org_id = ${orgId} limit 1`;
+    profileId = profile!.id;
+    const creator = await issue(ADMIN);
+    creatorToken = creator.token;
+    creatorKeyId = creator.record.id;
+    const read = await issueApiKey(database, { orgId, createdBy: OWNER, label: 'synthetic read key', profileIds: [profileId],
+      expiresAt: new Date(Date.now() + 86_400_000) });
+    readToken = read.token;
+    readKeyId = read.record.id;
+    server = await startHttpServer({ config: testConfig(database.connectionString), handle: database });
+  }, 180_000);
+  afterAll(async () => {
+    await server?.close();
+    await database?.drop();
+  });
+
+  it('is issued by owners and admins only, with no profiles, and the bid-write refusal stays', async () => {
+    expect((await issue(OWNER)).record).toMatchObject({ scope: 'creator:write', profileIds: [] });
+    expect((await issue(ADMIN)).record.scope).toBe('creator:write');
+    for (const user of [ANALYST, VIEWER]) await expect(issue(user)).rejects.toMatchObject({ status: 403 });
+    await expect(issue(OWNER, { profileIds: [profileId] })).rejects.toThrow('reaches no profile');
+    await expect(issue(OWNER, { scope: 'write' })).rejects.toThrow('read keys and creator:write keys only');
+    await expect(issueApiKey(database, { orgId, createdBy: OWNER, label: 'no profiles', profileIds: [], expiresAt: new Date(Date.now() + 86_400_000) }))
+      .rejects.toThrow('at least one profile');
+    expect((await verifyApiKey(database, creatorToken)).scope).toBe('creator:write');
+    expect((await verifyApiKey(database, readToken)).scope).toBe('read');
+  });
+
+  it('lists exactly the six creator tools for a creator:write key and none of them for a read key', async () => {
+    const creator = await connect(server, creatorToken);
+    const read = await connect(server, readToken);
+    try {
+      expect((await creator.listTools()).tools.map((tool) => tool.name).sort()).toEqual([...CREATOR_WRITE_TOOLS].sort());
+      expect((await creator.listResources()).resources.map((resource) => resource.uri)).toEqual(['wizardads://instructions']);
+      const readNames = (await read.listTools()).tools.map((tool) => tool.name);
+      expect(readNames.filter((name) => name.startsWith('creators.'))).toEqual([]);
+      expect([...readNames].sort()).toEqual(READ_TOOLS);
+    } finally {
+      await creator.close();
+      await read.close();
+    }
+  });
+
+  it('refuses a read key on every creators tool and a creator:write key on every other tool', async () => {
+    const creator = await connect(server, creatorToken);
+    const read = await connect(server, readToken);
+    const before = await tableCounts();
+    try {
+      for (const tool of CREATOR_WRITE_TOOLS) {
+        const result = await call(read, tool, { creator_record_id: 'CCR-SW-26-0134' });
+        expect(result.isError, tool).toBe(true);
+        expect(result.text, tool).toMatch(/not found/);
+      }
+      for (const tool of READ_TOOLS) {
+        const result = await call(creator, tool, { profile_id: profileId });
+        expect(result.isError, tool).toBe(true);
+        expect(result.text, tool).toMatch(/not found/);
+      }
+      await expect(creator.readResource({ uri: `wizardads://profiles/${profileId}` })).rejects.toThrow();
+    } finally {
+      await creator.close();
+      await read.close();
+    }
+    expect(await tableCounts()).toEqual(before);
+    // The database refuses each class on the other's authorization as well, whatever a server registered.
+    const context = (keyId: string) => ({ handle: database, config: testConfig(database.connectionString), actor: { orgId, userId: keyId === creatorKeyId ? ADMIN : OWNER }, keyId });
+    await expect(withMcpOperation(context(creatorKeyId), async () => 'read')).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(withCreatorWriteOperation(context(readKeyId), async () => 'write')).rejects.toMatchObject({ code: 'forbidden' });
+    expect(await withCreatorWriteOperation(context(creatorKeyId), async (operation) => operation.orgSlug)).toBe('creator-keys');
+  });
+
+  it('writes a registered record, replays it unchanged, and agrees with the import on every digest', async () => {
+    const client = await connect(server, creatorToken);
+    try {
+      const input = { record: registry('CCR-SW-26-0072', { lock_state: 'Locked for MCF', version: 7, mcf_reservation: reservation }),
+        resolution: { result: 'RESOLVED', creator_record_id: 'CCR-SW-26-0072', match_method: 'thread' } };
+      const first = await call(client, 'creators.register_record', input);
+      expect(first.isError).toBe(false);
+      expect(first.payload['counts']).toEqual({
+        records: { read: 1, inserted: 1, updated: 0, unchanged: 0 },
+        action_log: { read: 4, inserted: 4, updated: 0, unchanged: 0 },
+        sample_shipments: { read: 1, inserted: 1, updated: 0, unchanged: 0 },
+      });
+      const replay = await call(client, 'creators.register_record', input);
+      expect(replay.payload['counts']).toEqual({
+        records: { read: 1, inserted: 0, updated: 0, unchanged: 1 },
+        action_log: { read: 4, inserted: 0, updated: 0, unchanged: 4 },
+        sample_shipments: { read: 1, inserted: 0, updated: 0, unchanged: 1 },
+      });
+      // The file import of the same registry row, mapped the same way, changes nothing either.
+      const rows = creatorRegistryRows(input.record as never);
+      const run = await persistCreatorImport(database, { orgId, startedAt: new Date().toISOString(), source: 'control-runner', files: ['registry'],
+        records: { read: 1, invalid: 0, rows: [rows.record] }, actions: { read: rows.actions.length, invalid: 0, rows: rows.actions }, queue: null,
+        sweeps: null, shipments: { read: rows.lanes.length, invalid: 0, rows: rows.lanes } });
+      expect(run.counts.records).toMatchObject({ inserted: 0, updated: 0, unchanged: 1 });
+      expect(run.counts.action_log).toMatchObject({ inserted: 0, unchanged: 3 });
+      expect(run.counts.sample_shipments).toMatchObject({ inserted: 0, updated: 0, unchanged: 1 });
+      const [identity] = await database.sql`select action, reason_code, source, actor_user_id from public.creator_action_log
+        where org_id = ${orgId} and event_key = 'identity:CCR-SW-26-0072:7'`;
+      expect(identity).toEqual({ action: 'identity_resolved', reason_code: 'thread', source: 'mcp', actor_user_id: ADMIN });
+      // A stale row (an older runner version) writes nothing and says so.
+      const stale = await call(client, 'creators.register_record', { record: registry('CCR-SW-26-0072', { version: 6 }),
+        resolution: { result: 'RESOLVED', creator_record_id: 'CCR-SW-26-0072', match_method: 'thread' } });
+      expect(stale.payload).toEqual({ creator_record_id: 'CCR-SW-26-0072', record: 'older_than_held', held_version: 7 });
+      const [held] = await database.sql`select lock_state, runner_version from public.creator_records where org_id = ${orgId} and creator_record_id = 'CCR-SW-26-0072'`;
+      expect(held).toEqual({ lock_state: 'Locked for MCF', runner_version: 7 });
+      // A conflict keeps the records it named even when the import wrote the conflict entry first.
+      const locked = registry('CCR-SW-26-0117', { lock_state: 'Conflict', escalation_reason: 'multiple_active_records_match', version: 2 });
+      const importedFirst = creatorRegistryRows(locked as never);
+      await persistCreatorImport(database, { orgId, startedAt: new Date().toISOString(), source: 'control-runner', files: ['registry'],
+        records: { read: 1, invalid: 0, rows: [importedFirst.record] }, actions: { read: 1, invalid: 0, rows: importedFirst.actions }, queue: null, sweeps: null,
+        shipments: null });
+      const conflict = await call(client, 'creators.register_record', { record: locked,
+        resolution: { result: 'CONFLICT', reason: 'multiple_active_records_match', matches: ['CCR-SW-26-0117', 'CCR-SW-26-0203'] } });
+      expect(conflict.payload['counts']).toMatchObject({ records: { unchanged: 1 }, action_log: { read: 2, inserted: 1, unchanged: 1 } });
+      const [named] = await database.sql`select related_record_ids from public.creator_action_log where org_id = ${orgId} and event_key = 'identity:CCR-SW-26-0117:2'`;
+      expect(named).toEqual({ related_record_ids: ['CCR-SW-26-0203'] });
+    } finally { await client.close(); }
+  });
+
+  it('writes the score, the skill\'s entries, a draft, the queue and a sweep, each idempotent', async () => {
+    const client = await connect(server, creatorToken);
+    try {
+      expect((await call(client, 'creators.register_record', { record: registry('CCR-SW-26-0134'),
+        resolution: { result: 'NEW', fingerprints: { thread_key: fp('CCR-SW-26-0134:thread'), storefront_key: fp('CCR-SW-26-0134:storefront'),
+          full_name_fp: '', email_fp: '', phone_fp: '', address_fp: '' } } })).isError).toBe(false);
+      const checks = ['complete_fulfillment_details', 'requested_asin', 'exact_product_match', 'storefront_visible', 'recent_post_verified', 'content_quality',
+        'category_fit', 'performance_or_revenue', 'specific_asin_mentioned', 'low_spam_risk'];
+      const missing = ['recent_post_verified', 'performance_or_revenue'];
+      const score = { creator_record_id: 'CCR-SW-26-0134', scored_on: '2026-09-09', current_status: 'Verification Confirmed', tracker_score: 10,
+        result: { score: 8, checks: Object.fromEntries(checks.map((check) => [check, !missing.includes(check)])), missing } };
+      expect((await call(client, 'creators.record_score', score)).payload).toMatchObject({ record: 'updated' });
+      expect((await call(client, 'creators.record_score', score)).payload).toMatchObject({ record: 'unchanged' });
+
+      const entries = { entries: [{ event_key: 'sent-0134-1', creator_record_id: 'CCR-SW-26-0134', action: 'message_sent_by_hand',
+        occurred_at: '2026-09-09T06:38:00Z', evidence_reference: 'ev:thread-synthetic-1' }] };
+      expect((await call(client, 'creators.append_action', entries)).payload['counts']).toEqual({ read: 1, inserted: 1, updated: 0, unchanged: 0 });
+      expect((await call(client, 'creators.append_action', entries)).payload['counts']).toEqual({ read: 1, inserted: 0, updated: 0, unchanged: 1 });
+
+      const draft = { creator_record_id: 'CCR-SW-26-0134', thread_key: fp('CCR-SW-26-0134:thread'), template_key: 'first_base_verification',
+        draft_date: '2026-09-09', body: 'Hi {first name}, thanks for reaching out. Could you confirm the remaining details for sample review?' };
+      const submitted = await call(client, 'creators.submit_draft', draft);
+      expect(submitted.payload).toMatchObject({ status: 'draft', outcome: 'inserted', withdrew: null });
+      const again = await call(client, 'creators.submit_draft', draft);
+      expect(again.payload).toMatchObject({ draft_id: submitted.payload['draft_id'], outcome: 'unchanged' });
+
+      const queue = { run_date: '2026-09-09', items: [queueItem('CCR-SW-26-0134'), queueItem('CCR-SW-26-0072', { action_type: 'MCF_PREFLIGHT',
+        gate_result: 'HOLD', queue_state: 'Queued', computed_score: 10, missing: [], current_status: 'Approved for Sample',
+        reason: 'paid_order_requires_preflight_and_authorized_executor' })], counts: { queued: 1, escalated: 1 } };
+      expect((await call(client, 'creators.queue_snapshot', queue)).payload['counts']).toEqual({ queue_items: { read: 2, inserted: 2, updated: 0, unchanged: 0, removed: 0 } });
+      expect((await call(client, 'creators.queue_snapshot', queue)).payload['counts']).toEqual({ queue_items: { read: 2, inserted: 0, updated: 0, unchanged: 2, removed: 0 } });
+      const earlier = await call(client, 'creators.queue_snapshot', { run_date: '2026-09-08', items: [queueItem('CCR-SW-26-0134', {
+        queue_id: '20260908-CCR-SW-26-0134', run_date: '2026-09-08' })], counts: { queued: 0, escalated: 1 } });
+      expect(earlier.isError).toBe(true);
+      expect(earlier.text).toContain('earlier day is refused');
+      const badQueue = await call(client, 'creators.queue_snapshot', { ...queue, items: [queue.items[0], { ...queue.items[1], computed_score: 11 }] });
+      expect(badQueue.isError).toBe(true);
+      expect(badQueue.text).toContain('items.1.computed_score');
+
+      const sweep = { schema_version: 1, run_id: 'sweep-20260909-0612', run_date: '2026-09-09', brand: 'Synthetic brand', started_at: null,
+        completed_at: '2026-09-09T06:12:00Z', evidence_reference: 'ev:sweep-0909', counts: { mounted: 412, opened: 412, changed: 37, messages_examined: 96,
+          messages_sent: 0, no_action_acknowledgements: 359, held_or_escalated: 9, archived_spam: 5, unmatched: 7 },
+        threads: [{ thread_key: fp('thread-unmatched-1'), creator_record_id: null, sender_role: 'creator', amazon_timestamp: '2026-09-09T05:10:00Z',
+          body_hash: fp('body-1'), outcome: 'unmatched', reason: 'multiple_active_records_match' }] };
+      expect((await call(client, 'creators.sweep_checkpoint', sweep)).payload['counts']).toEqual({ sweep_runs: { read: 1, inserted: 1, updated: 0, unchanged: 0 } });
+      expect((await call(client, 'creators.sweep_checkpoint', sweep)).payload['counts']).toEqual({ sweep_runs: { read: 1, inserted: 0, updated: 0, unchanged: 1 } });
+      const [stored] = await database.sql`select reconciled, source from public.creator_sweep_runs where org_id = ${orgId} and run_id = 'sweep-20260909-0612'`;
+      expect(stored).toEqual({ reconciled: false, source: 'mcp' });
+    } finally { await client.close(); }
+  });
+
+  it('refuses raw contact data by shape anywhere in the arguments, writes nothing, and keeps it out of the audit log', async () => {
+    const client = await connect(server, creatorToken);
+    const before = await tableCounts();
+    const cases: [string, Record<string, unknown>, RegExp][] = [
+      ['creators.register_record', { record: registry('CCR-SW-26-0300', { brand: `Brand ${email}` }),
+        resolution: { result: 'RESOLVED', creator_record_id: 'CCR-SW-26-0300', match_method: 'storefront' } }, /record\.brand \(email\)/],
+      ['creators.register_record', { record: { ...registry('CCR-SW-26-0301'), email: 'x' },
+        resolution: { result: 'RESOLVED', creator_record_id: 'CCR-SW-26-0301', match_method: 'storefront' } }, /record\.email \(contact_key\)/],
+      ['creators.submit_draft', { creator_record_id: 'CCR-SW-26-0134', thread_key: fp('CCR-SW-26-0134:thread'), template_key: 'proof_request',
+        draft_date: '2026-09-10', body: `Hi {first name}, please call ${phone}.` }, /body \(phone\)/],
+      ['creators.submit_draft', { creator_record_id: 'CCR-SW-26-0134', thread_key: fp('CCR-SW-26-0134:thread'), template_key: 'proof_request',
+        draft_date: '2026-09-10', body: `Hi {first name}, shipping to ${street}.` }, /body \(address\)/],
+      ['creators.append_action', { entries: [{ event_key: 'sent-0134-9', creator_record_id: 'CCR-SW-26-0134', action: 'message_sent_by_hand',
+        occurred_at: '2026-09-09T06:38:00Z', evidence_reference: link }] }, /evidence_reference \(link\)/],
+      ['creators.record_score', { creator_record_id: 'CCR-SW-26-0134', scored_on: '2026-09-10', current_status: `Verified ${email}`, tracker_score: null,
+        result: {} }, /current_status \(email\)/],
+      ...['email_address', 'phone_number', 'shipping_address'].map((key): [string, Record<string, unknown>, RegExp] => ['creators.submit_draft',
+        { creator_record_id: 'CCR-SW-26-0134', thread_key: fp('CCR-SW-26-0134:thread'), template_key: 'proof_request', draft_date: '2026-09-10',
+          body: 'Hi {first name}, synthetic.', [key]: 'x' }, new RegExp(`${key} \\(contact_key\\)`)]),
+      ['creators.submit_draft', { creator_record_id: 'CCR-SW-26-0134', thread_key: fp('CCR-SW-26-0134:thread'), template_key: 'proof_request',
+        draft_date: '2026-09-10', body: 'Hi {first name}, synthetic.', [email]: 1 }, /\[key 5\] \(email\)/],
+    ];
+    try {
+      for (const [tool, args, where] of cases) {
+        const result = await call(client, tool, args);
+        expect(result.isError, tool).toBe(true);
+        expect(result.payload['error'], tool).toBe('invalid_argument');
+        expect(result.text, tool).toMatch(where);
+        for (const value of [email, phone, street, link]) expect(result.text, tool).not.toContain(value);
+      }
+    } finally { await client.close(); }
+    expect(await tableCounts()).toEqual(before);
+    const audit = (await readAuditEntries(database, orgId, 500)).filter((entry) => entry.actorId === creatorKeyId && entry.payload['outcome'] === 'error');
+    expect(audit.length).toBeGreaterThanOrEqual(cases.length);
+    const text = JSON.stringify(audit);
+    for (const value of [email, phone, street, link]) expect(text).not.toContain(value);
+    const keyed = audit.filter((entry) => (entry.payload['params'] as { otherKeys: number }).otherKeys > 0);
+    expect(keyed).toHaveLength(4);
+    for (const entry of keyed) expect((entry.payload['params'] as { keys: string[] }).keys).not.toContain('email_address');
+  });
+
+  it('refuses a draft whose name placeholder was rendered, and says why without the name', async () => {
+    const client = await connect(server, creatorToken);
+    try {
+      const rendered = await call(client, 'creators.submit_draft', { creator_record_id: 'CCR-SW-26-0134', thread_key: fp('CCR-SW-26-0134:thread'),
+        template_key: 'awaiting_content_follow_up', draft_date: '2026-09-10', body: 'Hi Synthetic, just checking in on the sample.' });
+      expect(rendered.isError).toBe(true);
+      expect(rendered.text).toContain('leave {first name} unrendered');
+      expect(rendered.text).not.toContain('Hi Synthetic');
+    } finally { await client.close(); }
+  });
+
+  it('writes one audit row per call, holding a digest and a size, never the arguments', async () => {
+    const before = (await readAuditEntries(database, orgId, 1_000)).filter((entry) => entry.actorId === creatorKeyId).length;
+    const client = await connect(server, creatorToken);
+    const body = 'Hi {first name}, thanks again. Your sample is now on the way.';
+    try {
+      const refused = await call(client, 'creators.submit_draft', { creator_record_id: 'CCR-SW-26-9999', thread_key: fp('x'),
+        template_key: 'sample_confirmation', draft_date: '2026-09-10', body });
+      expect(refused.payload['error']).toBe('not_found');
+      const resource = await client.readResource({ uri: 'wizardads://instructions' });
+      const text = (resource.contents[0] as { text?: string }).text ?? '';
+      for (const tool of CREATOR_WRITE_TOOLS) expect(text).toContain(tool);
+      expect(text).toContain('Fingerprints only');
+    } finally { await client.close(); }
+    const entries = (await readAuditEntries(database, orgId, 1_000)).filter((entry) => entry.actorId === creatorKeyId);
+    expect(entries.length - before).toBe(2);
+    const [resourceRead, draftCall] = entries;
+    expect(resourceRead).toMatchObject({ action: 'mcp.resource.instructions.read', actorType: 'mcp' });
+    expect(draftCall).toMatchObject({ action: 'mcp.creators.submit_draft', actorType: 'mcp' });
+    expect(draftCall!.payload).toMatchObject({ outcome: 'error', summary: { code: 'record_not_found' } });
+    expect((draftCall!.payload['params'] as { digest: string }).digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(draftCall!.payload)).not.toContain(body);
+  });
+
+  it('stops working when its issuer stops being an owner or admin, or it is revoked', async () => {
+    const demoted = await issue(ADMIN);
+    const client = await connect(server, demoted.token);
+    try {
+      await database.sql`update public.org_members set role = 'analyst' where org_id = ${orgId} and user_id = ${ADMIN}`;
+      const result = await call(client, 'creators.append_action', { entries: [{ event_key: 'demoted-1', creator_record_id: 'CCR-SW-26-0134',
+        action: 'status_moved', occurred_at: '2026-09-09T07:00:00Z' }] });
+      expect(result.isError).toBe(true);
+      expect(result.payload['error']).toBe('forbidden');
+    } finally {
+      await database.sql`update public.org_members set role = 'admin' where org_id = ${orgId} and user_id = ${ADMIN}`;
+      await client.close();
+    }
+    await database.sql`update mcp.api_keys set revoked_at = now() where id = ${demoted.record.id}`;
+    await expect(connect(server, demoted.token)).rejects.toThrow();
+  });
+
+  async function tableCounts(): Promise<Record<string, number>> {
+    const tables = ['creator_records', 'creator_action_log', 'creator_daily_queue', 'creator_sweep_runs', 'creator_sample_shipments', 'creator_drafts',
+      'creator_import_runs'];
+    const counts: Record<string, number> = {};
+    for (const table of tables) {
+      const [row] = await database.sql<{ n: number }[]>`select count(*)::int as n from ${database.sql(table)} where org_id = ${orgId}`;
+      counts[table] = row!.n;
+    }
+    return counts;
+  }
+});
+
+function testConfig(connectionString: string): McpConfig {
+  return {
+    connectionString, port: 0, host: '127.0.0.1', webBaseUrl: 'http://localhost:3000', revision: 'abcdef123456', poolSize: 4,
+    statementTimeoutSeconds: 30, maxRows: DEFAULT_MAX_ROWS, maxDownloadBytes: DEFAULT_MAX_DOWNLOAD_BYTES,
+  };
+}
+
+async function connect(server: RunningServer, token: string): Promise<Client> {
+  const transport = new StreamableHTTPClientTransport(new URL(server.url), { requestInit: { headers: { Authorization: `Bearer ${token}` } } });
+  const client = new Client({ name: 'creator-write-test-client', version: '0.0.0' });
+  await client.connect(transport);
+  return client;
+}
+
+async function call(client: Client, name: string, args: Record<string, unknown>) {
+  const result = (await client.callTool({ name, arguments: args })) as { content: { type: string; text?: string }[]; isError?: boolean };
+  const text = result.content.find((entry) => entry.type === 'text')?.text ?? '';
+  let payload: Record<string, unknown> = {};
+  try { payload = JSON.parse(text) as Record<string, unknown>; } catch { /* a protocol refusal is plain text */ }
+  return { payload, text, isError: result.isError === true };
+}

@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildCreatorImport, legacyReservationId, parseCreatorsImportArgs, readCreatorRunnerDirectory } from './creators-import.js';
 import { syntheticRunnerFiles, writeRunnerFiles } from './creators-import.fixture.js';
+import { CreatorRunnerQueueItem, CreatorRunnerQueueResult, CreatorRunnerRegistry, CreatorRunnerRegistryRecord } from '@wizard-ads/shared';
+import { creatorQueueRows, creatorRegistryRows } from '@wizard-ads/db/worker';
 
 const ORG = '33200000-0000-4000-8000-000000000011';
 const scratch = () => mkdtemp(join(tmpdir(), 'wp332-import-'));
@@ -122,5 +124,30 @@ describe('building the import from synthetic runner outputs', () => {
     const refused = buildCreatorImport(ORG, '2026-09-09T06:14:00.000Z', ['sweep_checkpoint'], { sweep_checkpoint: bad });
     expect(refused.batch.sweeps).toEqual({ read: 1, invalid: 1, rows: [] });
     expect(refused.invalid[0]!.issues[0]!.path).toMatch(/^threads\.4\./);
+  });
+});
+
+describe('one mapping for the import and the creator:write MCP tools', () => {
+  it('builds exactly the rows the MCP tools write from the same registry, queue and sweep', async () => {
+    const files = syntheticRunnerFiles();
+    const dir = await scratch();
+    await writeRunnerFiles(dir, files);
+    const read = await readCreatorRunnerDirectory(dir);
+    if (!read.ok) throw new Error('synthetic runner files did not read');
+    const { batch, invalid } = buildCreatorImport(ORG, '2026-09-09T06:14:00.000Z', read.files, read.content, read.sweepNotProduced);
+    const registry = CreatorRunnerRegistry.parse(files.registry);
+    const valid = registry.records.flatMap((raw) => { const parsed = CreatorRunnerRegistryRecord.safeParse(raw); return parsed.success ? [parsed.data] : []; });
+    const seen = new Set<string>();
+    const records = valid.filter((record) => !seen.has(record.creator_record_id) && seen.add(record.creator_record_id));
+    const mapped = records.map(creatorRegistryRows);
+    expect(mapped.map((rows) => rows.record)).toEqual(batch.records!.rows);
+    expect(mapped.flatMap((rows) => rows.actions)).toEqual(batch.actions!.rows);
+    // Registry lanes first, as the MCP tool writes them; list-mcf only confirms these.
+    expect(mapped.flatMap((rows) => rows.lanes)).toEqual(batch.shipments!.rows.slice(0, mapped.flatMap((rows) => rows.lanes).length));
+    const queue = CreatorRunnerQueueResult.parse(files.queue);
+    const items = queue.items.flatMap((raw) => { const parsed = CreatorRunnerQueueItem.safeParse(raw); return parsed.success && parsed.data.run_date === queue.run_date ? [parsed.data] : []; });
+    expect(creatorQueueRows(items)).toEqual(batch.queue!.rows);
+    expect(batch.actions!.rows.length).toBeGreaterThan(0);
+    expect(invalid.filter((entry) => entry.kind === 'action_log')).toEqual([]);
   });
 });

@@ -7,5 +7,6 @@ export { importScheduledPrompts } from './queries/sponsored-prompts.js';
 export { catalogueDigest, catalogueSourceEnabled, persistCatalogueCollection, recordCatalogueCursorFailure, resolveAmazonChangeEvents } from './queries/ads-catalogue.js';
 export { prepareProviderEvidenceRun, authorizeProviderEvidencePage, persistProviderEvidencePage, failProviderEvidenceRun } from './queries/provider-evidence.js';
 export { creatorContentDigest, persistCreatorImport, recordFailedCreatorImport, type CreatorActionWrite, type CreatorImportBatch, type CreatorImportFailureInput, type CreatorImportSection, type CreatorQueueWrite, type CreatorRecordWrite, type CreatorShipmentWrite, type CreatorSweepWrite } from './queries/creators.js';
+export { creatorQueueRows, creatorRegistryRows, creatorSweepRow, legacyReservationId, type CreatorRegistryRows } from './queries/creators-runner.js';
 export { createCampaignCreationLedger } from './queries/campaign-creation-worker.js';
 export * from './queries/market-signals.js';

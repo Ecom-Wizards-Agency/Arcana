@@ -63,6 +63,7 @@ export * from './provider-evidence.js';
 export * from './spapi-fulfillment.js';
 export * from './creators/runner.js';
 export * from './creators/model.js';
+export * from './creators/records.js';
 export * from './product-assignment.js';
 export * from './campaign-creation-batch.js';
 export * from './campaign-creation-admission.js';

@@ -1,4 +1,4 @@
-import type { CreatorDailyQueueItem, CreatorQueueAction } from '@wizard-ads/shared';
+import { CREATOR_TRACKER_STATUSES, type CreatorDailyQueueItem, type CreatorIdleGroup, type CreatorQueueAction } from '@wizard-ads/shared';
 
 /** The frame's group order; action types it does not draw follow in runner order. */
 export const ACTION_ORDER: readonly CreatorQueueAction[] = [
@@ -43,4 +43,23 @@ export function groupByAction(items: readonly CreatorDailyQueueItem[]) {
 /** Registered records the queue did not name today. */
 export function recordsWithoutAction(items: readonly CreatorDailyQueueItem[], registryRecords: number): number {
   return registryRecords - new Set(items.flatMap((item) => item.creatorRecordId === null ? [] : [item.creatorRecordId])).size;
+}
+
+/**
+ * Idle groups in the tracker dropdown's order (a `<Product> Pause` label after
+ * the listed stages), then the labels nobody recognises, then the records whose
+ * status was never reported.
+ */
+export function orderIdleGroups(groups: readonly CreatorIdleGroup[]) {
+  const rank = (status: string) => {
+    const index = (CREATOR_TRACKER_STATUSES as readonly string[]).indexOf(status.trim());
+    return index === -1 ? CREATOR_TRACKER_STATUSES.length : index;
+  };
+  const recognised = groups.filter((group) => group.status !== null && group.recognised === true)
+    .sort((left, right) => rank(left.status!) - rank(right.status!) || left.status!.localeCompare(right.status!));
+  const unrecognised = groups.filter((group) => group.status !== null && group.recognised === false)
+    .sort((left, right) => left.status!.localeCompare(right.status!));
+  const unreportedCount = groups.filter((group) => group.status === null).reduce((sum, group) => sum + group.records, 0);
+  const unreported = groups.some((group) => group.status === null) ? { records: unreportedCount } : null;
+  return { recognised, unrecognised, unreported };
 }

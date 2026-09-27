@@ -17,6 +17,7 @@ export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
   {"domain": "spapi-fulfillment", "contract": "spapi-fulfillment.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 111, "clause": "*", "after": ""}]},
   { domain: 'creators/runner', contract: 'creators/runner.ts', schema: null, queries: null, migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 112, clause: '*', after: '' }] },
   { domain: 'creators/model', contract: 'creators/model.ts', schema: null, queries: null, migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 113, clause: '*', after: '' }] },
+  { domain: 'creators/records', contract: 'creators/records.ts', schema: null, queries: null, migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 113, clause: '*', after: '' }] },
   { domain: 'provider-evidence', contract: 'provider-evidence.ts', schema: null, queries: null, migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 110, clause: '*', after: '' }] },
   {"domain":"own-collectors","contract":"own-collectors.ts","schema":null,"queries":null,"migrationPrefix":null,"exports":[{"barrel":"index.ts","order":103,"clause":"*","after":""}]},
   {"domain": "budget-usage", "contract": "budget-usage.ts", "schema": null, "queries": null, "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 103, "clause": "*", "after": ""}]},
