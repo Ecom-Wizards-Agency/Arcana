@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   formatSqpRefusalSummary,
   parseSqpReport,
+  roundSqpShare,
   SQP_PARSER_VERSION,
   summarizeSqpRefusals,
 } from './sqp.js';
@@ -13,7 +14,8 @@ const WEEK = { expectedWeekStart: '2026-08-16', expectedWeekEnd: '2026-08-22' } 
 const SCHEMA_TEXT = readFileSync(new URL('./sqp-report.schema.json', import.meta.url), 'utf8');
 const SCHEMA = JSON.parse(SCHEMA_TEXT) as Record<string, unknown>;
 
-type Funnel = { total: number; asin: number; share: number };
+/** `share` is whatever the report carries: a number, null, or a wrong kind. */
+type Funnel = { total: number; asin: number; share: unknown };
 
 interface RowInput {
   asin?: string;
@@ -109,6 +111,15 @@ function percentageRow(): Record<string, unknown> {
   });
 }
 
+/** A query with clicks but no cart adds or purchases, whose two empty shares arrive as null. */
+function zeroPurchaseRow(): Record<string, unknown> {
+  return reportRow({
+    searchQuery: 'Synthetic Quiet Query',
+    cartAdd: { total: 0, asin: 0, share: null },
+    purchase: { total: 0, asin: 0, share: null },
+  });
+}
+
 /**
  * The JSON Schema draft-07 subset the vendored schema uses. An unsupported
  * keyword throws, so the validator cannot silently skip a constraint.
@@ -191,6 +202,20 @@ describe('vendored SQP report schema', () => {
     expect((document['dataByAsin'] as unknown[]).length).toBe(2);
   });
 
+  it('documents the one deviation: a null or absent share of a zero-count stage fails only that field', () => {
+    // Amazon's schema requires each share as a number; live reports can carry
+    // none when the stage had no events. Every other field still validates.
+    const nullShares = zeroPurchaseRow();
+    const absentShare = zeroPurchaseRow();
+    delete (absentShare['purchaseData'] as Record<string, unknown>)['asinPurchaseShare'];
+    expect(validate(SCHEMA, reportDocument([nullShares, absentShare]))).toEqual([
+      '$.dataByAsin[0].cartAddData.asinCartAddShare is not a number',
+      '$.dataByAsin[0].purchaseData.asinPurchaseShare is not a number',
+      '$.dataByAsin[1].cartAddData.asinCartAddShare is not a number',
+      '$.dataByAsin[1].purchaseData.asinPurchaseShare is required',
+    ]);
+  });
+
   it('is not vacuous: it rejects a row missing an ignored field and a string share', () => {
     const missingRate = reportRow();
     delete (missingRate['clickData'] as Record<string, unknown>)['totalClickRate'];
@@ -238,17 +263,35 @@ describe('SQP share units', () => {
     for (const row of shares) for (const share of row) expect(share).toBeLessThanOrEqual(1);
   });
 
-  it('stores asin / total for an accepted share, including a share of exactly 1', () => {
+  it('stores asin / total at six decimals for an accepted share, including a share of exactly 1', () => {
     const result = parseSqpReport(reportDocument([
       // 1 as a fraction: the ASIN took every click.
       reportRow({ searchQuery: 'Synthetic Whole Share', click: { total: 7, asin: 7, share: 1 } }),
       // 1 as a percentage: one click in a hundred.
       reportRow({ searchQuery: 'Synthetic One Percent', click: { total: 100, asin: 1, share: 1 } }),
-      // A rounded source value: 33.33 % of three clicks is stored as exactly one third.
+      // A rounded source value: 33.33 % of three clicks is stored as one third at the column's six decimals.
       reportRow({ searchQuery: 'Synthetic Rounded Share', click: { total: 3, asin: 1, share: 33.33 } }),
     ]), { profileId: PROFILE_ID, marketplaceId: 'marketplace-1', ...WEEK });
     expect(result.counts).toMatchObject({ sourceRows: 3, parsedRows: 3, refusedRows: 0, upserts: 3 });
-    expect(result.rows.map((row) => row.asinClickShare)).toEqual([1, 0.01, 1 / 3]);
+    expect(result.rows.map((row) => row.asinClickShare)).toEqual([1, 0.01, 0.333333]);
+  });
+
+  it('rounds a share the way numeric(9,6) stores it: half away from zero at six places', () => {
+    const cases: Array<[number, number]> = [
+      [1 / 3, 0.333333],
+      [2 / 3, 0.666667],
+      [1 / 128, 0.007813], // 0.0078125: a half rounds away from zero
+      [1 / 64, 0.015625], // exactly six places: unchanged
+      [0.0765, 0.0765],
+      [1 / 2_000_000, 0.000001], // written 5e-7: a half again
+      [1 / 3_000_000, 0], // written 3.333...e-7
+      [0, 0],
+      [1, 1],
+    ];
+    expect(cases.map(([value]) => roundSqpShare(value))).toEqual(cases.map(([, stored]) => stored));
+    expect(cases).toHaveLength(9);
+    expect(() => roundSqpShare(Number.NaN)).toThrow('finite non-negative');
+    expect(() => roundSqpShare(-0.5)).toThrow('finite non-negative');
   });
 
   it('refuses out-of-range, contradictory and total-less shares with fixed reasons', () => {
@@ -263,11 +306,94 @@ describe('SQP share units', () => {
     expect(result.rows).toEqual([]);
     expect(result.refused).toEqual([
       { index: 0, reason: 'SQP row has out-of-range asinImpressionShare' },
-      { index: 1, reason: 'SQP row has out-of-range asinClickShare' },
+      { index: 1, reason: 'SQP row has invalid asinClickShare (negative)' },
       { index: 2, reason: 'SQP row asinCartAddShare disagrees with asinCartAddCount and totalCartAddCount' },
       { index: 3, reason: 'SQP row has nonzero asinPurchaseShare with zero totalPurchaseCount' },
       { index: 4, reason: 'SQP row asinClickCount exceeds totalClickCount' },
     ]);
+  });
+});
+
+describe('SQP empty shares (parser v3)', () => {
+  const context = { profileId: PROFILE_ID, marketplaceId: 'marketplace-1', ...WEEK };
+
+  it('accepts a null or absent share as null only when its total and ASIN counts are 0', () => {
+    const absent = reportRow({
+      searchQuery: 'Synthetic Absent Share',
+      impression: { total: 0, asin: 0, share: null },
+      click: { total: 0, asin: 0, share: null },
+      cartAdd: { total: 0, asin: 0, share: null },
+      purchase: { total: 0, asin: 0, share: null },
+    });
+    for (const block of ['impressionData', 'clickData', 'cartAddData', 'purchaseData']) {
+      const data = absent[block] as Record<string, unknown>;
+      for (const key of Object.keys(data)) if (key.endsWith('Share')) delete data[key];
+    }
+    const zeroShare = reportRow({
+      searchQuery: 'Synthetic Zero Share',
+      purchase: { total: 0, asin: 0, share: 0 },
+    });
+    const result = parseSqpReport(reportDocument([zeroPurchaseRow(), absent, zeroShare]), context);
+    expect(result.counts).toEqual({
+      sourceAsins: 1, sourceRows: 3, parsedRows: 3, deduplicatedRows: 3, refusedRows: 0, upserts: 3,
+    });
+    expect(result.refused).toEqual([]);
+    expect(result.rows.map((row) => [
+      row.normalizedQuery,
+      row.asinImpressionShare, row.asinClickShare, row.asinCartAddShare, row.asinPurchaseShare,
+    ])).toEqual([
+      ['synthetic quiet query', 0.1, 0.2, null, null],
+      ['synthetic absent share', null, null, null, null],
+      // A zero share Amazon did send stays the 0 it sent.
+      ['synthetic zero share', 0.1, 0.2, 0.2, 0],
+    ]);
+    expect(result.rows[0]).toMatchObject({
+      totalCartAdds: 0, asinCartAdds: 0, totalPurchases: 0, asinPurchases: 0,
+    });
+  });
+
+  it('refuses an empty share of a nonzero total and names every invalid kind without its value', () => {
+    const absentWithTotal = reportRow({ searchQuery: 'Synthetic F', purchase: { total: 5, asin: 0, share: 0 } });
+    delete (absentWithTotal['purchaseData'] as Record<string, unknown>)['asinPurchaseShare'];
+    const result = parseSqpReport(reportDocument([
+      reportRow({ searchQuery: 'Synthetic A', purchase: { total: 5, asin: 0, share: null } }),
+      reportRow({ searchQuery: 'Synthetic B', cartAdd: { total: 3, asin: 0, share: null } }),
+      reportRow({ searchQuery: 'Synthetic C', click: { total: 20, asin: 4, share: '4242' } }),
+      reportRow({ searchQuery: 'Synthetic D', impression: { total: 80, asin: 8, share: -0.1 } }),
+      reportRow({ searchQuery: 'Synthetic E', purchase: { total: 5, asin: 2, share: Number.POSITIVE_INFINITY } }),
+      absentWithTotal,
+      reportRow({ searchQuery: 'Synthetic G', cartAdd: { total: 0, asin: 0, share: '0' } }),
+      reportRow({ searchQuery: 'Synthetic H', click: { total: 20, asin: 4, share: true } }),
+      reportRow({ searchQuery: 'Synthetic I', click: { total: 20, asin: 4, share: [0.2] } }),
+    ]), context);
+    expect(result.counts).toMatchObject({ sourceRows: 9, parsedRows: 0, refusedRows: 9, upserts: 0 });
+    expect(result.rows).toEqual([]);
+    expect(result.refused).toEqual([
+      { index: 0, reason: 'SQP row has invalid asinPurchaseShare (null)' },
+      { index: 1, reason: 'SQP row has invalid asinCartAddShare (null)' },
+      { index: 2, reason: 'SQP row has invalid asinClickShare (string)' },
+      { index: 3, reason: 'SQP row has invalid asinImpressionShare (negative)' },
+      { index: 4, reason: 'SQP row has invalid asinPurchaseShare (not finite)' },
+      { index: 5, reason: 'SQP row has invalid asinPurchaseShare (absent)' },
+      { index: 6, reason: 'SQP row has invalid asinCartAddShare (string)' },
+      { index: 7, reason: 'SQP row has invalid asinClickShare (boolean)' },
+      { index: 8, reason: 'SQP row has invalid asinClickShare (array)' },
+    ]);
+    expect(JSON.stringify(result.refused)).not.toContain('4242');
+    const line = formatSqpRefusalSummary(summarizeSqpRefusals([result]));
+    expect(line).toBe(
+      'parser v3 refused 9 of 9 rows: SQP row has invalid asinCartAddShare (null) x1; ' +
+      'SQP row has invalid asinCartAddShare (string) x1; SQP row has invalid asinClickShare (array) x1; ' +
+      'SQP row has invalid asinClickShare (boolean) x1; SQP row has invalid asinClickShare (string) x1; ' +
+      '4 more distinct reasons; first refused row: missing [], 41 schema fields present, 0 unrecognized',
+    );
+  });
+
+  it('names the kind of an invalid count as well', () => {
+    const nullCount = reportRow({ searchQuery: 'Synthetic Null Count' });
+    (nullCount['clickData'] as Record<string, unknown>)['totalClickCount'] = null;
+    const result = parseSqpReport(reportDocument([nullCount]), context);
+    expect(result.refused).toEqual([{ index: 0, reason: 'SQP row has invalid totalClickCount (null)' }]);
   });
 });
 

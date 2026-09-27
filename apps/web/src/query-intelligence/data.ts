@@ -41,8 +41,13 @@ function isoTimestamp(value: DateValue): string {
   return date.toISOString();
 }
 
-function number(value: string | number | null): number {
-  return value === null ? 0 : Number(value);
+/**
+ * A nullable numeric column as the contract sees it. Null stays null: a share
+ * is null when its funnel stage had no events that week, and `SqpWeeklyFact`
+ * refuses a null count, so neither is ever shown as 0.
+ */
+function measure(value: string | number | null): number | null {
+  return value === null ? null : Number(value);
 }
 
 export async function listQueryIntelligenceScopes(
@@ -102,19 +107,19 @@ async function readFacts(
     normalized_query: string;
     category: SqpWeeklyFactType['category'];
     search_query_score: string | number | null;
-    search_volume: string | number;
-    total_impressions: string | number;
-    asin_impressions: string | number;
-    impression_share: string | number;
-    total_clicks: string | number;
-    asin_clicks: string | number;
-    click_share: string | number;
-    total_cart_adds: string | number;
-    asin_cart_adds: string | number;
-    asin_cart_add_share: string | number;
-    total_purchases: string | number;
-    asin_purchases: string | number;
-    purchase_share: string | number;
+    search_volume: string | number | null;
+    total_impressions: string | number | null;
+    asin_impressions: string | number | null;
+    impression_share: string | number | null;
+    total_clicks: string | number | null;
+    asin_clicks: string | number | null;
+    click_share: string | number | null;
+    total_cart_adds: string | number | null;
+    asin_cart_adds: string | number | null;
+    asin_cart_add_share: string | number | null;
+    total_purchases: string | number | null;
+    asin_purchases: string | number | null;
+    purchase_share: string | number | null;
   }[]>`
     select profile_id, marketplace_id, asin, week_start, week_end,
            search_query, normalized_query, category, search_query_score,
@@ -140,19 +145,19 @@ async function readFacts(
     normalizedQuery: row.normalized_query,
     category: row.category,
     searchQueryScore: row.search_query_score === null ? null : Number(row.search_query_score),
-    searchQueryVolume: number(row.search_volume),
-    totalImpressions: number(row.total_impressions),
-    asinImpressions: number(row.asin_impressions),
-    asinImpressionShare: number(row.impression_share),
-    totalClicks: number(row.total_clicks),
-    asinClicks: number(row.asin_clicks),
-    asinClickShare: number(row.click_share),
-    totalCartAdds: number(row.total_cart_adds),
-    asinCartAdds: number(row.asin_cart_adds),
-    asinCartAddShare: number(row.asin_cart_add_share),
-    totalPurchases: number(row.total_purchases),
-    asinPurchases: number(row.asin_purchases),
-    asinPurchaseShare: number(row.purchase_share),
+    searchQueryVolume: measure(row.search_volume),
+    totalImpressions: measure(row.total_impressions),
+    asinImpressions: measure(row.asin_impressions),
+    asinImpressionShare: measure(row.impression_share),
+    totalClicks: measure(row.total_clicks),
+    asinClicks: measure(row.asin_clicks),
+    asinClickShare: measure(row.click_share),
+    totalCartAdds: measure(row.total_cart_adds),
+    asinCartAdds: measure(row.asin_cart_adds),
+    asinCartAddShare: measure(row.asin_cart_add_share),
+    totalPurchases: measure(row.total_purchases),
+    asinPurchases: measure(row.asin_purchases),
+    asinPurchaseShare: measure(row.purchase_share),
   }));
   if (facts.length !== rows.length) throw new Error('SQP fact parse count mismatch');
   return facts;

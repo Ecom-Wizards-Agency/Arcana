@@ -129,12 +129,47 @@ export function planSqpReportRequests(input: {
  * different parser may offer that week once more (see the worker scheduler and
  * `sqp:requeue`). Version 1 passed share values through unchanged; version 2
  * resolves each share's unit against its own counts and refuses with fixed
- * reasons only.
+ * reasons only; version 3 accepts a null or absent share as null when its total
+ * and ASIN counts are both 0, and names the kind of an invalid value.
  */
-export const SQP_PARSER_VERSION = 2;
+export const SQP_PARSER_VERSION = 3;
 
 /** Largest absolute gap, on the 0..1 scale, between a share and its counts. */
 const SHARE_TOLERANCE = 0.0051;
+
+/** Decimal places of the `fact_sqp_weekly` share columns, numeric(9,6). */
+export const SQP_SHARE_SCALE = 6;
+
+/** The plain decimal digits of a non-negative number's shortest representation. */
+function plainDecimal(value: number): string {
+  const text = String(value);
+  const match = /^(\d+)(?:\.(\d+))?e([+-]\d+)$/.exec(text);
+  if (match === null) return text;
+  const digits = `${match[1]}${match[2] ?? ''}`;
+  const point = match[1]!.length + Number(match[3]);
+  if (point <= 0) return `0.${'0'.repeat(-point)}${digits}`;
+  if (point >= digits.length) return `${digits}${'0'.repeat(point - digits.length)}`;
+  return `${digits.slice(0, point)}.${digits.slice(point)}`;
+}
+
+/**
+ * Round a canonical share exactly as Postgres stores it in numeric(9,6). The
+ * database receives the number's shortest decimal text and rounds it half away
+ * from zero at six places; doing the same here means the fact a promotion
+ * fingerprints is the fact a later replay reads back (1/3 is 0.333333 on both
+ * sides). A value with six or fewer decimals comes back unchanged.
+ */
+export function roundSqpShare(value: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new SpApiParseError('SQP share must be a finite non-negative number');
+  }
+  const [whole = '0', fraction = ''] = plainDecimal(value).split('.');
+  if (fraction.length <= SQP_SHARE_SCALE) return value;
+  const kept = BigInt(`${whole}${fraction.slice(0, SQP_SHARE_SCALE)}`);
+  const scaled = Number(fraction.charAt(SQP_SHARE_SCALE)) >= 5 ? kept + 1n : kept;
+  const digits = scaled.toString().padStart(SQP_SHARE_SCALE + 1, '0');
+  return Number(`${digits.slice(0, -SQP_SHARE_SCALE)}.${digits.slice(-SQP_SHARE_SCALE)}`);
+}
 
 /**
  * A row refusal whose reason is built only from fixed text and Amazon or
@@ -156,12 +191,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function numeric(record: Record<string, unknown>, key: string): number {
+/**
+ * The kind of a value that is not a finite non-negative number, or null when it
+ * is one. Only this fixed word reaches a refusal reason, never the value.
+ */
+function invalidKind(record: Record<string, unknown>, key: string): string | null {
+  if (!Object.hasOwn(record, key)) return 'absent';
   const value = record[key];
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    refuse(`SQP row has invalid ${key}`);
-  }
-  return value;
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  if (typeof value !== 'number') return typeof value;
+  if (!Number.isFinite(value)) return 'not finite';
+  if (value < 0) return 'negative';
+  return null;
+}
+
+function numeric(record: Record<string, unknown>, key: string): number {
+  const kind = invalidKind(record, key);
+  if (kind !== null) refuse(`SQP row has invalid ${key} (${kind})`);
+  return record[key] as number;
 }
 
 function integer(record: Record<string, unknown>, key: string): number {
@@ -225,8 +273,11 @@ const SHARE_BLOCKS = {
 interface ShareMeasure {
   total: number;
   asin: number;
-  /** Canonical 0..1 fraction; `SqpWeeklyFact` and `fact_sqp_weekly` store fractions. */
-  share: number;
+  /**
+   * Canonical 0..1 fraction; `SqpWeeklyFact` and `fact_sqp_weekly` store
+   * fractions. Null only when the share was null or absent and both counts are 0.
+   */
+  share: number | null;
 }
 
 /**
@@ -238,19 +289,28 @@ interface ShareMeasure {
  * evidence rather than assumed: a value above 1 can only be a percentage; at or
  * below 1 either reading may agree. A value outside 0..100, a nonzero share of a
  * zero total, or a value that agrees with neither reading is refused. An
- * accepted share is stored as asin / total, so a rounded source value never
- * reaches the fact.
+ * accepted share is stored as asin / total at the column's six decimals
+ * (`roundSqpShare`), so a rounded source value never reaches the fact and a
+ * replay reads back exactly what was promoted.
+ *
+ * Amazon's schema marks every share as a required number, but a query with no
+ * purchases or cart adds can arrive without one. A null or absent share is
+ * therefore kept as null (a share of nothing is not 0 %) when its total and ASIN
+ * counts are both 0; with any count above 0 it is refused like any other invalid
+ * value.
  */
 function shareMeasure(row: Record<string, unknown>, spec: ShareBlock): ShareMeasure {
   const data = nested(row, spec.block);
   const total = integer(data, spec.totalKey);
   const asin = integer(data, spec.asinKey);
   if (asin > total) refuse(`SQP row ${spec.asinKey} exceeds ${spec.totalKey}`);
-  const value = data[spec.shareKey];
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    refuse(`SQP row has invalid ${spec.shareKey}`);
+  const kind = invalidKind(data, spec.shareKey);
+  if ((kind === 'null' || kind === 'absent') && total === 0 && asin === 0) {
+    return { total, asin, share: null };
   }
-  if (value < 0 || value > 100) refuse(`SQP row has out-of-range ${spec.shareKey}`);
+  if (kind !== null) refuse(`SQP row has invalid ${spec.shareKey} (${kind})`);
+  const value = data[spec.shareKey] as number;
+  if (value > 100) refuse(`SQP row has out-of-range ${spec.shareKey}`);
   if (total === 0) {
     if (value !== 0) refuse(`SQP row has nonzero ${spec.shareKey} with zero ${spec.totalKey}`);
     return { total, asin, share: 0 };
@@ -262,7 +322,7 @@ function shareMeasure(row: Record<string, unknown>, spec: ShareBlock): ShareMeas
   if (Math.min(percentageGap, fractionGap) > SHARE_TOLERANCE) {
     refuse(`SQP row ${spec.shareKey} disagrees with ${spec.asinKey} and ${spec.totalKey}`);
   }
-  return { total, asin, share: observed };
+  return { total, asin, share: roundSqpShare(observed) };
 }
 
 function contractRefusal(error: unknown): string | null {
@@ -365,7 +425,10 @@ const SQP_ROW_FIELDS: Readonly<Record<string, readonly string[] | null>> = {
   ],
 };
 
-/** Field paths this parser reads; absence of any one refuses the row. */
+/**
+ * Field paths this parser reads. Absence of any one refuses the row, except a
+ * share whose total and ASIN counts are both 0 (see `shareMeasure`).
+ */
 const SQP_PARSED_FIELDS: readonly string[] = [
   'startDate', 'endDate', 'asin',
   'searchQueryData.searchQuery', 'searchQueryData.searchQueryVolume',
