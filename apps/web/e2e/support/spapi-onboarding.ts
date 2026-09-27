@@ -1,4 +1,4 @@
-import { expect, type Page } from '@playwright/test';
+import { expect, type Locator, type Page, type Request } from '@playwright/test';
 import { createDb } from '@wizard-ads/db';
 import { mkdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
@@ -38,6 +38,25 @@ export async function exerciseSpApiOnboarding(page: Page): Promise<void> {
     await section.getByRole('checkbox',{ name: /NA storefront 1/ }).check();
     await section.getByTestId('connect-spapi').click();
     await expect(page.getByTestId('spapi-progress')).toBeVisible();
+  };
+  /**
+   * Each start ends in a full form navigation back to Connections, so the next
+   * button is server-rendered before React hydrates it, and a click in that
+   * window does nothing. On CI (runs 36332977850 and 36343945579) "Check seller
+   * connection" was clicked about 1.7 s before the page hydrated, no request
+   * left, and the status wait timed out. Click again only while the click has
+   * sent no request; the outcome assertions after each click are unchanged.
+   */
+  const clickUntilSent = async (button: Locator, method: string, path: RegExp): Promise<void> => {
+    let sent = false;
+    const listener = (request: Request): void => { if (request.method() === method && path.test(new URL(request.url()).pathname)) sent = true; };
+    page.on('request', listener);
+    try {
+      await expect(async () => {
+        if (!sent) await button.click();
+        await expect.poll(() => sent, { timeout: 2_000 }).toBe(true);
+      }).toPass({ timeout: 15_000 });
+    } finally { page.off('request', listener); }
   };
   await start();
   await expect(page.getByTestId('spapi-progress')).toContainText('Seller account connected');
@@ -79,14 +98,14 @@ export async function exerciseSpApiOnboarding(page: Page): Promise<void> {
     await mode('hold'); await start();
     await expect(page.getByTestId('spapi-progress')).toContainText('Connecting seller account');
     await capture('spapi-pending');
-    await page.getByRole('button',{ name: 'Cancel seller connection' }).click();
+    await clickUntilSent(page.getByRole('button',{ name: 'Cancel seller connection' }), 'POST', /^\/api\/amazon\/spapi\/operations\/[^/]+$/);
     await expect(page.getByTestId('spapi-progress')).toContainText('Seller connection cancelled');
     await capture('spapi-cancelled'); await mode('success');
     await mode('refuse'); await start();
     await expect(page.getByTestId('spapi-progress')).toContainText('Seller account needs reconnecting');
     await expect(page.getByTestId('spapi-progress')).toContainText('Amazon refused');
     await capture('spapi-reconnect-required'); await mode('success');
-    await row.getByRole('button',{ name: 'Check seller connection' }).click();
+    await clickUntilSent(row.getByRole('button',{ name: 'Check seller connection' }), 'GET', /^\/api\/amazon\/spapi\/connections\/[^/]+$/);
     await expect(section.getByRole('status')).toContainText('active');
     await row.getByRole('button',{ name: 'Revoke seller connection',exact: true }).click();
     await row.getByRole('button',{ name: 'Yes, revoke seller connection' }).click();
