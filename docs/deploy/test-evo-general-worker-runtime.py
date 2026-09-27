@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Credential mapping and mode tests for wizard-ads-credential-runtime.py (WP-326, WP-330, WP-336, WP-338b).
+"""Credential mapping and mode tests for wizard-ads-credential-runtime.py (WP-326, WP-330, WP-336, WP-338b, WP-338f).
 
 Runs against synthetic credentials in a temporary directory. os.execve is
 replaced, so no worker, database or network is ever reached.
@@ -705,6 +705,126 @@ class McfObserveTests(RuntimeCase):
                 self.assertFalse(set(launched.env) & runtime.MCF_OBSERVE_KEYS)
                 started += 1
         self.assertEqual(started, 2)
+
+
+
+# WP-338f: WP-338n's alert webhook (a credential) and samples link (a setting).
+WEBHOOK = "https://hooks.example.test/services/" + "SYNTHETIC/FIXTURE/0005"
+APP_URL = "https://app.example.test"
+WEBHOOK_REFUSAL = ("systemd runtime credential is invalid: mcf-alert-webhook "
+                   "must be an https URL without credentials or fragment")
+APP_URL_REFUSAL = "WIZARD_ADS_APP_URL must be an https origin without a path, query, fragment or credentials"
+RECIPIENT_REFUSAL = ("a recipient key credential (mcf-recipient-*) is loaded into a unit other than "
+                     "wizard-ads-mcf.service; remove its LoadCredentialEncrypted line")
+
+
+class McfHousekeepingSettingsTests(RuntimeCase):
+    def test_optional_webhook_credential_is_exact_and_never_public(self) -> None:
+        self.assertEqual(runtime.WORKER_OPTIONAL_CREDENTIALS, {"mcf-alert-webhook": "OPENSPELL_MCF_ALERT_WEBHOOK_URL"})
+        self.assertNotIn("OPENSPELL_MCF_ALERT_WEBHOOK_URL", runtime.WORKER_ENV_KEYS)
+        self.assertFalse(set(runtime.WORKER_OPTIONAL_CREDENTIALS) & set(runtime.WORKER_CREDENTIALS))
+        self.assertIn("WIZARD_ADS_APP_URL", runtime.WORKER_ENV_KEYS)
+
+    def test_worker_maps_the_webhook_and_passes_the_app_url(self) -> None:
+        self.write({**BASE_CONFIG, "WIZARD_ADS_APP_URL": APP_URL}, {"database-url": DATABASE, "mcf-alert-webhook": WEBHOOK})
+        launched, lines = self.launch(runtime.run_worker)
+        self.assertEqual(launched.env["OPENSPELL_MCF_ALERT_WEBHOOK_URL"], WEBHOOK)
+        self.assertEqual(launched.env["WIZARD_ADS_APP_URL"], APP_URL)
+        self.assertEqual(set(launched.env), {
+            "PATH", "HOME", "NODE_ENV", "DATABASE_URL", "OPENSPELL_WORKER_REVISION",
+            "OPENSPELL_MCF_ALERT_WEBHOOK_URL", "WIZARD_ADS_APP_URL", *BASE_CONFIG,
+        })
+        self.assertNotIn(WEBHOOK, json.dumps(lines))
+
+    def test_absent_webhook_and_app_url_pass_nothing(self) -> None:
+        self.write(BASE_CONFIG, {"database-url": DATABASE})
+        launched, _ = self.launch(runtime.run_worker)
+        self.assertFalse({"OPENSPELL_MCF_ALERT_WEBHOOK_URL", "WIZARD_ADS_APP_URL"} & set(launched.env))
+
+    def test_valid_webhook_and_app_url_shapes_are_accepted(self) -> None:
+        webhooks = (WEBHOOK, "https://hooks.example.test", "https://hooks.example.test:8443/a?b=c")
+        app_urls = (APP_URL, APP_URL + "/", "https://app.example.test:8443")
+        accepted = 0
+        for webhook, app_url in zip(webhooks, app_urls):
+            with self.subTest(webhook=webhook, app_url=app_url):
+                self.write({**BASE_CONFIG, "WIZARD_ADS_APP_URL": app_url},
+                           {"database-url": DATABASE, "mcf-alert-webhook": webhook})
+                launched, _ = self.launch(runtime.run_worker)
+                self.assertEqual(launched.env["OPENSPELL_MCF_ALERT_WEBHOOK_URL"], webhook)
+                self.assertEqual(launched.env["WIZARD_ADS_APP_URL"], app_url)
+                accepted += 1
+        self.assertEqual(accepted, 3)
+
+    def test_malformed_webhook_is_refused_without_its_value(self) -> None:
+        values = ("http://hooks.example.test/x", "hooks.example.test/x", "https://", "https:///x",
+                  "https://user:pass@hooks.example.test/x", "https://user@hooks.example.test/x",
+                  "https://hooks.example.test/x#frag", "https://hooks.example.test/x#",
+                  "https://hooks.example.test/two words", "https://HOOKS.example.test/x",
+                  "https://hooks.example.test:99999/x", "https://[::1]/x", "https://hooks_example.test/x",
+                  "ftp://hooks.example.test/x", "https://hooks.example.test/\u00e9")
+        refused = 0
+        for value in values:
+            with self.subTest(value=value):
+                self.write(BASE_CONFIG, {"database-url": DATABASE, "mcf-alert-webhook": value})
+                message = self.refuse(runtime.run_worker, WEBHOOK_REFUSAL)
+                self.assertEqual(message, WEBHOOK_REFUSAL)
+                refused += 1
+        self.assertEqual(refused, len(values))
+        self.write(BASE_CONFIG, {"database-url": DATABASE, "mcf-alert-webhook": ""})
+        self.refuse(runtime.run_worker, "credential is empty: mcf-alert-webhook")
+
+    def test_malformed_app_url_is_refused_by_name(self) -> None:
+        values = ("", " ", "http://app.example.test", "http://localhost:3000", "app.example.test",
+                  APP_URL + "/creators", APP_URL + "?x=1", APP_URL + "?", APP_URL + "#x", APP_URL + "#",
+                  "https://user@app.example.test", "https://APP.example.test", "https://app.example.test:0x1",
+                  " " + APP_URL, APP_URL + " ", APP_URL + "\n")
+        refused = 0
+        for value in values:
+            with self.subTest(value=value):
+                self.write({**BASE_CONFIG, "WIZARD_ADS_APP_URL": value}, {"database-url": DATABASE})
+                self.assertEqual(self.refuse(runtime.run_worker, APP_URL_REFUSAL), APP_URL_REFUSAL)
+                refused += 1
+        self.assertEqual(refused, len(values))
+
+    def test_webhook_is_never_a_worker_json_key(self) -> None:
+        self.write({**BASE_CONFIG, "OPENSPELL_MCF_ALERT_WEBHOOK_URL": WEBHOOK}, {"database-url": DATABASE})
+        message = self.refuse(runtime.run_worker,
+                              "OPENSPELL_MCF_ALERT_WEBHOOK_URL is the systemd credential mcf-alert-webhook")
+        self.assertNotIn(WEBHOOK, message)
+
+    def test_connection_modes_never_pass_the_webhook_or_app_url(self) -> None:
+        self.write({**BASE_CONFIG, **SPAPI_CONFIG, **AMAZON_CONFIG, "WIZARD_ADS_APP_URL": APP_URL,
+                    "OPENSPELL_SPAPI_CONNECTIONS_ENABLED": "0"},
+                   {**ALL_CREDENTIALS, **ADS_CREDENTIALS, "mcf-alert-webhook": WEBHOOK})
+        started = 0
+        for run in (runtime.run_spapi_connections, runtime.run_amazon_connections):
+            with self.subTest(mode=run.__name__):
+                launched, _ = self.launch(run)
+                self.assertFalse({"OPENSPELL_MCF_ALERT_WEBHOOK_URL", "WIZARD_ADS_APP_URL"} & set(launched.env))
+                self.assertNotIn(WEBHOOK, json.dumps(launched.env))
+                started += 1
+        self.assertEqual(started, 2)
+
+    def test_a_recipient_key_in_any_other_unit_is_refused(self) -> None:
+        cases = (
+            (runtime.run_worker, {**BASE_CONFIG}, {"database-url": DATABASE}),
+            (runtime.run_spapi_connections, {**BASE_CONFIG, **SPAPI_CONFIG, "OPENSPELL_SPAPI_CONNECTIONS_ENABLED": "0"},
+             ALL_CREDENTIALS),
+            (runtime.run_amazon_connections, {**BASE_CONFIG, **AMAZON_CONFIG}, ADS_CREDENTIALS),
+        )
+        refused = 0
+        for run, config, credentials in cases:
+            for name in ("mcf-recipient-" + "0badc0de", "mcf-recipient-other",
+                         "wizard-ads-mcf-recipient-" + "0badc0de.cred"):
+                with self.subTest(mode=run.__name__, name=name):
+                    for leftover in self.credentials.iterdir():
+                        leftover.unlink()
+                    self.write(config, {**credentials, name: "synthetic-recipient-" + "key-canary"})
+                    message = self.refuse(run, RECIPIENT_REFUSAL)
+                    self.assertEqual(message, RECIPIENT_REFUSAL)
+                    self.assertNotIn("key-canary", message)
+                    refused += 1
+        self.assertEqual(refused, 9)
 
 
 if __name__ == "__main__":
