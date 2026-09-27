@@ -7,5 +7,7 @@
   "OPENSPELL_SPAPI_CONNECTIONS_ENABLED": "1",
   "SP_API_APPLICATION_ID": "<sp-api-application-id>",
   "SP_API_OAUTH_REGION": "<NA|EU|FE>",
-  "SP_API_OAUTH_ALLOWED_REDIRECT_URIS": "<https-web-origin>/api/amazon/spapi/oauth/callback"
+  "SP_API_OAUTH_ALLOWED_REDIRECT_URIS": "<https-web-origin>/api/amazon/spapi/oauth/callback",
+  "OPENSPELL_AMAZON_CONNECTIONS_ENABLED": "1",
+  "AMAZON_OAUTH_ALLOWED_REDIRECT_URIS": "<https-web-origin>/api/amazon/oauth/callback"
 }

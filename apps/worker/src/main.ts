@@ -19,14 +19,14 @@ import { startSpWritePolling } from './sp-write-outbox/polling.js';
 import { spWritePolicyFromEnv } from './sp-write-outbox/policy.js';
 import { createDb, loadReportHealth } from '@wizard-ads/db';
 import { createAdsApiClientFromEnv } from './ads-api.js';
-import { AmazonConnectionLoop } from './amazon-connections.js';
-import { createAmazonConnectionProvider, createAmazonConnectionStore } from './amazon-connection-adapters.js';
+import { amazonConnectionPass } from './amazon-connections.js';
 import { configFromEnv } from './config.js';
 import { createCrosscheckIngest } from './crosscheck.js';
 import { createDataDiveRankSyncHandler } from './datadive.js';
 import { closeServer, startHealthServer } from './health.js';
 import { PostgresBidSeriesStore } from './bid-series.js';
 import { createKeepaSyncHandler } from './keepa.js';
+import { createMarketSignalsImportPass } from './market-signals-import.js';
 import { createMarketingStreamSqsConsumer } from './marketing-stream-sqs.js';
 import { createMarketingStreamNormalizeHandler } from './marketing-stream-normalize.js';
 import { createSpApiSqpRequestHandler } from './spapi-sqp.js';
@@ -102,7 +102,7 @@ const runsAmazonJobs = config.jobTypes === undefined
 // One client instance serves both the queue worker and bid-corridor sync.
 const adsApi = runsAmazonJobs ? createAdsApiClientFromEnv(handle) : undefined;
 const amazonConnections = config.amazonConnectionsEnabled
-  ? new AmazonConnectionLoop(createAmazonConnectionStore(handle), createAmazonConnectionProvider(handle))
+  ? new ProviderConnectionLoop(amazonConnectionPass(handle, config))
   : undefined;
 const spApiConnections = config.spApiConnectionsEnabled
   ? new ProviderConnectionLoop(spApiConnectionPass(handle, config))
@@ -182,6 +182,8 @@ const worker = new SyncWorker({
   pollIntervalMs: config.pollIntervalMs,
 });
 const spWritePolling = spWriteLoop ? startSpWritePolling(spWriteLoop, config.pollIntervalMs) : undefined;
+// WP-331: only with OPENSPELL_MARKET_SIGNALS_DIR set, on a runtime that runs background passes.
+const marketSignalsImport = createMarketSignalsImportPass(handle, process.env, config.startsBackgroundPasses);
 marketingStream?.start();
 amazonConnections?.start();
 spApiConnections?.start();
@@ -195,6 +197,7 @@ const health = await startHealthServer(worker, config.port, {
   },
   marketingStream,
   amazonConnections,
+  marketSignalsImport,
 }, config.healthHost);
 const authHealth = config.startsBackgroundPasses && adsApi
   ? new AuthHealthMonitor(worker, config.authHealthcheckIntervalMs)
@@ -224,6 +227,7 @@ reaper?.start();
 provisioner?.start();
 bidSeries?.start();
 recommendationObserver?.start();
+marketSignalsImport?.start();
 
 const CUSTODY_EXIT_CODE = 78;
 let shutdownPromise: Promise<WorkerShutdownEvidence> | null = null;
@@ -240,6 +244,7 @@ async function performShutdown(): Promise<WorkerShutdownEvidence> {
   provisioner?.stop();
   bidSeries?.stop();
   recommendationObserver?.stop();
+  await marketSignalsImport?.stop();
   await evidenceRecovery?.stop();
   await creativeSync?.stop();
   await spWritePolling?.stop();

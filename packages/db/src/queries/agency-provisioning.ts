@@ -1,4 +1,5 @@
 import {
+  ACCESS_LINK_AUDIT_ACTIONS, InvitationDeliveryStatus,
   AgencyProvisionCommand, AgencyProvisionReceipt, BootstrapReissueCommand, BootstrapRevokeCommand,
   BootstrapDeliveryContext, BootstrapTokenDigest, Uuid,
 } from '@wizard-ads/shared';
@@ -47,4 +48,27 @@ export async function agencyBootstrapDeliveryContext(
   `;
   if (rows.length !== 1) throw new Error('Invitation delivery response count mismatch');
   return BootstrapDeliveryContext.parse(rows[0]!.context);
+}
+
+/**
+ * Audit one operator-issued agency invitation link. The link is never stored.
+ * Callers pass the receipt of the provisioning/reissue that produced the token
+ * and first confirm it through `agencyBootstrapDeliveryContext`.
+ */
+export async function recordAgencyInvitationLinkIssued(handle: QueryHandle, raw: {
+  receipt: Pick<AgencyProvisionReceipt, 'requestId' | 'orgId' | 'invitationId' | 'generation'>;
+  status: InvitationDeliveryStatus;
+}): Promise<void> {
+  const receipt = AgencyProvisionReceipt.pick({ requestId: true, orgId: true, invitationId: true, generation: true }).parse({
+    requestId: raw.receipt.requestId, orgId: raw.receipt.orgId, invitationId: raw.receipt.invitationId, generation: raw.receipt.generation,
+  });
+  const status = InvitationDeliveryStatus.parse(raw.status);
+  const rows = await handle.sql`
+    insert into public.audit_log (org_id, actor_type, actor_id, action, target_type, target_id, payload, source)
+    values (${receipt.orgId}, 'service', session_user::text, ${ACCESS_LINK_AUDIT_ACTIONS.agency}, 'bootstrap_invitation',
+      ${receipt.invitationId}, jsonb_build_object('requestId', ${receipt.requestId}::text,
+        'generation', ${receipt.generation}::int, 'status', ${status}::text), 'operator')
+    returning id
+  `;
+  if (rows.length !== 1) throw new Error('Invitation link audit could not be recorded');
 }

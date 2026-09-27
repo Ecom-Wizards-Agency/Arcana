@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { asServiceRole, createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
 import { inspectAgencyBootstrapInvitation } from '@wizard-ads/db';
 import type { AgencyCommand } from './command.js';
-import { runAgencyCommand, type AgencyCommandResult, type SendInvitation } from './operator.js';
+import { runAgencyCommand, type AgencyCommandResult, type IssueInvitationLink, type SendInvitation } from './operator.js';
 
 const available = await databaseAvailable();
 const provision = (sendEmail = false): Extract<AgencyCommand, { operation: 'provision' }> => ({
@@ -20,8 +20,13 @@ describe.skipIf(!available)('agency operator real persistence', () => {
   let database: TestDatabase;
   beforeAll(async () => { database = await createTestDatabase('agency_operator'); }, 60_000);
   afterAll(async () => { await database?.drop(); });
-  const run = (command: AgencyCommand, sendInvitation?: SendInvitation) => asServiceRole(database, (sql) =>
-    runAgencyCommand(command, { handle: { sql }, appOrigin: 'https://app.example.test', ...(sendInvitation ? { sendInvitation } : {}) }));
+  const run = (command: AgencyCommand, sendInvitation?: SendInvitation, issueLink?: IssueInvitationLink) => asServiceRole(database, (sql) =>
+    runAgencyCommand(command, {
+      handle: { sql }, appOrigin: 'https://app.example.test',
+      ...(sendInvitation ? { sendInvitation } : {}), ...(issueLink ? { issueLink } : {}),
+    }));
+  const linkAudits = (orgId: string) => database.sql<{ target_id: string; payload: Record<string, unknown> }[]>`
+    select target_id, payload from public.audit_log where org_id = ${orgId} and action = 'agency.invitation_link_issued' order by id`;
 
   it('returns a link matching the stored digest without creating any membership or settings', async () => {
     const command = provision();
@@ -92,5 +97,30 @@ describe.skipIf(!available)('agency operator real persistence', () => {
     await expect(run(command)).rejects.toThrow('not configured');
     const [counts] = await database.sql`select count(*)::int as count from public.orgs where slug=${command.request.slug}`;
     expect(counts!.count).toBe(0);
+  });
+
+  it('link delivery returns the account link once for the saved owner and audits it without the link', async () => {
+    const command = provision();
+    const issueLink = vi.fn<IssueInvitationLink>(async (_email, url) => ({ status: 'link_ready', url: `${url}?token_hash=${'e1'.repeat(28)}` }));
+    const sender = vi.fn<SendInvitation>();
+    const result = issued(await run(command, sender, issueLink));
+    expect(result.delivery).toBe('link_ready');
+    expect(result.invitationUrl).toMatch(/^https:\/\/app\.example\.test\/agency-invite\/[A-Za-z0-9_-]{43}\?token_hash=(e1){28}$/);
+    expect(issueLink).toHaveBeenCalledExactlyOnceWith(command.request.ownerEmail, result.invitationUrl!.split('?')[0]);
+    expect(sender).not.toHaveBeenCalled();
+    expect(await inspectAgencyBootstrapInvitation(database, hashFromLink(result.invitationUrl!))).toMatchObject({ state: 'pending' });
+    const audits = await linkAudits(result.receipt.orgId);
+    expect(audits).toEqual([{ target_id: result.receipt.invitationId, payload: { requestId: command.request.requestId, generation: 1, status: 'link_ready' } }]);
+    expect(JSON.stringify(audits)).not.toContain(result.invitationUrl!.split('/').at(-1)!);
+  });
+
+  it('keeps the plain link and records nothing when the account link cannot be confirmed', async () => {
+    const command = provision();
+    const issueLink = vi.fn<IssueInvitationLink>().mockRejectedValue(new Error('synthetic response loss'));
+    const result = issued(await run(command, undefined, issueLink));
+    expect(result.delivery).toBe('uncertain');
+    expect(result.invitationUrl).toMatch(/^https:\/\/app\.example\.test\/agency-invite\/[A-Za-z0-9_-]{43}$/);
+    expect(issueLink).toHaveBeenCalledTimes(1);
+    expect(await linkAudits(result.receipt.orgId)).toHaveLength(0);
   });
 });

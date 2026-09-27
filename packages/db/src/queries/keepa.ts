@@ -119,6 +119,7 @@ export async function loadKeepaBsrObservations(
   if (rows.length === 0) return { offered: 0, existing: 0, written: 0 };
   assertUniqueFactGrain('keepa_bsr_observations', rows, (row) => [
     row.orgId,
+    row.marketplace ?? '',
     row.asin,
     row.category ?? '',
     row.observedAt instanceof Date ? row.observedAt.toISOString() : String(row.observedAt),
@@ -132,6 +133,7 @@ export async function loadKeepaBsrObservations(
       .onConflictDoNothing({
         target: [
           keepaBsrObservations.orgId,
+          keepaBsrObservations.marketplace,
           keepaBsrObservations.asin,
           keepaBsrObservations.category,
           keepaBsrObservations.observedAt,
@@ -182,6 +184,7 @@ export async function latestKeepaObservations(
   handle: DbHandle,
   orgId: string,
   asins: readonly string[],
+  marketplace?: string,
 ): Promise<KeepaObservationRecord[]> {
   if (asins.length === 0) return [];
   const rows = await handle.db
@@ -195,7 +198,14 @@ export async function latestKeepaObservations(
       coupon: keepaBsrObservations.coupon,
     })
     .from(keepaBsrObservations)
-    .where(and(eq(keepaBsrObservations.orgId, orgId), inArray(keepaBsrObservations.asin, [...asins])))
+    .where(and(
+      eq(keepaBsrObservations.orgId, orgId),
+      inArray(keepaBsrObservations.asin, [...asins]),
+      // keepa.sync compares against its own rows; imported rows carry no deal or coupon state.
+      eq(keepaBsrObservations.source, 'arcana'),
+      // The same ASIN in another marketplace is another listing and currency.
+      marketplace === undefined ? undefined : eq(keepaBsrObservations.marketplace, marketplace),
+    ))
     .orderBy(keepaBsrObservations.asin, desc(keepaBsrObservations.observedAt), desc(keepaBsrObservations.id));
   return rows;
 }

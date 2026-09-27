@@ -1,4 +1,4 @@
-import { readSpReportEvidence, readProviderEvidence, readStreamExtensionHealth, readCoreReportEvidence, loadReportLaneStatus } from '@wizard-ads/db';
+import { readSpReportEvidence, readProviderEvidence, readStreamExtensionHealth, readCoreReportEvidence, loadReportLaneStatus, readMarketSignalsImportStatus, readLatestCreatorImport } from '@wizard-ads/db';
 import type { SpEvidence, StreamExtensionHealth } from '@wizard-ads/shared';
 import type { ScreenActor } from '../../server/page-read';
 import { CoreFeatureReportType } from '@wizard-ads/shared';
@@ -45,9 +45,13 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   const status: Awaited<ReturnType<typeof loadSyncStatus>> & { streams?: StreamExtensionHealth[] } = await access.readSql((sql) => loadSyncStatus({ sql }, org.orgId, profileId));
   if (profileId) status.streams = await access.readSql((sql) => readStreamExtensionHealth({ sql }, org.orgId, profileId));
   const lane = await access.readSql((sql) => loadReportLaneStatus({ sql }, org.orgId, profileId));
+  // WP-331: the wizards-ai import's stored position and totals; null before its first batch.
+  const marketSignals = await access.readSql((sql) => readMarketSignalsImportStatus({ sql }, org.orgId));
   const today = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
   const coreEvidence = profileId ? await access.readSql((sql) => readCoreReportEvidence({ sql }, { orgId: org.orgId, profileId, families: CoreFeatureReportType.options, startDate: today, endDate: today, limit: 10 })) : [];
   const sources = profileId ? await access.readSql(sql => Promise.all((['retail', 'aba', 'catalogue'] as const).map(async family => ({ family, evidence: await readSpReportEvidence({ sql }, { orgId: org.orgId, profileId: profileId!, family, start: today, end: today, latest: true }) })))) : [];
   const providerEvidence = await access.readSql(async (sql) => Promise.all(status.freshness.map(async (profile) => ({ profileId: profile.profileId, evidence: await readProviderEvidence({ sql }, { orgId: org.orgId, profileId: profile.profileId, consumer: 'sync-status' }) }))));
-  return { view: 'ready' as const, props: { ...(providerEvidence ? { providerEvidence } : {}), context, status, lane, ...(coreEvidence.length ? { coreEvidence } : {}), ...({ sources } as { sources?: { family: string; evidence: SpEvidence }[] }) } };
+  // Creator Connections import counters (WP-332); RLS hides them from viewers, which reads as not measured.
+  const creatorImport = await access.readSql((sql) => readLatestCreatorImport({ sql }, org.orgId));
+  return { view: 'ready' as const, props: { ...(providerEvidence ? { providerEvidence } : {}), ...(marketSignals ? { marketSignals } : {}), context, status, lane, creatorImport, ...(coreEvidence.length ? { coreEvidence } : {}), ...({ sources } as { sources?: { family: string; evidence: SpEvidence }[] }) } };
 }

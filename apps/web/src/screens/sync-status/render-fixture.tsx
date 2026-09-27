@@ -5,7 +5,7 @@ const stage = (name: 'request' | 'poll' | 'fetch' | 'load') => ({
   stage: name, lastSucceededAt: null, lastFailedAt: null, lastErrorClass: null, retrying: 0, dead: 0,
 });
 
-export const ready = { "view": "ready", "props": { "context": context, "status": { "deadLetters": [], "lifecycle": [], "freshness": [], "jobs": [], "reports": [], "catalogue": [] }, "lane": { "scope": "organisation", "stages": [stage('request'), stage('poll'), stage('fetch'), stage('load')], "blocking": null, "organisationDead": { "total": 0, "byStage": { "request": 0, "poll": 0, "fetch": 0, "load": 0 }, "reRequested": 0, "resolved": 0 }, "profiles": [] } } } satisfies ScreenData;
+export const ready = { "view": "ready", "props": { "context": context, "status": { "deadLetters": [], "lifecycle": [], "freshness": [], "jobs": [], "reports": [], "catalogue": [] }, "lane": { "scope": "organisation", "stages": [stage('request'), stage('poll'), stage('fetch'), stage('load')], "blocking": null, "organisationDead": { "total": 0, "byStage": { "request": 0, "poll": 0, "fetch": 0, "load": 0 }, "reRequested": 0, "resolved": 0 }, "profiles": [] }, "creatorImport": null } } satisfies ScreenData;
 
 export const catalogueReady: ScreenData = {view:'ready',props:{...ready.props,status:{...ready.props.status,catalogue:
   ['never','empty','complete','failed'].map((state,index)=>({profileLabel:'Synthetic profile',marketplaceId:'SYNTHETIC-MARKET',family:'product_metadata',selectorKey:`selector-${index}`,enabled:false,reportingRecoveryVerified:true,

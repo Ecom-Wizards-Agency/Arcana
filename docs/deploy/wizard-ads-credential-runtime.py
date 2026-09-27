@@ -6,9 +6,9 @@ invoke the MCP protocol over a Unix socket, but cannot request a credential,
 choose a URL, or execute an arbitrary credentialed command.
 
 Installed as credential_runtime.py at the root of a versioned worker release
-(docs/deploy/build-evo-general-worker-artifact.sh). The worker and SP-API
-connection modes run the release's own app/ directory and report the revision
-recorded in its REVISION file. Each credential maps to exactly one environment
+(docs/deploy/build-evo-general-worker-artifact.sh). The worker, SP-API
+connection and Amazon Ads connection modes run the release's own app/ directory
+and report the revision recorded in its REVISION file. Each credential maps to exactly one environment
 variable; the public configuration can never name a credential variable.
 """
 from __future__ import annotations
@@ -36,6 +36,13 @@ SPAPI_CREDENTIALS = {
     "spapi-lwa-client-secret-value": "SP_API_LWA_CLIENT_SECRET",
 }
 WORKER_CREDENTIALS = {DATABASE_CREDENTIAL: "DATABASE_URL", **SPAPI_CREDENTIALS}
+# The Amazon Ads LWA application pair. Only the connection-only Ads mode reads
+# it; the general worker's unit never loads it.
+AMAZON_CREDENTIALS = {
+    "ads-lwa-client-id": "LWA_CLIENT_ID",
+    "ads-lwa-client-secret-value": "LWA_CLIENT_SECRET",
+}
+AMAZON_CONNECTION_CREDENTIALS = {DATABASE_CREDENTIAL: "DATABASE_URL", **AMAZON_CREDENTIALS}
 RELEASE_ROOT = Path(__file__).resolve().parent
 WORKER_CONFIG = Path("/etc/wizard-ads/worker.json")
 NODE = "/usr/local/bin/node"
@@ -46,6 +53,11 @@ SPAPI_SETTINGS = (
     "SP_API_OAUTH_ALLOWED_REDIRECT_URIS",
 )
 SPAPI_REGIONS = {"NA", "EU", "FE"}
+AMAZON_GATE = "OPENSPELL_AMAZON_CONNECTIONS_ENABLED"
+AMAZON_SETTINGS = ("AMAZON_OAUTH_ALLOWED_REDIRECT_URIS",)
+# Read only by the Amazon Ads connection mode. The worker mode never passes
+# them on: the worker config refuses the Ads loop without entity.sync.
+AMAZON_KEYS = frozenset({AMAZON_GATE, *AMAZON_SETTINGS})
 CREDENTIAL_VALUE = re.compile(r"^[\x21-\x7e]{1,4096}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 MCP_UPSTREAM = "http://127.0.0.1:18787"
@@ -91,6 +103,7 @@ WORKER_ENV_KEYS = {
     "WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS",
     SPAPI_GATE,
     *SPAPI_SETTINGS,
+    *AMAZON_KEYS,
 }
 
 
@@ -148,8 +161,9 @@ def public_config() -> dict[str, str]:
         raise RuntimeError("worker public configuration is invalid")
     if any("<" in value or ">" in value for value in config.values()):
         raise RuntimeError("worker public configuration still contains a template placeholder")
-    if config.get(SPAPI_GATE, "0") not in {"0", "1"}:
-        raise RuntimeError(f"{SPAPI_GATE} must be 0 or 1")
+    for gate in (SPAPI_GATE, AMAZON_GATE):
+        if config.get(gate, "0") not in {"0", "1"}:
+            raise RuntimeError(f"{gate} must be 0 or 1")
     region = config.get("SP_API_OAUTH_REGION")
     if region is not None and region not in SPAPI_REGIONS:
         raise RuntimeError("SP_API_OAUTH_REGION must be NA, EU or FE")
@@ -202,23 +216,45 @@ def spapi_credentials(required: bool) -> dict[str, str]:
     return values
 
 
-def announce(mode: str, revision: str, spapi_enabled: bool) -> None:
+def amazon_credentials() -> dict[str, str]:
+    """The Amazon Ads mode requires both LWA credentials."""
+    present = {name for name in AMAZON_CREDENTIALS if credential_file(name).exists()}
+    if present != set(AMAZON_CREDENTIALS):
+        raise RuntimeError(
+            "Amazon Ads LWA credentials must be supplied together: "
+            + ", ".join(sorted(AMAZON_CREDENTIALS))
+        )
+    values: dict[str, str] = {}
+    for name, variable in AMAZON_CREDENTIALS.items():
+        value = credential(name)
+        if not CREDENTIAL_VALUE.fullmatch(value):
+            raise RuntimeError(f"1Password Amazon Ads credential is invalid: {name}")
+        values[variable] = value
+    return values
+
+
+def announce(mode: str, revision: str, spapi_enabled: bool,
+             amazon_enabled: bool | None = None) -> None:
     # Configuration identity only; never a credential value or a public setting.
-    print(json.dumps({
+    line = {
         "event": "wizard_ads_runtime_start",
         "mode": mode,
         "revision": revision,
         "spapiConnectionLoop": "enabled" if spapi_enabled else "disabled",
-    }, separators=(",", ":")), flush=True)
+    }
+    if amazon_enabled is not None:
+        line["amazonConnectionLoop"] = "enabled" if amazon_enabled else "disabled"
+    print(json.dumps(line, separators=(",", ":")), flush=True)
 
 
 def exec_release(mode: str, revision: str, spapi_enabled: bool,
-                 entry: str, env: dict[str, str]) -> None:
+                 entry: str, env: dict[str, str],
+                 amazon_enabled: bool | None = None) -> None:
     root = RELEASE_ROOT / "app"
     runner = root / "node_modules/tsx/dist/cli.mjs"
     if not runner.is_file() or not (root / entry).is_file():
         raise RuntimeError("deployed worker runtime is unavailable")
-    announce(mode, revision, spapi_enabled)
+    announce(mode, revision, spapi_enabled, amazon_enabled)
     os.chdir(root)
     os.execve(NODE, [NODE, str(runner), entry], env)
 
@@ -233,7 +269,7 @@ def run_worker() -> None:
             "SP-API connections require " + ", ".join(SPAPI_SETTINGS)
         )
     env = base_environment()
-    env.update(config)
+    env.update({key: value for key, value in config.items() if key not in AMAZON_KEYS})
     env["OPENSPELL_WORKER_REVISION"] = revision
     env.update(spapi_credentials(required=spapi_enabled))
     env["DATABASE_URL"] = database_url()
@@ -258,6 +294,32 @@ def run_spapi_connections() -> None:
     env.update(spapi_credentials(required=True))
     env["DATABASE_URL"] = database_url()
     exec_release("spapi-connections", revision, True, "src/spapi-connections-cli.ts", env)
+
+
+def run_amazon_connections() -> None:
+    """Connection-only Amazon Ads exchange and discovery.
+
+    The general worker cannot own this loop: its configuration refuses it unless
+    the worker also claims entity.sync, which the Vercel cron tick owns. This
+    mode claims no job, so that rule does not apply to it.
+    """
+    config = public_config()
+    revision = release_revision()
+    if config.get(AMAZON_GATE) != "1":
+        raise RuntimeError(
+            f"set {AMAZON_GATE} to 1 in the worker configuration "
+            "to run the Amazon Ads connection loop"
+        )
+    missing = [name for name in AMAZON_SETTINGS if not config.get(name)]
+    if missing:
+        raise RuntimeError("Amazon Ads connections require " + ", ".join(missing))
+    env = base_environment()
+    env.update({name: config[name] for name in AMAZON_SETTINGS})
+    env[AMAZON_GATE] = "1"
+    env.update(amazon_credentials())
+    env["DATABASE_URL"] = database_url()
+    exec_release("amazon-connections", revision, False, "src/amazon-connections-cli.ts", env,
+                 amazon_enabled=True)
 
 
 def jsonrpc_error(request: Any, message: str) -> dict[str, Any] | None:
@@ -484,13 +546,15 @@ def run_mcp() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("worker", "spapi-connections", "mcp"))
+    parser.add_argument("mode", choices=("worker", "spapi-connections", "amazon-connections", "mcp"))
     args = parser.parse_args()
     os.umask(0o007)
     if args.mode == "worker":
         run_worker()
     elif args.mode == "spapi-connections":
         run_spapi_connections()
+    elif args.mode == "amazon-connections":
+        run_amazon_connections()
     else:
         run_mcp()
 

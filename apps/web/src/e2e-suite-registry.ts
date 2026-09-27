@@ -90,7 +90,7 @@ export const E2E_SUITE_DEFINITIONS = [
     config: 'playwright.auth-members.config.ts',
     project: 'auth-members',
     expectedSpecFiles: specsFor('auth-members'),
-    expectedTests: 5,
+    expectedTests: 6,
   },
   {
     name: 'auth-oauth',
@@ -114,7 +114,7 @@ export const E2E_SUITE_DEFINITIONS = [
     config: 'playwright.route-acceptance.config.ts',
     project: 'route-acceptance',
     expectedSpecFiles: specsFor('route-acceptance'),
-    expectedTests: 16,
+    expectedTests: 19,
   },
   {
     name: 'undesigned-routes',

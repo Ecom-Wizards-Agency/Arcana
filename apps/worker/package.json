@@ -13,12 +13,17 @@
     "start": "tsx src/main.ts",
     "reconcile-reports": "tsx src/reconcile-reports-cli.ts",
     "spapi-connections:start": "tsx src/spapi-connections-cli.ts",
+    "amazon-connections:start": "tsx src/amazon-connections-cli.ts",
     "recommendation:start": "tsx src/recommendation-lane/main.ts",
     "creative:preflight": "tsx src/creative-pilot-preflight-cli.ts",
     "stream:recover": "tsx src/marketing-stream-recovery-cli.ts",
+    "market-signals:import": "tsx src/market-signals-import-cli.ts",
+    "market-signals:map": "tsx src/market-signals-map-cli.ts",
+    "sqp:requeue": "tsx src/sqp-requeue-cli.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "backfill-coverage": "tsx src/backfill-coverage.ts"
+    "backfill-coverage": "tsx src/backfill-coverage.ts",
+    "creators:import": "tsx src/creators-import.ts"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.1120.0",

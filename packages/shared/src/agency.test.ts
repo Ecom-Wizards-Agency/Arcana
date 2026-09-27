@@ -3,7 +3,9 @@ import {
   AuthenticatedIdentity, OrgActor, OrgRole, OrgCapability,
   ORG_CAPABILITY_ROLES, TeamInvitationRole, TeamInvitationIssue,
   AgencyProvisionCommand, AgencyProvisionReceipt, BootstrapReissueCommand,
-  BootstrapAcceptanceReceipt,
+  BootstrapAcceptanceReceipt, InvitationDeliveryStatus, InvitationDeliveryMode,
+  ACCESS_LINK_AUDIT_ACTIONS, MEMBER_RECOVERY_LINK_INTERVAL_MINUTES,
+  MemberRecoveryLinkRequest, MemberRecoveryLinkRefusal,
 } from './agency.js';
 
 const userId = '11111111-1111-4111-8111-111111111111';
@@ -66,5 +68,25 @@ describe('agency authority contracts', () => {
     expect(AgencyProvisionReceipt.safeParse({ ...receipt, token: 'raw-token' }).success).toBe(false);
     expect(BootstrapReissueCommand.safeParse({ requestId: userId, expectedGeneration: 0, token: { tokenHash: 'a'.repeat(64), tokenPrefix: 'b'.repeat(12) } }).success).toBe(false);
     expect(BootstrapAcceptanceReceipt.safeParse({ orgId, invitationId: userId, generation: 1, outcome: 'accepted', role: 'owner' }).success).toBe(false);
+  });
+
+  it('adds link delivery beside email without changing the existing delivery outcomes', () => {
+    expect(InvitationDeliveryMode.options).toEqual(['link', 'email']);
+    expect(InvitationDeliveryStatus.options).toEqual([
+      'accepted_by_provider', 'existing_account', 'unavailable', 'failed', 'uncertain', 'link_ready',
+    ]);
+    expect(ACCESS_LINK_AUDIT_ACTIONS).toEqual({
+      team: 'team.invitation_link_issued',
+      agency: 'agency.invitation_link_issued',
+      recovery: 'auth.recovery_link_issued',
+    });
+  });
+
+  it('accepts only a member identity for an owner/admin reset link', () => {
+    expect(MEMBER_RECOVERY_LINK_INTERVAL_MINUTES).toBe(10);
+    expect(MemberRecoveryLinkRequest.parse({ userId })).toEqual({ userId });
+    expect(MemberRecoveryLinkRequest.safeParse({ userId, email: 'member@example.test' }).success).toBe(false);
+    expect(MemberRecoveryLinkRequest.safeParse({ userId: 'invalid' }).success).toBe(false);
+    expect(MemberRecoveryLinkRefusal.options).toEqual(['not_member', 'self', 'owner_only', 'other_orgs', 'rate_limited']);
   });
 });

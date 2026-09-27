@@ -11,6 +11,10 @@ interface RegistryEntry {
   exports: readonly { barrel: string; order: number; clause: string; after: string }[];
 }
 export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
+  { domain: 'queries/access-links', contract: null, schema: null, queries: 'queries/access-links.ts', migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 122, clause: '*', after: '' }] },
+  { domain: 'queries/creators', contract: null, schema: null, queries: 'queries/creators.ts', migrationPrefix: '20260926130000', exports: [
+    { barrel: 'index.ts', order: 122, clause: '{ CreatorImportCountError, creatorSampleOrderKey, readLatestCreatorImport, readCreatorQueue, readCreatorSweeps, readCreatorSampleShipments }', after: '' },
+    { barrel: 'worker.ts', order: 122, clause: '{ creatorContentDigest, persistCreatorImport, recordFailedCreatorImport, type CreatorActionWrite, type CreatorImportBatch, type CreatorImportFailureInput, type CreatorImportSection, type CreatorQueueWrite, type CreatorRecordWrite, type CreatorShipmentWrite, type CreatorSweepWrite }', after: '' }] },
   { domain: 'queries/product-assignment', contract: null, schema: null, queries: 'queries/product-assignment.ts', migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 120, clause: '*', after: '' }] },
   {domain: 'schema/report-families', contract: null, schema: 'schema/report-families.ts', queries: null, migrationPrefix: '20260915330000', exports: [{barrel: 'schema/index.ts', order: 120, clause: '*', after: ''}]},
   {domain: 'queries/report-families', contract: null, schema: null, queries: 'queries/report-families.ts', migrationPrefix: '20260915330000', exports: [{barrel: 'index.ts', order: 120, clause: '*', after: ''}]},
@@ -58,6 +62,7 @@ export const PACKAGE_REGISTRY: readonly RegistryEntry[] = [
   {"domain": "schema/target-translations", "contract": null, "schema": "schema/target-translations.ts", "queries": null, "migrationPrefix": "20260915150000", "exports": [{"barrel": "schema/index.ts", "order": 101, "clause": "*", "after": ""}]},
   {"domain": "queries/translation", "contract": null, "schema": null, "queries": "queries/translation.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 101, "clause": "*", "after": ""}]},
   {"domain": "schema/market-position", "contract": null, "schema": "schema/market-position.ts", "queries": null, "migrationPrefix": null, "exports": [{"barrel": "schema/index.ts", "order": 100, "clause": "*", "after": ""}]},
+  { domain: 'queries/market-signals', contract: null, schema: null, queries: 'queries/market-signals.ts', migrationPrefix: null, exports: [{ barrel: 'index.ts', order: 204, clause: '{ readMarketSignalsImportStatus }', after: '' }, { barrel: 'worker.ts', order: 291, clause: '*', after: '' }] },
   {"domain": "queries/market-position", "contract": null, "schema": null, "queries": "queries/market-position.ts", "migrationPrefix": null, "exports": [{"barrel": "index.ts", "order": 100, "clause": "*", "after": ""}]},
   {domain: "queries/sp-write-restore-export", contract: null, schema: null, queries: "queries/sp-write-restore-export.ts", migrationPrefix: null, exports: [{barrel: "index.ts", order: 107, clause: "{ readRestoreExportPreview, restoreProfileWriteEnabled, exportRestoreProposalForActor }", after: ""}]},
   {domain: "queries/sp-write-restore-preview", contract: null, schema: null, queries: "queries/sp-write-restore-preview.ts", migrationPrefix: null, exports: [{barrel: "index.ts", order: 91, clause: "{ buildRestoreProposal, readRestoreProposal, reviewRestoreProposal, assertRestoreBatchBinding, readRestoreOperation, prepareRestoreRetry }", after: ""}]},

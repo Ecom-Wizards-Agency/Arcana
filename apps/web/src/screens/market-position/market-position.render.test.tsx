@@ -105,3 +105,11 @@ it('does not claim a gap closed when proximity persists while the distance widen
   expect(host.textContent).toContain('Since the previous day you slipped 100');
   expect(host.textContent).not.toContain('The gap closed because you');
 });
+
+it('says where BSR comes from and, once the wizards-ai import has run, how fresh it is', () => {
+  expect(rendered(<Screen data={ready} />).textContent).toContain('BSR from Keepa, read daily');
+  const imported = rendered(<Screen data={{ ...ready, marketSignalsAsOf: '2026-09-25T01:00:00.000Z' }} />).textContent;
+  expect(imported).toContain('BSR from Keepa via wizards-ai, data as of 2026-09-25 01:00 UTC');
+  expect(imported).not.toContain('read daily');
+  expect(rendered(<Screen data={{ ...ready, marketSignalsAsOf: null }} />).textContent).toContain('data as of not reported');
+});

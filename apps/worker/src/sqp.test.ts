@@ -24,6 +24,7 @@ import {
   SqpWorkflowPermanentError,
   type SqpProviderGate,
   type SqpReportApi,
+  type SqpWorkflowCheckpoint,
   type SqpWorkflowDataStore,
 } from './sqp.js';
 
@@ -155,6 +156,64 @@ describe('weekly SQP worker workflow', () => {
       providerGate: new RecordingGate(),
       checkpoints: new InMemorySqpWorkflowCheckpoints(),
     })).rejects.toThrow(/refused 1 rows/);
+    expect(data.promotions).toHaveLength(0);
+  });
+
+  it('carries a value-free refusal summary into the job error, the checkpoint and one log line', async () => {
+    const refused = document();
+    const rows = refused['dataByAsin'] as Array<Record<string, unknown>>;
+    rows.push({
+      ...sqpRow('Marker Refused Query', 10),
+      clickData: { totalClickCount: 20, asinClickCount: 4, asinClickShare: 55.5 },
+    });
+    rows.push({ asin: 'B000000001', searchQueryData: { searchQuery: 'Marker Incomplete Query' } });
+    const data = new FakeDataStore(vocabulary(), []);
+    const checkpoints = new RecordingCheckpoints();
+    const logged: Array<{ message: string; details: Record<string, unknown> | undefined }> = [];
+    const failure = await runSqpRequestWorkflow(job(), {
+      api: new FakeSqpApi(['DONE'], refused),
+      data,
+      providerGate: new RecordingGate(),
+      checkpoints,
+      logger: { error: (message, details) => { logged.push({ message, details }); } },
+    }).then(() => null, (error: unknown) => error);
+
+    const summaryLine = 'parser v2 refused 2 of 5 rows: ' +
+      'SQP row asinClickShare disagrees with asinClickCount and totalClickCount x1; ' +
+      'SQP row has no impressionData x1; ' +
+      'first refused row: missing [], 23 schema fields present, 0 unrecognized';
+    expect(failure).toBeInstanceOf(SqpWorkflowPermanentError);
+    expect((failure as Error).message).toBe(
+      `SQP report refused 2 rows; canonical promotion is blocked; ${summaryLine}`,
+    );
+    const saved = checkpoints.saved.at(-1);
+    expect(saved?.completed).toBeNull();
+    expect(saved?.batches.map((batch) => batch.status)).toEqual(['ready']);
+    expect(saved?.refusalSummary).toEqual({
+      parserVersion: 2,
+      sourceRows: 5,
+      refusedRows: 2,
+      distinctReasons: 2,
+      topReasons: [
+        { reason: 'SQP row asinClickShare disagrees with asinClickCount and totalClickCount', count: 1 },
+        { reason: 'SQP row has no impressionData', count: 1 },
+      ],
+      firstRefusedRow: {
+        index: 3,
+        rowIsObject: true,
+        presentFields: expect.arrayContaining(['clickData.asinClickShare', 'searchQueryData.searchQuery']),
+        missingFields: [],
+        unrecognizedFieldCount: 0,
+      },
+    });
+    expect(saved?.refusalSummary?.firstRefusedRow?.presentFields).toHaveLength(23);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({
+      message: 'SQP report rows refused',
+      details: { weekStart: '2026-08-16', weekEnd: '2026-08-22', checkpointed: true, summary: summaryLine },
+    });
+    const rendered = JSON.stringify([(failure as Error).message, logged, saved?.refusalSummary]).toLowerCase();
+    for (const value of ['marker', '55.5', 'b000000001']) expect(rendered).not.toContain(value);
     expect(data.promotions).toHaveLength(0);
   });
 
@@ -299,6 +358,15 @@ describe('SQP provider throttling seam', () => {
     expect(slept).toEqual([100, 100]);
   });
 });
+
+class RecordingCheckpoints extends InMemorySqpWorkflowCheckpoints {
+  readonly saved: SqpWorkflowCheckpoint[] = [];
+
+  override async save(checkpoint: SqpWorkflowCheckpoint): Promise<void> {
+    this.saved.push(structuredClone(checkpoint));
+    await super.save(checkpoint);
+  }
+}
 
 class RecordingGate implements SqpProviderGate {
   readonly calls: string[] = [];

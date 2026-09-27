@@ -190,6 +190,8 @@ export const keepaBsrObservations = pgTable(
     orgId: uuid('org_id')
       .notNull()
       .references(() => orgs.id, { onDelete: 'cascade' }),
+    /** Two-letter marketplace; null only on rows no profile could attribute. */
+    marketplace: text('marketplace'),
     asin: text('asin').notNull(),
     observedAt: ts('observed_at').notNull(),
     category: text('category').notNull().default(''),
@@ -200,9 +202,15 @@ export const keepaBsrObservations = pgTable(
     reviewCount: integer('review_count'),
     lightningDeal: boolean('lightning_deal'),
     coupon: jsonb('coupon').$type<readonly [number, number] | null>(),
+    offerCount: integer('offer_count'),
+    /** `arcana` (keepa.sync) or `wizards-ai` (market-signals import). */
+    source: text('source').notNull().default('arcana'),
     createdAt: ts('created_at').notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('keepa_bsr_observations_key').on(t.orgId, t.asin, t.category, t.observedAt)],
+  (t) => [
+    uniqueIndex('keepa_bsr_observations_key').on(t.orgId, t.marketplace, t.asin, t.category, t.observedAt),
+    index('keepa_bsr_observations_asin_idx').on(t.orgId, t.asin, t.category, t.observedAt),
+  ],
 );
 
 export const COMPETITOR_PRICE_EVENT_KINDS = [
@@ -229,6 +237,7 @@ export const competitorPriceEvents = pgTable(
     price: money('price'),
     baselinePrice: money('baseline_price'),
     details: jsonb('details').$type<Record<string, unknown>>().notNull().default({}),
+    source: text('source').notNull().default('arcana'),
     createdAt: ts('created_at').notNull().defaultNow(),
   },
   (t) => [

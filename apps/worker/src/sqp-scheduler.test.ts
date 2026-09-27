@@ -4,7 +4,14 @@ import {
   createSpApiConnection, setSpApiBindingReporting, storeSpApiRefreshToken, upsertSpApiProfileBinding,
 } from '@wizard-ads/db';
 import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
-import { completedSqpWeek, PostgresWeeklySqpScheduler } from './sqp-scheduler.js';
+import {
+  completedSqpWeek,
+  PostgresWeeklySqpScheduler,
+  refusedParserVersion,
+  sqpParserRetryDedupeKey,
+  sqpWeekLockKey,
+} from './sqp-scheduler.js';
+import { SQP_PARSER_VERSION } from '@wizard-ads/sp-api';
 import type { SqpRequestJob } from '@wizard-ads/shared';
 
 describe('completedSqpWeek', () => {
@@ -72,7 +79,15 @@ describe('PostgresWeeklySqpScheduler', () => {
         refused_rows: '0',
       },
     ];
-    const sql = async () => rows;
+    const sql = Object.assign(async (strings: TemplateStringsArray) => {
+      const statement = strings.join(' ');
+      if (statement.includes('pg_advisory_xact_lock')) return [{}];
+      if (statement.includes('from public.sync_jobs')) {
+        // The first week is present and succeeded; it is never re-offered.
+        return [{ dedupe_key: offered[0]?.dedupeKey ?? null, status: 'succeeded', last_error: null, result: null }];
+      }
+      return rows;
+    }, { begin: async (run: (tx: unknown) => Promise<unknown>) => run(sql) });
     const seen = new Set<string>();
     const offered: Array<{ payload: SqpRequestJob; dedupeKey: string }> = [];
     const jobs = {
@@ -101,11 +116,13 @@ describe('PostgresWeeklySqpScheduler', () => {
       offeredJobs: 1,
       enqueuedJobs: 1,
       alreadyPresentJobs: 0,
+      reofferedRefusedJobs: 0,
     });
     await expect(scheduler.enqueueDueSqpRequests()).resolves.toMatchObject({
       offeredJobs: 1,
       enqueuedJobs: 0,
       alreadyPresentJobs: 1,
+      reofferedRefusedJobs: 0,
     });
     expect(new Set(offered.map((row) => row.dedupeKey))).toEqual(new Set([
       'sqp.request:00000000-0000-4000-8000-000000000011:synthetic-marketplace:2026-08-23',
@@ -117,6 +134,158 @@ describe('PostgresWeeklySqpScheduler', () => {
       weekStart: '2026-08-23',
       weekEnd: '2026-08-29',
     });
+  });
+});
+
+describe('parser-version re-offer of a refused week', () => {
+  const scope = {
+    org_id: '00000000-0000-4000-8000-000000000001',
+    profile_id: '00000000-0000-4000-8000-000000000011',
+    connection_id: '00000000-0000-4000-8000-000000000021',
+    marketplace_id: 'synthetic-marketplace',
+    region: 'NA',
+    timezone: 'UTC',
+    asins: ['B000000001'],
+    source_rows: '1',
+    valid_rows: '1',
+    refused_rows: '0',
+  };
+  const baseKey = 'sqp.request:00000000-0000-4000-8000-000000000011:synthetic-marketplace:2026-08-23';
+  const retryKey = sqpParserRetryDedupeKey(baseKey, SQP_PARSER_VERSION);
+
+  type Row = { dedupe_key: string; status: string; last_error: string | null; result: unknown };
+
+  function harness() {
+    const jobs = new Map<string, Row>();
+    const statements: string[] = [];
+    const lookups: unknown[][] = [];
+    const sql = Object.assign(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('pg_advisory_xact_lock')) {
+        statements.push(`lock ${String(values[0])}`);
+        return [{}];
+      }
+      if (statement.includes('insert into public.sync_jobs')) {
+        const key = String(values[4]);
+        statements.push(`insert ${key}`);
+        if (jobs.has(key)) return [];
+        jobs.set(key, { dedupe_key: key, status: 'queued', last_error: null, result: null });
+        return [{ id: key }];
+      }
+      if (statement.includes('from public.sync_jobs')) {
+        lookups.push(values);
+        return [...jobs.values()];
+      }
+      return [scope];
+    }, {
+      begin: async (run: (tx: unknown) => Promise<unknown>) => {
+        statements.push('begin');
+        return run(sql);
+      },
+    });
+    const offered: string[] = [];
+    const enqueuer = {
+      enqueue: async (_payload: SqpRequestJob, _runAt: Date, dedupeKey: string) => {
+        offered.push(dedupeKey);
+        if (jobs.has(dedupeKey)) return false;
+        jobs.set(dedupeKey, { dedupe_key: dedupeKey, status: 'queued', last_error: null, result: null });
+        return true;
+      },
+    };
+    const scheduler = new PostgresWeeklySqpScheduler(
+      { sql } as never,
+      enqueuer,
+      () => new Date('2026-08-30T12:00:00Z'),
+    );
+    return { jobs, lookups, offered, scheduler, statements };
+  }
+
+  it('re-offers a week refused by an older parser exactly once, under a versioned key', async () => {
+    const { jobs, lookups, offered, scheduler, statements } = harness();
+    await expect(scheduler.enqueueDueSqpRequests()).resolves.toMatchObject({
+      offeredJobs: 1, enqueuedJobs: 1, alreadyPresentJobs: 0, reofferedRefusedJobs: 0,
+    });
+    expect(lookups).toHaveLength(0);
+
+    jobs.set(baseKey, {
+      dedupe_key: baseKey,
+      status: 'dead',
+      last_error: 'SQP report refused 616 rows; canonical promotion is blocked',
+      result: { kind: 'sqp_workflow_checkpoint', version: 1, checkpoint: { batches: [] } },
+    });
+    await expect(scheduler.enqueueDueSqpRequests()).resolves.toMatchObject({
+      offeredJobs: 1, enqueuedJobs: 1, alreadyPresentJobs: 0, reofferedRefusedJobs: 1,
+    });
+    // The versioned job dies too; no further offer is possible for this parser version.
+    jobs.set(retryKey, {
+      dedupe_key: retryKey, status: 'dead',
+      last_error: 'SQP report refused 1 rows; canonical promotion is blocked', result: null,
+    });
+    for (let run = 0; run < 3; run += 1) {
+      await expect(scheduler.enqueueDueSqpRequests()).resolves.toMatchObject({
+        offeredJobs: 1, enqueuedJobs: 0, alreadyPresentJobs: 1, reofferedRefusedJobs: 0,
+      });
+    }
+    expect(offered).toEqual([baseKey, baseKey, baseKey, baseKey, baseKey]);
+    const lockKey = `lock ${sqpWeekLockKey(scope.profile_id, '2026-08-23')}`;
+    expect(statements).toEqual([
+      'begin', lockKey, `insert ${retryKey}`,
+      'begin', lockKey, `insert ${retryKey}`,
+      'begin', lockKey, `insert ${retryKey}`,
+      'begin', lockKey, `insert ${retryKey}`,
+    ]);
+    expect(lookups).toHaveLength(4);
+    expect(lookups.every((values) => values[0] === scope.org_id && values[3] === '2026-08-23')).toBe(true);
+    expect([...jobs.keys()]).toEqual([baseKey, retryKey]);
+  });
+
+  it('inserts no re-offer while any job for the week is live', async () => {
+    const { jobs, offered, scheduler, statements } = harness();
+    jobs.set(baseKey, {
+      dedupe_key: baseKey, status: 'dead',
+      last_error: 'SQP report refused 616 rows; canonical promotion is blocked', result: null,
+    });
+    // For example a job an operator requeued a moment ago under another key.
+    jobs.set('synthetic-live-key', { dedupe_key: 'synthetic-live-key', status: 'queued', last_error: null, result: null });
+    await expect(scheduler.enqueueDueSqpRequests()).resolves.toMatchObject({
+      offeredJobs: 1, enqueuedJobs: 0, alreadyPresentJobs: 1, reofferedRefusedJobs: 0,
+    });
+    expect(offered).toEqual([baseKey]);
+    expect(statements).toEqual(['begin', `lock ${sqpWeekLockKey(scope.profile_id, '2026-08-23')}`]);
+    expect(jobs.size).toBe(2);
+  });
+
+  it('does not re-offer a week refused by the current parser or dead for another reason', async () => {
+    for (const dead of [
+      {
+        status: 'dead',
+        last_error: 'SQP report refused 3 rows; canonical promotion is blocked; parser v2 refused 3 of 3 rows',
+        result: { checkpoint: { refusalSummary: { parserVersion: SQP_PARSER_VERSION } } },
+      },
+      { status: 'dead', last_error: 'cancelled SQP report lacks authoritative no-data confirmation', result: null },
+      { status: 'failed', last_error: 'SQP report refused 3 rows; canonical promotion is blocked', result: null },
+    ]) {
+      const { jobs, offered, scheduler, statements } = harness();
+      jobs.set(baseKey, { dedupe_key: baseKey, ...dead });
+      await expect(scheduler.enqueueDueSqpRequests()).resolves.toMatchObject({
+        offeredJobs: 1, enqueuedJobs: 0, alreadyPresentJobs: 1, reofferedRefusedJobs: 0,
+      });
+      expect(offered).toEqual([baseKey]);
+      expect(statements.filter((statement) => statement.startsWith('insert'))).toEqual([]);
+    }
+  });
+
+  it('attributes a refusal to the version recorded on the checkpoint, else to version 1', () => {
+    expect(refusedParserVersion({ status: 'dead', lastError: null,
+      result: { checkpoint: { refusalSummary: { parserVersion: 7 } } } })).toBe(7);
+    expect(refusedParserVersion({ status: 'dead',
+      lastError: 'SQP report refused 616 rows; canonical promotion is blocked', result: null })).toBe(1);
+    expect(refusedParserVersion({ status: 'dead', lastError: 'SQP report 1 failed fatally', result: null })).toBeNull();
+    // The summary checkpoint write failed, but the error line still names the parser.
+    expect(refusedParserVersion({ status: 'dead', lastError: 'SQP report refused 3 rows; canonical promotion is blocked; ' +
+      'parser v2 refused 3 of 3 rows: row is not an object x3; refusal summary was not checkpointed', result: null })).toBe(2);
+    expect(refusedParserVersion({ status: 'succeeded', lastError: null,
+      result: { checkpoint: { refusalSummary: { parserVersion: 1 } } } })).toBeNull();
   });
 });
 
