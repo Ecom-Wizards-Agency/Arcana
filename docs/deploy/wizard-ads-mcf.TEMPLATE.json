@@ -1,0 +1,5 @@
+{
+  "OPENSPELL_MCF_PREVIEW_ENABLED": "0",
+  "OPENSPELL_MCF_DISPATCH_ENABLED": "0",
+  "OPENSPELL_MCF_SCOPE": "<spapi-connection-uuid>:<marketplace-id>"
+}
