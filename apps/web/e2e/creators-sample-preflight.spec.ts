@@ -79,8 +79,9 @@ test('sample pre-flight: a pass, a hold at check seven, and a pass whose preview
     await expect(page.locator('[data-testid="preflight-check"][data-outcome="pass"]')).toHaveCount(8);
     await expect(page.getByTestId('what-this-will-do').getByTestId('order-key')).toHaveText(key('CCR-E5-26-0088', 'B0D9K3M2QP'));
     await expect(page.getByTestId('recipient')).toHaveAttribute('data-bound', 'true');
-    await expect(page.getByTestId('place-order')).toBeDisabled();
-    await expect(page.getByTestId('place-order-note')).toContainText('Ordering is not built in this round.');
+    // WP-338g: with no grant and no MCF worker, sending is off, the screen names what is missing, and nothing can be pressed.
+    await expect(page.getByTestId('sending-off')).toContainText('Sending is off, so there is no Send button.');
+    await expect(page.getByTestId('send-button')).toHaveCount(0);
     await expect(page.locator('main button:not([disabled])')).toHaveCount(0);
     await capture(page, testInfo, 'creators-preflight-pass');
 

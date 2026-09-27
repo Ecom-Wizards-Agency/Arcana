@@ -212,6 +212,27 @@ describe.skipIf(!available)('Creator Connections pre-flights and MCF observation
     expect(Object.keys(all).every((item) => item.startsWith('CCS-'))).toBe(true);
   });
 
+  it('reads an Arcana-owned lane back as Arcana-owned through the pre-flight and fulfillment details', async () => {
+    const arcanaOwner = '33400000-0000-4000-8000-000000000006';
+    const [created] = await db.sql`select app.seed_tenant_fixture('creator-samples-arcana', ${arcanaOwner}, 'owner') as id`;
+    const arcanaOrg = String(created!['id']);
+    await persistCreatorImport(db, seed(arcanaOrg));
+    // Only the MCF send ledger may hand a lane to Arcana; the lane guard admits its transaction-local flag.
+    await db.sql.begin(async (sql) => {
+      await sql`select set_config('app.creator_mcf_ledger', 'on', true)`;
+      await sql`update public.creator_sample_shipments set order_owner = 'arcana' where org_id = ${arcanaOrg} and creator_record_id = 'CCR-SW-26-0088'`;
+    });
+    const arcanaKey = creatorSampleOrderKey(arcanaOrg, 'CCR-SW-26-0088', ASIN);
+    const runnerKey = creatorSampleOrderKey(arcanaOrg, 'CCR-SW-26-0072', ASIN);
+    const [preflightDetail, fulfillmentDetail, runnerPreflight, runnerFulfillment] = await asUser(db, arcanaOwner, async (sql) => [
+      await readCreatorPreflightDetail({ sql }, arcanaOrg, arcanaKey), await readCreatorFulfillmentDetail({ sql }, arcanaOrg, arcanaKey),
+      await readCreatorPreflightDetail({ sql }, arcanaOrg, runnerKey), await readCreatorFulfillmentDetail({ sql }, arcanaOrg, runnerKey),
+    ] as const);
+    expect([preflightDetail?.lane?.orderOwner, fulfillmentDetail?.lane?.orderOwner]).toEqual(['arcana', 'arcana']);
+    expect([runnerPreflight?.lane?.orderOwner, runnerFulfillment?.lane?.orderOwner]).toEqual(['runner', 'runner']);
+    expect([preflightDetail?.lane?.laneState, fulfillmentDetail?.lane?.laneState]).toEqual(['Confirmed', 'Confirmed']);
+  });
+
   it('escalates at the same count in SQL as CREATOR_MCF_NOT_FOUND_ESCALATION says', async () => {
     const [source] = await db.sql<{ definition: string }[]>`select pg_get_functiondef('app.creator_mcf_observation_settle()'::regprocedure) as definition`;
     const thresholds = [...source!.definition.matchAll(/mcf_not_found_probes \+ 1 >= (\d+)/g)].map((match) => Number(match[1]));

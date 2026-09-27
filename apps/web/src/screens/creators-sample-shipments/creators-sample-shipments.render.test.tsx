@@ -7,7 +7,9 @@ import { verifyScreen } from '../settings/render-support';
 import { descriptor } from './descriptor';
 import { snapshot as queue } from '../creators-daily-queue/render-fixture';
 import { dailyReport } from './daily-report';
-import { ambiguous, empty, notImported, queueOnly, ready, refused, reported, shipped } from './render-fixture';
+import { SAMPLES_NOW, ambiguous, empty, notImported, queueOnly, ready, refused, reported, shipped } from './render-fixture';
+import { GATE_OFF, GATE_ON, KEY, SEND, arrived, reservedLane } from '../creators-sample-preflight/render-fixture';
+import type { SamplesSending } from './load';
 import Screen, { carrierHasNoScan } from './view';
 
 verifyScreen(descriptor, [
@@ -45,7 +47,8 @@ describe('sample shipments', () => {
     expect(carrierHasNoScan({ ...shipped, packages: [{ ...shipped.packages![0]!, carrierStatus: 'IN_TRANSIT', carrierStatusReadAt: '2026-09-10T08:00:00.000Z' }] })).toBe(false);
     expect(carrierHasNoScan({ ...shipped, mcf: { ...shipped.mcf!, status: 'Planning' } })).toBe(false);
     const scanned = rendered(<Screen data={{ view: 'ready', props: { snapshot: { ...ready.props.snapshot, shipments: [{ ...shipped,
-      packages: [{ ...shipped.packages![0]!, carrierStatus: 'IN_TRANSIT', carrierStatusReadAt: '2026-09-10T08:00:00.000Z' }] }] }, report: null } }} />);
+      packages: [{ ...shipped.packages![0]!, carrierStatus: 'IN_TRANSIT', carrierStatusReadAt: '2026-09-10T08:00:00.000Z' }] }] }, report: null, sending: null,
+      now: SAMPLES_NOW } }} />);
     expect(scanned.querySelector('[data-testid="carrier-no-scan"]')).toBeNull();
     expect(scanned.textContent).toContain('IN_TRANSIT · Amazon · getPackageTrackingDetails · 08:00:00');
   });
@@ -107,5 +110,70 @@ describe('daily report', () => {
     expect(failed.lines).toHaveLength(2);
     expect(failed.lines[1]).toContain('failed, so nothing here would read as current.');
     expect(dailyReport(empty.props.snapshot, { queue, settlements: {} }).lines[3]).toBe('Sample lanes: none recorded.');
+  });
+});
+
+describe('Arcana sending on the list (WP-338g)', () => {
+  const second = { ...reservedLane, creatorRecordId: 'CCR-SW-26-0091', derivedOrderKey: 'CCS-91a0f3c9e1b7d42a8c6e0f1b3d5a7c9e' };
+  const third = { ...reservedLane, creatorRecordId: 'CCR-SW-26-0093', derivedOrderKey: 'CCS-93a0f3c9e1b7d42a8c6e0f1b3d5a7c9e', laneState: 'Reconciliation Required' as const,
+    orderOwner: 'arcana' as const, reconciliationReason: 'outcome_unknown' as const };
+  const fourth = { ...reservedLane, creatorRecordId: 'CCR-SW-26-0094', derivedOrderKey: 'CCS-94a0f3c9e1b7d42a8c6e0f1b3d5a7c9e', laneState: 'Verified for Submit' as const,
+    orderOwner: 'arcana' as const };
+  const fifth = { ...reservedLane, creatorRecordId: 'CCR-SW-26-0095', derivedOrderKey: 'CCS-95a0f3c9e1b7d42a8c6e0f1b3d5a7c9e', laneState: 'Verified for Submit' as const,
+    orderOwner: 'arcana' as const };
+  const sixth = { ...reservedLane, creatorRecordId: 'CCR-SW-26-0096', derivedOrderKey: 'CCS-96a0f3c9e1b7d42a8c6e0f1b3d5a7c9e' };
+  const sending: SamplesSending = {
+    gate: GATE_ON, key: KEY, escalated: [third.derivedOrderKey],
+    sends: {
+      [reservedLane.derivedOrderKey]: { ...SEND, latestPreview: { ...SEND.latestPreview!, readAt: '2026-09-09T10:53:00.000Z' } },
+      [second.derivedOrderKey]: null,
+      [sixth.derivedOrderKey]: 'unread',
+      [third.derivedOrderKey]: { ...SEND, state: 'uncertain', custodyExpiresAt: null, latestPreview: null },
+      [fourth.derivedOrderKey]: { ...SEND, state: 'conflict', custodyExpiresAt: null, amazonStatus: 'Planning', events: arrived('conflict', ['sku_mismatch']) },
+      [fifth.derivedOrderKey]: { ...SEND, state: 'accepted', escalationReason: 'ladder_exhausted', custodyExpiresAt: null, amazonStatus: null },
+    },
+  };
+  const data = (value: SamplesSending) => ({ view: 'ready' as const, props: { snapshot: { ...ready.props.snapshot,
+    shipments: [shipped, reservedLane, second, third, fourth, fifth, sixth] }, report: null, sending: value, now: SAMPLES_NOW } });
+
+  it('heads the list with units approved today (UTC) against the cap and whether sending is on', () => {
+    const host = rendered(<Screen data={data(sending)} />);
+    expect(host.querySelector('[data-testid="sending-header"]')?.getAttribute('data-sending')).toBe('on');
+    expect(host.querySelector('[data-testid="units-today"]')?.textContent).toBe('Units approved today (UTC): 2 of 5');
+    const off = rendered(<Screen data={data({ ...sending, gate: GATE_OFF, key: { status: 'absent' } })} />);
+    expect(off.querySelector('[data-testid="sending-header"]')?.getAttribute('data-sending')).toBe('off');
+    expect([...off.querySelectorAll('[data-testid="sending-header"] [data-missing]')].map((item) => item.getAttribute('data-missing')))
+      .toEqual(['grant', 'heartbeat', 'key_absent']);
+    expect(off.querySelector('[data-testid="units-today"]')?.textContent).toBe('Units approved today (UTC): not measured without a grant');
+  });
+
+  it('adds address, preview age, send state and Amazon status per lane', () => {
+    const host = rendered(<Screen data={data(sending)} />);
+    const rows = [...host.querySelectorAll('[data-testid="sample-lane"]')];
+    expect(rows).toHaveLength(7);
+    expect(rows[6]!.querySelector('[data-testid="send-cells"]')?.textContent).toBe('Send not read: the ledger read failed');
+    expect(host.querySelectorAll('thead th')).toHaveLength(12);
+    expect(rows[0]!.querySelector('[data-testid="send-cells"]')?.textContent).toBe('Runner lane; no Arcana send');
+    expect(rows[1]!.querySelector('[data-testid="send-address"]')?.textContent).toBe('Sealed · US · 94••• · 2 linesexpires 08:35 UTC');
+    expect(rows[1]!.querySelector('[data-testid="send-preview-age"]')?.textContent).toBe('12 min');
+    expect(rows[1]!.querySelector('[data-testid="send-state"]')?.getAttribute('data-send-state')).toBe('preview_ready');
+    expect(rows[1]!.querySelector('[data-testid="send-amazon"]')?.textContent).toBe('not read');
+    expect(rows[2]!.querySelector('[data-testid="send-cells"]')?.textContent).toBe('Ready for address');
+    expect(rows[3]!.querySelector('[data-testid="send-preview-age"]')?.textContent).toBe('no preview');
+    expect(rows[4]!.querySelector('[data-testid="send-amazon"]')?.textContent).toBe('Planning');
+  });
+
+  it('counts the sends that need a person in banners', () => {
+    const host = rendered(<Screen data={data(sending)} />);
+    for (const testid of ['send-uncertain', 'send-escalated', 'send-conflict', 'send-ladder']) {
+      expect(host.querySelector(`[data-testid="${testid}"]`)?.getAttribute('data-count')).toBe('1');
+    }
+    const calm = rendered(<Screen data={data({ ...sending, escalated: [], sends: { [reservedLane.derivedOrderKey]: SEND } })} />);
+    expect(calm.querySelectorAll('[data-testid^="send-"][data-count]')).toHaveLength(0);
+  });
+
+  it('shows no sending header or send columns when the list is withheld', () => {
+    const host = rendered(<Screen data={{ ...refused, props: { ...refused.props, sending } }} />);
+    expect(host.querySelector('[data-testid="sending-header"]')).toBeNull();
   });
 });

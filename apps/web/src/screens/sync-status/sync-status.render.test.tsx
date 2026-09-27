@@ -84,3 +84,31 @@ it('shows the market signals import totals and data-as-of only once the import h
   expect(cells.slice(1)).toEqual(['Not reported', '2', '3', '20', '24', '5', '30', '1', '2']);
   expect(cells[0]).toContain('01:00 UTC');
 });
+
+const importedLanes = {
+  id: '33200000-0000-4000-8000-0000000000b3', startedAt: '2026-09-09T06:13:58.000Z', finishedAt: '2026-09-09T06:14:00.000Z', status: 'succeeded' as const, failure: null,
+  failedFile: null, files: ['registry' as const, 'mcf_reservations' as const], queueRunDate: null, source: 'control-runner' as const,
+  counts: { records: null, action_log: null, queue_items: null, sweep_runs: null, preflights: null,
+    sample_shipments: { read: 6, valid: 6, invalid: 0, inserted: 1, updated: 1, unchanged: 2, skipped: 2, removed: 0 } },
+};
+
+it('WP-338g: shows the import\'s skipped count as Arcana-owned lanes left unchanged, and the custody residue', () => {
+  render(<Screen data={{ ...ready, props: { ...ready.props, creatorImport: importedLanes, mcfResidue: { expiredLive: 0, custodyFreeLive: 0 } } }} />);
+  expect(screen.getAllByRole('columnheader').map((cell) => cell.textContent).filter((text) => text === 'Skipped')).toHaveLength(1);
+  const lanes = screen.getAllByTestId('creator-import-row').find((row) => row.textContent?.startsWith('Sample shipments'))!;
+  expect([...lanes.querySelectorAll('td')].map((cell) => cell.textContent)).toEqual(['Sample shipments', '6', '6', '0', '1', '1', '2', '2', '0']);
+  expect(screen.getByTestId('creator-import-skipped').textContent).toBe(
+    'Arcana-owned lanes left unchanged: 2. The runner\'s file named them; Arcana\'s send ledger owns them.');
+  expect(screen.getByTestId('creator-mcf-residue').getAttribute('data-residue')).toBe('0');
+  expect(screen.getByTestId('creator-mcf-residue').textContent).toContain('0 past expiry, 0 behind a send that should hold none');
+});
+
+it('WP-338g: names residue above zero, and never reads an unmeasured residue or skipped count as zero', () => {
+  const { unmount } = render(<Screen data={{ ...ready, props: { ...ready.props, creatorImport: importedLanes, mcfResidue: { expiredLive: 1, custodyFreeLive: 2 } } }} />);
+  expect(screen.getByTestId('creator-mcf-residue').getAttribute('data-residue')).toBe('3');
+  unmount();
+  render(<Screen data={{ ...ready, props: { ...ready.props, creatorImport: { ...importedLanes, counts: { ...importedLanes.counts, sample_shipments: null } } } }} />);
+  expect(screen.getByTestId('creator-mcf-residue').getAttribute('data-residue')).toBe('not-measured');
+  expect(screen.getByTestId('creator-mcf-residue').textContent).toBe('Sealed-address custody residue: not measured.');
+  expect(screen.getByTestId('creator-import-skipped').textContent).toContain('not measured');
+});

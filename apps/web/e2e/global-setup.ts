@@ -18,7 +18,7 @@
  * production build by design. Running the suite against `next start` would have
  * to disable that guard, which is the guard's whole point.
  */
-import { randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
@@ -104,6 +104,8 @@ export default async function globalSetup(): Promise<void> {
   // Brand lens ships behind its rollout flag (off in production). Set it for this process so the
   // spec expectations (nav links from the registry) and the dev server (below) agree.
   process.env['WIZARD_ADS_BRAND_LENS_ENABLED'] ??= '1';
+  // The creators send spec seals to this run's public key; its private half is discarded here, so nothing can open what the browser seals.
+  process.env['OPENSPELL_MCF_RECIPIENT_PUBLIC_KEY'] ??= syntheticMcfRecipientPublicKey();
   await runE2EGlobalSetup({
     installTeardown: (teardown) => {
       (globalThis as Record<string, unknown>)['__wizardAdsE2E'] = teardown;
@@ -430,6 +432,14 @@ function spawnWebServer(connectionString: string, amazon: AmazonMock, _fixturePr
     });
   });
   return { child, failedBeforeReady };
+}
+
+/** A fresh P-256 public key and its key id (hex SHA-256 of the SPKI DER), in the OPENSPELL_MCF_RECIPIENT_PUBLIC_KEY shape. */
+function syntheticMcfRecipientPublicKey(): string {
+  const { publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const jwk = publicKey.export({ format: 'jwk' });
+  const keyId = createHash('sha256').update(publicKey.export({ type: 'spki', format: 'der' })).digest('hex');
+  return JSON.stringify({ keyId, jwk: { kty: 'EC', crv: 'P-256', x: jwk.x, y: jwk.y } });
 }
 
 function appendNodeOption(current: string | undefined, option: string): string {

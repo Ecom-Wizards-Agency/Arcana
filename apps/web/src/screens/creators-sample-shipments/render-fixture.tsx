@@ -23,17 +23,19 @@ export const ambiguous: CreatorSampleShipment = {
   reservationId: 'MCFR-9f2c41ab77e0d3b5', laneState: 'Reconciliation Required', feeCents: 620, verifiedAt: '2026-09-08T06:44:00.000Z',
   reconciliationReason: 'outcome_unknown',
 };
-export const ready = { view: 'ready', props: { snapshot: { lastImport, shipments: [shipped, ambiguous] }, report: null } } satisfies ScreenData;
-export const refused = { view: 'ready', props: { snapshot: { lastImport: failedImport, shipments: [shipped, ambiguous] }, report: null } } satisfies ScreenData;
-export const empty = { view: 'ready', props: { snapshot: { lastImport, shipments: [] }, report: null } } satisfies ScreenData;
-export const notImported = { view: 'ready', props: { snapshot: { lastImport: null, shipments: [] }, report: null } } satisfies ScreenData;
+/** The list's read time. */
+export const SAMPLES_NOW = '2026-09-09T11:05:00.000Z';
+export const ready = { view: 'ready', props: { snapshot: { lastImport, shipments: [shipped, ambiguous] }, report: null, sending: null, now: SAMPLES_NOW } } satisfies ScreenData;
+export const refused = { view: 'ready', props: { snapshot: { lastImport: failedImport, shipments: [shipped, ambiguous] }, report: null, sending: null, now: SAMPLES_NOW } } satisfies ScreenData;
+export const empty = { view: 'ready', props: { snapshot: { lastImport, shipments: [] }, report: null, sending: null, now: SAMPLES_NOW } } satisfies ScreenData;
+export const notImported = { view: 'ready', props: { snapshot: { lastImport: null, shipments: [] }, report: null, sending: null, now: SAMPLES_NOW } } satisfies ScreenData;
 /** An import that read only the queue: nothing that records a sample lane was read. */
-export const queueOnly = { view: 'ready', props: { snapshot: { lastImport: { ...lastImport, files: ['queue'] }, shipments: [] }, report: null } } satisfies ScreenData;
+export const queueOnly = { view: 'ready', props: { snapshot: { lastImport: { ...lastImport, files: ['queue'] }, shipments: [] }, report: null, sending: null, now: SAMPLES_NOW } } satisfies ScreenData;
 /**
  * `?report=daily`: the fixture queue (34 items) and sweep (did not reconcile),
  * with 0088's order found by a read and 0072 read twice with nothing found.
  */
-export const reported = { view: 'ready', props: { snapshot: ready.props.snapshot, report: { queue, settlements: {
+export const reported = { view: 'ready', props: { snapshot: ready.props.snapshot, sending: null, now: SAMPLES_NOW, report: { queue, settlements: {
   [shipped.derivedOrderKey]: { settlement: 'found', notFoundProbes: 0, lastProbeAt: '2026-09-09T11:02:41.000Z' },
   [ambiguous.derivedOrderKey]: { settlement: 'not_found', notFoundProbes: 2, lastProbeAt: '2026-09-09T11:02:43.000Z' },
 } } } } satisfies ScreenData;

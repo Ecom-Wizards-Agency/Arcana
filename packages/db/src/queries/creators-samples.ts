@@ -191,7 +191,7 @@ function switchPreflight(row: PreflightRow): CreatorSwitchPreflight {
 
 const SHIPMENT_COLUMNS = `creator_record_id, asin, derived_order_key, sku, campaign_id, reservation_id, lane_state, runner_order_id, fee_cents,
   fee_cap_cents, reserved_at, verified_at, confirmed_at, cancelled_at, cancellation_reason, reconciliation_reason, mcf_status, mcf_operation,
-  mcf_read_at, packages, source, imported_at`;
+  mcf_read_at, packages, source, imported_at, order_owner`;
 type LaneRow = ShipmentRow & { shipments: unknown; mcf_settlement: string | null; mcf_not_found_probes: number; mcf_probed_at: Date | null };
 
 async function readLane(handle: QueryHandle, orgId: string, key: string): Promise<LaneRow | null> {
