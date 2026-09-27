@@ -41,7 +41,9 @@ fi
 
 # 2. Every unit keeps the host unit's lines exactly. Only comments, Description=,
 # ExecStart= and LoadCredentialEncrypted= may differ, so no directive can be
-# added, repeated, reordered or overridden (a later ProtectHome=no, say).
+# added, repeated, reordered or overridden (a later ProtectHome=no, say). The
+# worker unit alone adds one line after ProtectHome=yes: the import directory,
+# read-only (WP-336).
 require_line() {
   local file="$1" line="$2"
   if ! grep -Fqx -- "$line" "$file"; then
@@ -79,12 +81,24 @@ SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 [Install]
 WantedBy=multi-user.target'
+import_paths_line='ReadOnlyPaths=-/var/lib/wizard-ads-imports'
+worker_unit_lines="${host_unit_lines/$'ProtectHome=yes\n'/$'ProtectHome=yes\n'$import_paths_line$'\n'}"
+if [[ "$worker_unit_lines" == "$host_unit_lines" \
+  || "$(printf '%s\n' "$worker_unit_lines" | wc -l)" != "$(( $(printf '%s\n' "$host_unit_lines" | wc -l) + 1 ))" ]]; then
+  echo "the worker unit's expected shape must be the host unit plus the import directory line" >&2
+  exit 1
+fi
 for unit in "$worker_unit" "$spapi_unit" "$amazon_unit"; do
+  if [[ "$unit" == "$worker_unit" ]]; then
+    expected_lines="$worker_unit_lines"
+  else
+    expected_lines="$host_unit_lines"
+  fi
   shape="$(grep -v -e '^#' -e '^Description=' -e '^ExecStart=' \
     -e '^LoadCredentialEncrypted=' -e '^[[:space:]]*$' "$unit")"
-  if [[ "$shape" != "$host_unit_lines" ]]; then
-    echo "$(basename "$unit") differs from the host unit outside its command and credentials" >&2
-    diff <(printf '%s\n' "$host_unit_lines") <(printf '%s\n' "$shape") >&2 || true
+  if [[ "$shape" != "$expected_lines" ]]; then
+    echo "$(basename "$unit") differs from its expected unit outside its command and credentials" >&2
+    diff <(printf '%s\n' "$expected_lines") <(printf '%s\n' "$shape") >&2 || true
     exit 1
   fi
   if [[ "$(grep -c '^Description=' "$unit")" != 1 || "$(grep -c '^ExecStart=' "$unit")" != 1 ]]; then
@@ -191,6 +205,11 @@ if config.get(module.AMAZON_GATE) != "1" or not re.fullmatch(
     fail("the Amazon Ads connection unit must be enabled with a placeholder callback")
 if module.AMAZON_KEYS != frozenset({module.AMAZON_GATE, "AMAZON_OAUTH_ALLOWED_REDIRECT_URIS"}):
     fail("the Amazon Ads keys the worker mode withholds changed")
+# WP-336: the import keys are optional and documented in always-on-worker.md;
+# JSON has no comments, so the template's key set stays exact without them.
+if module.IMPORT_KEYS != frozenset({"OPENSPELL_MARKET_SIGNALS_DIR", "OPENSPELL_MARKET_SIGNALS_ORG_KEYS"}) \
+        or not module.IMPORT_KEYS <= module.WORKER_ENV_KEYS or set(config) & module.IMPORT_KEYS:
+    fail("the optional import keys must be allowlisted and absent from the template")
 secret_shapes = [r"postgres(ql)?://", r"amzn1\.oa2-cs", r"amzn1\.application-oa2-client\.",
                  "op" + r":/" + "/", r"/(home|Users)/", r"[A-Za-z0-9+=_-]{24,}"]
 for value in config.values():

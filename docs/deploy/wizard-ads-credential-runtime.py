@@ -58,6 +58,18 @@ AMAZON_SETTINGS = ("AMAZON_OAUTH_ALLOWED_REDIRECT_URIS",)
 # Read only by the Amazon Ads connection mode. The worker mode never passes
 # them on: the worker config refuses the Ads loop without entity.sync.
 AMAZON_KEYS = frozenset({AMAZON_GATE, *AMAZON_SETTINGS})
+# WP-331's market-signals import (WP-336). Optional and non-secret; without the
+# directory the import is off. Only the worker mode passes them on, after
+# validation. ProtectHome=yes hides /home, /root and /run/user from the unit.
+MARKET_SIGNALS_DIR = "OPENSPELL_MARKET_SIGNALS_DIR"
+MARKET_SIGNALS_ORG_KEYS = "OPENSPELL_MARKET_SIGNALS_ORG_KEYS"
+IMPORT_KEYS = frozenset({MARKET_SIGNALS_DIR, MARKET_SIGNALS_ORG_KEYS})
+HIDDEN_ROOTS = ("/home", "/root", "/run/user")
+IMPORT_DIRECTORY = re.compile(r"^(?:/[A-Za-z0-9._-]+)+$")
+ORG_KEY_ENTRY = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}="
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 CREDENTIAL_VALUE = re.compile(r"^[\x21-\x7e]{1,4096}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 MCP_UPSTREAM = "http://127.0.0.1:18787"
@@ -104,6 +116,7 @@ WORKER_ENV_KEYS = {
     SPAPI_GATE,
     *SPAPI_SETTINGS,
     *AMAZON_KEYS,
+    *IMPORT_KEYS,
 }
 
 
@@ -177,6 +190,30 @@ def general_worker_job_types(config: dict[str, str]) -> None:
         raise RuntimeError(
             "WORKER_JOB_TYPES must list exactly these job types once each: "
             + ",".join(sorted(GENERAL_WORKER_JOB_TYPES))
+        )
+
+
+def market_signals_settings(config: dict[str, str]) -> None:
+    """Refuse an import setting the hardened worker could not use; name the key, never the value."""
+    directory = config.get(MARKET_SIGNALS_DIR)
+    if directory is None:
+        if MARKET_SIGNALS_ORG_KEYS in config:
+            raise RuntimeError(f"{MARKET_SIGNALS_ORG_KEYS} requires {MARKET_SIGNALS_DIR}")
+        return
+    if not IMPORT_DIRECTORY.fullmatch(directory) or os.path.normpath(directory) != directory \
+            or any(directory == root or directory.startswith(root + "/") for root in HIDDEN_ROOTS):
+        raise RuntimeError(
+            f"{MARKET_SIGNALS_DIR} must be a normalized absolute path outside "
+            + ", ".join(HIDDEN_ROOTS)
+        )
+    org_keys = config.get(MARKET_SIGNALS_ORG_KEYS)
+    if org_keys is None:
+        return
+    entries = org_keys.split(",")
+    keys = [entry.split("=", 1)[0] for entry in entries]
+    if not all(ORG_KEY_ENTRY.fullmatch(entry) for entry in entries) or len(keys) != len(set(keys)):
+        raise RuntimeError(
+            f"{MARKET_SIGNALS_ORG_KEYS} must be key=uuid[,key=uuid] with unique keys"
         )
 
 
@@ -262,6 +299,7 @@ def exec_release(mode: str, revision: str, spapi_enabled: bool,
 def run_worker() -> None:
     config = public_config()
     general_worker_job_types(config)
+    market_signals_settings(config)
     revision = release_revision()
     spapi_enabled = config.get(SPAPI_GATE) == "1"
     if spapi_enabled and any(not config.get(name) for name in SPAPI_SETTINGS):
