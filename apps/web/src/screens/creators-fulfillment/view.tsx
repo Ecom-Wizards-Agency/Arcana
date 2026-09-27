@@ -8,6 +8,7 @@ import { amazonRead, clock, money } from '../creators-sample-preflight/order-key
 import { REFUSED_ORDER_STATUSES, carrierFailed, fulfillmentStages, trackingNotSafeToSend, type FulfillmentStage } from './stages';
 import type { CreatorMcfLaneSend } from '@wizard-ads/db';
 import { SEND_STATE_WORDS, STATE_REASON_WORDS } from '../creators-sample-preflight/send-model';
+import { CANCEL_ORIGINS, cancelAnswerWords, cancelEndingWords, cancelOpen, endingOf, notSentCause, statusClass } from '../creators-sample-preflight/cancel-model';
 import type { load } from './load';
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
@@ -289,8 +290,21 @@ const OUTCOME_LINE: Partial<Record<CreatorMcfLaneSend['state'], string>> = {
   not_created: 'Released as not created after enough not-found reads.',
   failed_by_amazon: 'Amazon holds the order in a failed status.',
   failed_after_placement: 'The placed order later became Cancelled or Unfulfillable in Amazon.',
-  cancel_requested: 'A cancel was requested.', cancel_dispatching: 'The worker is asking Amazon to cancel.', cancelled: 'Amazon cancelled the order.',
+  cancel_requested: 'Arcana approved a cancel of this order; the worker has not sent the cancel request yet.',
+  cancel_dispatching: 'The worker sent Arcana\'s one cancel request to Amazon. Only a read showing Cancelled settles it; the request is never sent twice.',
+  cancelled: 'Arcana asked Amazon to cancel this order, and a read showed it Cancelled. The lane is Cancelled.',
 };
+
+/** Where the send's newest cancel stands, read-only: approved and waiting, sent, or how it ended. Null when none was pressed. */
+function CancelLine({ send }: { send: CreatorMcfLaneSend }) {
+  const cancel = send.cancel;
+  if (cancel === null) return null;
+  const [key, text] = send.state === 'cancel_dispatching' || (cancel.reservedAt !== null && cancel.endedAt === null)
+    ? ['dispatching', `The one cancel request was reserved ${cancel.reservedAt === null ? 'at a time not recorded' : `at ${formatTimestamp(cancel.reservedAt)}`}. Amazon's answer so far: ${cancelAnswerWords(cancel)}${endingOf(cancel) === 'not_sent' ? ` ${notSentCause(cancel.endingReason)}` : ''} Arcana waits for a read showing Cancelled and never sends the request twice.`]
+    : cancelOpen(cancel) ? ['approved', `Cancel approved at ${formatTimestamp(cancel.approvedAt)}, waiting for the worker. If it has not taken it by ${clock(cancel.claimDeadline)} it expires and nothing is sent to Amazon.`]
+      : [endingOf(cancel) ?? 'open', `${cancelEndingWords(cancel)}${cancel.ending === 'not_honoured' ? ` Amazon's answer to the request: ${cancelAnswerWords(cancel)}` : ''}${cancel.endedAt === null ? '' : ` Ended ${formatTimestamp(cancel.endedAt)}.`}`];
+  return <span data-testid="arcana-cancel" data-cancel={key}>{text}</span>;
+}
 
 /** Arcana placed this lane's order: its outcome, in the ledger's words, with the Amazon status and codes. */
 function ArcanaOutcome({ send, lane }: { send: CreatorMcfLaneSend; lane: CreatorSampleShipment }) {
@@ -307,9 +321,13 @@ function ArcanaOutcome({ send, lane }: { send: CreatorMcfLaneSend; lane: Creator
       ['placed', 'Placed', send.placedAt === null ? <span className="wa-page-sub">not placed</span> : formatTimestamp(send.placedAt)],
       ['codes', 'Amazon codes', (send.providerCodes ?? []).length === 0 ? <span className="wa-page-sub">none</span>
         : (send.providerCodes ?? []).map((code) => <code key={code}>{code} </code>)],
+      ...(send.cancel === null ? [] : [['cancel', 'Cancel in Amazon', <CancelLine key="cancel" send={send} />] as const]),
     ]} />
+    {CANCEL_ORIGINS.includes(send.state) && !cancelOpen(send.cancel) && statusClass(send.amazonStatus ?? lane.mcf?.status ?? null) === 'cancellable'
+      ? <p style={{ margin: 0 }} data-testid="cancel-link-line">Amazon holds this order as {send.amazonStatus ?? lane.mcf?.status}, so it can still be cancelled.
+        {' '}<a href={`/creators/samples/${lane.derivedOrderKey}/preflight`} data-testid="cancel-link">Cancel on the send page</a></p> : null}
     {escalation === null ? null : <p className="wa-banner wa-banner--bad" data-testid="arcana-escalation" style={{ display: 'block', margin: 0 }}><strong>{escalation}</strong></p>}
-    <p className="wa-page-sub" style={{ margin: 0 }}>Arcana owns this lane&apos;s order. Asking Amazon, releasing and recording as sent are on
+    <p className="wa-page-sub" style={{ margin: 0 }}>Arcana owns this lane&apos;s order. Asking Amazon, releasing, recording as sent and cancelling are on
       {' '}<a href={`/creators/samples/${lane.derivedOrderKey}/preflight`} data-testid="arcana-controls-link">the pre-flight</a>.</p>
   </Panel>;
 }

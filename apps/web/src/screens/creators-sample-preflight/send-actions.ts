@@ -1,6 +1,7 @@
 /**
  * The send section's server actions (WP-338g), behind the thin 'use server'
- * module in app/creators/samples/[id]/preflight/actions.ts.
+ * module in app/creators/samples/[id]/preflight/actions.ts. The two cancel
+ * actions (WP-338i) sit behind ./cancel-actions.ts, the same kind of module.
  *
  * The seal action accepts only the strict shared CreatorMcfSealRequest
  * ({binding, envelope}); any other key, including any plaintext address field,
@@ -19,10 +20,13 @@
  */
 import { headers } from 'next/headers';
 import {
-  AgencyAccessDenied, approveCreatorMcfSend, refreshCreatorMcfPreview, releaseCreatorMcfSend, requestCreatorMcfSettleRead,
-  resolveCreatorMcfConflict, sealCreatorMcfRecipient, withdrawCreatorMcfSend, type CreatorMcfCommandResult, type CreatorMcfRefusal,
+  AgencyAccessDenied, approveCreatorMcfCancel, approveCreatorMcfSend, refreshCreatorMcfPreview, releaseCreatorMcfSend,
+  requestCreatorMcfCancelPreview, requestCreatorMcfSettleRead, resolveCreatorMcfConflict, sealCreatorMcfRecipient, withdrawCreatorMcfSend,
+  type CreatorMcfCancelApproval, type CreatorMcfCommandResult, type CreatorMcfRefusal,
 } from '@wizard-ads/db';
-import { CreatorMcfSealRequest, CreatorMcfSendApproval, type CreatorMcfSendState, type OrgActor } from '@wizard-ads/shared';
+import {
+  CreatorMcfSealRequest, CreatorMcfSendApproval, creatorMcfCancelConfirmation, type CreatorMcfSendState, type OrgActor,
+} from '@wizard-ads/shared';
 import { requireDatabase } from '../../data/db';
 import { requestActor } from '../../server/request-context';
 
@@ -104,4 +108,36 @@ export async function resolveConflictAction(sendId: unknown, requestId: unknown)
   const request = uuid(requestId);
   if (id === null || request === null) return { ok: false, reason: 'invalid' };
   return ledger((handle, actor) => resolveCreatorMcfConflict(handle, actor, id, request));
+}
+
+/** "Cancel in Amazon" and "Read again": asks the MCF worker for one getOrder read of a placed or conflicting send. */
+export const requestCancelPreviewAction = bySend(requestCreatorMcfCancelPreview);
+
+const HEX64 = /^[0-9a-f]{64}$/;
+const CANCEL_KEYS = ['sendId', 'previewId', 'previewFingerprint', 'confirmation', 'requestId'] as const;
+
+/**
+ * The press on "Cancel 1 order in Amazon": exactly five string keys, three
+ * uuids and a hex fingerprint, or `approval_invalid`; a well-formed press whose
+ * text is not exactly the one-order wording is `confirmation_mismatch`. Both
+ * are refused before a database handle is opened. The database recomputes the
+ * wording and checks the preview again.
+ */
+export async function approveCancelAction(approval: unknown): Promise<SendActionResult> {
+  if (typeof approval !== 'object' || approval === null || Array.isArray(approval) || Object.getPrototypeOf(approval) !== Object.prototype) {
+    return { ok: false, reason: 'approval_invalid' };
+  }
+  const record = approval as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (keys.length !== CANCEL_KEYS.length || !CANCEL_KEYS.every((key) => Object.hasOwn(record, key) && typeof record[key] === 'string')) {
+    return { ok: false, reason: 'approval_invalid' };
+  }
+  const input = record as unknown as CreatorMcfCancelApproval;
+  if (uuid(input.sendId) === null || uuid(input.previewId) === null || uuid(input.requestId) === null || !HEX64.test(input.previewFingerprint)) {
+    return { ok: false, reason: 'approval_invalid' };
+  }
+  if (input.confirmation !== creatorMcfCancelConfirmation(1)) return { ok: false, reason: 'confirmation_mismatch' };
+  const exact: CreatorMcfCancelApproval = { sendId: input.sendId, previewId: input.previewId, previewFingerprint: input.previewFingerprint,
+    confirmation: input.confirmation, requestId: input.requestId };
+  return ledger((handle, actor) => approveCreatorMcfCancel(handle, actor, exact));
 }

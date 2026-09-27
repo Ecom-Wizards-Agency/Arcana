@@ -20,7 +20,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import {
-  CREATOR_MCF_IRREVERSIBILITY, CREATOR_MCF_RECIPIENT_FIELDS, CreatorMcfCancellableStatus, CreatorMcfRecipient, creatorMcfEnvelopeSupported,
+  CREATOR_MCF_IRREVERSIBILITY, CREATOR_MCF_RECIPIENT_FIELDS, CreatorMcfRecipient, creatorMcfEnvelopeSupported,
   creatorMcfRecipientIssues, creatorMcfSendConfirmation, sealCreatorMcfRecipient, type CreatorMcfRecipientBinding, type CreatorMcfRecipientField,
   type CreatorMcfRecipientIssue, type CreatorMcfSendPreview, type CreatorPreflightDetail,
 } from '@wizard-ads/shared';
@@ -28,14 +28,20 @@ import type { CreatorMcfLaneSend, CreatorMcfLaneView } from '@wizard-ads/db';
 import { Badge, TableFrame } from '../../ui/primitives';
 import { formatTimestamp } from '../../ui/date-format';
 import type { SendActionFailure, SendActionResult } from './send-actions';
+import { approveMcfCancel, requestMcfCancelPreview } from './cancel-actions';
+import { CancelControls, CancelProgress, cancelPhase, cancelWaiting, type CancelActions } from './cancel';
 import {
   MISSING_WORDS, REFUSAL_WORDS, SEND_STATE_WORDS, STATE_REASON_WORDS, SUPERSEDABLE, WAITING, WITHDRAWABLE, arrivalEvent, codeWords, hhmm,
   initialsOf, issueWords, laneBlock, maskText, mayTakeAddress, minor, previewCurrent, sealBinding, sendingMissing, type LaneBlock, type SendData,
   type SendKey, type SendMissing,
 } from './send-model';
 
-/** The server actions the page passes in. Tests pass fakes. */
-export interface SendActions {
+/**
+ * The server actions the page passes in. Tests pass fakes. The two cancel
+ * actions are optional: when the page passes none, the section supplies the
+ * real ones from ./cancel-actions.
+ */
+export interface SendActions extends Partial<CancelActions> {
   seal(body: unknown): Promise<SendActionResult>;
   approve(approval: unknown): Promise<SendActionResult>;
   withdraw(sendId: unknown): Promise<SendActionResult>;
@@ -463,10 +469,8 @@ function Outcome({ send, view }: { send: CreatorMcfLaneSend; view: CreatorMcfLan
         : ` ${codes.map(codeWords).join('; ')}.`} The sealed address was destroyed; nothing was ordered.</p>;
     case 'withdrawn': case 'expired': case 'expired_unclaimed':
       return <p style={{ margin: 0 }} data-testid="ended-note">{reason ?? SEND_STATE_WORDS[send.state].title}. The sealed address was destroyed; nothing was ordered.</p>;
-    case 'cancel_requested': case 'cancel_dispatching':
-      return <p style={{ margin: 0 }} data-testid="cancel-note">Cancelling in Amazon. Nothing else can change this send until Amazon answers.</p>;
-    case 'cancelled':
-      return <p style={{ margin: 0 }} data-testid="cancel-note">Amazon cancelled the order at Arcana&apos;s request.</p>;
+    case 'cancel_requested': case 'cancel_dispatching': case 'cancelled':
+      return <CancelProgress send={send} view={view} />;
     default:
       return null;
   }
@@ -485,7 +489,7 @@ function SendCard({ send, view, detail, data, sendingOn, actions, now, onChange 
   const preview = latest !== null && latest.preview.kind !== 'cancel_preview' ? latest.preview : null;
   const escalatedLadder = send.escalationReason === 'ladder_exhausted';
   const act = data.canAct;
-  const settleable = ['accepted', 'uncertain', 'conflict'].includes(send.state);
+  const settleable = ['accepted', 'uncertain', 'conflict', 'cancel_dispatching'].includes(send.state);
   const heldCustody = SUPERSEDABLE.includes(send.state) || send.state === 'approved';
   const current = preview !== null && latest !== null && previewCurrent(latest, now);
 
@@ -546,13 +550,11 @@ function SendCard({ send, view, detail, data, sendingOn, actions, now, onChange 
         <button type="button" className="wa-btn wa-btn--primary" data-testid="record-as-sent" disabled={command.pending !== null}
           onClick={() => { resolveRequest.current ??= globalThis.crypto.randomUUID(); const request = resolveRequest.current;
             void command.run('resolve', actions && (() => actions.resolveConflict(send.sendId, request))); }}>Record as sent</button>
-        {CreatorMcfCancellableStatus.safeParse(send.amazonStatus ?? view.lane.mcfStatus).success
-          ? <button type="button" className="wa-btn" data-testid="cancel-in-amazon" disabled aria-describedby="cancel-not-built">Cancel in Amazon</button> : null}
       </> : null}
     </p> : null}
-    {act && send.state === 'conflict' && CreatorMcfCancellableStatus.safeParse(send.amazonStatus ?? view.lane.mcfStatus).success
-      ? <p className="wa-page-sub" id="cancel-not-built" style={{ margin: 0 }}>Cancel is its own guarded write with its own preview and the button
-        &quot;Cancel 1 order in Amazon&quot;. It is not available in Arcana yet; cancel in Seller Central while the order is Received or Planning.</p> : null}
+    <CancelControls send={send} view={view} data={data} now={now} command={command}
+      actions={actions?.requestCancelPreview === undefined || actions.approveCancel === undefined ? undefined
+        : { requestCancelPreview: actions.requestCancelPreview, approveCancel: actions.approveCancel }} />
     {command.note}
   </section>;
 }
@@ -581,7 +583,15 @@ export function SendSection({ detail, now, data, actions }: { detail: CreatorPre
   const view = data.mcf;
   const send = view?.send ?? null;
   const refresh = () => { setTick((value) => value + 1); router.refresh(); };
-  const every = send === null ? null : WAITING.includes(send.state) ? REFRESH_MS : send.state === 'preview_ready' ? READY_REFRESH_MS : null;
+  const phase = send !== null && ['placed', 'conflict'].includes(send.state) ? cancelPhase(send, now) : null;
+  /** A current cancel preview re-reads the clock and the gate, so the button hides once it is too old; a stale one waits for a press. */
+  const cancelReady = phase?.kind === 'preview' && phase.current;
+  const every = send === null ? null : WAITING.includes(send.state) || cancelWaiting(send) ? REFRESH_MS
+    : send.state === 'preview_ready' || cancelReady ? READY_REFRESH_MS : null;
+  /** The page's actions, with the real cancel server actions when the page passed none. */
+  const wired: SendActions | undefined = actions === undefined ? undefined : {
+    ...actions, requestCancelPreview: actions.requestCancelPreview ?? requestMcfCancelPreview, approveCancel: actions.approveCancel ?? approveMcfCancel,
+  };
   useEffect(() => {
     if (every === null) return;
     const timer = setInterval(() => { router.refresh(); }, every);
@@ -601,10 +611,11 @@ export function SendSection({ detail, now, data, actions }: { detail: CreatorPre
     {send === null && block === null && !data.canAct ? <p className="wa-page-sub" data-testid="no-send" style={{ margin: 0 }}>Nothing has been sealed for this lane.
       Owners and admins type the address here.</p> : null}
     {send !== null && view !== null
-      ? <SendCard key={send.sendId} send={send} view={view} detail={detail} data={data} sendingOn={sendingOn} actions={actions} now={now} onChange={refresh} /> : null}
+      ? <SendCard key={send.sendId} send={send} view={view} detail={detail} data={data} sendingOn={sendingOn} actions={wired} now={now} onChange={refresh} /> : null}
     {canEnter && data.key.status === 'ok' && binding !== null
       ? <AddressEntry key={`entry-${send?.sendId ?? 'new'}`} detail={detail} binding={binding} sendKey={data.key} marketplaceId={data.gate?.marketplaceId ?? null}
         currency={data.gate?.currency ?? null} actions={actions} superseding={send !== null && SUPERSEDABLE.includes(send.state)} onSealed={refresh} /> : null}
-    {!data.canAct ? <p className="wa-page-sub" data-testid="analyst-note" style={{ margin: 0 }}>Owners and admins seal, send, withdraw and settle; this view has no controls.</p> : null}
+    {!data.canAct ? <p className="wa-page-sub" data-testid="analyst-note" style={{ margin: 0 }}>Owners and admins seal, send, withdraw, settle and cancel; this view has no
+      controls.</p> : null}
   </section>;
 }

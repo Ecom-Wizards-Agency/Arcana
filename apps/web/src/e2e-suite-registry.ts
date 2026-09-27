@@ -114,7 +114,7 @@ export const E2E_SUITE_DEFINITIONS = [
     config: 'playwright.route-acceptance.config.ts',
     project: 'route-acceptance',
     expectedSpecFiles: specsFor('route-acceptance'),
-    expectedTests: 27,
+    expectedTests: 28,
   },
   {
     name: 'undesigned-routes',

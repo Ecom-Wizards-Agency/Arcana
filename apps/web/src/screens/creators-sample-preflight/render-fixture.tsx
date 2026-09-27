@@ -5,10 +5,10 @@
  * and nothing here names a creator: Arcana holds fingerprints only.
  */
 import {
-  CREATOR_MCF_IRREVERSIBILITY, CreatorMcfSendPreview, creatorPreflightChecks, type CreatorMcfSendState, type CreatorPreflightCheck, type CreatorPreflightDetail,
+  CREATOR_MCF_IRREVERSIBILITY, CreatorMcfCancelPreview, CreatorMcfSendPreview, creatorPreflightChecks, type CreatorMcfSendState, type CreatorPreflightCheck, type CreatorPreflightDetail,
   type CreatorSamplePreflight, type CreatorSampleShipment,
 } from '@wizard-ads/shared';
-import type { CreatorMcfLaneSend, CreatorMcfLaneView, CreatorMcfSendGate } from '@wizard-ads/db';
+import type { CreatorMcfLaneCancel, CreatorMcfLaneSend, CreatorMcfLaneView, CreatorMcfSendGate } from '@wizard-ads/db';
 import type { SendData } from './send-model';
 import { failedImport, lastImport } from '../creators-daily-queue/render-fixture';
 import { ambiguous, shipped } from '../creators-sample-shipments/render-fixture';
@@ -107,7 +107,36 @@ export const SEND: CreatorMcfLaneSend = {
   intentReservedAt: null, providerOutcome: null, providerReason: null, providerStatus: null, providerCodes: null, amazonStatus: null, acceptedAt: null,
   placedAt: null, createdAt: '2026-09-09T06:35:00.000Z',
   latestPreview: { previewId: PREVIEW.previewId, fingerprint: '9d'.repeat(32), preview: PREVIEW, readAt: PREVIEW.readAt, validUntil: PREVIEW.validUntil },
-  events: [],
+  events: [], cancel: null, latestCancelPreview: null, cancelPreviewPending: false, cancelPreviewRefusal: null,
+};
+
+// ---------------------------------------------------------------------------
+// The guarded cancel (WP-338i): a grant carrying 'cancel', a getOrder read at
+// 06:38:00 valid until 06:43:00 (NOW is 06:40:00), and a cancel at each step.
+// ---------------------------------------------------------------------------
+
+/** Sending on, and the grant carries the cancel action too. */
+export const CANCEL_GATE: CreatorMcfSendGate = { ...GATE_ON, actions: ['send', 'cancel'] };
+export const CANCEL_PREVIEW = CreatorMcfCancelPreview.parse({
+  previewId: '33800000-0000-4000-8000-0000000000c1', sendId: SEND_ID, derivedOrderKey: shipped.derivedOrderKey, reservationId: shipped.reservationId,
+  spapiConnectionId: CONNECTION, marketplaceId: 'ATVPDKIKX0DER', readAt: '2026-09-09T06:38:00.000Z', validUntil: '2026-09-09T06:43:00.000Z',
+  workerRevision: 'synthetic-rev', kind: 'cancel_preview', existingOrder: { status: 'Received' },
+  items: [{ sellerSku: 'SW-DERMA-05-FBA', sellerFulfillmentOrderItemId: `${shipped.derivedOrderKey}-1`, quantity: 1 }], totalUnits: 1,
+});
+export const LATEST_CANCEL_PREVIEW: NonNullable<CreatorMcfLaneSend['latestCancelPreview']> = {
+  previewId: CANCEL_PREVIEW.previewId, fingerprint: 'c4'.repeat(32), preview: CANCEL_PREVIEW, readAt: CANCEL_PREVIEW.readAt,
+  validUntil: CANCEL_PREVIEW.validUntil,
+};
+/** Approved at 06:39:00 on a placed send; the worker has until 06:54:00 to take it. */
+export const OPEN_CANCEL: CreatorMcfLaneCancel = {
+  cancelId: '33800000-0000-4000-8000-0000000000c2', originState: 'placed', approvedAt: '2026-09-09T06:39:00.000Z', claimDeadline: '2026-09-09T06:54:00.000Z',
+  reservedAt: null, providerOutcome: null, providerReason: null, providerStatus: null, providerCodes: null, endedAt: null, ending: null, endingReason: null,
+};
+/** The ledger's `not_sent` ending, typed through the web's own union until the ledger's type names it. */
+export const NOT_SENT = 'not_sent' as unknown as CreatorMcfLaneCancel['ending'];
+/** A placed send as the ledger shows it once Amazon holds the order as Received. */
+export const PLACED: Partial<CreatorMcfLaneSend> = {
+  state: 'placed', amazonStatus: 'Received', placedAt: '2026-09-09T06:30:00.000Z', custodyExpiresAt: null, latestPreview: null,
 };
 
 type LaneOverrides = Partial<CreatorMcfLaneView['lane']>;

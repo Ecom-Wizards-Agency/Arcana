@@ -3,6 +3,10 @@
  * the browser posts only {binding, envelope}, a simulated MCF worker records a
  * preview through the service-role ledger functions, and "Send 1 unit via
  * Amazon" approves it. The route carries a nonce CSP; other routes do not.
+ * WP-338i live: on a placed send, "Cancel in Amazon" queues one read, the
+ * simulated worker records the cancel preview, "Cancel 1 order in Amazon"
+ * approves it, and the worker's reservation, answer and a read showing
+ * Cancelled settle the send and the lane.
  *
  * Synthetic rows only. Nothing calls Amazon: the "worker" here is two SQL calls.
  * The public key comes from global setup, which discarded its private half, so
@@ -11,11 +15,14 @@
  */
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { expect, test, type Page, type Request, type TestInfo } from '@playwright/test';
-import { CREATOR_MCF_IRREVERSIBILITY, CreatorMcfPreview, CreatorPreflightCheck, creatorMcfCanonicalJson, creatorPreflightChecks } from '@wizard-ads/shared';
-import { createDb, type DbHandle } from '@wizard-ads/db';
+import {
+  CREATOR_MCF_ENVELOPE_SUITE, CREATOR_MCF_IRREVERSIBILITY, CreatorMcfCancelPreview, CreatorMcfPreview, CreatorPreflightCheck, creatorMcfBase64UrlEncode,
+  creatorMcfCanonicalJson, creatorPreflightChecks,
+} from '@wizard-ads/shared';
+import { approveCreatorMcfSend, createDb, sealCreatorMcfRecipient, type DbHandle } from '@wizard-ads/db';
 import { asServiceRole } from '@wizard-ads/db/testing';
 import { signIn } from './support/auth';
-import { BASE_URL, readState } from './support/fixture';
+import { BASE_URL, USERS, readState } from './support/fixture';
 
 const COUNTS = '{"records":null,"action_log":null,"queue_items":null,"sweep_runs":null,"sample_shipments":null,"preflights":null}';
 const DIGEST = '0'.repeat(64);
@@ -261,6 +268,192 @@ test('sample send: seal in the browser, post only the envelope, preview, and "Se
     expect(residue).toEqual({ expired_live: 0, custody_free_live: 0 });
     const [custody] = await db.sql<{ n: number }[]>`select count(*)::int as n from app.creator_mcf_recipient_custody where send_id = ${send!.id}`;
     expect(custody?.n).toBe(0);
+    expect(offOrigin).toEqual([]);
+    expect(cspErrors).toEqual([]);
+  } finally {
+    await db.sql`update app.creator_mcf_grants set revoked_at = now() where org_id = ${org} and revoked_at is null`;
+    await db.sql`delete from app.creator_mcf_worker_heartbeats where worker_id = 'e2e-mcf-worker'`;
+    for (const binding of restore.bindings) await db.sql`update public.spapi_profile_bindings set enabled = ${binding.enabled} where id = ${binding.id}`;
+    for (const connection of restore.connections) {
+      await asServiceRole(db, (sql) => sql`update public.spapi_connections set status = ${connection.status}, vault_secret_id = ${connection.vault_secret_id}
+        where id = ${connection.id}`);
+    }
+    await db.close();
+  }
+});
+
+/** A found getFulfillmentOrder read of this lane's order: one unit of the SKU, in `status`, read now. */
+function orderRead(key: string, sku: string, status: string, readAt = new Date()) {
+  return { outcome: 'found', operation: 'getFulfillmentOrder', status, readAt: readAt.toISOString(), sellerFulfillmentOrderId: key,
+    items: [{ sellerSku: sku, quantity: 1, cancelledQuantity: 0, unfulfillableQuantity: 0 }], shipments: [], packages: [] };
+}
+
+/** One service-role ledger call that answers jsonb. */
+async function worker<T = Record<string, unknown>>(db: DbHandle, call: (sql: Parameters<Parameters<typeof asServiceRole>[1]>[0]) => Promise<{ result: T }[]>): Promise<T> {
+  return asServiceRole(db, async (sql) => (await call(sql))[0]!.result);
+}
+
+interface CancelClaim extends Claim {
+  cancel: { mode: 'preview' | 'execute'; originState: string; cancelId?: string; previewId?: string } | null;
+}
+
+async function claimCancel(db: DbHandle, scope: Scope, sendId: string): Promise<CancelClaim> {
+  const claim = await worker<CancelClaim | null>(db, (sql) => sql`select app.claim_creator_mcf_outbox('e2e-mcf-worker', ${[scope.scope]}::text[],
+    '{cancel}') as result`);
+  if (claim === null) throw new Error('no cancel work was due for the send');
+  expect(claim.sendId).toBe(sendId);
+  return claim;
+}
+
+test('sample cancel: "Cancel in Amazon" reads the order, "Cancel 1 order in Amazon" approves it, and a read showing Cancelled settles it', async ({ page }, testInfo) => {
+  test.setTimeout(300_000);
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  const state = await readState();
+  const db = createDb({ connectionString: state.connectionString, max: 2 });
+  const org = state.orgId;
+  const { scope, restore } = await usableBinding(db, org);
+  try {
+    const keyId = publicKeyId();
+    const record = 'CCR-E7-26-0302';
+    const asin = 'B0E7K3M2QR';
+    const sku = 'SW-E7-06-FBA';
+    const reservation = `MCFR-${randomBytes(8).toString('hex').toUpperCase()}`;
+    const key = `CCS-${createHash('sha256').update(`${org}|${record}|${asin}`).digest('hex').slice(0, 32)}`;
+    const admin = { orgId: org, userId: USERS.admin };
+    await db.sql`update app.creator_mcf_grants set revoked_at = now() where org_id = ${org} and revoked_at is null`;
+    await db.sql`insert into app.creator_mcf_grants(org_id, spapi_connection_id, marketplace_id, action_classes, recipient_key_ids, max_units_per_day,
+        max_fee_minor, currency, enabled_by, enabled_at, expires_at)
+      values (${org}, ${scope.connection}, ${scope.marketplace}, '{send,cancel}', ${[keyId]}::text[], 20, 1500, 'USD', 'synthetic e2e operator', now(),
+        now() + interval '1 day')`;
+    await heartbeat(db, scope);
+    await db.sql`insert into public.creator_records(org_id, creator_record_id, brand, campaign_id, storefront_fp, record_state, lock_state, runner_version,
+        created_on, source, source_digest)
+      values (${org}, ${record}, 'Synthetic brand', 'campaign-e7', ${createHash('sha256').update(`synthetic:e7:${record}`).digest('hex')},
+        'Active', 'Unlocked', 1, '2026-09-01', 'control-runner', ${DIGEST}) on conflict do nothing`;
+    await db.sql`insert into public.creator_sample_shipments(org_id, creator_record_id, asin, sku, campaign_id, reservation_id, lane_state, fee_cents,
+        fee_cap_cents, reserved_at, source, source_digest)
+      values (${org}, ${record}, ${asin}, ${sku}, 'campaign-e7', ${reservation}, 'Reserved', 620, 800, now() - interval '5 minutes', 'control-runner',
+        ${DIGEST})`;
+    await db.sql`insert into public.creator_sample_preflights(org_id, run_id, command, creator_record_id, asin, result, errors, required_next_state, detail,
+        started_at, completed_at, source, source_digest)
+      values (${org}, ${`e7-cancel-${randomBytes(3).toString('hex')}`}, 'preflight', ${record}, ${asin}, 'PASS', '{}', 'Locked for MCF',
+        ${JSON.stringify(preflightDetail(sku, asin))}::jsonb, now() - interval '65 seconds', now() - interval '60 seconds',
+        'control-runner', ${DIGEST})`;
+    await db.sql`insert into public.creator_import_runs(org_id, started_at, finished_at, status, files, counts, source)
+      values (${org}, clock_timestamp(), clock_timestamp(), 'succeeded', '{registry,preflight_results}', ${COUNTS}::jsonb, 'control-runner')`;
+
+    // To placed, through the ledger alone: a synthetic random-bytes envelope nobody can open, the worker's preview, the admin's
+    // "Send 1 unit via Amazon", the dispatch re-read, the one POST reserved and accepted, and a read that finds the order Received.
+    const envelope = { v: 1, suite: CREATOR_MCF_ENVELOPE_SUITE, envelopeId: randomUUID(), keyId,
+      enc: creatorMcfBase64UrlEncode(Uint8Array.of(4, ...randomBytes(64))), ciphertext: creatorMcfBase64UrlEncode(randomBytes(48)),
+      mask: { countryCode: 'US', postalPrefix: '94', lines: 2 } };
+    const sealed = await sealCreatorMcfRecipient(db, admin, { creatorRecordId: record, asin,
+      request: { binding: { orgId: org, creatorRecordId: record, asin, derivedOrderKey: key, reservationId: reservation }, envelope } });
+    if (sealed.outcome !== 'sealed') throw new Error(`seal refused: ${sealed.reason}`);
+    const sendId = sealed.sendId;
+    const preview = await workerPreview(db, scope, sendId);
+    const [latest] = await db.sql<{ fingerprint: string }[]>`select fingerprint from public.creator_mcf_send_previews where id = ${preview.previewId}`;
+    const approved = await approveCreatorMcfSend(db, admin, { sendId, previewId: preview.previewId, previewFingerprint: latest!.fingerprint, totalUnits: 1,
+      confirmation: 'Send 1 unit via Amazon', requestId: randomUUID() });
+    expect(approved.outcome).toBe('approved');
+    const dispatch = await worker<Claim | null>(db, (sql) => sql`select app.claim_creator_mcf_outbox('e2e-mcf-worker', ${[scope.scope]}::text[],
+      '{dispatch}') as result`);
+    expect(dispatch?.sendId).toBe(sendId);
+    const rereadAt = new Date();
+    const reread = CreatorMcfPreview.parse({ ...preview, previewId: randomUUID(), kind: 'dispatch_reread', readAt: rereadAt.toISOString(),
+      validUntil: new Date(rereadAt.getTime() + 30 * 60_000).toISOString() });
+    expect((await worker<{ decision: string }>(db, (sql) => sql`select app.record_creator_mcf_preview(${sendId}::uuid, ${dispatch!.leaseId}::uuid,
+      ${creatorMcfCanonicalJson(reread)}) as result`)).decision).toBe('same');
+    expect((await worker<{ decision: string }>(db, (sql) => sql`select app.reserve_creator_mcf_dispatch(${sendId}::uuid, ${dispatch!.leaseId}::uuid,
+      ${'d1'.repeat(32)}) as result`)).decision).toBe('dispatch_once');
+    expect(await worker(db, (sql) => sql`select app.record_creator_mcf_outcome(${sendId}::uuid, ${dispatch!.leaseId}::uuid,
+      '{"outcome":"accepted","status":200}'::jsonb, null) as result`)).toMatchObject({ state: 'accepted' });
+    expect(await worker(db, (sql) => sql`select app.record_creator_mcf_settlement(${sendId}::uuid,
+      ${JSON.stringify(orderRead(key, sku, 'Received'))}::text::jsonb, null) as result`)).toMatchObject({ state: 'placed' });
+
+    const offOrigin: string[] = [];
+    const cspErrors: string[] = [];
+    page.on('request', (request) => { if (!/^(data|blob):/.test(request.url()) && new URL(request.url()).origin !== BASE_URL) offOrigin.push(request.url()); });
+    page.on('console', (message) => { if (/Content Security Policy|Refused to (execute|load|apply)/i.test(message.text())) cspErrors.push(message.text()); });
+
+    await signIn(page, 'admin');
+    await page.goto(`/creators/samples/${key}/preflight`);
+    await expect(page.locator('[data-testid="send-card"][data-send-state="placed"]')).toBeVisible();
+    const offer = page.getByTestId('cancel-in-amazon');
+    await expect(offer).toHaveText('Cancel in Amazon');
+    await expect(offer).toBeEnabled();
+    await offer.click();
+    await expect(page.getByTestId('cancel-reading')).toBeVisible();
+    const [queued] = await db.sql<{ n: number }[]>`select count(*)::int as n from public.creator_mcf_outbox
+      where send_id = ${sendId} and action = 'cancel' and completed_at is null`;
+    expect(queued?.n).toBe(1);
+
+    // The worker's cancel preview: one getOrder read showing Received, valid for 5 minutes.
+    const readClaim = await claimCancel(db, scope, sendId);
+    expect(readClaim.cancel).toMatchObject({ mode: 'preview', originState: 'placed' });
+    const readAt = new Date();
+    const cancelPreview = CreatorMcfCancelPreview.parse({
+      previewId: randomUUID(), sendId, derivedOrderKey: key, reservationId: reservation, spapiConnectionId: readClaim.spapiConnectionId,
+      marketplaceId: readClaim.marketplaceId, readAt: readAt.toISOString(), validUntil: new Date(readAt.getTime() + 5 * 60_000).toISOString(),
+      workerRevision: 'e2e-rev', kind: 'cancel_preview', existingOrder: { status: 'Received' },
+      items: [{ sellerSku: sku, sellerFulfillmentOrderItemId: `${key}-1`, quantity: 1 }], totalUnits: 1,
+    });
+    const ready = await worker<{ decision: string; previewId: string; fingerprint: string }>(db, (sql) => sql`select app.record_creator_mcf_cancel_preview(
+      ${sendId}::uuid, ${readClaim.leaseId}::uuid, ${JSON.stringify(orderRead(key, sku, 'Received', readAt))}::text::jsonb,
+      ${creatorMcfCanonicalJson(cancelPreview)}) as result`);
+    expect(ready.decision).toBe('cancel_preview_ready');
+
+    const card = page.getByTestId('cancel-preview');
+    await expect(card).toHaveAttribute('data-current', 'true', { timeout: 30_000 });
+    await expect(card.locator('[data-fact="order-id"]')).toHaveText(key);
+    await expect(card.locator('[data-fact="status"]')).toHaveText('Received');
+    await expect(card.locator('[data-fact="items"]')).toHaveText(`1 × ${sku}`);
+    await expect(card.locator('[data-fact="total"]')).toHaveText('1 unit');
+    const button = page.getByTestId('cancel-button');
+    await expect(button).toHaveText('Cancel 1 order in Amazon');
+    expect(await button.textContent()).toBe('Cancel 1 order in Amazon');
+    await capture(page, testInfo, 'creators-cancel-preview');
+
+    await button.click();
+    await expect(page.getByTestId('cancel-approved')).toBeVisible();
+    await expect(page.getByTestId('cancel-approved')).toContainText('the cancel expires and nothing is sent to Amazon');
+    const cancels = await db.sql<{ id: string; confirmation_text: string; origin_state: string; reserved_at: Date | null; preview_id: string }[]>`
+      select id, confirmation_text, origin_state, reserved_at, preview_id from app.creator_mcf_cancels where send_id = ${sendId}`;
+    expect(cancels).toHaveLength(1);
+    expect(cancels[0]).toMatchObject({ confirmation_text: 'Cancel 1 order in Amazon', origin_state: 'placed', reserved_at: null, preview_id: ready.previewId });
+    const [still] = await db.sql<{ state: string }[]>`select state from public.creator_mcf_sends where id = ${sendId}`;
+    expect(still?.state).toBe('placed');
+    await capture(page, testInfo, 'creators-cancel-approved');
+
+    // The worker takes the approved cancel, re-reads the order after the approval, sends the one request, and Amazon answers 200.
+    const execute = await claimCancel(db, scope, sendId);
+    expect(execute.cancel).toMatchObject({ mode: 'execute', originState: 'placed', cancelId: cancels[0]!.id, previewId: ready.previewId });
+    const reserved = await worker<{ decision: string; cancelId: string }>(db, (sql) => sql`select app.reserve_creator_mcf_cancel(${sendId}::uuid,
+      ${execute.leaseId}::uuid, ${JSON.stringify(orderRead(key, sku, 'Received'))}::text::jsonb, ${'ca'.repeat(32)}) as result`);
+    expect(reserved).toMatchObject({ decision: 'cancel_once', cancelId: cancels[0]!.id });
+    await worker(db, (sql) => sql`select app.record_creator_mcf_cancel_outcome(${sendId}::uuid, ${execute.leaseId}::uuid,
+      '{"outcome":"accepted","status":200}'::jsonb, null) as result`);
+    await expect(page.locator('[data-testid="send-card"][data-send-state="cancel_dispatching"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('cancel-dispatching').locator('[data-fact="answer"]')).toContainText('That is not proof');
+
+    // A read after the reservation shows Cancelled: the send and the lane settle.
+    expect(await worker(db, (sql) => sql`select app.record_creator_mcf_settlement(${sendId}::uuid,
+      ${JSON.stringify(orderRead(key, sku, 'Cancelled'))}::text::jsonb, null) as result`)).toMatchObject({ state: 'cancelled' });
+    await expect(page.locator('[data-testid="send-card"][data-send-state="cancelled"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('cancel-note')).toContainText('Cancelled in Amazon at Arcana\'s request');
+    await expect(page.getByTestId('cancel-note')).toContainText('The lane is Cancelled with the reason operator_cancelled_in_amazon.');
+    expect(await page.locator('[data-testid="mcf-send"] button').count()).toBe(0);
+    await capture(page, testInfo, 'creators-cancel-cancelled');
+
+    const [lane] = await db.sql<{ lane_state: string; cancellation_reason: string | null }[]>`select lane_state, cancellation_reason
+      from public.creator_sample_shipments where org_id = ${org} and creator_record_id = ${record} and asin = ${asin}`;
+    expect(lane).toEqual({ lane_state: 'Cancelled', cancellation_reason: 'operator_cancelled_in_amazon' });
+    const [ended] = await db.sql<{ ending: string | null; puts: number }[]>`select ending, puts from app.creator_mcf_cancels where send_id = ${sendId}`;
+    expect(ended).toEqual({ ending: 'cancelled', puts: 1 });
+    const [custody] = await db.sql<{ n: number }[]>`select count(*)::int as n from app.creator_mcf_recipient_custody where send_id = ${sendId}`;
+    expect(custody?.n).toBe(0);
+    const [residue] = await db.sql<{ expired_live: number; custody_free_live: number }[]>`select * from app.creator_mcf_custody_residue()`;
+    expect(residue).toEqual({ expired_live: 0, custody_free_live: 0 });
     expect(offOrigin).toEqual([]);
     expect(cspErrors).toEqual([]);
   } finally {

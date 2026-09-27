@@ -57,7 +57,9 @@ function SendCells({ shipment, sending, now }: { shipment: CreatorSampleShipment
       : <>Sealed · {maskText(send.mask)}<br /><span className="wa-page-sub">expires {hhmm(send.custodyExpiresAt)}</span></>}</td>
     <td data-testid="send-preview-age">{preview === null ? <span className="wa-page-sub">no preview</span> : age(preview.readAt, now)}</td>
     <td data-testid="send-state" data-send-state={send.state}><Badge tone={SEND_STATE_WORDS[send.state].tone}>{SEND_STATE_WORDS[send.state].title}</Badge>
-      {send.escalationReason === null ? null : <><br /><span className="wa-page-sub">escalated: {send.escalationReason.replace('_', ' ')}</span></>}</td>
+      {send.escalationReason === null ? null : <><br /><span className="wa-page-sub">escalated: {send.escalationReason.replace('_', ' ')}</span></>}
+      {send.cancel !== null && send.cancel.endedAt === null && send.cancel.reservedAt === null
+        ? <><br /><span className="wa-page-sub" data-testid="send-cancel-open">cancel approved, waiting for the worker</span></> : null}</td>
     <td data-testid="send-amazon">{send.amazonStatus ?? <span className="wa-page-sub">not read</span>}</td>
   </>;
 }

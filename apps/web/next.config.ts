@@ -44,6 +44,9 @@ const nextConfig: NextConfig = {
     '@wizard-ads/ui',
   ],
   typedRoutes: true,
+  // The dev server logs each Server Function call with its arguments; the sample send's seal action
+  // carries a sealed address envelope, which has no place in a terminal. Next 16.3's option (default true).
+  logging: { serverFunctions: false },
   // Resolve query-preserving aliases before streaming the application layout.
   redirects: async () => SCREEN_REGISTRY.flatMap((screen) =>
     screen.redirectTo !== undefined && screenEnabled(screen)

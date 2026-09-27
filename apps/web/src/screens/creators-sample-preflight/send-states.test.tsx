@@ -5,10 +5,18 @@
  * card and the button), 449:221 (stale), 447:2 (outcome unknown).
  */
 import { describe, expect, it } from 'vitest';
-import { CREATOR_MCF_IRREVERSIBILITY, CREATOR_MCF_SEND_TRANSITIONS, creatorMcfSendConfirmation, type CreatorMcfSendState } from '@wizard-ads/shared';
+import {
+  CREATOR_MCF_IRREVERSIBILITY, CREATOR_MCF_SEND_TRANSITIONS, creatorMcfCancelConfirmation, creatorMcfSendConfirmation, type CreatorMcfSendState,
+} from '@wizard-ads/shared';
+import { CREATOR_MCF_REFUSALS, type CreatorMcfLaneCancel } from '@wizard-ads/db';
 import { rendered } from '../render-test-support';
-import { GATE_OFF, GATE_ON, KEY, KEY_ID, PREVIEW, SEND, arrived, passing, reservedLane, withSend } from './render-fixture';
-import { SEND_STATE_WORDS, sendingMissing } from './send-model';
+import { formatTimestamp } from '../../ui/date-format';
+import {
+  CANCEL_GATE, CANCEL_PREVIEW, GATE_OFF, GATE_ON, KEY, KEY_ID, LATEST_CANCEL_PREVIEW, NOT_SENT, OPEN_CANCEL, PLACED, PREVIEW, SEND, arrived, passing, reservedLane,
+  withSend,
+} from './render-fixture';
+import { cancelMissing, cancelPreviewCurrent, statusClass } from './cancel-model';
+import { REFUSAL_WORDS, SEND_STATE_WORDS, sendingMissing } from './send-model';
 import Screen from './view';
 
 const section = (host: HTMLElement) => host.querySelector('[data-testid="mcf-send"]')!;
@@ -224,12 +232,14 @@ describe('send section: after the press', () => {
 
   it('conflict: Record as sent, and Cancel in Amazon only while Received or Planning', () => {
     const received = rendered(<Screen data={withSend({ state: 'conflict', amazonStatus: 'Received', custodyExpiresAt: null, escalationReason: 'conflict',
-      events: arrived('conflict', ['sku_mismatch'], '2026-09-09T06:50:00.000Z', 'accepted') })} />);
+      events: arrived('conflict', ['sku_mismatch'], '2026-09-09T06:50:00.000Z', 'accepted') }, { data: { gate: CANCEL_GATE } })} />);
     expect(received.querySelector('[data-testid="conflict-banner"]')?.textContent).toContain('sku_mismatch');
     expect(buttons(received)).toEqual(['Ask Amazon for this order id', 'Record as sent', 'Cancel in Amazon']);
-    expect(received.querySelector('[data-testid="cancel-in-amazon"]')?.hasAttribute('disabled')).toBe(true);
-    const processing = rendered(<Screen data={withSend({ state: 'conflict', amazonStatus: 'Processing', custodyExpiresAt: null })} />);
+    expect(received.querySelector('[data-testid="cancel-in-amazon"]')?.hasAttribute('disabled')).toBe(false);
+    expect(received.textContent).not.toContain('not available in Arcana yet');
+    const processing = rendered(<Screen data={withSend({ state: 'conflict', amazonStatus: 'Processing', custodyExpiresAt: null }, { data: { gate: CANCEL_GATE } })} />);
     expect(buttons(processing)).toEqual(['Ask Amazon for this order id', 'Record as sent']);
+    expect(processing.querySelector('[data-testid="cancel-not-allowed"]')?.textContent).toContain('Amazon is already picking this unit (Processing)');
   });
 
   it('ladder exhausted: Amazon has not settled the order in 7 days', () => {
@@ -269,7 +279,7 @@ describe('send section: endings', () => {
       const host = ending(state, { amazonStatus: state === 'failed_by_amazon' ? 'Invalid' : 'Cancelled' });
       expect(host.querySelector(`[data-testid="${testid}"]`)).not.toBeNull();
       expect(host.querySelector('[data-testid="address-entry"]')).toBeNull();
-      expect(buttons(host)).toEqual([]);
+      expect(buttons(host)).toEqual(state === 'cancel_dispatching' ? ['Ask Amazon for this order id'] : []);
     }
   });
 
@@ -292,3 +302,277 @@ describe('send fixtures', () => {
     expect(SEND.mask).toEqual({ countryCode: 'US', postalPrefix: '94', lines: 2 });
   });
 });
+
+describe('send section: the guarded cancel (WP-338i)', () => {
+  const cancelSection = (host: HTMLElement) => host.querySelector('[data-testid="mcf-cancel"]');
+  const phase = (host: HTMLElement) => cancelSection(host)?.getAttribute('data-cancel-phase');
+  const facts = (host: HTMLElement) => Object.fromEntries([...host.querySelectorAll('[data-testid="cancel-preview"] [data-fact]')]
+    .map((cell) => [cell.getAttribute('data-fact'), cell.textContent]));
+  const placed = (send: Parameters<typeof withSend>[0] = {}, options: Parameters<typeof withSend>[1] = {}) =>
+    rendered(<Screen data={withSend({ ...PLACED, ...send }, { ...options, data: { gate: CANCEL_GATE, ...options.data } })} />);
+  const ended = (change: Partial<CreatorMcfLaneCancel>): CreatorMcfLaneCancel => ({ ...OPEN_CANCEL, endedAt: '2026-09-09T06:39:30.000Z', ...change });
+
+  it('offers Cancel in Amazon on a placed send while the last known status is Received or Planning', () => {
+    for (const status of ['Received', 'Planning'] as const) {
+      const host = placed({ amazonStatus: status });
+      expect(phase(host)).toBe('idle');
+      expect(buttons(host)).toEqual(['Cancel in Amazon']);
+      expect(host.querySelector('[data-testid="cancel-in-amazon"]')?.hasAttribute('disabled')).toBe(false);
+      expect(host.querySelector('[data-testid="cancel-off"]')).toBeNull();
+    }
+    // Without a status on the send, the lane's last read decides.
+    const lane = placed({ amazonStatus: null }, { lane: { mcfStatus: 'Planning' } });
+    expect(buttons(lane)).toEqual(['Cancel in Amazon']);
+  });
+
+  it('says Amazon is already picking the unit once the status is Processing or later, and offers no cancel', () => {
+    const cases = [['Processing', 'Amazon is already picking this unit (Processing)'], ['Complete', 'Amazon is already picking this unit (Complete)'],
+      ['CompletePartialled', 'Amazon is already picking this unit (CompletePartialled)'], ['New', 'Amazon has not validated this order yet (New)'],
+      ['Cancelled', 'Amazon holds the order as Cancelled, so there is nothing to cancel.']] as const;
+    for (const [status, words] of cases) {
+      const host = placed({ amazonStatus: status });
+      expect(buttons(host)).toEqual([]);
+      expect(host.querySelector('[data-testid="cancel-not-allowed"]')?.getAttribute('data-status')).toBe(status);
+      expect(host.querySelector('[data-testid="cancel-not-allowed"]')?.textContent).toContain(words);
+    }
+    const unread = placed({ amazonStatus: null });
+    expect(unread.querySelector('[data-testid="cancel-not-allowed"]')?.textContent).toBe('No Amazon status is recorded for this order, so no cancel is offered.');
+    expect(statusClass('Received')).toBe('cancellable');
+    expect(statusClass('Processing')).toBe('picking');
+    expect(statusClass(null)).toBe('unread');
+  });
+
+  it('names what is missing while cancel is off, and needs neither the recipient key nor previews on', () => {
+    const noClass = placed({}, { data: { gate: GATE_ON } });
+    expect(missing(noClass)).toEqual([]);
+    expect([...noClass.querySelectorAll('[data-testid="cancel-off"] [data-missing]')].map((item) => item.getAttribute('data-missing'))).toEqual(['cancel_class']);
+    expect(noClass.querySelector('[data-testid="cancel-off"]')?.textContent).toContain('Cancel in Amazon is off, so there is no cancel button.');
+    expect(noClass.querySelector('[data-testid="cancel-in-amazon"]')).toBeNull();
+    expect(buttons(noClass)).toEqual([]);
+    const beat = placed({}, { data: { gate: { ...CANCEL_GATE, sendingOn: false, missing: ['heartbeat', 'scope', 'dispatch_disabled'] } } });
+    expect([...beat.querySelectorAll('[data-testid="cancel-off"] [data-missing]')].map((item) => item.getAttribute('data-missing')))
+      .toEqual(['heartbeat', 'scope', 'dispatch_disabled']);
+    expect(beat.querySelector('[data-testid="cancel-off"]')?.textContent).toContain(`Last heartbeat: ${formatTimestamp(CANCEL_GATE.heartbeat!.beatAt)}.`);
+    expect(cancelMissing(CANCEL_GATE)).toEqual([]);
+    expect(cancelMissing(GATE_ON)).toEqual(['cancel_class']);
+    expect(cancelMissing(GATE_OFF)).toEqual(['grant', 'heartbeat']);
+    expect(cancelMissing({ ...GATE_OFF, missing: ['connection', 'grant'] })).toEqual(['connection', 'grant']);
+    expect(cancelMissing(null)).toEqual(['unread']);
+    // A grant carrying cancel only: the gate lists 'grant' (nothing can be sent), and cancel is still on.
+    const cancelOnly = { ...CANCEL_GATE, sendingOn: false, missing: ['grant' as const], actions: ['cancel' as const] };
+    expect(cancelMissing(cancelOnly)).toEqual([]);
+    expect(buttons(placed({}, { data: { gate: cancelOnly } }))).toEqual(['Cancel in Amazon']);
+    expect(cancelMissing({ ...CANCEL_GATE, heartbeat: { ...CANCEL_GATE.heartbeat!, previewEnabled: false } })).toEqual([]);
+    const keyless = placed({}, { data: { key: { status: 'absent' } } });
+    expect(buttons(keyless)).toEqual(['Cancel in Amazon']);
+  });
+
+  it('a queued read: says Arcana is reading the order, with no control', () => {
+    const host = placed({ cancelPreviewPending: true });
+    expect(phase(host)).toBe('pending');
+    expect(host.querySelector('[data-testid="cancel-reading"]')?.textContent).toContain('Reading this order from Amazon before a cancel');
+    expect(buttons(host)).toEqual([]);
+  });
+
+  it('a refused read: the reason in words and Read again', () => {
+    const cases = [
+      ['status_processing', 'Amazon is already picking this unit (Processing)'], ['status_complete', 'Amazon is already picking this unit (Complete)'],
+      ['status_completepartialled', 'Amazon is already picking this unit (CompletePartialled)'],
+      ['status_new', 'Amazon has not validated this order yet (New)'], ['order_not_found', 'Amazon has no order under this id.'],
+      ['state_changed', 'The send changed state after the read was asked for'], ['order_shape', 'does not match this send\'s SKU and one unit'],
+      ['grant_inactive', 'The grant carrying cancel was revoked or expired while the read was queued.'],
+    ] as const;
+    expect(cases).toHaveLength(8);
+    for (const [reason, words] of cases) {
+      const host = placed({ cancelPreviewRefusal: { reason, codes: [], at: '2026-09-09T06:39:00.000Z' } });
+      expect(phase(host)).toBe('read_refused');
+      expect(host.querySelector('[data-testid="cancel-read-refused"]')?.getAttribute('data-reason')).toBe(reason);
+      expect(host.querySelector('[data-testid="cancel-read-refused"]')?.textContent).toContain(words);
+      expect(buttons(host)).toEqual(['Read again']);
+      expect(host.querySelector('[data-testid="cancel-button"]')).toBeNull();
+    }
+    const off = placed({ cancelPreviewRefusal: { reason: 'status_new', codes: [], at: '2026-09-09T06:39:00.000Z' } }, { data: { gate: GATE_ON } });
+    expect(buttons(off)).toEqual([]);
+    expect(off.querySelector('[data-testid="cancel-off"]')).not.toBeNull();
+  });
+
+  it('a current cancel preview: the order, its status, the items, the read and the exact button', () => {
+    const host = placed({ latestCancelPreview: LATEST_CANCEL_PREVIEW });
+    expect(phase(host)).toBe('preview');
+    const card = host.querySelector('[data-testid="cancel-preview"]')!;
+    expect(card.getAttribute('data-current')).toBe('true');
+    expect(card.querySelector('h2')?.textContent).toBe('What the cancel will do');
+    const shown = facts(host);
+    expect(Object.keys(shown)).toHaveLength(6);
+    expect(shown['order-id']).toBe(CANCEL_PREVIEW.derivedOrderKey);
+    expect(shown['status']).toBe('Received');
+    expect(shown['items']).toBe('1 × SW-DERMA-05-FBA');
+    expect(shown['total']).toBe('1 unit');
+    expect(shown['read']).toBe(`Amazon · getFulfillmentOrder · ${formatTimestamp(CANCEL_PREVIEW.readAt)}`);
+    expect(shown['valid-until']).toBe(formatTimestamp(CANCEL_PREVIEW.validUntil));
+    expect(card.querySelector('[data-testid="cancel-meaning"]')?.textContent)
+      .toBe('A cancel asks Amazon to stop this order, and Amazon can still refuse it if picking starts first.');
+    const button = host.querySelector('[data-testid="cancel-button"]')!;
+    expect(button.textContent).toBe(creatorMcfCancelConfirmation(1));
+    expect(button.textContent).toBe('Cancel 1 order in Amazon');
+    expect(buttons(host)).toEqual(['Cancel 1 order in Amazon']);
+    // A conflict takes the same card beside its own controls.
+    const conflict = placed({ state: 'conflict', latestCancelPreview: LATEST_CANCEL_PREVIEW });
+    expect(buttons(conflict)).toEqual(['Ask Amazon for this order id', 'Record as sent', 'Cancel 1 order in Amazon']);
+  });
+
+  it('a cancel preview past 5 minutes: too old, Read again, and no cancel button', () => {
+    const host = placed({ latestCancelPreview: LATEST_CANCEL_PREVIEW }, { now: '2026-09-09T06:43:00.000Z' });
+    expect(host.querySelector('[data-testid="cancel-preview"]')?.getAttribute('data-current')).toBe('false');
+    expect(host.querySelector('[data-testid="cancel-preview-old"]')?.textContent).toContain('older than 5 minutes');
+    expect(host.querySelector('[data-testid="cancel-button"]')).toBeNull();
+    expect(buttons(host)).toEqual(['Read again']);
+    expect(cancelPreviewCurrent({ readAt: '2026-09-09T06:38:00.000Z', validUntil: '2026-09-09T06:48:00.000Z' }, '2026-09-09T06:42:59.000Z')).toBe(true);
+    expect(cancelPreviewCurrent({ readAt: '2026-09-09T06:38:00.000Z', validUntil: '2026-09-09T06:48:00.000Z' }, '2026-09-09T06:43:00.000Z')).toBe(false);
+    expect(cancelPreviewCurrent({ readAt: '2026-09-09T06:38:00.000Z', validUntil: '2026-09-09T06:40:00.000Z' }, NOW_AT_VALID_UNTIL)).toBe(false);
+  });
+
+  it('an approved cancel the worker has not taken: approved at, the claim deadline, then expired with nothing sent', () => {
+    const host = placed({ cancel: OPEN_CANCEL, latestCancelPreview: LATEST_CANCEL_PREVIEW });
+    expect(phase(host)).toBe('open');
+    const note = host.querySelector('[data-testid="cancel-approved"]')!;
+    expect(note.getAttribute('data-expired')).toBe('false');
+    expect(note.textContent).toContain(`Cancel approved at ${formatTimestamp(OPEN_CANCEL.approvedAt)}`);
+    expect(note.textContent).toContain('by 06:54 UTC the cancel expires and nothing is sent to Amazon');
+    expect(buttons(host)).toEqual([]);
+    expect(card(host)?.getAttribute('data-send-state')).toBe('placed');
+    const late = placed({ cancel: OPEN_CANCEL }, { now: '2026-09-09T06:55:00.000Z' });
+    expect(late.querySelector('[data-testid="cancel-approved"]')?.getAttribute('data-expired')).toBe('true');
+    expect(late.querySelector('[data-testid="cancel-approved"]')?.textContent).toContain('so nothing was sent to Amazon');
+    // Until the ledger's sweep ends it, an expired cancel still reads as open; a new read is the way on.
+    expect(buttons(late)).toEqual(['Read again']);
+    expect(buttons(placed({ cancel: OPEN_CANCEL, amazonStatus: 'Processing' }, { now: '2026-09-09T06:55:00.000Z' }))).toEqual([]);
+  });
+
+  it('cancel dispatching: reserved at, Amazon\'s answer so far, and never a second request', () => {
+    const reserved = { ...OPEN_CANCEL, reservedAt: '2026-09-09T06:40:30.000Z' };
+    const cases: [Partial<CreatorMcfLaneCancel>, string][] = [
+      [{}, 'No answer recorded yet.'],
+      [{ providerOutcome: 'accepted', providerStatus: 200 }, 'Accepted (HTTP 200). That is not proof: only a read showing Cancelled settles it.'],
+      [{ providerOutcome: 'uncertain', providerReason: 'transport' }, 'No answer Arcana can read as accepted or rejected (transport).'],
+      [{ providerOutcome: 'rejected', providerStatus: 400, providerReason: 'validation', providerCodes: ['InvalidInput'] }, 'Rejected: InvalidInput (HTTP 400, validation).'],
+    ];
+    for (const [change, answer] of cases) {
+      const host = rendered(<Screen data={withSend({ ...PLACED, state: 'cancel_dispatching', cancel: { ...reserved, ...change } }, { data: { gate: CANCEL_GATE } })} />);
+      const facts = Object.fromEntries([...host.querySelectorAll('[data-testid="cancel-dispatching"] [data-fact]')].map((cell) => [cell.getAttribute('data-fact'), cell.textContent]));
+      expect(facts).toEqual({ approved: formatTimestamp(OPEN_CANCEL.approvedAt), reserved: formatTimestamp(reserved.reservedAt), answer });
+      expect(host.querySelector('[data-testid="cancel-note"]')?.textContent).toContain('never sends the request a second time');
+      expect(buttons(host)).toEqual(['Ask Amazon for this order id']);
+      expect(host.querySelector('[data-testid="mcf-cancel"]')).toBeNull();
+      expect(host.querySelector('[data-testid="cancel-not-sent"]')).toBeNull();
+    }
+  });
+
+  it('cancelled: at Arcana\'s request, and the lane is Cancelled with operator_cancelled_in_amazon', () => {
+    const host = rendered(<Screen data={withSend({ ...PLACED, state: 'cancelled', amazonStatus: 'Cancelled',
+      cancel: { ...OPEN_CANCEL, reservedAt: '2026-09-09T06:40:30.000Z', providerOutcome: 'accepted', providerStatus: 200, endedAt: '2026-09-09T06:42:00.000Z',
+        ending: 'cancelled', endingReason: 'operator_cancelled_in_amazon' } }, { data: { gate: CANCEL_GATE }, detail: { lane: { ...reservedLane, laneState: 'Cancelled' } },
+      lane: { laneState: 'Cancelled' } })} />);
+    const note = host.querySelector('[data-testid="cancel-note"]')!;
+    expect(note.textContent).toContain('Cancelled in Amazon at Arcana\'s request');
+    expect(note.textContent).toContain(`a read showing Cancelled was recorded at ${formatTimestamp('2026-09-09T06:42:00.000Z')}`);
+    expect(note.textContent).toContain('The lane is Cancelled with the reason operator_cancelled_in_amazon.');
+    expect(buttons(host)).toEqual([]);
+  });
+
+  it('an ended cancel on a placed send: refused, expired or not honoured, and the offer again only under the rule', () => {
+    const refused = placed({ cancel: ended({ ending: 'refused', endingReason: 'status_processing' }), amazonStatus: 'Processing' });
+    expect(refused.querySelector('[data-testid="cancel-ended"]')?.getAttribute('data-ending')).toBe('refused');
+    expect(refused.querySelector('[data-testid="cancel-ended"]')?.textContent).toContain('The cancel was refused before any request reached Amazon. Amazon is already picking this unit (Processing)');
+    expect(buttons(refused)).toEqual([]);
+    const lost = placed({ cancel: ended({ ending: 'refused', endingReason: 'grant_revoked' }) });
+    expect(lost.querySelector('[data-testid="cancel-ended"]')?.textContent).toContain('The grant carrying cancel was revoked or replaced after the approval.');
+    expect(buttons(lost)).toEqual(['Cancel in Amazon']);
+    const expired = placed({ cancel: ended({ ending: 'expired', endingReason: 'claim_deadline' }), latestCancelPreview: LATEST_CANCEL_PREVIEW });
+    expect(expired.querySelector('[data-testid="cancel-ended"]')?.textContent).toContain('the worker did not take it by its deadline, so nothing was sent to Amazon');
+    // The preview read before that cancel was pressed belongs to it: no button on it, only the offer to read again.
+    expect(phase(expired)).toBe('idle');
+    expect(expired.querySelector('[data-testid="cancel-button"]')).toBeNull();
+    expect(buttons(expired)).toEqual(['Cancel in Amazon']);
+    const kept = placed({ amazonStatus: 'Processing', cancel: ended({ reservedAt: '2026-09-09T06:39:10.000Z', providerOutcome: 'accepted', providerStatus: 200,
+      ending: 'not_honoured', endingReason: 'processing' }) });
+    expect(kept.querySelector('[data-testid="cancel-ended"]')?.textContent).toContain('Amazon did not cancel: the order reached Processing.');
+    expect(kept.querySelector('[data-testid="cancel-ended"]')?.textContent).toContain('Accepted (HTTP 200). That is not proof');
+    expect(buttons(kept)).toEqual([]);
+    expect(kept.querySelector('[data-testid="cancel-not-allowed"]')?.textContent).toContain('Amazon is already picking this unit (Processing)');
+    const complete = placed({ amazonStatus: 'Complete', cancel: ended({ ending: 'not_honoured', endingReason: 'completepartialled' }) });
+    expect(complete.querySelector('[data-testid="cancel-ended"]')?.textContent).toContain('Amazon did not cancel: the order reached CompletePartialled.');
+  });
+
+  it('a cancel request that did not take (not_sent) on a placed send: nothing changed at Amazon, and the offer again under the rule', () => {
+    const reasons = [
+      ['rejected_throttled', 'Amazon throttled the cancel request (HTTP 429), so nothing changed at Amazon.'],
+      ['rejected_authorization', 'Amazon refused the cancel request for authorization (HTTP 401 or 403), so nothing changed at Amazon.'],
+      ['reservation_mismatch', 'the reservation did not match the approved cancel'], ['stopping', 'it was stopping'],
+      ['policy_off', 'cancel is switched off in the worker'], ['lease_budget', 'too little time was left on its lease'],
+      ['token_unavailable', 'it had no Amazon access token'], ['request_invalid', 'the request failed its own checks'],
+      ['cancel_failed', 'it could not be built or sent'],
+    ] as const;
+    expect(reasons).toHaveLength(9);
+    for (const [reason, words] of reasons) {
+      const host = placed({ cancel: ended({ reservedAt: '2026-09-09T06:39:10.000Z', ending: NOT_SENT, endingReason: reason }) });
+      const note = host.querySelector('[data-testid="cancel-ended"]')!;
+      expect(note.getAttribute('data-ending')).toBe('not_sent');
+      expect(note.getAttribute('data-reason')).toBe(reason);
+      expect(note.textContent).toContain('Last cancel not sent');
+      expect(note.textContent).toContain(words);
+      expect(note.textContent).toContain('nothing changed at Amazon. The order can be cancelled again while it is Received or Planning.');
+      expect(buttons(host)).toEqual(['Cancel in Amazon']);
+    }
+    const picking = placed({ amazonStatus: 'Processing', cancel: ended({ ending: NOT_SENT, endingReason: 'rejected_throttled' }) });
+    expect(buttons(picking)).toEqual([]);
+    expect(picking.querySelector('[data-testid="cancel-not-allowed"]')?.textContent).toContain('Amazon is already picking this unit (Processing)');
+  });
+
+  it('a conflict whose cancel request did not take stays cancel dispatching, says so, and offers Ask Amazon', () => {
+    const conflictCancel = { ...OPEN_CANCEL, originState: 'conflict' as const, reservedAt: '2026-09-09T06:40:30.000Z' };
+    const endedNotSent = rendered(<Screen data={withSend({ ...PLACED, state: 'cancel_dispatching', cancel: { ...conflictCancel, providerOutcome: 'rejected',
+      providerStatus: 429, providerReason: 'throttled', providerCodes: ['QuotaExceeded'], endedAt: '2026-09-09T06:40:31.000Z', ending: NOT_SENT,
+      endingReason: 'rejected_throttled' } }, { data: { gate: CANCEL_GATE } })} />);
+    const note = endedNotSent.querySelector('[data-testid="cancel-not-sent"]')!;
+    expect(note.getAttribute('data-reason')).toBe('rejected_throttled');
+    expect(note.textContent).toContain('Amazon throttled the cancel request (HTTP 429), so nothing changed at Amazon.');
+    expect(note.textContent).toContain('it stays here until a read of the order settles it');
+    expect(buttons(endedNotSent)).toEqual(['Ask Amazon for this order id']);
+    // Only the ledger event recorded it: the words still say the request did not take.
+    const byEvent = rendered(<Screen data={withSend({ ...PLACED, state: 'cancel_dispatching', cancel: conflictCancel, events: [{ event: 'cancel_not_sent',
+      actorType: 'worker', beforeState: 'cancel_dispatching', afterState: 'cancel_dispatching', reason: 'stopping', codes: [], httpStatus: null,
+      at: '2026-09-09T06:40:31.000Z' }] }, { data: { gate: CANCEL_GATE } })} />);
+    expect(byEvent.querySelector('[data-testid="cancel-not-sent"]')?.textContent).toContain('The cancel request did not take, so nothing changed at Amazon.');
+  });
+
+  it('shows analysts every cancel step with no control', () => {
+    const cases = [
+      withSend({ ...PLACED }, { data: { gate: CANCEL_GATE, canAct: false } }),
+      withSend({ ...PLACED, cancelPreviewPending: true }, { data: { gate: CANCEL_GATE, canAct: false } }),
+      withSend({ ...PLACED, latestCancelPreview: LATEST_CANCEL_PREVIEW }, { data: { gate: CANCEL_GATE, canAct: false } }),
+      withSend({ ...PLACED, cancelPreviewRefusal: { reason: 'status_processing', codes: [], at: '2026-09-09T06:39:00.000Z' } }, { data: { gate: CANCEL_GATE, canAct: false } }),
+      withSend({ ...PLACED, cancel: OPEN_CANCEL }, { data: { gate: CANCEL_GATE, canAct: false } }),
+      withSend({ ...PLACED, state: 'conflict', latestCancelPreview: LATEST_CANCEL_PREVIEW }, { data: { gate: CANCEL_GATE, canAct: false } }),
+    ];
+    expect(cases).toHaveLength(6);
+    const phases = cases.map((data) => {
+      const host = rendered(<Screen data={data} />);
+      expect(section(host).querySelectorAll('button')).toHaveLength(0);
+      expect(host.querySelector('[data-testid="cancel-off"]')).toBeNull();
+      return phase(host);
+    });
+    expect(phases).toEqual(['idle', 'pending', 'preview', 'read_refused', 'open', 'preview']);
+    expect(rendered(<Screen data={cases[2]!} />).querySelector('[data-testid="cancel-preview"]')).not.toBeNull();
+  });
+
+  it('has words for every ledger refusal, the six cancel refusals included', () => {
+    expect(CREATOR_MCF_REFUSALS).toHaveLength(46);
+    for (const reason of CREATOR_MCF_REFUSALS) expect(REFUSAL_WORDS[reason].length).toBeGreaterThan(10);
+    const cancel = ['send_not_cancellable', 'cancel_open', 'cancel_grant_inactive', 'cancel_preview_expired', 'order_not_cancellable', 'observation_stale'] as const;
+    expect(new Set(cancel.map((reason) => REFUSAL_WORDS[reason])).size).toBe(6);
+    expect(REFUSAL_WORDS.cancel_preview_expired).toContain('older than 5 minutes');
+  });
+});
+
+const NOW_AT_VALID_UNTIL = '2026-09-09T06:40:00.000Z';

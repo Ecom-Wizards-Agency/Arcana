@@ -7,8 +7,9 @@
  *  - `OPENSPELL_MCF_PREVIEW_ENABLED` gates the address-bearing preview work:
  *    opening a sealed address, the getOrder check before a preview and
  *    getFulfillmentPreview.
- *  - `OPENSPELL_MCF_DISPATCH_ENABLED` gates dispatch: the re-read, the
- *    reservation and createFulfillmentOrder (and, later, cancels).
+ *  - `OPENSPELL_MCF_DISPATCH_ENABLED` gates the writes: the dispatch re-read,
+ *    reservation and createFulfillmentOrder, and the guarded cancel (its
+ *    preview read, re-read, reservation and cancelFulfillmentOrder).
  *  - `OPENSPELL_MCF_SCOPE` lists the `<spapiConnectionUuid>:<marketplaceId>`
  *    pairs the unit may touch at all. Settlement reads of orders that may exist
  *    run for every scoped pair whenever the unit runs, flags on or off.
@@ -84,12 +85,26 @@ export function mcfScopeCovers(policy: McfSendPolicy, spapiConnectionId: string,
   return policy.scope.includes(mcfScopePair(spapiConnectionId, marketplaceId));
 }
 
-export type McfOutboxAction = 'preview' | 'dispatch' | 'settle';
+export type McfOutboxAction = 'preview' | 'dispatch' | 'cancel' | 'settle';
 
-/** The outbox actions this policy lets the unit claim. Settle reads need only a scope. */
+/**
+ * The outbox actions this policy lets the unit claim. Settle reads need only a
+ * scope; dispatch and cancel are Amazon writes and need the dispatch flag.
+ */
 export function mcfClaimableActions(policy: McfSendPolicy): McfOutboxAction[] {
   if (policy.scope.length === 0) return [];
-  return [...(policy.previewEnabled ? ['preview' as const] : []), ...(policy.dispatchEnabled ? ['dispatch' as const] : []), 'settle'];
+  return [...(policy.previewEnabled ? ['preview' as const] : []), ...(policy.dispatchEnabled ? ['dispatch' as const, 'cancel' as const] : []), 'settle'];
+}
+
+/**
+ * The start-up key check (DESIGN section 8): with either flag on, every
+ * recipient key id an active grant in the unit's scope names must have a
+ * readable key file. Returns the key ids that have none (distinct, sorted);
+ * the unit refuses to start unless this is empty.
+ */
+export function mcfMissingRecipientKeys(activeKeyIds: readonly string[], readableKeyIds: readonly string[]): string[] {
+  const readable = new Set(readableKeyIds);
+  return [...new Set(activeKeyIds)].filter((keyId) => !readable.has(keyId)).sort();
 }
 
 /**
