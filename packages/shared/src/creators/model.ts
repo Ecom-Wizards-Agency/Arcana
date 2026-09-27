@@ -24,6 +24,13 @@ const Code = z.string().regex(/^[a-z0-9_]+$/).max(120);
 /** Who wrote the row: the runner import this round; the MCP key class and the web later. */
 export const CreatorSource = z.enum(['control-runner', 'mcp', 'web']);
 export type CreatorSource = z.infer<typeof CreatorSource>;
+/**
+ * Who wrote an action-log entry: a `CreatorSource`, or the Arcana MCF worker
+ * recording what happened to a send it placed. Only the action log takes it, so
+ * a lane, an import or a pre-flight cannot claim a worker source.
+ */
+export const CreatorActionSource = z.enum([...CreatorSource.options, 'worker']);
+export type CreatorActionSource = z.infer<typeof CreatorActionSource>;
 
 /** The computed 10-point gate. `checks` and `missing` are two views of one result. */
 export const CreatorQualification = z.object({
@@ -66,8 +73,10 @@ export type CreatorRecord = z.infer<typeof CreatorRecord>;
 
 /**
  * Append-only events. The import derives the first six from registry history,
- * never from a clock. The rest arrive from a `creator:write` key (identity,
- * score and the skill's own entries) or from the drafts screen.
+ * never from a clock. The next ones arrive from a `creator:write` key (identity,
+ * score and the skill's own entries) or from the drafts screen. The `mcf_send_*`
+ * kinds are written by the database for a send Arcana placed; no MCP tool may
+ * append them (`CreatorAppendableAction` leaves them out).
  */
 export const CreatorActionKind = z.enum([
   'identity_conflict_locked', 'mcf_reserved', 'mcf_screen_verified', 'mcf_reconciliation_required',
@@ -75,6 +84,7 @@ export const CreatorActionKind = z.enum([
   'identity_resolved', 'score_recorded',
   'message_sent_by_hand', 'status_moved', 'content_verified', 'escalated', 'preflight_recorded',
   'draft_submitted', 'draft_approved', 'draft_sent_by_hand', 'draft_withdrawn',
+  'mcf_send_approved', 'mcf_send_placed', 'mcf_send_failed', 'mcf_send_uncertain', 'mcf_send_cancelled',
 ]);
 export type CreatorActionKind = z.infer<typeof CreatorActionKind>;
 export const CreatorActionLogEntry = z.object({
@@ -88,7 +98,7 @@ export const CreatorActionLogEntry = z.object({
   reasonCode: Code.nullable(),
   evidenceReference: z.string().nullable(),
   recordVersion: z.number().int().positive().nullable(),
-  source: CreatorSource,
+  source: CreatorActionSource,
   recordedAt: Timestamp,
 }).strict();
 export type CreatorActionLogEntry = z.infer<typeof CreatorActionLogEntry>;
@@ -154,6 +164,19 @@ export const CreatorSampleOrderKey = z.string().regex(/^CCS-[0-9a-f]{32}$/);
 export type CreatorSampleOrderKey = z.infer<typeof CreatorSampleOrderKey>;
 export const CreatorSampleLaneState = z.enum(['Reserved', 'Verified for Submit', 'Reconciliation Required', 'Confirmed', 'Cancelled']);
 export type CreatorSampleLaneState = z.infer<typeof CreatorSampleLaneState>;
+/**
+ * Why a lane was released: the runner's six definitive reasons, plus two only an
+ * order Arcana placed can reach: Amazon cancelled it after the create was
+ * accepted, or the operator cancelled it in Amazon. The runner-file parse keeps
+ * `CreatorCancellationReason` at six, so a runner file carrying either is refused.
+ */
+export const CreatorLaneCancellationReason = z.enum([
+  ...CreatorCancellationReason.options, 'amazon_cancelled_after_submit', 'operator_cancelled_in_amazon',
+]);
+export type CreatorLaneCancellationReason = z.infer<typeof CreatorLaneCancellationReason>;
+/** Who places the lane's order: the runner through Seller Central, or Arcana through SP-API. */
+export const CreatorSampleOrderOwner = z.enum(['runner', 'arcana']);
+export type CreatorSampleOrderOwner = z.infer<typeof CreatorSampleOrderOwner>;
 /** What Amazon said about the order, with the operation and read time that said it. */
 export const CreatorMcfObservation = z.object({
   status: FulfillmentOrderStatus, operation: z.literal('getFulfillmentOrder'), readAt: Timestamp,
@@ -178,6 +201,8 @@ export const CreatorSampleShipment = z.object({
   campaignId: z.string().nullable(),
   reservationId: CreatorReservationId.nullable(),
   laneState: CreatorSampleLaneState,
+  /** A lane read before the owner existed was the runner's. */
+  orderOwner: CreatorSampleOrderOwner.default('runner'),
   /** The order id `confirm-mcf` or `reconcile-mcf` recorded; null until one did. */
   runnerOrderId: z.string().nullable(),
   feeCents: Count.nullable(),
@@ -186,14 +211,17 @@ export const CreatorSampleShipment = z.object({
   verifiedAt: Timestamp.nullable(),
   confirmedAt: Timestamp.nullable(),
   cancelledAt: Timestamp.nullable(),
-  cancellationReason: CreatorCancellationReason.nullable(),
+  cancellationReason: CreatorLaneCancellationReason.nullable(),
   reconciliationReason: CreatorReconciliationReason.nullable(),
   mcf: CreatorMcfObservation.nullable(),
   /** Null until Amazon has been read; an empty list is Amazon saying there are none. */
   packages: z.array(CreatorSamplePackage).nullable(),
   source: CreatorSource,
   importedAt: Timestamp,
-}).strict();
+}).strict().refine((lane) => lane.orderOwner === 'arcana' || lane.cancellationReason === null
+  || CreatorCancellationReason.safeParse(lane.cancellationReason).success, {
+  path: ['cancellationReason'], message: 'only a lane Arcana placed can be cancelled after submit or in Amazon',
+});
 export type CreatorSampleShipment = z.infer<typeof CreatorSampleShipment>;
 
 /** What one import wrote, per kind of row. */
@@ -202,11 +230,15 @@ export type CreatorImportKind = z.infer<typeof CreatorImportKind>;
 /** The runner files the import reads from its directory. `preflight_results` is a proposed file (WP-334). */
 export const CreatorImportFile = z.enum(['registry', 'queue', 'sweep_checkpoint', 'mcf_reservations', 'preflight_results']);
 export type CreatorImportFile = z.infer<typeof CreatorImportFile>;
-/** read = valid + invalid; valid = inserted + updated + unchanged. `removed` is queue rows a newer run dropped. */
+/**
+ * read = valid + invalid; valid = inserted + updated + unchanged + skipped.
+ * `removed` is queue rows a newer run dropped. `skipped` is valid rows left
+ * untouched on purpose; a run stored before it existed skipped none.
+ */
 export const CreatorImportCounts = z.object({
-  read: Count, valid: Count, invalid: Count, inserted: Count, updated: Count, unchanged: Count, removed: Count,
+  read: Count, valid: Count, invalid: Count, inserted: Count, updated: Count, unchanged: Count, skipped: Count.default(0), removed: Count,
 }).strict().refine((counts) => counts.read === counts.valid + counts.invalid
-  && counts.valid === counts.inserted + counts.updated + counts.unchanged, 'import counts do not reconcile');
+  && counts.valid === counts.inserted + counts.updated + counts.unchanged + counts.skipped, 'import counts do not reconcile');
 export type CreatorImportCounts = z.infer<typeof CreatorImportCounts>;
 export const CreatorImportFailure = z.enum([
   'directory_unreadable', 'no_runner_files', 'file_unreadable', 'file_shape_invalid', 'database_write_failed',

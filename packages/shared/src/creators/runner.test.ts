@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CreatorRunnerActiveReservation, CreatorRunnerQueueItem, CreatorRunnerQueueResult, CreatorRunnerRegistry,
   CreatorRunnerRegistryRecord, CreatorRunnerReservationList, CreatorRunnerScoreResult, CreatorSweepCheckpoint,
-  CreatorSweepCounts, CreatorSweepThread, CreatorQualificationCheck,
+  CreatorSweepCounts, CreatorSweepThread, CreatorQualificationCheck, CreatorCancellationReason, CreatorRunnerReservationHistoryEntry,
 } from './runner.js';
 
 /** Synthetic fingerprints: a hash of a label, never of contact data. */
@@ -67,6 +67,16 @@ describe('registry cache (creator_control.py new_registry, issue_record_id, rese
       expect(CreatorRunnerRegistryRecord.safeParse({ ...unlocked, ...change }).success, JSON.stringify(change)).toBe(false);
     }
     expect(CreatorRunnerRegistryRecord.safeParse({ ...locked, mcf_reservation: { ...locked.mcf_reservation, asin: 'b0d9k3m2qp' } }).success).toBe(false);
+  });
+  it('refuses a runner cancellation carrying either reason only an Arcana-placed order can reach', () => {
+    const [released] = withHistory.mcf_reservation_history;
+    expect(CreatorCancellationReason.options).toHaveLength(6);
+    expect(CreatorRunnerReservationHistoryEntry.safeParse(released).success).toBe(true);
+    const refused = ['amazon_cancelled_after_submit', 'operator_cancelled_in_amazon'];
+    for (const reason_code of refused) {
+      expect(CreatorRunnerReservationHistoryEntry.safeParse({ ...released, reason_code }).success, reason_code).toBe(false);
+      expect(CreatorRunnerRegistryRecord.safeParse({ ...withHistory, mcf_reservation_history: [{ ...released, reason_code }] }).success, reason_code).toBe(false);
+    }
   });
   it('refuses another schema version and keeps bad records inside the envelope for counting', () => {
     expect(CreatorRunnerRegistry.safeParse({ schema_version: 2, sequence_by_brand: {}, records: [] }).success).toBe(false);

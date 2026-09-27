@@ -82,11 +82,11 @@ describe.skipIf(!available)('Creator Connections persistence', () => {
     expect(run.status).toBe('succeeded');
     expect(run.queueRunDate).toBe('2026-09-09');
     expect(run.counts).toEqual({
-      records: { read: 4, valid: 3, invalid: 1, inserted: 3, updated: 0, unchanged: 0, removed: 0 },
-      action_log: { read: 2, valid: 2, invalid: 0, inserted: 2, updated: 0, unchanged: 0, removed: 0 },
-      queue_items: { read: 3, valid: 3, invalid: 0, inserted: 3, updated: 0, unchanged: 0, removed: 0 },
-      sweep_runs: { read: 1, valid: 1, invalid: 0, inserted: 1, updated: 0, unchanged: 0, removed: 0 },
-      sample_shipments: { read: 1, valid: 1, invalid: 0, inserted: 1, updated: 0, unchanged: 0, removed: 0 },
+      records: { read: 4, valid: 3, invalid: 1, inserted: 3, updated: 0, unchanged: 0, skipped: 0, removed: 0 },
+      action_log: { read: 2, valid: 2, invalid: 0, inserted: 2, updated: 0, unchanged: 0, skipped: 0, removed: 0 },
+      queue_items: { read: 3, valid: 3, invalid: 0, inserted: 3, updated: 0, unchanged: 0, skipped: 0, removed: 0 },
+      sweep_runs: { read: 1, valid: 1, invalid: 0, inserted: 1, updated: 0, unchanged: 0, skipped: 0, removed: 0 },
+      sample_shipments: { read: 1, valid: 1, invalid: 0, inserted: 1, updated: 0, unchanged: 0, skipped: 0, removed: 0 },
       // No pre-flight results file in this batch: not read, so null rather than zero.
       preflights: null,
     });
@@ -110,13 +110,13 @@ describe.skipIf(!available)('Creator Connections persistence', () => {
     next.records!.rows[0] = { ...next.records!.rows[0]!, lastVerifiedOn: '2026-09-09', runnerVersion: 4 };
     next.queue = { runDate: '2026-09-09', read: 1, invalid: 0, rows: [next.queue!.rows[2]!] };
     const changed = await persistCreatorImport(db, next);
-    expect(changed.counts.records).toMatchObject({ inserted: 0, updated: 1, unchanged: 2 });
-    expect(changed.counts.queue_items).toMatchObject({ read: 1, inserted: 0, updated: 0, unchanged: 1, removed: 2 });
+    expect(changed.counts.records).toMatchObject({ inserted: 0, updated: 1, unchanged: 2, skipped: 0 });
+    expect(changed.counts.queue_items).toMatchObject({ read: 1, inserted: 0, updated: 0, unchanged: 1, skipped: 0, removed: 2 });
   });
 
   it('keeps a day worked to zero as that day', async () => {
     const zero = await persistCreatorImport(db, batch(orgId, { queue: { runDate: '2026-09-10', read: 0, invalid: 0, rows: [] } }));
-    expect(zero.counts.queue_items).toEqual({ read: 0, valid: 0, invalid: 0, inserted: 0, updated: 0, unchanged: 0, removed: 0 });
+    expect(zero.counts.queue_items).toEqual({ read: 0, valid: 0, invalid: 0, inserted: 0, updated: 0, unchanged: 0, skipped: 0, removed: 0 });
     const snapshot = await asUser(db, ANALYST, (sql) => readCreatorQueue({ sql }, orgId));
     expect(snapshot.runDate).toBe('2026-09-10');
     expect(snapshot.items).toHaveLength(0);

@@ -9,7 +9,7 @@ import type { CreatorSampleShipment } from '@wizard-ads/shared';
 import { failedImport, lastImport, snapshot as queue } from '../creators-daily-queue/render-fixture';
 import type { ScreenData } from './view';
 
-const base = { campaignId: null, runnerOrderId: null, feeCapCents: 800, reservedAt: null, verifiedAt: null, confirmedAt: null, cancelledAt: null,
+const base = { orderOwner: 'runner', campaignId: null, runnerOrderId: null, feeCapCents: 800, reservedAt: null, verifiedAt: null, confirmedAt: null, cancelledAt: null,
   cancellationReason: null, reconciliationReason: null, mcf: null, packages: null, source: 'control-runner', importedAt: '2026-09-09T06:14:00.000Z' } as const;
 export const shipped: CreatorSampleShipment = {
   ...base, creatorRecordId: 'CCR-SW-26-0088', asin: 'B0D9K3M2QP', derivedOrderKey: 'CCS-5a0f3c9e1b7d42a8c6e0f1b3d5a7c9e1', sku: 'SW-DERMA-05-FBA',

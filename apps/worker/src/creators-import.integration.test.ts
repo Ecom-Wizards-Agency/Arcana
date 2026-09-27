@@ -40,11 +40,11 @@ describe.skipIf(!available)('creators:import', () => {
     const summary = JSON.parse(lines.at(-1)!);
     expect(summary).toMatchObject({ event: 'creators_import', status: 'succeeded', files: ['registry', 'queue', 'sweep_checkpoint', 'mcf_reservations'], queueRunDate: '2026-09-09' });
     expect(summary.counts).toEqual({
-      records: { read: 7, valid: 6, invalid: 1, inserted: 6, updated: 0, unchanged: 0, removed: 0 },
-      action_log: { read: 8, valid: 8, invalid: 0, inserted: 8, updated: 0, unchanged: 0, removed: 0 },
-      queue_items: { read: 5, valid: 4, invalid: 1, inserted: 4, updated: 0, unchanged: 0, removed: 0 },
-      sweep_runs: { read: 1, valid: 1, invalid: 0, inserted: 1, updated: 0, unchanged: 0, removed: 0 },
-      sample_shipments: { read: 4, valid: 4, invalid: 0, inserted: 4, updated: 0, unchanged: 0, removed: 0 },
+      records: { read: 7, valid: 6, invalid: 1, inserted: 6, updated: 0, unchanged: 0, skipped: 0, removed: 0 },
+      action_log: { read: 8, valid: 8, invalid: 0, inserted: 8, updated: 0, unchanged: 0, skipped: 0, removed: 0 },
+      queue_items: { read: 5, valid: 4, invalid: 1, inserted: 4, updated: 0, unchanged: 0, skipped: 0, removed: 0 },
+      sweep_runs: { read: 1, valid: 1, invalid: 0, inserted: 1, updated: 0, unchanged: 0, skipped: 0, removed: 0 },
+      sample_shipments: { read: 4, valid: 4, invalid: 0, inserted: 4, updated: 0, unchanged: 0, skipped: 0, removed: 0 },
       // No preflight-results.json among the four runner files: not read, so null rather than zero.
       preflights: null,
     });
@@ -94,7 +94,7 @@ describe.skipIf(!available)('creators:import', () => {
     expect(await run()).toBe(0);
     const summary = JSON.parse(lines.at(-1)!);
     expect(summary).toMatchObject({ status: 'succeeded', files: ['registry', 'queue', 'sweep_checkpoint', 'mcf_reservations'] });
-    expect(summary.counts.sweep_runs).toEqual({ read: 1, valid: 0, invalid: 1, inserted: 0, updated: 0, unchanged: 0, removed: 0 });
+    expect(summary.counts.sweep_runs).toEqual({ read: 1, valid: 0, invalid: 1, inserted: 0, updated: 0, unchanged: 0, skipped: 0, removed: 0 });
     expect(summary.invalid).toContainEqual({ kind: 'sweep_runs', index: 0, issues: [{ path: '', code: 'sweep_file_not_produced' }] });
     expect(summary.counts.records).toMatchObject({ read: 7, valid: 6, invalid: 1 });
   });

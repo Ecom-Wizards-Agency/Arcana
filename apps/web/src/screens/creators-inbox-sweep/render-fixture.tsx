@@ -17,7 +17,7 @@ export const refused = { view: 'ready', props: { snapshot: { lastImport: failedI
 export const notImported = { view: 'ready', props: { snapshot: { lastImport: null, latest: null, previous: null } } } satisfies ScreenData;
 /** The import found a sweep file in a shape nothing produces yet and skipped it. */
 export const notProduced = { view: 'ready', props: { snapshot: { latest, previous, lastImport: { ...lastImport, counts: { ...lastImport.counts,
-  sweep_runs: { read: 1, valid: 0, invalid: 1, inserted: 0, updated: 0, unchanged: 0, removed: 0 } } } } } } satisfies ScreenData;
+  sweep_runs: { read: 1, valid: 0, invalid: 1, inserted: 0, updated: 0, unchanged: 0, skipped: 0, removed: 0 } } } } } } satisfies ScreenData;
 /** The import read no sweep file at all. */
 export const noSweepFile = { view: 'ready', props: { snapshot: { latest, previous, lastImport: { ...lastImport, files: ['registry', 'queue'],
   counts: { ...lastImport.counts, sweep_runs: null } } } } } satisfies ScreenData;

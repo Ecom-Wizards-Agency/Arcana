@@ -7,7 +7,7 @@
 import type { ReactNode } from 'react';
 import {
   CREATOR_QUALIFICATION_CHECKS, type CreatorActionKind, type CreatorFingerprintClass, type CreatorImportFailure, type CreatorImportFile,
-  type CreatorImportRun, type CreatorLockState, type CreatorQualificationCheck, type CreatorSource,
+  type CreatorImportRun, type CreatorLockState, type CreatorQualificationCheck, type CreatorActionSource,
 } from '@wizard-ads/shared';
 import { Badge, EmptyState, PageHeader, StatusChip } from '../../ui/primitives';
 import { formatShellDate, formatTimestamp } from '../../ui/date-format';
@@ -93,7 +93,10 @@ export const FINGERPRINT_CLASS_LABEL: Record<CreatorFingerprintClass, string> = 
   storefront: 'storefront', thread: 'thread', fullName: 'full name', email: 'email', phone: 'phone', address: 'address',
 };
 
-export const SOURCE_LABEL: Record<CreatorSource, string> = { 'control-runner': 'runner file import', mcp: 'creator:write key', web: 'Arcana' };
+/** Every writer in words, including the MCF worker, which only the action log names. */
+export const SOURCE_LABEL: Record<CreatorActionSource, string> = {
+  'control-runner': 'runner file import', mcp: 'creator:write key', web: 'Arcana', worker: 'Arcana MCF worker',
+};
 
 /** Action-log kinds in words. */
 export const ACTION_WORDS: Record<CreatorActionKind, string> = {
@@ -103,7 +106,9 @@ export const ACTION_WORDS: Record<CreatorActionKind, string> = {
   score_recorded: 'Qualification score recorded', message_sent_by_hand: 'Message sent by hand in Amazon', status_moved: 'Tracker status moved',
   content_verified: 'Content verified', escalated: 'Escalated', preflight_recorded: 'Sample pre-flight recorded',
   draft_submitted: 'Reply draft submitted', draft_approved: 'Reply draft approved', draft_sent_by_hand: 'Reply marked sent by hand',
-  draft_withdrawn: 'Reply draft withdrawn',
+  draft_withdrawn: 'Reply draft withdrawn', mcf_send_approved: 'Sample send via Amazon approved',
+  mcf_send_placed: 'Sample order placed in Amazon by Arcana', mcf_send_failed: 'Sample send failed',
+  mcf_send_uncertain: 'Sample send outcome unknown', mcf_send_cancelled: 'Sample order cancelled in Amazon',
 };
 
 export function LockBadge({ lock }: { lock: CreatorLockState | null }) {

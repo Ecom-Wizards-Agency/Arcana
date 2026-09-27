@@ -15,7 +15,7 @@ import {
   CreatorImportRun, CreatorSampleShipment, CreatorSweepRun, CreatorDailyQueueItem, isRecognisedCreatorStatus,
   type CreatorActionLogEntry, type CreatorIdleGroup, type CreatorTrackerScore, type CreatorWriteCounts, type CreatorImportCounts, type CreatorImportFailure, type CreatorImportFile,
   type CreatorImportKind, type CreatorQueueSnapshot, type CreatorRecord, type CreatorSampleSnapshot,
-  type CreatorSource, type CreatorSweepSnapshot,
+  type CreatorCancellationReason, type CreatorSource, type CreatorSweepSnapshot,
 } from '@wizard-ads/shared';
 import type { DbHandle, QueryHandle, QuerySql } from '../client.js';
 import { partitionCreatorPreflights, writeCreatorPreflights, type CreatorPreflightWrite } from './creators-samples.js';
@@ -26,7 +26,12 @@ export type CreatorActionWrite = Omit<CreatorActionLogEntry, 'recordedAt' | 'sou
 export type CreatorEventWrite = CreatorActionWrite & { relatedRecordIds?: readonly string[]; actorUserId?: string | null };
 export type CreatorQueueWrite = Omit<CreatorDailyQueueItem, 'lockState' | 'source'>;
 export type CreatorSweepWrite = Omit<CreatorSweepRun, 'reconciled' | 'importedAt' | 'source'>;
-export type CreatorShipmentWrite = Omit<CreatorSampleShipment, 'derivedOrderKey' | 'mcf' | 'packages' | 'importedAt' | 'source'>;
+/**
+ * A lane the runner files or a `creator:write` key report. Those lanes are the
+ * runner's: no owner is taken from input, and only the runner's six reasons.
+ */
+export type CreatorShipmentWrite = Omit<CreatorSampleShipment, 'derivedOrderKey' | 'mcf' | 'packages' | 'importedAt' | 'source' | 'orderOwner' | 'cancellationReason'>
+  & { cancellationReason: CreatorCancellationReason | null };
 
 /** One kind of row from one file: how many were read, how many failed validation, and the valid rows. */
 export interface CreatorImportSection<Row> {
@@ -85,7 +90,7 @@ function tally(kind: CreatorImportKind, section: CreatorImportSection<unknown>, 
   if (section.read !== valid + section.invalid || unchanged < 0) {
     throw new CreatorImportCountError(`${kind}: read ${section.read}, valid ${valid}, invalid ${section.invalid}, written ${written.inserted + written.updated}`);
   }
-  return { read: section.read, valid, invalid: section.invalid, inserted: written.inserted, updated: written.updated, unchanged, removed };
+  return { read: section.read, valid, invalid: section.invalid, inserted: written.inserted, updated: written.updated, unchanged, skipped: 0, removed };
 }
 
 async function upsertRecords(sql: QuerySql, orgId: string, source: CreatorSource, rows: readonly CreatorRecordWrite[]) {
@@ -277,7 +282,7 @@ export type CreatorMcpWriteCounts = Partial<Record<'records' | 'action_log' | 'q
 const writeCounts = (read: number, written: { inserted: number; updated: number }): CreatorWriteCounts => {
   const unchanged = read - written.inserted - written.updated;
   if (unchanged < 0) throw new CreatorImportCountError(`wrote ${written.inserted + written.updated} of ${read} rows`);
-  return { read, inserted: written.inserted, updated: written.updated, unchanged };
+  return { read, inserted: written.inserted, updated: written.updated, unchanged, skipped: 0 };
 };
 
 /**

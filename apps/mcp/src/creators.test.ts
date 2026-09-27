@@ -181,15 +181,15 @@ describe.skipIf(!available)('the creator:write key class', () => {
       const first = await call(client, 'creators.register_record', input);
       expect(first.isError).toBe(false);
       expect(first.payload['counts']).toEqual({
-        records: { read: 1, inserted: 1, updated: 0, unchanged: 0 },
-        action_log: { read: 4, inserted: 4, updated: 0, unchanged: 0 },
-        sample_shipments: { read: 1, inserted: 1, updated: 0, unchanged: 0 },
+        records: { read: 1, inserted: 1, updated: 0, unchanged: 0, skipped: 0 },
+        action_log: { read: 4, inserted: 4, updated: 0, unchanged: 0, skipped: 0 },
+        sample_shipments: { read: 1, inserted: 1, updated: 0, unchanged: 0, skipped: 0 },
       });
       const replay = await call(client, 'creators.register_record', input);
       expect(replay.payload['counts']).toEqual({
-        records: { read: 1, inserted: 0, updated: 0, unchanged: 1 },
-        action_log: { read: 4, inserted: 0, updated: 0, unchanged: 4 },
-        sample_shipments: { read: 1, inserted: 0, updated: 0, unchanged: 1 },
+        records: { read: 1, inserted: 0, updated: 0, unchanged: 1, skipped: 0 },
+        action_log: { read: 4, inserted: 0, updated: 0, unchanged: 4, skipped: 0 },
+        sample_shipments: { read: 1, inserted: 0, updated: 0, unchanged: 1, skipped: 0 },
       });
       // The file import of the same registry row, mapped the same way, changes nothing either.
       const rows = creatorRegistryRows(input.record as never);
@@ -238,8 +238,8 @@ describe.skipIf(!available)('the creator:write key class', () => {
 
       const entries = { entries: [{ event_key: 'sent-0134-1', creator_record_id: 'CCR-SW-26-0134', action: 'message_sent_by_hand',
         occurred_at: '2026-09-09T06:38:00Z', evidence_reference: 'ev:thread-synthetic-1' }] };
-      expect((await call(client, 'creators.append_action', entries)).payload['counts']).toEqual({ read: 1, inserted: 1, updated: 0, unchanged: 0 });
-      expect((await call(client, 'creators.append_action', entries)).payload['counts']).toEqual({ read: 1, inserted: 0, updated: 0, unchanged: 1 });
+      expect((await call(client, 'creators.append_action', entries)).payload['counts']).toEqual({ read: 1, inserted: 1, updated: 0, unchanged: 0, skipped: 0 });
+      expect((await call(client, 'creators.append_action', entries)).payload['counts']).toEqual({ read: 1, inserted: 0, updated: 0, unchanged: 1, skipped: 0 });
 
       const draft = { creator_record_id: 'CCR-SW-26-0134', thread_key: fp('CCR-SW-26-0134:thread'), template_key: 'first_base_verification',
         draft_date: '2026-09-09', body: 'Hi {first name}, thanks for reaching out. Could you confirm the remaining details for sample review?' };
@@ -251,8 +251,8 @@ describe.skipIf(!available)('the creator:write key class', () => {
       const queue = { run_date: '2026-09-09', items: [queueItem('CCR-SW-26-0134'), queueItem('CCR-SW-26-0072', { action_type: 'MCF_PREFLIGHT',
         gate_result: 'HOLD', queue_state: 'Queued', computed_score: 10, missing: [], current_status: 'Approved for Sample',
         reason: 'paid_order_requires_preflight_and_authorized_executor' })], counts: { queued: 1, escalated: 1 } };
-      expect((await call(client, 'creators.queue_snapshot', queue)).payload['counts']).toEqual({ queue_items: { read: 2, inserted: 2, updated: 0, unchanged: 0, removed: 0 } });
-      expect((await call(client, 'creators.queue_snapshot', queue)).payload['counts']).toEqual({ queue_items: { read: 2, inserted: 0, updated: 0, unchanged: 2, removed: 0 } });
+      expect((await call(client, 'creators.queue_snapshot', queue)).payload['counts']).toEqual({ queue_items: { read: 2, inserted: 2, updated: 0, unchanged: 0, skipped: 0, removed: 0 } });
+      expect((await call(client, 'creators.queue_snapshot', queue)).payload['counts']).toEqual({ queue_items: { read: 2, inserted: 0, updated: 0, unchanged: 2, skipped: 0, removed: 0 } });
       const earlier = await call(client, 'creators.queue_snapshot', { run_date: '2026-09-08', items: [queueItem('CCR-SW-26-0134', {
         queue_id: '20260908-CCR-SW-26-0134', run_date: '2026-09-08' })], counts: { queued: 0, escalated: 1 } });
       expect(earlier.isError).toBe(true);
@@ -266,8 +266,8 @@ describe.skipIf(!available)('the creator:write key class', () => {
           messages_sent: 0, no_action_acknowledgements: 359, held_or_escalated: 9, archived_spam: 5, unmatched: 7 },
         threads: [{ thread_key: fp('thread-unmatched-1'), creator_record_id: null, sender_role: 'creator', amazon_timestamp: '2026-09-09T05:10:00Z',
           body_hash: fp('body-1'), outcome: 'unmatched', reason: 'multiple_active_records_match' }] };
-      expect((await call(client, 'creators.sweep_checkpoint', sweep)).payload['counts']).toEqual({ sweep_runs: { read: 1, inserted: 1, updated: 0, unchanged: 0 } });
-      expect((await call(client, 'creators.sweep_checkpoint', sweep)).payload['counts']).toEqual({ sweep_runs: { read: 1, inserted: 0, updated: 0, unchanged: 1 } });
+      expect((await call(client, 'creators.sweep_checkpoint', sweep)).payload['counts']).toEqual({ sweep_runs: { read: 1, inserted: 1, updated: 0, unchanged: 0, skipped: 0 } });
+      expect((await call(client, 'creators.sweep_checkpoint', sweep)).payload['counts']).toEqual({ sweep_runs: { read: 1, inserted: 0, updated: 0, unchanged: 1, skipped: 0 } });
       const [stored] = await database.sql`select reconciled, source from public.creator_sweep_runs where org_id = ${orgId} and run_id = 'sweep-20260909-0612'`;
       expect(stored).toEqual({ reconciled: false, source: 'mcp' });
     } finally { await client.close(); }
@@ -338,8 +338,8 @@ describe.skipIf(!available)('the creator:write key class', () => {
       const first = await call(client, 'creators.preflight_result', preflight());
       expect(first.isError).toBe(false);
       expect(first.payload).toEqual({ run_id: 'preflight-0088-20260909-063304', command: 'preflight', result: 'PASS',
-        derived_order_key: creatorSampleOrderKey(orgId, 'CCR-SW-26-0088', 'B0D9K3M2QP'), counts: { read: 1, inserted: 1, updated: 0, unchanged: 0 } });
-      expect((await call(client, 'creators.preflight_result', preflight())).payload['counts']).toEqual({ read: 1, inserted: 0, updated: 0, unchanged: 1 });
+        derived_order_key: creatorSampleOrderKey(orgId, 'CCR-SW-26-0088', 'B0D9K3M2QP'), counts: { read: 1, inserted: 1, updated: 0, unchanged: 0, skipped: 0 } });
+      expect((await call(client, 'creators.preflight_result', preflight())).payload['counts']).toEqual({ read: 1, inserted: 0, updated: 0, unchanged: 1, skipped: 0 });
       const reused = await call(client, 'creators.preflight_result', preflight({ visible_fee_cents: 790 }));
       expect(reused.isError).toBe(true);
       expect(reused.payload['error']).toBe('invalid_argument');

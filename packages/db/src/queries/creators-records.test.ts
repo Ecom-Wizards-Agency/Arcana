@@ -222,12 +222,12 @@ describe.skipIf(!available)('Creator Connections records, drafts and the creator
       const input = { creator_record_id: 'CCR-SW-26-0134', scored_on: '2026-09-10', current_status: 'Verification Confirmed', tracker_score: 10,
         result: scoreResult(['recent_post_verified', 'performance_or_revenue']) };
       expect(await asOwner((sql) => recordCreatorScore(sql, orgId, OWNER, input)))
-        .toEqual({ record: 'updated', actionLog: { read: 1, inserted: 1, updated: 0, unchanged: 0 } });
+        .toEqual({ record: 'updated', actionLog: { read: 1, inserted: 1, updated: 0, unchanged: 0, skipped: 0 } });
       expect(await asOwner((sql) => recordCreatorScore(sql, orgId, OWNER, input)))
-        .toEqual({ record: 'unchanged', actionLog: { read: 1, inserted: 0, updated: 0, unchanged: 1 } });
+        .toEqual({ record: 'unchanged', actionLog: { read: 1, inserted: 0, updated: 0, unchanged: 1, skipped: 0 } });
       const [{ n: logged }] = await db.sql<[{ n: number }]>`select count(*)::int as n from public.creator_action_log where org_id = ${orgId} and action = 'score_recorded'`;
       expect(await asOwner((sql) => recordCreatorScore(sql, orgId, OWNER, { ...input, scored_on: '2026-09-08', tracker_score: null })))
-        .toEqual({ record: 'older_than_held', actionLog: { read: 0, inserted: 0, updated: 0, unchanged: 0 } });
+        .toEqual({ record: 'older_than_held', actionLog: { read: 0, inserted: 0, updated: 0, unchanged: 0, skipped: 0 } });
       const [{ n: after }] = await db.sql<[{ n: number }]>`select count(*)::int as n from public.creator_action_log where org_id = ${orgId} and action = 'score_recorded'`;
       expect(after).toBe(logged);
       const [row] = await db.sql`select status, computed_score, tracker_score, tracker_scored_on::text as on from public.creator_records
@@ -243,8 +243,8 @@ describe.skipIf(!available)('Creator Connections records, drafts and the creator
     it('appends entries idempotently and refuses a key reused for other content', async () => {
       const entry = { eventKey: 'sent-0134-1', creatorRecordId: 'CCR-SW-26-0134', action: 'message_sent_by_hand', occurredAt: '2026-09-09T06:38:00.000Z',
         reservationId: null, asin: null, reasonCode: null, evidenceReference: 'ev:thread-synthetic-1' };
-      expect(await asOwner((sql) => appendCreatorActions(sql, orgId, OWNER, [entry]))).toEqual({ read: 1, inserted: 1, updated: 0, unchanged: 0 });
-      expect(await asOwner((sql) => appendCreatorActions(sql, orgId, OWNER, [entry]))).toEqual({ read: 1, inserted: 0, updated: 0, unchanged: 1 });
+      expect(await asOwner((sql) => appendCreatorActions(sql, orgId, OWNER, [entry]))).toEqual({ read: 1, inserted: 1, updated: 0, unchanged: 0, skipped: 0 });
+      expect(await asOwner((sql) => appendCreatorActions(sql, orgId, OWNER, [entry]))).toEqual({ read: 1, inserted: 0, updated: 0, unchanged: 1, skipped: 0 });
       await expect(asOwner((sql) => appendCreatorActions(sql, orgId, OWNER, [{ ...entry, reasonCode: 'other' }]))).rejects.toMatchObject({ code: 'event_key_reused' });
       await expect(asOwner((sql) => appendCreatorActions(sql, orgId, OWNER, [{ ...entry, eventKey: 'x', creatorRecordId: 'CCR-SW-26-9999' }])))
         .rejects.toMatchObject({ code: 'record_not_found' });
@@ -256,7 +256,7 @@ describe.skipIf(!available)('Creator Connections records, drafts and the creator
       const again = await asOwner((sql) => writeCreatorMcpRows(sql, orgId, { records: [record('CCR-SW-26-0072')], actions: [{ eventKey: 'conflict:CCR-SW-26-0117:2',
         creatorRecordId: 'CCR-SW-26-0117', action: 'identity_conflict_locked', occurredAt: null, reservationId: null, asin: null,
         reasonCode: 'multiple_active_records_match', evidenceReference: null, recordVersion: 2 }] }));
-      expect(again).toEqual({ records: { read: 1, inserted: 0, updated: 0, unchanged: 1 }, action_log: { read: 1, inserted: 0, updated: 0, unchanged: 1 } });
+      expect(again).toEqual({ records: { read: 1, inserted: 0, updated: 0, unchanged: 1, skipped: 0 }, action_log: { read: 1, inserted: 0, updated: 0, unchanged: 1, skipped: 0 } });
       const [{ runs }] = await db.sql<[{ runs: number }]>`select count(*)::int as runs from public.creator_import_runs where org_id = ${orgId} and source = 'mcp'`;
       expect(runs).toBe(0);
       await expect(asUser(db, ANALYST, (sql) => writeCreatorMcpRows(sql, orgId, { records: [record('CCR-SW-26-0555')] }))).rejects.toThrow(/row-level security/);
@@ -266,10 +266,10 @@ describe.skipIf(!available)('Creator Connections records, drafts and the creator
       const locked = record('CCR-SW-26-0203', { lockState: 'Conflict', escalationReason: 'multiple_active_records_match', runnerVersion: 3,
         lastVerifiedOn: '2026-09-04', fingerprints: { ...record('CCR-SW-26-0203').fingerprints, storefront: fp('shared-storefront') } });
       const stale = { ...locked, lockState: 'Unlocked' as const, escalationReason: null, runnerVersion: 2 };
-      expect((await asOwner((sql) => writeCreatorMcpRows(sql, orgId, { records: [stale] }))).records).toEqual({ read: 1, inserted: 0, updated: 0, unchanged: 1 });
+      expect((await asOwner((sql) => writeCreatorMcpRows(sql, orgId, { records: [stale] }))).records).toEqual({ read: 1, inserted: 0, updated: 0, unchanged: 1, skipped: 0 });
       const run = await persistCreatorImport(db, { orgId, startedAt: new Date().toISOString(), source: 'control-runner', files: ['registry'],
         records: { read: 1, invalid: 0, rows: [stale] }, actions: null, queue: null, sweeps: null, shipments: null });
-      expect(run.counts.records).toMatchObject({ updated: 0, unchanged: 1 });
+      expect(run.counts.records).toMatchObject({ updated: 0, unchanged: 1, skipped: 0 });
       const [held] = await db.sql`select lock_state, runner_version from public.creator_records where org_id = ${orgId} and creator_record_id = 'CCR-SW-26-0203'`;
       expect(held).toEqual({ lock_state: 'Conflict', runner_version: 3 });
     });

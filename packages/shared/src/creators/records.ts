@@ -15,7 +15,7 @@ import {
   CreatorLockState,
 } from './runner.js';
 import {
-  CreatorActionKind, CreatorDailyQueueItem, CreatorImportRun, CreatorRecord, CreatorSampleShipment, CreatorSource,
+  CreatorActionKind, CreatorActionSource, CreatorDailyQueueItem, CreatorImportRun, CreatorRecord, CreatorSampleShipment, CreatorSource,
 } from './model.js';
 
 const Timestamp = z.iso.datetime({ offset: true });
@@ -240,7 +240,8 @@ export const CreatorRecordEvent = z.object({
   relatedRecordIds: z.array(CreatorRecordId),
   draftId: z.uuid().nullable(),
   actorUserId: z.uuid().nullable(),
-  source: CreatorSource,
+  /** An action-log row, so the MCF worker may have written it. */
+  source: CreatorActionSource,
 }).strict();
 export type CreatorRecordEvent = z.infer<typeof CreatorRecordEvent>;
 
@@ -384,11 +385,15 @@ export const CreatorQueueSnapshotInput = CreatorRunnerQueueResult;
 /** `creators.sweep_checkpoint`: the proposed sweep checkpoint (WP-332). Every thread must validate. */
 export const CreatorSweepCheckpointInput = CreatorSweepCheckpoint;
 
-/** What a write tool reports: the rows it was given and what each became. Replays report unchanged. */
+/**
+ * What a write tool reports: the rows it was given and what each became.
+ * Replays report unchanged; `skipped` is rows left untouched on purpose, and a
+ * count object from before it existed skipped none.
+ */
 export const CreatorWriteCounts = z.object({
   read: z.number().int().nonnegative(), inserted: z.number().int().nonnegative(),
-  updated: z.number().int().nonnegative(), unchanged: z.number().int().nonnegative(),
-}).strict().refine((counts) => counts.read === counts.inserted + counts.updated + counts.unchanged, 'write counts do not reconcile');
+  updated: z.number().int().nonnegative(), unchanged: z.number().int().nonnegative(), skipped: z.number().int().nonnegative().default(0),
+}).strict().refine((counts) => counts.read === counts.inserted + counts.updated + counts.unchanged + counts.skipped, 'write counts do not reconcile');
 export type CreatorWriteCounts = z.infer<typeof CreatorWriteCounts>;
 
 /** Re-exported check list so the screens can show all ten in the runner's order. */

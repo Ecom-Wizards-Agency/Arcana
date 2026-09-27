@@ -78,7 +78,7 @@ describe('creator queue against CREATOR-FIXTURE.json, with the runner winning wh
     expect(noSweep.querySelectorAll('[data-sweep-count]')).toHaveLength(0);
     // An import that skipped the sweep must not let the older sweep pass for the current one.
     const skipped = { ...ready.props.snapshot.lastImport!, counts: { ...ready.props.snapshot.lastImport!.counts,
-      sweep_runs: { read: 1, valid: 0, invalid: 1, inserted: 0, updated: 0, unchanged: 0, removed: 0 } } };
+      sweep_runs: { read: 1, valid: 0, invalid: 1, inserted: 0, updated: 0, unchanged: 0, skipped: 0, removed: 0 } } };
     const stale = rendered(<Screen data={{ view: 'ready', props: { snapshot: { ...ready.props.snapshot, lastImport: skipped } } }} />);
     expect(stale.querySelector('[data-testid="sweep-strip"]')?.textContent).toContain('could not read as a checkpoint');
     expect(stale.querySelectorAll('[data-sweep-count]')).toHaveLength(0);

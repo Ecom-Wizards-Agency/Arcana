@@ -114,9 +114,9 @@ describe.skipIf(!available)('Creator Connections pre-flights and MCF observation
 
   it('records pre-flights idempotently by run id, refuses a reused run id and an unregistered record, and logs each run once', async () => {
     const rows = [creatorPreflightRow(preflight('preflight-0088-1')), creatorPreflightRow(held)];
-    expect(await writeCreatorPreflights(db.sql, orgId, 'mcp', rows, ADMIN)).toMatchObject({ read: 2, inserted: 2, updated: 0, unchanged: 0 });
+    expect(await writeCreatorPreflights(db.sql, orgId, 'mcp', rows, ADMIN)).toMatchObject({ read: 2, inserted: 2, updated: 0, unchanged: 0, skipped: 0 });
     const replay = await writeCreatorPreflights(db.sql, orgId, 'mcp', rows, ADMIN);
-    expect(replay).toEqual({ read: 2, inserted: 0, updated: 0, unchanged: 2, derivedOrderKeys: [creatorSampleOrderKey(orgId, 'CCR-SW-26-0088', ASIN),
+    expect(replay).toEqual({ read: 2, inserted: 0, updated: 0, unchanged: 2, skipped: 0, derivedOrderKeys: [creatorSampleOrderKey(orgId, 'CCR-SW-26-0088', ASIN),
       creatorSampleOrderKey(orgId, 'CCR-SW-26-0151', FBM)] });
     await expect(db.sql.begin((sql) => writeCreatorPreflights(sql, orgId, 'mcp', [creatorPreflightRow(preflight('preflight-0088-1', {},
       { visible_fee_cents: 790 }))], ADMIN))).rejects.toMatchObject({ code: 'run_id_reused' });
@@ -136,10 +136,10 @@ describe.skipIf(!available)('Creator Connections pre-flights and MCF observation
       creatorPreflightRow(switchResult('switch-0166-b', 'B0D6H9YY41', ['selected_sku_not_mcf_fulfillable', 'insufficient_mcf_fulfillable_quantity']))] };
     const batch = { ...seed(orgId), records: null, shipments: null, files: ['preflight_results' as const], preflights: section };
     const first = await persistCreatorImport(db, batch);
-    expect(first.counts.preflights).toEqual({ read: 3, valid: 2, invalid: 1, inserted: 2, updated: 0, unchanged: 0, removed: 0 });
+    expect(first.counts.preflights).toEqual({ read: 3, valid: 2, invalid: 1, inserted: 2, updated: 0, unchanged: 0, skipped: 0, removed: 0 });
     expect(first.counts.records).toBeNull();
     const again = await persistCreatorImport(db, batch);
-    expect(again.counts.preflights).toEqual({ read: 3, valid: 2, invalid: 1, inserted: 0, updated: 0, unchanged: 2, removed: 0 });
+    expect(again.counts.preflights).toEqual({ read: 3, valid: 2, invalid: 1, inserted: 0, updated: 0, unchanged: 2, skipped: 0, removed: 0 });
     expect(again.files).toEqual(['preflight_results']);
   });
 
@@ -151,7 +151,7 @@ describe.skipIf(!available)('Creator Connections pre-flights and MCF observation
       preflights: { read: 3, invalid: 0, rows: [stranger, good, reused] } };
     const run = await persistCreatorImport(db, batch);
     expect(run.status).toBe('succeeded');
-    expect(run.counts.preflights).toEqual({ read: 3, valid: 1, invalid: 2, inserted: 1, updated: 0, unchanged: 0, removed: 0 });
+    expect(run.counts.preflights).toEqual({ read: 3, valid: 1, invalid: 2, inserted: 1, updated: 0, unchanged: 0, skipped: 0, removed: 0 });
     expect(run.counts.records).toMatchObject({ read: 4, valid: 4 });
     const [held] = await db.sql`select detail->>'feeCents' as fee from public.creator_sample_preflights where org_id = ${orgId} and run_id = 'preflight-0088-1'`;
     expect(held).toEqual({ fee: '620' });
