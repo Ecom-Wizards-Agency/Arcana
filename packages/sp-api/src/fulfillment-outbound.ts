@@ -1,8 +1,13 @@
-import { FulfillmentIntent, FulfillmentOrderStatus, FulfillmentRequest, FulfillmentResult } from '@wizard-ads/shared';
+import {
+  FulfillmentCarrierStatus, FulfillmentIntent, FulfillmentOrderList, FulfillmentOrderLookup, FulfillmentOrderStatus, FulfillmentRequest,
+  FulfillmentResult, FulfillmentShipmentStatus, PackageTrackingObservation,
+  type FulfillmentOrderListEntry, type FulfillmentShipmentObservation,
+} from '@wizard-ads/shared';
 import type { SpApiClientOptions } from './types.js';
 import { canonicalSpJson, spFingerprint } from './report-families.js';
 
 const PATH = '/fba/outbound/2020-07-01/fulfillmentOrders';
+const TRACKING_PATH = '/fba/outbound/2020-07-01/tracking';
 type Options = Pick<SpApiClientOptions, 'endpoint' | 'accessTokenProvider' | 'userAgent' | 'now'> & {
   /** Explicit transport injection keeps this sibling inert until worker composition. */
   fetch: NonNullable<SpApiClientOptions['fetch']>;
@@ -54,33 +59,38 @@ function empty(input: FulfillmentRequest, state: FulfillmentResult['state'] = 'u
   return { state, requestedItems: input.items.length, returnedItems: 0, missingItems: input.items.length, refusedItems: 0, items: [] };
 }
 
+/** One HTTP exchange. Provider bodies and errors never escape; see FulfillmentOutboundError. */
+async function send(options: Options, method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> {
+  let access: string;
+  try { access = await options.accessTokenProvider.getAccessToken(); }
+  catch { throw new FulfillmentOutboundError('authentication'); }
+  let response: Response;
+  try {
+    response = await options.fetch(`${options.endpoint.replace(/\/$/, '')}${path}`, {
+      method, headers: { Accept: 'application/json', 'Content-Type': 'application/json',
+        'User-Agent': options.userAgent, 'x-amz-access-token': access,
+        'x-amz-date': (options.now?.() ?? new Date()).toISOString().replace(/[:-]|\.\d{3}/g, '') },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  } catch { throw new FulfillmentOutboundError('transport'); }
+  if (!response.ok) throw new FulfillmentOutboundError('http', response.status);
+  try {
+    const text = await response.text();
+    if (!text) return null;
+    const decoded: unknown = JSON.parse(text);
+    if (record(decoded)['errors'] !== undefined && list(record(decoded)['errors']).length > 0) {
+      throw new FulfillmentOutboundError('invalid_response');
+    }
+    return decoded;
+  } catch { throw new FulfillmentOutboundError('invalid_response'); }
+}
+
 /** No retry loop, scheduler, authority grant or recipient persistence lives here. */
 export class FulfillmentOutboundClient {
   constructor(private readonly options: Options) {}
 
-  private async call(method: string, path: string, body?: unknown): Promise<unknown> {
-    let access: string;
-    try { access = await this.options.accessTokenProvider.getAccessToken(); }
-    catch { throw new FulfillmentOutboundError('authentication'); }
-    let response: Response;
-    try {
-      response = await this.options.fetch(`${this.options.endpoint.replace(/\/$/, '')}${path}`, {
-        method, headers: { Accept: 'application/json', 'Content-Type': 'application/json',
-          'User-Agent': this.options.userAgent, 'x-amz-access-token': access,
-          'x-amz-date': (this.options.now?.() ?? new Date()).toISOString().replace(/[:-]|\.\d{3}/g, '') },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
-    } catch { throw new FulfillmentOutboundError('transport'); }
-    if (!response.ok) throw new FulfillmentOutboundError('http', response.status);
-    try {
-      const text = await response.text();
-      if (!text) return null;
-      const decoded: unknown = JSON.parse(text);
-      if (record(decoded)['errors'] !== undefined && list(record(decoded)['errors']).length > 0) {
-        throw new FulfillmentOutboundError('invalid_response');
-      }
-      return decoded;
-    } catch { throw new FulfillmentOutboundError('invalid_response'); }
+  private call(method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> {
+    return send(this.options, method, path, body);
   }
 
   async preview(raw: FulfillmentRequest): Promise<FulfillmentResult> {
@@ -102,6 +112,11 @@ export class FulfillmentOutboundClient {
   }
 
   /**
+   * @deprecated Unwired; no worker calls it. Creator sample orders are created by
+   * `FulfillmentOutboundWriter.create` (fulfillment-outbound-writer.ts), which
+   * returns address-free outcomes. Do not wire this method: it compares
+   * recipient addresses and throws on 4xx answers.
+   *
    * Caller must atomically claim the reserved intent and durably save uncertainty
    * before returning from persistUncertain. Replays of uncertainty only read by ID.
    * This callback does not confer worker/operator authority.
@@ -123,6 +138,11 @@ export class FulfillmentOutboundClient {
     }
   }
 
+  /**
+   * @deprecated Unwired; no worker calls it. It compares the destination address
+   * read back from Amazon. Read orders through `FulfillmentOutboundReader.getOrder`,
+   * which copies an address-free allowlist.
+   */
   async status(raw: FulfillmentRequest, persistedIntent: FulfillmentIntent): Promise<FulfillmentResult> {
     const input = request(raw);
     verify(input, persistedIntent);
@@ -164,6 +184,144 @@ export class FulfillmentOutboundClient {
     });
     const counted = account(input, rows);
     return { ...counted, providerOrderStatus, ...(orderRefused ? { state: 'refused' as const } : {}) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Read-only observation (WP-334). Each reader copies an allowlist of fields out
+// of the provider body, so a recipient field Amazon adds tomorrow cannot pass
+// through either: destination address, notification emails, displayable order
+// id and comment, signer, ship-to address, carrier phone and event locations
+// never leave this module.
+// ---------------------------------------------------------------------------
+
+function optional(value: unknown): RecordValue | null {
+  return value === undefined || value === null ? null : record(value);
+}
+function text(value: unknown, max = 100): string | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || value.length > max) throw new FulfillmentOutboundError('invalid_response');
+  return value;
+}
+function when(value: unknown): string | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) throw new FulfillmentOutboundError('invalid_response');
+  return new Date(value).toISOString();
+}
+function count(value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) throw new FulfillmentOutboundError('invalid_response');
+  return Number(value);
+}
+function status<T>(schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } }, value: unknown): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new FulfillmentOutboundError('invalid_response');
+  return parsed.data;
+}
+
+function shipment(value: unknown): FulfillmentShipmentObservation {
+  const row = record(value);
+  return {
+    amazonShipmentId: text(row['amazonShipmentId']) ?? (() => { throw new FulfillmentOutboundError('invalid_response'); })(),
+    status: status(FulfillmentShipmentStatus, row['fulfillmentShipmentStatus']),
+    shippedAt: when(row['shippingDate']),
+    estimatedArrivalAt: when(row['estimatedArrivalDate']),
+    packages: list(row['fulfillmentShipmentPackage'] ?? []).map((item) => {
+      const pkg = record(item);
+      return { packageNumber: count(pkg['packageNumber']), carrierCode: text(pkg['carrierCode']), trackingNumber: text(pkg['trackingNumber']),
+        estimatedArrivalAt: when(pkg['estimatedArrivalDate']) };
+    }),
+  };
+}
+
+/**
+ * Read-only Fulfillment Outbound observation. It has no create, update or
+ * cancel path and holds no request body: it can only ask Amazon what exists.
+ */
+export class FulfillmentOutboundReader {
+  constructor(private readonly options: Options) {}
+
+  /** The reader's only way to reach Amazon: a GET, never a body. */
+  private read(path: string): Promise<unknown> { return send(this.options, 'GET', path); }
+
+  /**
+   * getFulfillmentOrder by seller fulfillment order id. HTTP 404 is Amazon
+   * saying no order exists under that id; any other failure throws, so a
+   * transport error is never read as "not found".
+   */
+  async getOrder(sellerFulfillmentOrderId: string): Promise<FulfillmentOrderLookup> {
+    if (!/^.{1,40}$/.test(sellerFulfillmentOrderId)) throw new FulfillmentOutboundError('invalid_request');
+    let response: unknown;
+    try { response = await this.read(`${PATH}/${encodeURIComponent(sellerFulfillmentOrderId)}`); }
+    catch (error) {
+      if (error instanceof FulfillmentOutboundError && error.reason === 'http' && error.status === 404) {
+        return { outcome: 'not_found', sellerFulfillmentOrderId };
+      }
+      throw error;
+    }
+    const payload = record(record(response)['payload']);
+    const order = record(payload['fulfillmentOrder']);
+    if (order['sellerFulfillmentOrderId'] !== sellerFulfillmentOrderId) throw new FulfillmentOutboundError('identity_conflict');
+    return FulfillmentOrderLookup.parse({ outcome: 'found', order: {
+      sellerFulfillmentOrderId,
+      status: status(FulfillmentOrderStatus, order['fulfillmentOrderStatus']),
+      receivedAt: when(order['receivedDate']),
+      statusUpdatedAt: when(order['statusUpdatedDate']),
+      items: list(payload['fulfillmentOrderItems'] ?? []).map((item) => {
+        const row = record(item);
+        return { sellerSku: text(row['sellerSku'], 50) ?? (() => { throw new FulfillmentOutboundError('invalid_response'); })(),
+          quantity: count(row['quantity']), cancelledQuantity: count(row['cancelledQuantity'] ?? 0),
+          unfulfillableQuantity: count(row['unfulfillableQuantity'] ?? 0) };
+      }),
+      // The whole array: a cancelled shipment can be replaced by another entry rather than removed.
+      shipments: list(payload['fulfillmentShipments'] ?? []).map(shipment),
+    } });
+  }
+
+  /** listAllFulfillmentOrders from `queryStartDate`, at most `maxPages` pages. Identity and status only. */
+  async listOrders(queryStartDate: string, maxPages = 5): Promise<FulfillmentOrderList> {
+    if (Number.isNaN(Date.parse(queryStartDate)) || !Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > 20) {
+      throw new FulfillmentOutboundError('invalid_request');
+    }
+    const start = new Date(queryStartDate).toISOString();
+    const orders: FulfillmentOrderListEntry[] = [];
+    let nextToken: string | null = null;
+    let pages = 0;
+    do {
+      const query = new URLSearchParams({ queryStartDate: start, ...(nextToken === null ? {} : { nextToken }) });
+      const payload = record(record(await this.read(`${PATH}?${query.toString()}`))['payload']);
+      pages++;
+      for (const item of list(payload['fulfillmentOrders'] ?? [])) {
+        const row = record(item);
+        orders.push({ sellerFulfillmentOrderId: text(row['sellerFulfillmentOrderId'], 40) ?? (() => { throw new FulfillmentOutboundError('invalid_response'); })(),
+          status: status(FulfillmentOrderStatus, row['fulfillmentOrderStatus']), receivedAt: when(row['receivedDate']),
+          statusUpdatedAt: when(row['statusUpdatedDate']) });
+      }
+      nextToken = text(payload['nextToken'], 2000);
+    } while (nextToken !== null && pages < maxPages);
+    return FulfillmentOrderList.parse({ queryStartDate: start, pages, complete: nextToken === null, orders });
+  }
+
+  /**
+   * getPackageTrackingDetails. Null when Amazon has no tracking for the package
+   * yet (HTTP 404); a null `currentStatus` is Amazon returning no carrier status.
+   */
+  async trackPackage(packageNumber: number): Promise<PackageTrackingObservation | null> {
+    if (!Number.isSafeInteger(packageNumber) || packageNumber < 0) throw new FulfillmentOutboundError('invalid_request');
+    let response: unknown;
+    try { response = await this.read(`${TRACKING_PATH}?${new URLSearchParams({ packageNumber: String(packageNumber) }).toString()}`); }
+    catch (error) {
+      if (error instanceof FulfillmentOutboundError && error.reason === 'http' && error.status === 404) return null;
+      throw error;
+    }
+    const payload = optional(record(response)['payload']);
+    if (payload === null) return null;
+    if (payload['packageNumber'] !== packageNumber) throw new FulfillmentOutboundError('identity_conflict');
+    const current = payload['currentStatus'];
+    return PackageTrackingObservation.parse({
+      packageNumber, carrierCode: text(payload['carrierCode']), trackingNumber: text(payload['trackingNumber']),
+      estimatedArrivalAt: when(payload['estimatedArrivalDate']),
+      currentStatus: current === undefined || current === null ? null : status(FulfillmentCarrierStatus, current),
+    });
   }
 }
 

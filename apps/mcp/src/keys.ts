@@ -11,10 +11,15 @@
  * token is 32 bytes of `randomBytes`, so there is no dictionary to slow down,
  * and a KDF would force a table scan on every request instead of an index hit.
  *
- * A key is scoped three ways, all enforced here and again in the tool layer:
- * read-only, a required profile allowlist, and a bounded expiry. That is the
- * AdLabs gap the recon named first — their key is unscoped, non-expiring and
+ * A read key is scoped three ways, all enforced here and again in the tool
+ * layer: read-only, a required profile allowlist, and a bounded expiry. That is
+ * the AdLabs gap the recon named first — their key is unscoped, non-expiring and
  * read-write by default.
+ *
+ * A `creator:write` key (WP-333) is a separate class, not a widened read key: it
+ * reaches no profile, reads no analytics, and admits only the Creator Connections
+ * write tools. Neither class can call the other's tools. `write` (bid
+ * delegation) keys are issued elsewhere and are still refused here.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { DbHandle } from '@wizard-ads/db';
@@ -31,7 +36,9 @@ export const DEFAULT_API_KEY_LIFETIME_DAYS = 30;
 const DAY_MS = 86_400_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export type KeyScope = 'read' | 'write';
+export type KeyScope = 'read' | 'write' | 'creator:write';
+/** The classes this server admits. A `write` key is never verified here. */
+export type ServedKeyScope = 'read' | 'creator:write';
 
 export interface ApiKeyRecord {
   id: string;
@@ -55,6 +62,7 @@ export interface IssuedApiKey {
 
 /** A verified key stays bound to the current membership of its issuing user. */
 export interface VerifiedApiKey extends ApiKeyRecord {
+  scope: ServedKeyScope;
   actor: OrgActor;
 }
 
@@ -106,7 +114,10 @@ export interface IssueApiKeyInput {
   orgId: string;
   label: string;
   scope?: KeyScope;
-  /** A required hard allowlist. Every id is verified against `orgId`. */
+  /**
+   * A read key's required hard allowlist; every id is verified against `orgId`.
+   * A `creator:write` key reaches no profile, so this must be empty for it.
+   */
   profileIds: readonly string[];
   /** Required, future, and no more than 90 days from issuance. */
   expiresAt: Date;
@@ -118,18 +129,21 @@ export async function issueApiKey(
   input: IssueApiKeyInput,
 ): Promise<IssuedApiKey> {
   const scope = input.scope ?? 'read';
-  if (scope !== 'read') {
-    // v1 has no write path at all. Issuing a write key would create a
-    // credential whose permission the server cannot honor, which is worse than
-    // refusing: it reads as capability that does not exist.
-    throw new Error('v1 issues read-only keys only. A write scope unlocks with WP-12.');
+  if (scope !== 'read' && scope !== 'creator:write') {
+    // Bid-delegation write keys are issued only through the operator's audited
+    // delegation command, never here. Issuing one would create a credential
+    // whose permission this path cannot bound, which is worse than refusing.
+    throw new Error('This command issues read keys and creator:write keys only. Write delegations are issued separately.');
   }
 
   const label = input.label.trim();
   if (label.length === 0) throw new Error('API keys require a non-empty label.');
 
   const profileIds = Array.isArray(input.profileIds) ? [...input.profileIds] : [];
-  if (profileIds.length === 0) throw new Error('API keys require at least one profile.');
+  if (scope === 'creator:write' && profileIds.length > 0) {
+    throw new Error('A creator:write key reaches no profile. Issue it without profiles.');
+  }
+  if (scope === 'read' && profileIds.length === 0) throw new Error('API keys require at least one profile.');
   if (!profileIds.every((profileId) => UUID.test(profileId))) {
     throw new Error('Every API key profile must be a valid UUID.');
   }
@@ -156,7 +170,7 @@ export async function issueApiKey(
     }
     // Keep the ownership proof and credential insert in one transaction. The
     // row locks prevent a profile from being removed between those two steps.
-    const ownedProfiles = await sql<{ id: string }[]>`
+    const ownedProfiles = profileIds.length === 0 ? [] : await sql<{ id: string }[]>`
       select id
         from public.ad_profiles
        where org_id = ${input.orgId}
@@ -177,7 +191,7 @@ export async function issueApiKey(
         ${token.slice(0, PREFIX_LENGTH)},
         ${hashToken(token)},
         ${scope},
-        ${sql.array(profileIds)}::uuid[],
+        ${profileIds}::uuid[],
         ${input.expiresAt.toISOString()}::timestamptz,
         ${actor.userId}
       )
@@ -212,8 +226,10 @@ export async function revokeApiKey(handle: DbHandle, keyId: string): Promise<boo
 }
 
 /**
- * Resolve a presented token to a read-only key, stamp its last-used time, or
- * throw an `AuthError`.
+ * Resolve a presented token to a read key or a `creator:write` key, stamp its
+ * last-used time, or throw an `AuthError`. A read key needs a profile
+ * allowlist; a `creator:write` key has none. A bid-delegation `write` key is
+ * never admitted by this server.
  *
  * Every failure is a 401 with the same message. Distinguishing "no such key"
  * from "revoked" from "expired" tells an attacker which of their guesses was
@@ -231,10 +247,10 @@ export async function verifyApiKey(handle: DbHandle, token: string): Promise<Ver
     update mcp.api_keys
        set last_used_at = now()
      where token_hash = ${hash}
-       and scope = 'read'
+       and ((scope::text = 'read' and cardinality(profile_ids) > 0)
+         or (scope::text = 'creator:write' and cardinality(profile_ids) = 0))
        and revoked_at is null
        and profile_ids is not null
-       and cardinality(profile_ids) > 0
        and expires_at is not null
        and expires_at > now()
        and expires_at <= created_at + make_interval(days => ${MAX_API_KEY_LIFETIME_DAYS})
@@ -253,9 +269,10 @@ export async function verifyApiKey(handle: DbHandle, token: string): Promise<Ver
   // The lookup already matched on the hash; the constant-time compare is here
   // so the code does not depend on the index comparison being safe.
   if (!constantTimeEquals(row.token_hash, hash)) throw unauthorized;
-  if (row.scope !== 'read') throw unauthorized;
+  const scope = row.scope;
+  if (scope !== 'read' && scope !== 'creator:write') throw unauthorized;
 
-  return { ...toRecord(row), actor: OrgActor.parse({ orgId: row.org_id, userId: row.created_by }) };
+  return { ...toRecord(row), scope, actor: OrgActor.parse({ orgId: row.org_id, userId: row.created_by }) };
 }
 
 function constantTimeEquals(a: string, b: string): boolean {

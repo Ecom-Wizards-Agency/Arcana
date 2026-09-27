@@ -7,7 +7,7 @@
  * in the response once and never again, which the UI states plainly next to it.
  */
 import { mutationBody, mutationUuid, MutationInputError } from '../../../src/server/authenticated-mutation';
-import { issueMcpKey } from '../../../src/data/mcp-keys';
+import { CREATOR_WRITE_PROFILES_REFUSED, issueMcpKey, parseMcpKeyScope } from '../../../src/data/mcp-keys';
 import {
   DEFAULT_MCP_KEY_EXPIRY_DAYS,
   isMcpKeyExpiryDays,
@@ -30,18 +30,27 @@ export async function POST(request: Request): Promise<Response> {
         label?: unknown;
         profileIds?: unknown;
         expiresInDays?: unknown;
+        scope?: unknown;
       };
       if (typeof body.label !== 'string' || body.label.trim().length === 0) {
         throw new MutationInputError('A key needs a label so you can tell your keys apart.');
       }
-      if (
+      // Absent means read. A write key is never issued here.
+      const scope = parseMcpKeyScope(body.scope);
+      if (scope === null) throw new MutationInputError('Choose a read key or a Creator Connections write key.');
+      if (scope === 'creator:write') {
+        if (body.profileIds !== undefined && !(Array.isArray(body.profileIds) && body.profileIds.length === 0)) {
+          throw new MutationInputError(CREATOR_WRITE_PROFILES_REFUSED);
+        }
+      } else if (
         !Array.isArray(body.profileIds) ||
         body.profileIds.length === 0 ||
         !body.profileIds.every((profileId) => typeof profileId === 'string')
       ) {
         throw new MutationInputError('Select at least one profile for this key.');
       }
-      for (const id of body.profileIds) mutationUuid(id, 'profileId');
+      const profileIds: string[] = scope === 'read' ? body.profileIds as string[] : [];
+      for (const id of profileIds) mutationUuid(id, 'profileId');
       const expiresInDays = body.expiresInDays ?? DEFAULT_MCP_KEY_EXPIRY_DAYS;
       if (!isMcpKeyExpiryDays(expiresInDays)) {
         throw new MutationInputError('Choose one of the available expiry periods.');
@@ -50,7 +59,8 @@ export async function POST(request: Request): Promise<Response> {
       const issued = await issueMcpKey(database, {
         orgId: actor.orgId,
         label: body.label,
-        profileIds: body.profileIds,
+        profileIds,
+        scope,
         expiresInDays,
         createdBy: actor.userId,
       });

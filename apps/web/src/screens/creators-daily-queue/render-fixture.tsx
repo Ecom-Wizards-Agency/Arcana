@@ -5,7 +5,9 @@
  * rows the fixture only counts carry placeholder ids and are not asserted.
  * Nothing here is from a real run.
  */
-import type { CreatorDailyQueueItem, CreatorImportRun, CreatorQueueAction, CreatorQueueSnapshot, CreatorSweepRun } from '@wizard-ads/shared';
+import type {
+  CreatorDailyQueueItem, CreatorIdleGroup, CreatorImportRun, CreatorQueueAction, CreatorQueueSnapshot, CreatorSweepRun, CreatorTrackerScore,
+} from '@wizard-ads/shared';
 import type { ScreenData } from './view';
 
 export const AS_OF = { date: '2026-09-09', sweepRun: '2026-09-09T06:12:00.000Z', trackerRead: '2026-09-09T06:14:00.000Z' } as const;
@@ -16,12 +18,13 @@ const counts = (read: number) => ({ read, valid: read, invalid: 0, inserted: 0, 
 export const lastImport: CreatorImportRun = {
   id: '33200000-0000-4000-8000-0000000000a1', startedAt: '2026-09-09T06:13:58.000Z', finishedAt: AS_OF.trackerRead, status: 'succeeded',
   failure: null, failedFile: null, files: ['registry', 'queue', 'sweep_checkpoint', 'mcf_reservations'], queueRunDate: AS_OF.date,
-  counts: { records: counts(272), action_log: counts(0), queue_items: counts(34), sweep_runs: counts(1), sample_shipments: counts(2) },
+  counts: { records: counts(272), action_log: counts(0), queue_items: counts(34), sweep_runs: counts(1), sample_shipments: counts(2),
+    preflights: null },
   source: 'control-runner',
 };
 export const failedImport: CreatorImportRun = {
   ...lastImport, id: '33200000-0000-4000-8000-0000000000a2', status: 'failed', failure: 'file_shape_invalid', failedFile: 'queue', queueRunDate: null,
-  counts: { records: null, action_log: null, queue_items: null, sweep_runs: null, sample_shipments: null },
+  counts: { records: null, action_log: null, queue_items: null, sweep_runs: null, sample_shipments: null, preflights: null },
 };
 
 /** `sweep` in the fixture: 359 + 37 + 9 + 7 = 412, and seven unmatched, so it did not reconcile. */
@@ -89,13 +92,32 @@ export const items: CreatorDailyQueueItem[] = [
     reason: 'message_send_requires_current_approval;track_performance_and_request_video_link' })),
 ];
 
-export const snapshot: CreatorQueueSnapshot = { lastImport, runDate: AS_OF.date, items, registryRecords: 272, sweep };
+/** Column 36 as typed: 0134 reads 10 where the runner computes 8 (the score that disagrees); 0088 agrees. */
+export const trackerScores: CreatorTrackerScore[] = [
+  { creatorRecordId: 'CCR-SW-26-0134', trackerScore: 10, scoredOn: AS_OF.date },
+  { creatorRecordId: 'CCR-SW-26-0088', trackerScore: 10, scoredOn: AS_OF.date },
+];
+/**
+ * `no_action.by_status` from the fixture (238, with `Awaiting Sample` the label
+ * nobody recognises), plus the three records the runner's queue leaves idle
+ * beyond the fixture's count (241 − 238) as records whose status was never
+ * reported: not measured.
+ */
+export const idle: CreatorIdleGroup[] = [
+  ...([['Sample Sent', 12], ['Delivered / Awaiting Content', 9], ['Content Posted', 31], ['Performance Update', 18], ['Ghosted', 44],
+    ['Unqualified', 61], ['Declined / Closed', 22], ['On Hold', 7], ['Derma stamp Pause', 26], ['Manager Review', 5]] as const)
+    .map(([status, records]) => ({ status, recognised: true, records })),
+  { status: 'Awaiting Sample', recognised: false, records: 3 },
+  { status: null, recognised: null, records: 3 },
+];
+export const snapshot: CreatorQueueSnapshot = { lastImport, runDate: AS_OF.date, items, registryRecords: 272, sweep, trackerScores, idle };
 export const ready = { view: 'ready', props: { snapshot } } satisfies ScreenData;
 /** Frame 443:244: the last read failed, so nothing is shown as today's. */
 export const refused = { view: 'ready', props: { snapshot: { ...snapshot, lastImport: failedImport } } } satisfies ScreenData;
 /** Frame 443:406: a queue run with no rows, over records that did not move. */
 export const workedToZero = { view: 'ready', props: { snapshot: { ...snapshot, items: [] } } } satisfies ScreenData;
 /** An import that read the registry but no queue file: the day is not measured, not zero. */
-export const noQueueFile = { view: 'ready', props: { snapshot: { ...snapshot, runDate: null, items: [],
+export const noQueueFile = { view: 'ready', props: { snapshot: { ...snapshot, runDate: null, items: [], trackerScores: [], idle: [],
   lastImport: { ...lastImport, files: ['registry'], queueRunDate: null, counts: { ...lastImport.counts, queue_items: null, sweep_runs: null } } } } } satisfies ScreenData;
-export const notImported = { view: 'ready', props: { snapshot: { lastImport: null, runDate: null, items: [], registryRecords: 0, sweep: null } } } satisfies ScreenData;
+export const notImported = { view: 'ready', props: { snapshot: { lastImport: null, runDate: null, items: [], registryRecords: 0, sweep: null,
+  trackerScores: [], idle: [] } } } satisfies ScreenData;

@@ -924,6 +924,21 @@ begin
       values(v_org,(p_date-30)::timestamptz,(p_date-30)::timestamptz,'succeeded','{}',
         '{"records":null,"action_log":null,"queue_items":null,"sweep_runs":null,"sample_shipments":null}'::jsonb,'control-runner');
   end if;
+  if to_regclass('public.creator_sample_preflights') is not null then
+    insert into public.creator_sample_preflights(org_id,run_id,command,creator_record_id,asin,result,errors,required_next_state,
+      detail,started_at,completed_at,source,source_digest)
+      values(v_org,'fixture-preflight','preflight','CCR-FX-26-0001','B0FIXTURE1','HOLD','{selected_sku_not_mcf_fulfillable}',
+        'Conflict or Held','{}'::jsonb,(p_date-30)::timestamptz,(p_date-30)::timestamptz,'mcp',repeat('0',64));
+    insert into public.creator_mcf_observations(org_id,observation_key,creator_record_id,asin,queried_order_id,operation,outcome,read_at)
+      values(v_org,'fixture-observation','CCR-FX-26-0001','B0FIXTURE1','fixture-order','getFulfillmentOrder','not_found',
+        (p_date-30)::timestamptz);
+  end if;
+  if to_regclass('public.creator_drafts') is not null then
+    insert into public.creator_drafts(org_id,creator_record_id,thread_fp,template_key,body,draft_date,submission_digest,created_by,
+      source,status_source)
+      values(v_org,'CCR-FX-26-0001',repeat('a',64),'awaiting_content_follow_up','Hi {first name}, fixture draft text.',p_date-30,repeat('0',64),p_user_id,
+        'mcp','mcp');
+  end if;
   if to_regclass('public.queued_changes') is not null then
     insert into public.queued_changes(id,org_id,profile_id,target_id,created_by,context,request,checks)
     values(v_batch,v_org,v_profile,'synthetic-queue-target',p_user_id,

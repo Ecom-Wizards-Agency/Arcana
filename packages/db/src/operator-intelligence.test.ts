@@ -384,6 +384,25 @@ describe.skipIf(!available)('WP-56 operator-intelligence foundations', () => {
     `;
     expect(await insertComplete('Synthetic Query')).toHaveLength(1);
     await expect(insertComplete('synthetic-query')).rejects.toThrow(/duplicate key value/i);
+
+    // A share may be null only when its stage had no events: total and ASIN counts both 0.
+    const insertEmptyPurchases = (normalizedQuery: string, totalPurchases: number) => database.sql`
+      insert into public.fact_sqp_weekly (
+        org_id, profile_id, week_start, marketplace_id, asin, search_query,
+        normalized_query, search_volume,
+        total_impressions, asin_impressions, impression_share,
+        total_clicks, asin_clicks, click_share,
+        total_cart_adds, asin_cart_adds, asin_cart_add_share,
+        total_purchases, asin_purchases, purchase_share
+      ) values (
+        ${orgA}, ${profileA}, '2026-08-02', 'market-synthetic',
+        'ASIN-SYNTHETIC', 'Synthetic Quiet Query', ${normalizedQuery}, 10,
+        100, 10, 0.1, 20, 4, 0.2, 0, 0, null, ${totalPurchases}, 0, null
+      ) returning purchase_share
+    `;
+    expect(await insertEmptyPurchases('synthetic quiet query', 0)).toEqual([{ purchase_share: null }]);
+    await expect(insertEmptyPurchases('synthetic quiet query two', 3))
+      .rejects.toThrow(/fact_sqp_weekly_contract_complete/i);
   });
 
   it('tenant-scopes every new table and keeps worker evidence append-only for users', async () => {

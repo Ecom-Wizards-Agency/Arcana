@@ -6,9 +6,10 @@ import type {
   SqpWeeklyPromotionInput,
   SqpWeeklyPromotionResult,
 } from '@wizard-ads/db';
+import { ensureFactPartitions } from '@wizard-ads/db';
 import type { SqpRequestJob } from '@wizard-ads/shared';
 import type { CreateReportInput, SpApiReport, SpApiReportDocument } from '@wizard-ads/sp-api';
-import { SQP_PARSER_VERSION } from '@wizard-ads/sp-api';
+import { roundSqpShare, SQP_PARSER_VERSION } from '@wizard-ads/sp-api';
 import {
   parseSqpRequeueArgs,
   requeueDeadSqpWeek,
@@ -248,7 +249,7 @@ describe.skipIf(!available)('sqp:requeue against the test database', () => {
     const job = payload('2026-09-06', '2026-09-12');
     const id = await insertRunningJob(job);
     const failure = await refuseAndDeadLetter(id, job, new ScriptedSqpApi({ dataByAsin: [sqpRow(55)] }));
-    expect(failure.message).toMatch(/^SQP report refused 1 rows; canonical promotion is blocked; parser v2 refused 1 of 1 rows: /);
+    expect(failure.message).toMatch(/^SQP report refused 1 rows; canonical promotion is blocked; parser v3 refused 1 of 1 rows: /);
     const before = await jobRow(id);
     expect((before.result?.['checkpoint'] as Record<string, unknown>)['refusalSummary']).toMatchObject({
       parserVersion: SQP_PARSER_VERSION, refusedRows: 1,
@@ -257,6 +258,105 @@ describe.skipIf(!available)('sqp:requeue against the test database', () => {
     await expect(requeueDeadSqpWeek(db, { orgSlug, profileLabel: label, weekStart: '2026-09-06', freshReports: true }))
       .rejects.toThrow(`parser v${SQP_PARSER_VERSION} already refused that week; this checkout's parser is v${SQP_PARSER_VERSION}`);
     expect(await jobRow(id)).toEqual(before);
+  });
+
+  it('requeues a week parser v2 refused for null shares, and v3 promotes it with those shares null', async () => {
+    // Facts are partitioned by month; this test promotes into the real table.
+    await ensureFactPartitions(db, '2026-08-01', 1);
+    const job = payload('2026-08-23', '2026-08-29');
+    const id = await insertRunningJob(job);
+    const week = (row: Record<string, unknown>) => ({ ...row, startDate: '2026-08-23', endDate: '2026-08-29' });
+    const api = new ScriptedSqpApi({ dataByAsin: [week(sqpRow(55))] });
+    await refuseAndDeadLetter(id, job, api);
+    // Emulate the production row parser v2 left: its summary and its error line.
+    const v2Error = 'SQP report refused 1 rows; canonical promotion is blocked; parser v2 refused 1 of 2 rows: ' +
+      'SQP row has invalid asinPurchaseShare x1; first refused row: missing [], 23 schema fields present, 0 unrecognized';
+    await db.sql`
+      update public.sync_jobs set last_error = ${v2Error},
+             result = jsonb_set(result, '{checkpoint,refusalSummary,parserVersion}', '2'::jsonb)
+       where id = ${id}`;
+
+    await expect(requeueDeadSqpWeek(db, {
+      orgSlug, profileLabel: label, weekStart: '2026-08-23', freshReports: false, now: new Date('2026-09-27T13:00:00Z'),
+    })).resolves.toMatchObject({
+      jobId: id, refusedByParserVersion: 2, currentParserVersion: 3, checkpointKept: true,
+      reusedReports: 1, reportsToRequest: 0,
+    });
+
+    // The same report, now read by v3: one ordinary row and one with no cart adds or purchases.
+    api.document = { dataByAsin: [
+      week(sqpRow(20)),
+      week({
+        ...sqpRow(20),
+        searchQueryData: { searchQuery: 'Synthetic Quiet Query', searchQueryScore: 1, searchQueryVolume: 30 },
+        cartAddData: { totalCartAddCount: 0, asinCartAddCount: 0, asinCartAddShare: null },
+        purchaseData: { totalPurchaseCount: 0, asinPurchaseCount: 0, asinPurchaseShare: null },
+      }),
+    ] };
+    await db.sql`update public.sync_jobs set status = 'running', attempts = 1, claimed_by = 'synthetic-worker', claimed_at = now() where id = ${id}`;
+    api.actions.length = 0;
+    const run = createPostgresSqpRequestHandler({ handle: db, api, providerGate: { beforeCall: async () => {} } });
+    const completed = await run(job, { jobId: id });
+    expect(api.actions).toEqual(['get_report_document', 'download_report_document']);
+    expect(completed).toMatchObject({
+      status: 'completed', reused: false,
+      ingestion: { sourceRows: 2, parsedRows: 2, refusedRows: 0, upserts: 2, promotedRows: 2, canonicalRows: 2 },
+    });
+    const loaded = await db.sql<{
+      normalized_query: string; click_share: string | null; asin_cart_add_share: string | null;
+      purchase_share: string | null; total_purchases: string; asin_purchases: string;
+    }[]>`
+      select normalized_query, click_share::text, asin_cart_add_share::text, purchase_share::text,
+             total_purchases::text, asin_purchases::text
+        from public.fact_sqp_weekly
+       where org_id = ${orgId} and profile_id = ${profileId} and week_start = '2026-08-23'
+       order by normalized_query`;
+    expect(loaded).toEqual([
+      { normalized_query: 'synthetic quiet query', click_share: '0.200000', asin_cart_add_share: null,
+        purchase_share: null, total_purchases: '0', asin_purchases: '0' },
+      { normalized_query: 'synthetic requeue query', click_share: '0.200000', asin_cart_add_share: '0.200000',
+        purchase_share: '0.400000', total_purchases: '5', asin_purchases: '2' },
+    ]);
+    // A replay re-reads the stored facts; the null shares survive the fingerprint check.
+    await expect(run(job, { jobId: id })).resolves.toMatchObject({ status: 'completed', reused: true });
+  });
+
+  it('rounds every share exactly as numeric(9,6) stores it', async () => {
+    const shares: number[] = [];
+    for (const total of [3, 6, 7, 9, 11, 13, 17, 97, 128, 999, 1_024, 7_919, 65_536, 999_983, 2_000_000, 3_000_000]) {
+      for (const asin of [0, 1, 2, Math.floor(total / 3), Math.floor(total / 2), total - 1, total]) shares.push(asin / total);
+    }
+    const stored = await db.sql<{ share: string }[]>`
+      select (value::numeric(9,6))::text as share from unnest(${shares.map(String)}::text[]) with ordinality as input(value, position)
+       order by position`;
+    expect(stored).toHaveLength(shares.length);
+    expect(shares.length).toBe(112);
+    expect(shares.map(roundSqpShare)).toEqual(stored.map((row) => Number(row.share)));
+  });
+
+  it('replays a finished job whose one-third share was stored at six decimals', async () => {
+    await ensureFactPartitions(db, '2026-09-01', 1);
+    const job = payload('2026-09-20', '2026-09-26');
+    const id = await insertRunningJob(job);
+    const row = {
+      ...sqpRow(33.33),
+      startDate: '2026-09-20', endDate: '2026-09-26',
+      clickData: { totalClickCount: 3, asinClickCount: 1, asinClickShare: 33.33 },
+    };
+    const api = new ScriptedSqpApi({ dataByAsin: [row] });
+    const run = createPostgresSqpRequestHandler({ handle: db, api, providerGate: { beforeCall: async () => {} } });
+    await expect(run(job, { jobId: id })).resolves.toMatchObject({
+      status: 'completed', reused: false,
+      ingestion: { sourceRows: 1, parsedRows: 1, refusedRows: 0, upserts: 1, promotedRows: 1, canonicalRows: 1 },
+    });
+    const [loaded] = await db.sql<{ click_share: string }[]>`
+      select click_share::text from public.fact_sqp_weekly
+       where org_id = ${orgId} and profile_id = ${profileId} and week_start = '2026-09-20'`;
+    expect(loaded?.click_share).toBe('0.333333');
+    // The replay re-reads the stored facts and re-derives the promotion fingerprint.
+    api.actions.length = 0;
+    await expect(run(job, { jobId: id })).resolves.toMatchObject({ status: 'completed', reused: true });
+    expect(api.actions).toEqual([]);
   });
 
   it('drops the checkpoint only when asked for fresh reports', async () => {

@@ -5,9 +5,9 @@ import SharedError from '../../../app/creators/error';
 import { rendered } from '../render-test-support';
 import { verifyScreen } from '../settings/render-support';
 import { descriptor } from './descriptor';
-import { items, noQueueFile, notImported, ready, refused, workedToZero } from './render-fixture';
+import { idle, items, noQueueFile, notImported, ready, refused, snapshot, workedToZero } from './render-fixture';
 import { CreatorRunnerQueueItem } from '@wizard-ads/shared';
-import { queueTiles, recordsWithoutAction } from './queue-summary';
+import { orderIdleGroups, queueTiles, recordsWithoutAction } from './queue-summary';
 import Screen from './view';
 
 verifyScreen(descriptor, [
@@ -19,6 +19,8 @@ verifyScreen(descriptor, [
   { state: 'empty', name: 'shows a day worked to zero over the records that did not move (443:406)', render: () => <Screen data={workedToZero} />, text: '272 records on the registry did not move' },
   { state: 'not-measured', name: 'never calls an import without a queue file worked to zero', render: () => <Screen data={noQueueFile} />, text: 'read no queue output, so the day\'s work is not measured', absent: ['[data-creator-state="worked-to-zero"]'] },
   { state: 'not-measured', name: 'says nothing was imported rather than showing zero', render: () => <Screen data={notImported} />, text: 'It is not zero' },
+  { state: 'not-measured', name: 'calls records whose status was never reported not measured, not a stage (444:2)', render: () => <Screen data={ready} />, text: 'Status not reported: 3 records.' },
+  { state: 'refused', name: 'gives the label nobody recognises its own refusal group (444:2)', render: () => <Screen data={ready} />, text: 'Not in the tracker\'s dropdown.' },
   { state: 'gated', name: 'keeps viewers out', render: () => <Screen data={{ view: 'gated', props: {} }} />, text: 'Owners, admins and analysts only' },
 ]);
 
@@ -80,5 +82,63 @@ describe('creator queue against CREATOR-FIXTURE.json, with the runner winning wh
     const stale = rendered(<Screen data={{ view: 'ready', props: { snapshot: { ...ready.props.snapshot, lastImport: skipped } } }} />);
     expect(stale.querySelector('[data-testid="sweep-strip"]')?.textContent).toContain('could not read as a checkpoint');
     expect(stale.querySelectorAll('[data-sweep-count]')).toHaveLength(0);
+  });
+});
+
+describe('creator queue in-place states', () => {
+  it('opens a row in place with all ten checks and the score that disagrees (444:301)', () => {
+    const host = rendered(<Screen data={ready} />);
+    // Every row with a record opens; the three unresolved threads do not.
+    expect(host.querySelectorAll('[data-testid="queue-row-open"]')).toHaveLength(31);
+    const opened = host.querySelector('[data-testid="queue-row-open"][data-record="CCR-SW-26-0134"]')!;
+    expect(opened.tagName).toBe('DETAILS');
+    const checks = [...opened.querySelectorAll('[data-check]')];
+    expect(checks).toHaveLength(10);
+    expect(checks.map((check) => check.getAttribute('data-check'))).toEqual([
+      'complete_fulfillment_details', 'requested_asin', 'exact_product_match', 'storefront_visible', 'recent_post_verified',
+      'content_quality', 'category_fit', 'performance_or_revenue', 'specific_asin_mentioned', 'low_spam_risk']);
+    expect(checks.filter((check) => check.getAttribute('data-passed') === 'false').map((check) => check.getAttribute('data-check')))
+      .toEqual(['recent_post_verified', 'performance_or_revenue']);
+    const agreement = opened.querySelector('[data-testid="score-agreement"]')!;
+    expect(agreement.getAttribute('data-agreement')).toBe('disagrees');
+    expect(agreement.textContent).toMatch(/The tracker says 10 \/ 10 \(scored 9 Sept? 2026\); the runner computes 8 \/ 10/);
+    expect(opened.querySelector('[data-testid="open-record"]')?.getAttribute('href')).toBe('/creators/records/CCR-SW-26-0134');
+    expect(opened.querySelector('[data-testid="open-drafts"]')).toBeNull();
+    const agrees = host.querySelector('[data-testid="queue-row-open"][data-record="CCR-SW-26-0088"] [data-testid="score-agreement"]')!;
+    expect(agrees.getAttribute('data-agreement')).toBe('agrees');
+    const agreements = [...host.querySelectorAll('[data-testid="score-agreement"]')].map((element) => element.getAttribute('data-agreement'));
+    expect(agreements.filter((value) => value === 'no-tracker-score')).toHaveLength(29);
+    const message = host.querySelector('[data-testid="queue-row-open"][data-record="CCR-SW-26-0203"]')!;
+    expect(message.querySelector('[data-testid="open-drafts"]')?.getAttribute('href')).toBe('/creators/drafts');
+    expect(message.querySelector('[data-testid="open-conflict"]')?.getAttribute('href')).toBe('/creators/conflicts/CCR-SW-26-0203');
+    expect(host.querySelectorAll('[data-testid="open-drafts"]')).toHaveLength(14);
+  });
+
+  it('groups the records that produced no action by status, with the unrecognised label refused and the unreported not measured (444:2)', () => {
+    expect(idle.reduce((sum, group) => sum + group.records, 0)).toBe(recordsWithoutAction(items, snapshot.registryRecords));
+    const ordered = orderIdleGroups(idle);
+    expect(ordered.recognised).toHaveLength(10);
+    expect(ordered.unrecognised.map((group) => group.status)).toEqual(['Awaiting Sample']);
+    expect(ordered.unreported).toEqual({ records: 3 });
+    const host = rendered(<Screen data={ready} />);
+    const groups = [...host.querySelectorAll('[data-testid="idle-group"]')];
+    expect(groups).toHaveLength(10);
+    expect(groups.map((group) => group.getAttribute('data-status'))).toEqual(['Sample Sent', 'Delivered / Awaiting Content', 'Content Posted',
+      'Performance Update', 'Manager Review', 'On Hold', 'Unqualified', 'Ghosted', 'Declined / Closed', 'Derma stamp Pause']);
+    expect(groups.find((group) => group.getAttribute('data-status') === 'Unqualified')?.textContent).toBe('Unqualified61');
+    const refusedGroups = [...host.querySelectorAll('[data-testid="idle-refused"]')];
+    expect(refusedGroups.map((group) => group.textContent)).toEqual(['Awaiting Sample: 3 records']);
+    expect(host.querySelector('[data-testid="idle-unrecognised"]')?.textContent).toContain('Not in the tracker\'s dropdown.');
+    expect(host.querySelector('[data-testid="idle-unreported"]')?.textContent).toMatch(/^Status not reported: 3 records\. .*not measured\.$/);
+    // Still the single count the round-1 test pins, above the groups.
+    expect(host.querySelector('[data-testid="no-action"]')?.textContent).toMatch(/^241 records/);
+    const zero = rendered(<Screen data={workedToZero} />);
+    expect(zero.querySelectorAll('[data-testid="idle-group"]')).toHaveLength(10);
+    const none = rendered(<Screen data={notImported} />);
+    expect(none.querySelector('[data-testid="idle-groups"]')).toBeNull();
+    const unscored = rendered(<Screen data={{ view: 'ready', props: { snapshot: { ...snapshot, idle: [{ status: null, recognised: null, records: 241 }] } } }} />);
+    expect(unscored.querySelectorAll('[data-testid="idle-group"]')).toHaveLength(0);
+    expect(unscored.querySelector('[data-testid="idle-unreported"]')?.textContent).toContain('241 records');
+    expect(unscored.querySelector('[data-testid="idle-unreported"]')?.textContent).not.toMatch(/\b0 records/);
   });
 });

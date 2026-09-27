@@ -58,6 +58,28 @@ AMAZON_SETTINGS = ("AMAZON_OAUTH_ALLOWED_REDIRECT_URIS",)
 # Read only by the Amazon Ads connection mode. The worker mode never passes
 # them on: the worker config refuses the Ads loop without entity.sync.
 AMAZON_KEYS = frozenset({AMAZON_GATE, *AMAZON_SETTINGS})
+# WP-331's market-signals import (WP-336). Optional and non-secret; without the
+# directory the import is off. Only the worker mode passes them on, after
+# validation. ProtectHome=yes hides /home, /root and /run/user from the unit.
+MARKET_SIGNALS_DIR = "OPENSPELL_MARKET_SIGNALS_DIR"
+MARKET_SIGNALS_ORG_KEYS = "OPENSPELL_MARKET_SIGNALS_ORG_KEYS"
+IMPORT_KEYS = frozenset({MARKET_SIGNALS_DIR, MARKET_SIGNALS_ORG_KEYS})
+HIDDEN_ROOTS = ("/home", "/root", "/run/user")
+IMPORT_DIRECTORY = re.compile(r"^(?:/[A-Za-z0-9._-]+)+$")
+ORG_KEY_ENTRY = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}="
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+# WP-334's read-only MCF observation (WP-338b). Optional and non-secret; absent
+# or 0 leaves it off. Only the worker mode passes them on, after validation. The
+# worker (apps/worker/src/mcf-observe.ts) enables it only on exactly "1" with both
+# SP-API LWA credentials, and reads the interval as whole minutes from 5 to 1440
+# (30 when absent).
+MCF_OBSERVE_GATE = "OPENSPELL_MCF_OBSERVE_ENABLED"
+MCF_OBSERVE_INTERVAL = "OPENSPELL_MCF_OBSERVE_INTERVAL_MINUTES"
+MCF_OBSERVE_KEYS = frozenset({MCF_OBSERVE_GATE, MCF_OBSERVE_INTERVAL})
+MCF_OBSERVE_MINUTES = (5, 1440)
+WHOLE_MINUTES = re.compile(r"^[1-9][0-9]{0,3}$")
 CREDENTIAL_VALUE = re.compile(r"^[\x21-\x7e]{1,4096}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 MCP_UPSTREAM = "http://127.0.0.1:18787"
@@ -104,11 +126,15 @@ WORKER_ENV_KEYS = {
     SPAPI_GATE,
     *SPAPI_SETTINGS,
     *AMAZON_KEYS,
+    *IMPORT_KEYS,
+    *MCF_OBSERVE_KEYS,
 }
 
 
 # The Evo general worker's exact claim surface. sqp.request is the weekly
 # Brand Analytics report request; the Vercel cron tick never claims it.
+# mcf.observe is WP-334's read-only MCF observation (WP-338b); claiming it does
+# nothing until OPENSPELL_MCF_OBSERVE_ENABLED is 1.
 GENERAL_WORKER_JOB_TYPES = frozenset({
     "keepa.sync",
     "rank.sync",
@@ -116,6 +142,7 @@ GENERAL_WORKER_JOB_TYPES = frozenset({
     "sqp.categorize",
     "sqp.request",
     "recommendations.run",
+    "mcf.observe",
 })
 
 
@@ -171,13 +198,50 @@ def public_config() -> dict[str, str]:
 
 
 def general_worker_job_types(config: dict[str, str]) -> None:
-    """The worker mode claims exactly the six types; the connection-only mode claims none."""
+    """The worker mode claims exactly the seven types; the connection-only modes claim none."""
     job_types = config.get("WORKER_JOB_TYPES", "").split(",")
     if len(job_types) != len(set(job_types)) or set(job_types) != GENERAL_WORKER_JOB_TYPES:
         raise RuntimeError(
             "WORKER_JOB_TYPES must list exactly these job types once each: "
             + ",".join(sorted(GENERAL_WORKER_JOB_TYPES))
         )
+
+
+def market_signals_settings(config: dict[str, str]) -> None:
+    """Refuse an import setting the hardened worker could not use; name the key, never the value."""
+    directory = config.get(MARKET_SIGNALS_DIR)
+    if directory is None:
+        if MARKET_SIGNALS_ORG_KEYS in config:
+            raise RuntimeError(f"{MARKET_SIGNALS_ORG_KEYS} requires {MARKET_SIGNALS_DIR}")
+        return
+    if not IMPORT_DIRECTORY.fullmatch(directory) or os.path.normpath(directory) != directory \
+            or any(directory == root or directory.startswith(root + "/") for root in HIDDEN_ROOTS):
+        raise RuntimeError(
+            f"{MARKET_SIGNALS_DIR} must be a normalized absolute path outside "
+            + ", ".join(HIDDEN_ROOTS)
+        )
+    org_keys = config.get(MARKET_SIGNALS_ORG_KEYS)
+    if org_keys is None:
+        return
+    entries = org_keys.split(",")
+    keys = [entry.split("=", 1)[0] for entry in entries]
+    if not all(ORG_KEY_ENTRY.fullmatch(entry) for entry in entries) or len(keys) != len(set(keys)):
+        raise RuntimeError(
+            f"{MARKET_SIGNALS_ORG_KEYS} must be key=uuid[,key=uuid] with unique keys"
+        )
+
+
+def mcf_observe_settings(config: dict[str, str]) -> bool:
+    """Refuse an observation setting the worker would read differently; name the key, never the value."""
+    if config.get(MCF_OBSERVE_GATE, "0") not in {"0", "1"}:
+        raise RuntimeError(f"{MCF_OBSERVE_GATE} must be 0 or 1")
+    minutes = config.get(MCF_OBSERVE_INTERVAL)
+    low, high = MCF_OBSERVE_MINUTES
+    if minutes is not None and not (WHOLE_MINUTES.fullmatch(minutes) and low <= int(minutes) <= high):
+        raise RuntimeError(
+            f"{MCF_OBSERVE_INTERVAL} must be a whole number of minutes from {low} to {high}"
+        )
+    return config.get(MCF_OBSERVE_GATE) == "1"
 
 
 def release_revision() -> str:
@@ -262,6 +326,8 @@ def exec_release(mode: str, revision: str, spapi_enabled: bool,
 def run_worker() -> None:
     config = public_config()
     general_worker_job_types(config)
+    market_signals_settings(config)
+    observe_enabled = mcf_observe_settings(config)
     revision = release_revision()
     spapi_enabled = config.get(SPAPI_GATE) == "1"
     if spapi_enabled and any(not config.get(name) for name in SPAPI_SETTINGS):
@@ -271,7 +337,14 @@ def run_worker() -> None:
     env = base_environment()
     env.update({key: value for key, value in config.items() if key not in AMAZON_KEYS})
     env["OPENSPELL_WORKER_REVISION"] = revision
-    env.update(spapi_credentials(required=spapi_enabled))
+    spapi = spapi_credentials(required=spapi_enabled)
+    if observe_enabled and not spapi:
+        # The worker would stay off silently; refuse instead so the flag means what it says.
+        raise RuntimeError(
+            f"{MCF_OBSERVE_GATE}=1 requires the SP-API LWA credentials: "
+            + ", ".join(sorted(SPAPI_CREDENTIALS))
+        )
+    env.update(spapi)
     env["DATABASE_URL"] = database_url()
     exec_release("worker", revision, spapi_enabled, "src/main.ts", env)
 
