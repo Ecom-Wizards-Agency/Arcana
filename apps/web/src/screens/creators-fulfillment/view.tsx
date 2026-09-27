@@ -6,6 +6,8 @@ import { formatTimestamp } from '../../ui/date-format';
 import { CreatorGated, CreatorHeader, CreatorLoadError, ImportRefusal, LockBadge, SectionHead, count, lastRead } from '../creators-daily-queue/creator-frame';
 import { amazonRead, clock, money } from '../creators-sample-preflight/order-key';
 import { REFUSED_ORDER_STATUSES, carrierFailed, fulfillmentStages, trackingNotSafeToSend, type FulfillmentStage } from './stages';
+import type { CreatorMcfLaneSend } from '@wizard-ads/db';
+import { SEND_STATE_WORDS, STATE_REASON_WORDS } from '../creators-sample-preflight/send-model';
 import type { load } from './load';
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
@@ -125,9 +127,10 @@ function ReservationHolds({ detail, lane }: { detail: CreatorFulfillmentDetail; 
   </Panel>;
 }
 
-function LockLine() {
-  return <p className="wa-page-sub" data-testid="lock-line">The lock is not hand-editable, and nothing on this page releases it. The runner owns the lane state and
-    the lock; settling whether an order exists is not releasing the lock.</p>;
+function LockLine({ lane }: { lane: CreatorSampleShipment }) {
+  return <p className="wa-page-sub" data-testid="lock-line">The lock is not hand-editable, and nothing on this page releases it. {lane.orderOwner === 'arcana'
+    ? 'Arcana\'s send ledger owns this lane\'s state, and the runner\'s import leaves it unchanged;'
+    : 'The runner owns the lane state and the lock;'} settling whether an order exists is not releasing the lock.</p>;
 }
 
 function Reconciliation({ detail, lane }: { detail: CreatorFulfillmentDetail; lane: CreatorSampleShipment }) {
@@ -166,7 +169,7 @@ function Reconciliation({ detail, lane }: { detail: CreatorFulfillmentDetail; la
         order is never placed after an ambiguous first one, and a duplicate submit under the same id is rejected by Amazon rather than shipped.
       </section>
     </div>
-    <LockLine />
+    <LockLine lane={lane} />
   </section>;
 }
 
@@ -274,7 +277,44 @@ function Reads({ detail }: { detail: CreatorFulfillmentDetail }) {
   </section>;
 }
 
-function ReadyOrder({ detail }: { detail: CreatorFulfillmentDetail }) {
+/** What each send outcome means for this order; the controls stay on the pre-flight. */
+const OUTCOME_LINE: Partial<Record<CreatorMcfLaneSend['state'], string>> = {
+  approved: 'Approved; the worker has not sent the order request yet.',
+  dispatching: 'The worker is sending the order request now.',
+  accepted: 'Amazon answered HTTP 200. That is not placed: a read must show Received or later with this SKU and one unit.',
+  placed: 'A read found the order under this id with this SKU and one unit.',
+  uncertain: 'The order request returned nothing readable. Only reads of this order id settle it; no second order is requested.',
+  conflict: 'Amazon holds an order under this id that does not match the send.',
+  rejected: 'Amazon rejected the order request, and a follow-up read found no order.',
+  not_created: 'Released as not created after enough not-found reads.',
+  failed_by_amazon: 'Amazon holds the order in a failed status.',
+  failed_after_placement: 'The placed order later became Cancelled or Unfulfillable in Amazon.',
+  cancel_requested: 'A cancel was requested.', cancel_dispatching: 'The worker is asking Amazon to cancel.', cancelled: 'Amazon cancelled the order.',
+};
+
+/** Arcana placed this lane's order: its outcome, in the ledger's words, with the Amazon status and codes. */
+function ArcanaOutcome({ send, lane }: { send: CreatorMcfLaneSend; lane: CreatorSampleShipment }) {
+  const words = SEND_STATE_WORDS[send.state];
+  const escalation = send.escalationReason === 'ladder_exhausted' ? 'Amazon has not settled this order in 7 days.'
+    : send.escalationReason === 'conflict' ? 'Escalated as a conflict.' : null;
+  return <Panel title="Arcana's order request" testid="arcana-outcome">
+    <p style={{ margin: 0 }} data-send-state={send.state}><Badge tone={words.tone}>{words.title}</Badge>{' '}
+      <span className="wa-page-sub">since {formatTimestamp(send.stateChangedAt)}</span></p>
+    <Facts testid="arcana-facts" rows={[
+      ['outcome', 'What it means', OUTCOME_LINE[send.state] ?? (send.stateReason === null ? words.title : STATE_REASON_WORDS[send.stateReason] ?? send.stateReason)],
+      ['amazon-status', 'Amazon status', send.amazonStatus ?? notRead],
+      ['accepted', 'Accepted by Amazon', send.acceptedAt === null ? <span className="wa-page-sub">not accepted</span> : formatTimestamp(send.acceptedAt)],
+      ['placed', 'Placed', send.placedAt === null ? <span className="wa-page-sub">not placed</span> : formatTimestamp(send.placedAt)],
+      ['codes', 'Amazon codes', (send.providerCodes ?? []).length === 0 ? <span className="wa-page-sub">none</span>
+        : (send.providerCodes ?? []).map((code) => <code key={code}>{code} </code>)],
+    ]} />
+    {escalation === null ? null : <p className="wa-banner wa-banner--bad" data-testid="arcana-escalation" style={{ display: 'block', margin: 0 }}><strong>{escalation}</strong></p>}
+    <p className="wa-page-sub" style={{ margin: 0 }}>Arcana owns this lane&apos;s order. Asking Amazon, releasing and recording as sent are on
+      {' '}<a href={`/creators/samples/${lane.derivedOrderKey}/preflight`} data-testid="arcana-controls-link">the pre-flight</a>.</p>
+  </Panel>;
+}
+
+function ReadyOrder({ detail, send }: { detail: CreatorFulfillmentDetail; send: CreatorMcfLaneSend | null }) {
   const { lane, lastImport } = detail;
   const refused = lastImport?.status === 'failed';
   const shown = refused ? null : lane;
@@ -297,18 +337,19 @@ function ReadyOrder({ detail }: { detail: CreatorFulfillmentDetail }) {
   }
   const reconciliation = lane.laneState === 'Reconciliation Required';
   const found = detail.settlement?.settlement === 'found' || lane.mcf !== null;
-  return <main className="wa-stack" data-testid="creator-fulfillment" data-lane={lane.laneState}>
+  return <main className="wa-stack" data-testid="creator-fulfillment" data-lane={lane.laneState} data-owner={lane.orderOwner}>
     {header}{links}
+    {send === null ? null : <ArcanaOutcome send={send} lane={lane} />}
     {reconciliation ? <Reconciliation detail={detail} lane={lane} /> : null}
     {found ? <Fulfillment detail={detail} lane={lane} /> : null}
-    {!reconciliation && !found ? <><ReservationHolds detail={detail} lane={lane} /><LockLine /></> : null}
+    {!reconciliation && !found ? <><ReservationHolds detail={detail} lane={lane} /><LockLine lane={lane} /></> : null}
     <Reads detail={detail} />
   </main>;
 }
 
 export default function Screen({ data }: { data: ScreenData }) {
   switch (data.view) {
-    case 'ready': return <ReadyOrder detail={data.props.detail} />;
+    case 'ready': return <ReadyOrder detail={data.props.detail} send={data.props.send ?? null} />;
     case 'missing': return <main className="wa-stack" data-testid="creator-fulfillment"><CreatorHeader title={TITLE} subtitle="Creator Connections" />
       <EmptyState variant="empty" data-creator-state="order-missing" title="No such sample order"
         body="This address does not name a sample order key." action={<a href="/creators/samples">Sample shipments</a>} /></main>;
