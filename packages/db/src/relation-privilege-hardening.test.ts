@@ -477,12 +477,15 @@ describe.skipIf(!available)('authenticated relation privilege hardening', () => 
       });
 
       await applySqlFile(concurrent, HARDENING);
-      await pending`commit`;
 
-      const [escaped] = await concurrent.sql<{
+      // The drift session sees the committed hardening beside its own drift, which proves the
+      // same escape without committing: roles are cluster-wide, so committed API-role drift
+      // would break the hardening guards of every test database another worker is migrating (WP-339).
+      const [escaped] = await pending<{
         table_truncate: boolean;
         table_select: boolean;
         public_column_acl: boolean;
+        direct_truncate_revoked: boolean;
         inherited_truncate: boolean;
         membership: boolean;
         bypassrls: boolean;
@@ -502,6 +505,14 @@ describe.skipIf(!available)('authenticated relation privilege hardening', () => 
                and attribute.attname = 'id'
                and privilege.grantee = 0
           ) as public_column_acl,
+          not exists (
+            select 1
+              from pg_catalog.pg_class relation
+              cross join lateral pg_catalog.aclexplode(relation.relacl) privilege
+             where relation.oid = 'public.orgs'::regclass
+               and privilege.grantee = 'authenticated'::regrole
+               and privilege.privilege_type = 'TRUNCATE'
+          ) as direct_truncate_revoked,
           has_table_privilege(
             'authenticated', 'public.orgs', 'truncate'
           ) as inherited_truncate,
@@ -512,18 +523,26 @@ describe.skipIf(!available)('authenticated relation privilege hardening', () => 
              where rolname = 'authenticated'
           ) as bypassrls
       `;
+      // The committed hardening is visible here (no direct TRUNCATE), so TRUNCATE is inherited.
       expect(escaped).toEqual({
         table_truncate: true,
         table_select: true,
         public_column_acl: true,
+        direct_truncate_revoked: true,
         inherited_truncate: true,
         membership: true,
         bypassrls: true,
       });
+
+      // Every other session, and so every other test database on the server, never saw the drift.
+      const [otherSessions] = await concurrent.sql<{ bypassrls: boolean; membership: boolean }[]>`
+        select
+          (select rolbypassrls from pg_catalog.pg_roles where rolname = 'authenticated') as bypassrls,
+          pg_has_role('authenticated', 'service_role', 'member') as membership
+      `;
+      expect(otherSessions).toEqual({ bypassrls: false, membership: false });
     } finally {
       await pending`rollback`.catch(() => {});
-      await concurrent.sql`alter role authenticated nobypassrls`.catch(() => {});
-      await concurrent.sql`revoke service_role from authenticated`.catch(() => {});
       pending.release();
       await concurrent.drop();
     }
