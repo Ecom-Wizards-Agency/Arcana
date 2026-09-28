@@ -1,0 +1,14 @@
+{
+  "endpoint": "https://sandbox.sellingpartnerapi-na.amazon.com",
+  "orgId": "<org-uuid>",
+  "scope": "<spapi-connection-uuid>:<marketplace-id>",
+  "sellerSku": "<sandbox-seller-sku>",
+  "recipient": {
+    "name": "<synthetic recipient name>",
+    "addressLine1": "<synthetic street line>",
+    "city": "<synthetic city>",
+    "stateOrRegion": "<two-letter state>",
+    "postalCode": "<synthetic postal code>",
+    "countryCode": "US"
+  }
+}

@@ -935,6 +935,138 @@ must stay closed, the fallback is a static system user `wizard-ads-mcf` (not
 `Group=wizard-ads-mcf`. That is a reviewed change to the unit, its proof and the
 verify's user check, not a hand edit on the host.
 
+## MCF sandbox run and the live test (WP-338k)
+
+Two checks come before normal MCF use, each under its own authorization from
+Victor: one run of the sandbox harness, then one scoped live unit. Nothing in
+this section runs until Victor has authorized that step in writing for that
+window; a previous authorization does not carry over.
+
+### Sandbox harness
+
+`wizard-ads-mcf-sandbox.service` runs `credential_runtime.py mcf-sandbox`, which
+execs `apps/worker/src/mcf-sandbox-cli.ts` once from the same release as the MCF
+unit. The unit is `Type=oneshot` with no `Restart=` and no `[Install]` section:
+it runs when started by hand, exits, and never starts at boot. It loads the MCF
+unit's three credentials (`database-url` and the SP-API LWA pair) and nothing
+else, so no credential is read on a laptop and no recipient key is loaded. The
+seller's refresh token comes from the database, as `mcf.observe` reads it.
+
+The harness calls only the North America SP-API sandbox,
+`https://sandbox.sellingpartnerapi-na.amazon.com` (Amazon's sandbox page lists it
+and a sandbox limit of 5 requests a second, burst 15), and the LWA token
+exchange. Its configuration must name that endpoint exactly; any other value, a
+production endpoint included, is refused before the database is opened or a
+token is requested, and every request passes a guard that refuses any other URL
+and never follows a redirect. It sends, in order and about a second apart:
+
+| Probe | Request | What it answers |
+|---|---|---|
+| `unknown_id` | getFulfillmentOrder for a fresh id | 404 or 400 for an unknown id |
+| `create_explicit` | createFulfillmentOrder with Ship and FillOrKill | the normal create |
+| `read_explicit` | getFulfillmentOrder for that id | read-after-write, status |
+| `create_duplicate` | the same create again | the duplicate-id answer |
+| `read_duplicate` | getFulfillmentOrder for the first id | that the first order is unchanged and still one unit |
+| `create_omitted` | a create without fulfillmentAction and fulfillmentPolicy | whether Amazon takes it |
+| `read_omitted` | getFulfillmentOrder for it | the defaults Amazon filled in |
+| `cancel` | cancelFulfillmentOrder for the first order | the cancel answer |
+| `read_cancelled` | getFulfillmentOrder for it | the status after the cancel |
+| `create_cancelled_id` | a create under the cancelled id | whether a cancelled id can be reused |
+| `throttle` | up to 30 un-spaced reads of an unknown id | the 429 status, code and rate-limit header; no 429 is recorded as observed, not as a mismatch |
+
+The configuration `/etc/wizard-ads/mcf-sandbox.json` (template
+`wizard-ads-mcf-sandbox.TEMPLATE.json`) holds exactly `endpoint`, `orgId`,
+`scope` (one `<lower-case connection uuid>:<marketplace id>`, a North America
+marketplace, normally the MCF unit's scope entry), `sellerSku` (the dynamic
+sandbox accepts any SKU) and `recipient`. The recipient must be synthetic: an
+invented name, street and city, never a creator's or anyone's real address, and
+words that do not look like Amazon error codes (the harness withholds any code
+that repeats a recipient word). A US recipient needs a two-letter state. The
+runtime refuses any other key (a worker or MCF unit key by name), a template
+placeholder, another endpoint, a credential other than the three, and a run
+outside the unit (`$STATE_DIRECTORY` other than `/var/lib/wizard-ads-mcf-sandbox`).
+The CLI parses the file again with the shared recipient rules before it opens the
+database.
+
+Steps on the Evo, after Victor's authorization for the sandbox calls, from a
+clean checkout of the release revision `REV` that `worker-current` points at:
+
+```bash
+cmp docs/deploy/wizard-ads-credential-runtime.py \
+  /usr/local/lib/wizard-ads-runtime/worker-current/credential_runtime.py
+test -f /usr/local/lib/wizard-ads-runtime/worker-current/app/src/mcf-sandbox-cli.ts
+sudo install -m 0644 -o root -g root docs/deploy/wizard-ads-mcf-sandbox.TEMPLATE.json \
+  /etc/wizard-ads/mcf-sandbox.json
+sudoedit /etc/wizard-ads/mcf-sandbox.json        # fill every <placeholder>
+sudo install -m 0644 -o root -g root docs/deploy/wizard-ads-mcf-sandbox.service \
+  /etc/systemd/system/wizard-ads-mcf-sandbox.service
+sudo systemd-analyze verify /etc/systemd/system/wizard-ads-mcf-sandbox.service
+sudo systemctl daemon-reload
+sudo systemctl start wizard-ads-mcf-sandbox.service   # returns when the run ends
+systemctl show -p Result -p ExecMainStatus wizard-ads-mcf-sandbox.service
+sudo journalctl -u wizard-ads-mcf-sandbox.service -o cat -n 40
+```
+
+`/etc/wizard-ads` must be traversable by other users (`stat -c %a /etc/wizard-ads`
+shows `755`), because the unit runs as a dynamic user; the file holds no secret.
+Exit status 0 means every probe ran; 2 means a refusal (configuration, host or
+credential; the line names the code); 1 means a fault, such as `authentication`
+when no access token could be had. A fault or a guard refusal stops the run where
+it happened: the `mcf_sandbox_probe` lines printed before it show every request
+that was sent, and a probe without a line may still have sent its request. Do
+not start the unit a second time without a new authorization.
+
+The journal holds one `wizard_ads_runtime_start` line with
+`"mode":"mcf-sandbox"`, one `mcf_sandbox_probe` line per probe (status, codes,
+withheld-code count, what the writer or reader made of it, the design's
+assumption and `matches`) and one `mcf_sandbox_done` line with
+`"indicative":true` and the list of mismatched probes. Copy each probe's status
+and codes into the table in `packages/sp-api/src/fixtures/README.md`, with the
+run date and no id. Every probe in `mismatches` becomes a named follow-up package
+before the live test; an `unknown_id` answer of 400 means WP-334's reader needs
+its fix before any preview flag goes on. Then remove the harness:
+
+```bash
+sudo rm /etc/systemd/system/wizard-ads-mcf-sandbox.service /etc/wizard-ads/mcf-sandbox.json
+sudo systemctl daemon-reload
+```
+
+### Scoped live test: one unit
+
+Preconditions: the sandbox rows are recorded and every mismatch is resolved and
+released; WP-338i (the guarded cancel) is released; the preview-only soak passed
+with residue 0; the grant is seeded (send and cancel, 1 unit per UTC day).
+
+1. **Authorization.** In the operator's untracked
+   `_local/amazon-write-authorization.json`, add the `mcf` block from the tracked
+   template `_local/amazon-write-authorization.TEMPLATE.json`: the connection's
+   local label, the marketplace code, action classes `mcf.send` and `mcf.cancel`,
+   at most 1 unit per send, 1 send and 1 cancel, cadence limit 0 (no scheduled or
+   automatic send), an expiry no later than the end of the test day, the internal
+   recipient (an address the operator controls, never a creator's), and the
+   inverse: `mcf.cancel` only while the order is Received or Planning, confirmed
+   with "Cancel 1 order in Amazon". Set `enabled` to `true` only after Victor
+   approves this filled block for this window. No id enters a tracked file.
+2. **Dispatch on for the window.** Set `OPENSPELL_MCF_DISPATCH_ENABLED` to `1` in
+   `/etc/wizard-ads-mcf/mcf.json`, restart the MCF unit and run
+   `verify-mcf-evo-systemd.sh --revision "$REV"`.
+3. **One send.** On the internal test lane, type the internal address, check the
+   review panel, seal, check the preview card (1 x SKU, 1 unit, Standard, the fee
+   against the cap, fulfillability, the masked destination, the CCS key) and press
+   "Send 1 unit via Amazon" once. Watch the send move to accepted, then placed
+   (Received).
+4. **Inverse.** While the order is Received or Planning, an owner or admin may
+   press "Cancel 1 order in Amazon" and watch it reach Cancelled. Once Amazon shows
+   Processing it cannot be cancelled: let the unit ship to the internal address
+   and record that. Do not press send or cancel a second time; an uncertain or
+   conflict state stops the test and is settled by reads only.
+5. **Dispatch off.** Set `OPENSPELL_MCF_DISPATCH_ENABLED` back to `0`, restart the
+   MCF unit and run the verify.
+6. **Evidence.** Check the send's event trail and counts, that
+   `select * from app.creator_mcf_custody_residue();` returns 0 and 0, and that no
+   MCF alert is open. Set `enabled` in the local `mcf` block back to `false` and
+   record the outcome, the dates and the grant id in the private runbook.
+
 ## Report fetch reliability (WP-323)
 
 Until WP-323 every report fetch on the Vercel cron lane died with `report download
