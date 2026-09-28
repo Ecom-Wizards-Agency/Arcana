@@ -177,7 +177,12 @@ export function registerCreatorWriteTools(server: McpServer, context: ServerCont
     annotations: WRITE,
   }, auditedCreatorWrite(context, 'creators.register_record', ['record', 'resolution'], async (args, operation) => {
     const input = parse(CreatorRegisterRecordInput, args);
-    const rows = creatorRegistryRows(input.record);
+    const rows = creatorRegistryRows(operation.actor.orgId, input.record);
+    if (!rows.ok) {
+      throw invalid(rows.paths.map((path) => ({ path: ['record', ...path], code: 'custom', message: path.at(-1) === 'order_id'
+        ? 'order_id is not this organisation\'s derived order key for the record and ASIN'
+        : 'derived_order_key is not this organisation\'s key for the record and ASIN' })));
+    }
     const resolution = input.resolution as Exclude<CreatorRunnerResolution, { result: 'HOLD' }>;
     const held = await readCreatorWriteBaseline(operation.sql, operation.actor.orgId, input.record.creator_record_id);
     if (held.runnerVersion !== null && held.runnerVersion > input.record.version) {

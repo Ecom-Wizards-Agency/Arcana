@@ -37,6 +37,17 @@ const Reference = z.string().trim().min(1).max(500);
 const Sku = z.string().trim().min(1).max(50);
 const CampaignId = z.string().trim().min(1).max(200);
 const Title = z.string().trim().min(1).max(500);
+/**
+ * `CCS_ORDER_KEY`: Arcana's sample order key (`app.creator_sample_order_key`),
+ * which the runner stores exactly as `creators.preflight_result` returned it and
+ * never computes. Whether it is this organisation's key for the record and ASIN
+ * is checked where the org is known (`creatorRegistryRows` in packages/db).
+ */
+const RunnerOrderKey = z.string().regex(/^CCS-[0-9a-f]{32}$/, 'expected CCS- plus 32 lower-case hex');
+/** `ARCANA_BINDING_NOTE`: written on a history entry `record_api_order` recorded, in place of a recipient binding. */
+export const CREATOR_ARCANA_RECIPIENT_NOTE = 'recipient: operator-entered in Arcana, binding unverified';
+/** `arcana_outcome` `evidence_reference`: `arcana:send:<key>:` plus a 64-hex digest of the send event. */
+const ARCANA_SEND_EVIDENCE = /^arcana:send:(CCS-[0-9a-f]{32}):[0-9a-f]{64}$/;
 
 /** `score_record`: the ten checks, one point each. Only exactly 10/10 may be sampled. */
 export const CreatorQualificationCheck = z.enum([
@@ -79,6 +90,12 @@ export type CreatorReconciliationReason = z.infer<typeof CreatorReconciliationRe
  * `reserve_mcf` manifest, extended in place by `verify_mcf` and by an uncertain
  * `cancel_mcf`. A reservation written before ids existed carries only what it
  * had; `list_mcf_reservations` names it `MCFR-LEGACY-*`.
+ *
+ * WP-338l: every new reservation stores `derived_order_key`. A lane handed to
+ * Arcana also carries `order_owner: "arcana"` (absent means the runner places
+ * the order) and may omit `visible_fee_cents`, since Arcana's preview shows the
+ * fee. `order_owner` here is the runner's note only: Arcana's lane ownership is
+ * set by its own send path in the database, never by an import.
  */
 export const CreatorRunnerReservation = z.object({
   reservation_id: CreatorReservationId.optional(),
@@ -103,10 +120,22 @@ export const CreatorRunnerReservation = z.object({
   verification_failure_codes: z.array(ReasonCode).optional(),
   reconciliation_reason: CreatorReconciliationReason.optional(),
   reconciliation_evidence_reference: Reference.optional(),
-}).strict();
+  derived_order_key: RunnerOrderKey.optional(),
+  order_owner: z.literal('arcana', 'order_owner is "arcana" or absent').optional(),
+}).strict().superRefine((reservation, context) => {
+  // `reserve_mcf` writes the key on every new reservation, so a lane handed to Arcana always has one.
+  if (reservation.order_owner === 'arcana' && reservation.derived_order_key === undefined) {
+    context.addIssue({ code: 'custom', path: ['derived_order_key'], message: 'a reservation handed to Arcana carries derived_order_key' });
+  }
+});
 export type CreatorRunnerReservation = z.infer<typeof CreatorRunnerReservation>;
 
-/** `confirm_mcf` appends the first shape; `reconcile_mcf` appends the evidence-bound second. */
+/**
+ * `confirm_mcf` appends the first shape; `reconcile_mcf` appends the evidence-bound
+ * second; `record_api_order` (WP-338l) appends the third for an order Arcana
+ * placed: `recipient_note` instead of a binding, the CCS key as `order_id`, and
+ * the `arcana:send:` evidence reference for that key.
+ */
 export const CreatorRunnerSampleHistoryEntry = z.object({
   reservation_id: CreatorReservationId,
   campaign_id: CampaignId.nullable().optional(),
@@ -122,7 +151,22 @@ export const CreatorRunnerSampleHistoryEntry = z.object({
   product_title: Title.optional(),
   recipient_binding: CreatorFingerprint.optional(),
   reconciliation_evidence_fp: CreatorFingerprint.optional(),
-}).strict();
+  recipient_note: z.literal(CREATOR_ARCANA_RECIPIENT_NOTE, 'recipient_note is the runner\'s fixed note or absent').optional(),
+}).strict().superRefine((entry, context) => {
+  if (entry.recipient_note === undefined) return;
+  // An Arcana-recorded entry says the binding is unverified, so it cannot also carry one.
+  for (const key of ['recipient_binding', 'reconciliation_evidence_fp'] as const) {
+    if (entry[key] !== undefined) {
+      context.addIssue({ code: 'custom', path: [key], message: `an entry with recipient_note carries no ${key}` });
+    }
+  }
+  if (!RunnerOrderKey.safeParse(entry.order_id).success) {
+    context.addIssue({ code: 'custom', path: ['order_id'], message: 'an entry with recipient_note names its order by derived_order_key' });
+  }
+  if (ARCANA_SEND_EVIDENCE.exec(entry.evidence_reference)?.[1] !== entry.order_id) {
+    context.addIssue({ code: 'custom', path: ['evidence_reference'], message: 'an entry with recipient_note cites arcana:send:<order_id>:<digest>' });
+  }
+});
 export type CreatorRunnerSampleHistoryEntry = z.infer<typeof CreatorRunnerSampleHistoryEntry>;
 
 /** `cancel_mcf` appends one entry per definitively released reservation. */
