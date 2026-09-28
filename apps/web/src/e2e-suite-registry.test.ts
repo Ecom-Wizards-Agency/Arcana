@@ -7,6 +7,7 @@ import {
   E2E_SUITES,
   e2eTestMatch,
   E2E_EXPECTED_TOTAL,
+  e2eProcessShards,
   getE2ESuiteDefinition,
   runE2ESuiteMatrix,
 } from './e2e-suite-registry.js';
@@ -58,6 +59,18 @@ describe('web E2E suite registry', () => {
       expect(suite.expectedTests, suite.name).toBe(declared);
     }
     expect(E2E_SUITES.map((suite) => getE2ESuiteDefinition(suite))).toEqual(E2E_SUITE_DEFINITIONS);
+  });
+
+  it('keeps process shard counts between one and the owned spec file count', () => {
+    for (const suite of E2E_SUITE_DEFINITIONS) {
+      const shards = e2eProcessShards(suite);
+      expect(Number.isInteger(shards), suite.name).toBe(true);
+      expect(shards, suite.name).toBeGreaterThanOrEqual(1);
+      // Playwright shards whole files when a config is not fully parallel.
+      expect(shards, suite.name).toBeLessThanOrEqual(suite.expectedSpecFiles.length);
+      if ('processShards' in suite) expect(suite.processShards, suite.name).toBeGreaterThan(1);
+    }
+    expect(e2eProcessShards(getE2ESuiteDefinition('route-acceptance'))).toBe(3);
   });
 
   it('runs later suites after a thrown setup failure and preserves its diagnostic', async () => {

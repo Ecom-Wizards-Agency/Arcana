@@ -115,6 +115,7 @@ export const E2E_SUITE_DEFINITIONS = [
     project: 'route-acceptance',
     expectedSpecFiles: specsFor('route-acceptance'),
     expectedTests: 25,
+    processShards: 3,
   },
   {
     name: 'undesigned-routes',
@@ -170,6 +171,23 @@ export async function runE2ESuiteMatrix(
   }
   return finalCode;
 }
+
+/**
+ * Fresh dev processes within one suite. `e2e/run.ts` runs a suite with more
+ * than one process shard as that many Playwright invocations over Playwright's
+ * `--shard=i/n` partition. Each invocation runs global setup, so each gets its
+ * own database, fake Amazon and dev server, and the compiled route graphs of
+ * one shard are released before the next starts. `expectedTests` stays the
+ * suite total and is enforced on the sum of the shards.
+ */
+export function e2eProcessShards(definition: E2ESuiteDefinition): number {
+  return 'processShards' in definition ? definition.processShards : 1;
+}
+
+/** Set by `e2e/run.ts` on a sharded invocation, as `<index>-of-<total>`. */
+export const E2E_SHARD_ENV = 'WIZARD_ADS_E2E_SHARD';
+/** Where a sharded invocation writes Playwright's JSON list of the tests it ran. */
+export const E2E_SHARD_TESTS_FILE_ENV = 'WIZARD_ADS_E2E_SHARD_TESTS_FILE';
 
 /** Exact basename ownership, including a path boundary on Windows and POSIX. */
 export function e2eTestMatch(name: E2ESuite): RegExp[] {
