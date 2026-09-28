@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Tests for the mcf mode of wizard-ads-credential-runtime.py (WP-338f).
+"""Tests for the mcf mode (WP-338f) and the mcf-sandbox mode (WP-338k) of
+wizard-ads-credential-runtime.py.
 
 The mcf mode runs only in wizard-ads-mcf.service. These tests run against
 synthetic credentials in a temporary directory; os.execve is replaced, so no
@@ -11,6 +12,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import stat
 import tempfile
 import unittest
@@ -431,6 +433,280 @@ class OtherModesRefuseMcfKeysTests(McfCase):
                                      "never worker.json")
                     refused += 1
         self.assertEqual(refused, 3 * len(keys))
+
+
+SANDBOX_STATE = "/var/lib/wizard-ads-mcf-sandbox"
+SANDBOX_ENDPOINT = "https://sandbox.sellingpartnerapi-na.amazon.com"
+ORG = "0f0e0d0c-0b0a-4908-8706-" + "0504030201aa"
+SANDBOX_RECIPIENT = {"name": "Zephyrine " + "Quartzwell", "addressLine1": "77 Bramble" + "holt Lane", "city": "Vellum" + "ford",
+                     "stateOrRegion": "WA", "postalCode": "98001", "countryCode": "US"}
+SANDBOX_CONFIG = {"endpoint": SANDBOX_ENDPOINT, "orgId": ORG, "scope": SCOPE, "sellerSku": "SYNTH-SKU-0001",
+                  "recipient": SANDBOX_RECIPIENT}
+# Values long enough to be unambiguous in a scan ("WA" and "US" would match variable names).
+SANDBOX_VALUES = (ORG, SCOPE, CONNECTION, MARKETPLACE, "SYNTH-SKU-0001",
+                  *(value for value in SANDBOX_RECIPIENT.values() if len(value) > 2))
+SANDBOX_UNIT_ONLY = ("the mcf-sandbox mode runs only in wizard-ads-mcf-sandbox.service "
+                     "(StateDirectory=wizard-ads-mcf-sandbox)")
+ENDPOINT_REFUSAL = f"the mcf-sandbox mode calls only the NA SP-API sandbox endpoint ({SANDBOX_ENDPOINT})"
+SANDBOX_UNIT = HERE / "wizard-ads-mcf-sandbox.service"
+
+
+class McfSandboxCase(McfCase):
+    def setUp(self) -> None:
+        super().setUp()
+        (self.release / "app/src/mcf-sandbox-cli.ts").write_text("")
+        self.sandbox_config = Path(self.tmp.name) / "mcf-sandbox.json"
+        patcher = mock.patch.object(runtime, "MCF_SANDBOX_CONFIG", self.sandbox_config)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch.dict(os.environ, {"STATE_DIRECTORY": SANDBOX_STATE})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write_sandbox(self, config: object, credentials: dict[str, str]) -> None:
+        self.write(OFF_CONFIG, credentials)
+        self.sandbox_config.write_text(config if isinstance(config, str) else json.dumps(config))
+
+    def launch_sandbox(self) -> tuple[Exec, list[dict[str, object]], int]:
+        calls = []
+
+        def execve(path: str, argv: list[str], env: dict[str, str]) -> None:
+            calls.append(path)
+            raise Exec(path, argv, env)
+        output = io.StringIO()
+        with mock.patch.object(runtime.os, "execve", execve), redirect_stdout(output), \
+                mock.patch.object(runtime, "run_mcf", side_effect=AssertionError("mcf mode reached")):
+            with self.assertRaises(Exec) as caught:
+                runtime.run_mcf_sandbox()
+        lines = [json.loads(line) for line in output.getvalue().splitlines()]
+        return caught.exception, lines, len(calls)
+
+    def refuse_sandbox(self, config: object, credentials: dict[str, str], expected: str, exact: bool = True) -> str:
+        self.write_sandbox(config, credentials)
+        with mock.patch.object(runtime.os, "execve", side_effect=AssertionError("exec reached")):
+            with self.assertRaises(RuntimeError) as caught:
+                runtime.run_mcf_sandbox()
+        message = str(caught.exception)
+        if exact:
+            self.assertEqual(message, expected)
+        else:
+            self.assertIn(expected, message)
+        for value in (*STATIC_CREDENTIALS.values(), KEY_CANARY, *SANDBOX_VALUES):
+            if value not in expected:
+                self.assertNotIn(value, message)
+        return message
+
+
+class McfSandboxModeTests(McfSandboxCase):
+    def test_mapping_and_keys_are_exact(self) -> None:
+        self.assertEqual(runtime.MCF_SANDBOX_CREDENTIALS, runtime.MCF_CREDENTIALS)
+        self.assertEqual(runtime.MCF_SANDBOX_KEYS, frozenset({"endpoint", "orgId", "scope", "sellerSku", "recipient"}))
+        self.assertEqual(runtime.MCF_SANDBOX_ENDPOINT, SANDBOX_ENDPOINT)
+        self.assertEqual(str(runtime.MCF_SANDBOX_CONFIG.name), "mcf-sandbox.json")
+        with mock.patch.object(runtime, "MCF_SANDBOX_CONFIG", Path("/etc/wizard-ads/mcf-sandbox.json")):
+            self.assertEqual(str(runtime.MCF_SANDBOX_CONFIG), "/etc/wizard-ads/mcf-sandbox.json")
+        self.assertEqual(runtime.MCF_SANDBOX_STATE_DIRECTORIES,
+                         ("/var/lib/wizard-ads-mcf-sandbox", "/var/lib/private/wizard-ads-mcf-sandbox"))
+        # No configuration key can become an environment variable, and none is an MCF unit or worker key.
+        self.assertFalse(runtime.MCF_SANDBOX_KEYS & (runtime.MCF_ENV_KEYS | runtime.WORKER_ENV_KEYS))
+
+    def test_execs_the_cli_once_with_exactly_its_environment(self) -> None:
+        launched_count = 0
+        for state in runtime.MCF_SANDBOX_STATE_DIRECTORIES:
+            with self.subTest(state=state), mock.patch.dict(os.environ, {"STATE_DIRECTORY": state}):
+                self.write_sandbox(SANDBOX_CONFIG, STATIC_CREDENTIALS)
+                launched, lines, execs = self.launch_sandbox()
+                self.assertEqual(execs, 1)
+                self.assertEqual(launched.path, "/fixture/node")
+                self.assertEqual(launched.argv, [
+                    "/fixture/node", str(self.release / "app/node_modules/tsx/dist/cli.mjs"), "src/mcf-sandbox-cli.ts",
+                ])
+                self.assertEqual(set(launched.env), {
+                    "PATH", "HOME", "NODE_ENV", "DATABASE_URL", "OPENSPELL_WORKER_REVISION", "SP_API_LWA_CLIENT_ID",
+                    "SP_API_LWA_CLIENT_SECRET",
+                })
+                self.assertEqual(launched.env["HOME"], state)
+                self.assertEqual(launched.env["DATABASE_URL"], DATABASE)
+                self.assertEqual(launched.env["SP_API_LWA_CLIENT_SECRET"], CLIENT_SECRET)
+                rendered_env = json.dumps(launched.env)
+                for value in SANDBOX_VALUES:
+                    self.assertNotIn(value, rendered_env)
+                self.assertEqual(lines, [{
+                    "event": "wizard_ads_runtime_start", "mode": "mcf-sandbox", "revision": REVISION,
+                    "spapiConnectionLoop": "disabled", "mcfSandboxHost": "sandbox.sellingpartnerapi-na.amazon.com",
+                }])
+                launched_count += 1
+        self.assertEqual(launched_count, 2)
+
+    def test_mode_is_dispatched(self) -> None:
+        with mock.patch.object(runtime, "run_mcf_sandbox") as run, mock.patch.object(runtime, "run_mcf") as mcf, \
+                mock.patch("sys.argv", ["credential_runtime.py", "mcf-sandbox"]), \
+                mock.patch.object(runtime.os, "umask"):
+            runtime.main()
+        run.assert_called_once_with()
+        mcf.assert_not_called()
+
+    def test_refuses_every_endpoint_but_the_na_sandbox(self) -> None:
+        endpoints = ("https://sellingpartnerapi-na.amazon.com", "https://sandbox.sellingpartnerapi-eu.amazon.com",
+                     "https://sandbox.sellingpartnerapi-fe.amazon.com", "http://sandbox.sellingpartnerapi-na.amazon.com",
+                     SANDBOX_ENDPOINT + "/", SANDBOX_ENDPOINT.upper(), " " + SANDBOX_ENDPOINT, "", None, 1)
+        refused = 0
+        for endpoint in endpoints:
+            with self.subTest(endpoint=endpoint):
+                self.refuse_sandbox({**SANDBOX_CONFIG, "endpoint": endpoint}, STATIC_CREDENTIALS, ENDPOINT_REFUSAL)
+                refused += 1
+        without = {key: value for key, value in SANDBOX_CONFIG.items() if key != "endpoint"}
+        self.refuse_sandbox(without, STATIC_CREDENTIALS, ENDPOINT_REFUSAL)
+        self.assertEqual(refused, len(endpoints))
+
+    def test_refuses_worker_and_mcf_unit_keys_by_name(self) -> None:
+        keys = sorted(runtime.MCF_ENV_KEYS | runtime.WORKER_ENV_KEYS | {"OPENSPELL_MCF_ALERT_WEBHOOK_URL"})
+        self.assertIn("OPENSPELL_MCF_DISPATCH_ENABLED", keys)
+        self.assertIn("OPENSPELL_MCF_SCOPE", keys)
+        self.assertIn("WORKER_JOB_TYPES", keys)
+        refused = 0
+        for key in keys:
+            with self.subTest(key=key):
+                self.refuse_sandbox({**SANDBOX_CONFIG, key: "1"}, STATIC_CREDENTIALS,
+                                    f"{key} is a worker or MCF unit key, never the MCF sandbox configuration")
+                refused += 1
+        self.assertEqual(refused, len(keys))
+
+    def test_refuses_any_other_shape(self) -> None:
+        cases = [
+            ({**SANDBOX_CONFIG, "DATABASE_URL": "x"}, "MCF sandbox configuration contains unsupported keys"),
+            ({**SANDBOX_CONFIG, "credentialsDirectory": "x"}, "MCF sandbox configuration contains unsupported keys"),
+            ({key: value for key, value in SANDBOX_CONFIG.items() if key != "recipient"},
+             "MCF sandbox configuration must hold exactly endpoint, orgId, recipient, scope, sellerSku"),
+            ({**SANDBOX_CONFIG, "recipient": {**SANDBOX_RECIPIENT, "phone": "5550100"}}, "MCF sandbox configuration is invalid"),
+            ({**SANDBOX_CONFIG, "recipient": {}}, "MCF sandbox configuration is invalid"),
+            ({**SANDBOX_CONFIG, "recipient": "inline"}, "MCF sandbox configuration is invalid"),
+            ({**SANDBOX_CONFIG, "sellerSku": 7}, "MCF sandbox configuration is invalid"),
+            ({**SANDBOX_CONFIG, "orgId": "<org-uuid>"}, "MCF sandbox configuration still contains a template placeholder"),
+            ({**SANDBOX_CONFIG, "recipient": {**SANDBOX_RECIPIENT, "city": "<city>"}},
+             "MCF sandbox configuration still contains a template placeholder"),
+            ({**SANDBOX_CONFIG, "orgId": ORG.upper()}, "MCF sandbox configuration needs a lower-case orgId and one "
+             "<lower-case connection uuid>:<marketplace id> scope"),
+            ({**SANDBOX_CONFIG, "scope": f"{SCOPE},{SCOPE}"}, "MCF sandbox configuration needs a lower-case orgId and one "
+             "<lower-case connection uuid>:<marketplace id> scope"),
+            ([], "MCF sandbox configuration is invalid"),
+            ("not json", "MCF sandbox configuration is unavailable"),
+        ]
+        refused = 0
+        for config, expected in cases:
+            with self.subTest(expected=expected, config=str(config)[:60]):
+                self.refuse_sandbox(config, STATIC_CREDENTIALS, expected)
+                refused += 1
+        self.assertEqual(refused, len(cases))
+        self.write_sandbox(SANDBOX_CONFIG, STATIC_CREDENTIALS)
+        self.sandbox_config.unlink()
+        with self.assertRaises(RuntimeError) as caught:
+            runtime.run_mcf_sandbox()
+        self.assertEqual(str(caught.exception), "MCF sandbox configuration is unavailable")
+
+    def test_template_is_refused_until_filled(self) -> None:
+        template = json.loads((HERE / "wizard-ads-mcf-sandbox.TEMPLATE.json").read_text())
+        self.assertEqual(set(template), set(runtime.MCF_SANDBOX_KEYS))
+        self.assertEqual(template["endpoint"], SANDBOX_ENDPOINT)
+        self.assertLessEqual(set(template["recipient"]), set(runtime.MCF_SANDBOX_RECIPIENT_KEYS))
+        rendered = json.dumps(template)
+        self.assertIsNone(re.search(r"[0-9a-f]{8}-[0-9a-f]{4}|postgres|[A-Z0-9]{10,}", rendered))
+        self.refuse_sandbox(template, STATIC_CREDENTIALS, "MCF sandbox configuration still contains a template placeholder")
+
+    def test_requires_exactly_the_mcf_units_three_credentials(self) -> None:
+        missing = ({"database-url": DATABASE},
+                   {"database-url": DATABASE, "spapi-lwa-client-id": CLIENT_ID},
+                   {"database-url": DATABASE, "spapi-lwa-client-secret-value": CLIENT_SECRET})
+        for credentials in missing:
+            with self.subTest(credentials=sorted(credentials)):
+                self.refuse_sandbox(SANDBOX_CONFIG, credentials, LWA_REQUIRED)
+        self.refuse_sandbox(SANDBOX_CONFIG, {"spapi-lwa-client-id": CLIENT_ID, "spapi-lwa-client-secret-value": CLIENT_SECRET},
+                            "systemd runtime credential is unavailable: database-url")
+        extras = (KEY_NAME, "mcf-alert-webhook", "ads-lwa-client-id", "ads-lwa-client-secret-value", "wizard-ads-mcp-token")
+        refused = 0
+        for extra in extras:
+            with self.subTest(extra=extra):
+                self.refuse_sandbox(SANDBOX_CONFIG, {**STATIC_CREDENTIALS, extra: "synthetic"},
+                                    "wizard-ads-mcf-sandbox.service loads a credential the mcf-sandbox mode does not use: "
+                                    + extra)
+                refused += 1
+        self.assertEqual(refused, len(extras))
+
+    def test_runs_only_inside_its_unit(self) -> None:
+        self.write_sandbox(SANDBOX_CONFIG, STATIC_CREDENTIALS)
+        for state in (None, "", STATE, "/var/lib/private/wizard-ads-mcf", "/var/lib/wizard-ads", SANDBOX_STATE + "/"):
+            with self.subTest(state=state):
+                environment = {k: v for k, v in os.environ.items() if k != "STATE_DIRECTORY"}
+                if state is not None:
+                    environment["STATE_DIRECTORY"] = state
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    self.refuse_sandbox(SANDBOX_CONFIG, STATIC_CREDENTIALS, SANDBOX_UNIT_ONLY)
+        for directory in (None, "", "relative/credentials"):
+            with self.subTest(directory=directory):
+                environment = {k: v for k, v in os.environ.items() if k != "CREDENTIALS_DIRECTORY"}
+                if directory is not None:
+                    environment["CREDENTIALS_DIRECTORY"] = directory
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    self.refuse_sandbox(SANDBOX_CONFIG, STATIC_CREDENTIALS,
+                                        "the mcf-sandbox mode runs only under systemd with its credentials directory")
+
+    def test_missing_entry_is_refused(self) -> None:
+        self.write_sandbox(SANDBOX_CONFIG, STATIC_CREDENTIALS)
+        (self.release / "app/src/mcf-sandbox-cli.ts").unlink()
+        self.refuse_sandbox(SANDBOX_CONFIG, STATIC_CREDENTIALS, "deployed worker runtime is unavailable")
+
+    def test_the_mcf_mode_is_unchanged_by_a_sandbox_configuration(self) -> None:
+        self.write_sandbox(SANDBOX_CONFIG, {"database-url": DATABASE})
+        with mock.patch.dict(os.environ, {"STATE_DIRECTORY": STATE}):
+            launched, _ = self.launch()
+        self.assertEqual(launched.argv[-1], "src/mcf-main.ts")
+        self.assertFalse(any(value in json.dumps(launched.env) for value in SANDBOX_VALUES))
+
+
+class McfSandboxUnitTests(unittest.TestCase):
+    """wizard-ads-mcf-sandbox.service runs its one run and exits; nothing restarts or re-runs it."""
+
+    def directives(self) -> list[str]:
+        return [line for line in SANDBOX_UNIT.read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.startswith("#")]
+
+    def test_unit_is_a_oneshot_that_never_restarts_or_starts_at_boot(self) -> None:
+        lines = self.directives()
+        self.assertEqual(lines[0], "[Unit]")
+        self.assertEqual([line for line in lines if line.startswith("[")], ["[Unit]", "[Service]"])
+        self.assertIn("Type=oneshot", lines)
+        self.assertEqual([line for line in lines if line.startswith("Type=")], ["Type=oneshot"])
+        for prefix in ("Restart", "RemainAfterExit", "WantedBy", "RequiredBy", "Alias", "OnCalendar", "Also"):
+            self.assertEqual([line for line in lines if line.startswith(prefix)], [], prefix)
+        self.assertEqual([line for line in lines if line.startswith("ExecStart")],
+                         ["ExecStart=/usr/local/lib/wizard-ads-runtime/worker-current/credential_runtime.py mcf-sandbox"])
+        self.assertIn("DynamicUser=yes", lines)
+        self.assertIn("StateDirectory=wizard-ads-mcf-sandbox", lines)
+        self.assertIn("/var/lib/wizard-ads-mcf-sandbox", runtime.MCF_SANDBOX_STATE_DIRECTORIES)
+        self.assertTrue(any(line.startswith("TimeoutStartSec=") for line in lines))
+
+    def test_unit_loads_exactly_the_mcf_units_three_credentials(self) -> None:
+        lines = self.directives()
+        names = sorted(line.split("=", 1)[1].split(":", 1)[0] for line in lines if line.startswith("LoadCredentialEncrypted="))
+        self.assertEqual(names, sorted(runtime.MCF_SANDBOX_CREDENTIALS))
+        mcf_lines = (HERE / "wizard-ads-mcf.service").read_text(encoding="utf-8").splitlines()
+        self.assertEqual([line for line in lines if line.startswith("LoadCredentialEncrypted=")],
+                         [line for line in mcf_lines if line.startswith("LoadCredentialEncrypted=")])
+        self.assertFalse(any("mcf-recipient" in line or "mcf-alert-webhook" in line or "ads-lwa" in line for line in lines))
+        for prefix in ("User=", "Group=", "Environment", "ImportCredential", "SetCredential", "LoadCredential=", "Listen", "Sockets"):
+            self.assertEqual([line for line in lines if line.startswith(prefix)], [], prefix)
+
+    def test_unit_carries_the_mcf_units_hardening(self) -> None:
+        lines = set(self.directives())
+        names = ("DynamicUser", "UMask", "NoNewPrivileges", "Private[A-Za-z]+", "Protect[A-Za-z]+", "ProcSubset", "RemoveIPC",
+                 "Restrict[A-Za-z]+", "LockPersonality", "SystemCallArchitectures", "CapabilityBoundingSet",
+                 "AmbientCapabilities", "DevicePolicy", "TasksMax", "LimitNOFILE", "KillSignal", "StateDirectoryMode",
+                 "LimitCORE", "CoredumpFilter", "MemorySwapMax")
+        hardening = re.compile("^(" + "|".join(names) + ")=")
+        mcf = [line for line in (HERE / "wizard-ads-mcf.service").read_text(encoding="utf-8").splitlines()
+               if hardening.match(line)]
+        self.assertEqual(len(mcf), 32)
+        self.assertEqual([line for line in mcf if line not in lines], [])
 
 
 if __name__ == "__main__":
