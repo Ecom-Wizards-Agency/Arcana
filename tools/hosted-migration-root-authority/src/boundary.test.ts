@@ -66,6 +66,62 @@ interface CargoMetadata {
   readonly workspace_members: readonly string[];
 }
 
+interface ToolchainFixture {
+  readonly clippy?: string | undefined;
+  readonly rustfmt?: string | undefined;
+  readonly rustdoc?: string | undefined;
+}
+
+const pinnedToolchain: Required<ToolchainFixture> = Object.freeze({
+  clippy: "clippy 0.1.97 (8bab26f4f6 2026-07-14)",
+  rustfmt: "rustfmt 1.9.0-stable (8bab26f4f6 2026-07-14)",
+  rustdoc: "rustdoc 1.97.1 (8bab26f4f 2026-07-14)",
+});
+
+// Writes rustc, cargo and (optionally) rustdoc shims. `cargoBody` runs for every cargo call that
+// is not a version probe; a missing clippy or rustfmt fails like an unprovisioned component.
+function writeToolchainFixture(
+  binaryDirectory: string,
+  cargoBody: readonly string[],
+  toolchain: ToolchainFixture = pinnedToolchain,
+): void {
+  const versionProbe = (subcommand: string, output: string | undefined): readonly string[] =>
+    output === undefined
+      ? [
+          `if [ "$1" = "${subcommand}" ]; then`,
+          "  printf 'error: component is not applicable to the toolchain\\n' >&2",
+          "  exit 1",
+          "fi",
+        ]
+      : [
+          `if [ "$1" = "${subcommand}" ] && [ "$2" = "--version" ]; then`,
+          `  printf '%s\\n' '${output}'`,
+          "  exit 0",
+          "fi",
+        ];
+  const scripts: Record<string, readonly string[]> = {
+    rustc: ["#!/bin/sh", "printf 'rustc 1.97.1 (8bab26f4f 2026-07-14)\\n'"],
+    cargo: [
+      "#!/bin/sh",
+      'if [ "$1" = "--version" ]; then',
+      "  printf 'cargo 1.97.1 (c980f4866 2026-06-30)\\n'",
+      "  exit 0",
+      "fi",
+      ...versionProbe("clippy", toolchain.clippy),
+      ...versionProbe("fmt", toolchain.rustfmt),
+      ...cargoBody,
+    ],
+  };
+  if (toolchain.rustdoc !== undefined) {
+    scripts.rustdoc = ["#!/bin/sh", `printf '%s\\n' '${toolchain.rustdoc}'`];
+  }
+  for (const [name, lines] of Object.entries(scripts)) {
+    const path = join(binaryDirectory, name);
+    writeFileSync(path, [...lines, ""].join("\n"), { mode: 0o700 });
+    chmodSync(path, 0o700);
+  }
+}
+
 function exactLocalCargo(): boolean {
   const rustc = spawnSync("rustc", ["--version"], { encoding: "utf8" });
   const cargo = spawnSync("cargo", ["--version"], { encoding: "utf8" });
@@ -242,26 +298,7 @@ describe("private root-authority package boundary", () => {
       const cargoTempDirectory = join(fixtureDirectory, "tmp");
       mkdirSync(binaryDirectory);
       mkdirSync(cargoTempDirectory);
-      const rustcPath = join(binaryDirectory, "rustc");
-      const cargoPath = join(binaryDirectory, "cargo");
-      writeFileSync(rustcPath, "#!/bin/sh\nprintf 'rustc 1.97.1 (fixture)\\n'\n", {
-        mode: 0o700,
-      });
-      writeFileSync(
-        cargoPath,
-        [
-          "#!/bin/sh",
-          'if [ "$1" = "--version" ]; then',
-          "  printf 'cargo 1.97.1 (fixture)\\n'",
-          "  exit 0",
-          "fi",
-          "exit 23",
-          "",
-        ].join("\n"),
-        { mode: 0o700 },
-      );
-      chmodSync(rustcPath, 0o700);
-      chmodSync(cargoPath, 0o700);
+      writeToolchainFixture(binaryDirectory, ["exit 23"]);
 
       const result = spawnSync(process.execPath, [join(packageDirectory, "scripts/cargo.mjs"), "check"], {
         cwd: packageDirectory,
@@ -282,6 +319,78 @@ describe("private root-authority package boundary", () => {
     }
   });
 
+  it.each([
+    ["clippy is missing", { ...pinnedToolchain, clippy: undefined }],
+    ["rustfmt is missing", { ...pinnedToolchain, rustfmt: undefined }],
+    ["rustdoc is missing", { ...pinnedToolchain, rustdoc: undefined }],
+    ["clippy is another build", { ...pinnedToolchain, clippy: "clippy 0.1.97 (0000000000 2026-07-14)" }],
+    ["rustfmt is another build", { ...pinnedToolchain, rustfmt: "rustfmt 1.9.0-stable (8bab26f4f6 2026-07-15)" }],
+  ] as const)("falls back to the pinned container when local %s", (_case, toolchain) => {
+    const fixtureDirectory = mkdtempSync(join(tmpdir(), "openspell-root-authority-cargo-partial-"));
+    try {
+      const binaryDirectory = join(fixtureDirectory, "bin");
+      mkdirSync(binaryDirectory);
+      const localProbe = join(fixtureDirectory, "local-cargo");
+      const dockerProbe = join(fixtureDirectory, "docker-arguments");
+      writeToolchainFixture(binaryDirectory, ['printf local > "$LOCAL_CARGO_PROBE"'], toolchain);
+      const dockerPath = join(binaryDirectory, "docker");
+      writeFileSync(dockerPath, `#!/bin/sh\nprintf '%s\\n' "$@" > "$DOCKER_ARGUMENTS_PROBE"\n`, {
+        mode: 0o700,
+      });
+      chmodSync(dockerPath, 0o700);
+
+      const result = spawnSync(process.execPath, [join(packageDirectory, "scripts/cargo.mjs"), "check"], {
+        cwd: packageDirectory,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          DOCKER_ARGUMENTS_PROBE: dockerProbe,
+          LOCAL_CARGO_PROBE: localProbe,
+          PATH: binaryDirectory,
+        },
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(existsSync(localProbe)).toBe(false);
+      const dockerArguments = readFileSync(dockerProbe, "utf8").split("\n");
+      expect(dockerArguments.slice(0, 2)).toEqual(["run", "--rm"]);
+      expect(dockerArguments).toContain(rustImage);
+      expect(dockerArguments).toContain(`${packageDirectory}/:/workspace:ro`);
+    } finally {
+      rmSync(fixtureDirectory, { force: true, recursive: true });
+    }
+  });
+
+  it("runs the whole check locally when every pinned tool is present", () => {
+    const fixtureDirectory = mkdtempSync(join(tmpdir(), "openspell-root-authority-cargo-complete-"));
+    try {
+      const binaryDirectory = join(fixtureDirectory, "bin");
+      mkdirSync(binaryDirectory);
+      const localProbe = join(fixtureDirectory, "local-cargo");
+      writeToolchainFixture(binaryDirectory, ['printf "%s\\n" "$1" >> "$LOCAL_CARGO_PROBE"']);
+      const dockerPath = join(binaryDirectory, "docker");
+      writeFileSync(dockerPath, "#!/bin/sh\nexit 97\n", { mode: 0o700 });
+      chmodSync(dockerPath, 0o700);
+
+      const result = spawnSync(process.execPath, [join(packageDirectory, "scripts/cargo.mjs"), "check"], {
+        cwd: packageDirectory,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          LOCAL_CARGO_PROBE: localProbe,
+          PATH: `${binaryDirectory}:${process.env.PATH ?? ""}`,
+        },
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(readFileSync(localProbe, "utf8")).toBe("fmt\ncheck\nclippy\nrustdoc\n");
+    } finally {
+      rmSync(fixtureDirectory, { force: true, recursive: true });
+    }
+  });
+
   it("keeps populated abrupt-termination residue outside the workspace", async () => {
     const fixtureDirectory = mkdtempSync(
       join(tmpdir(), "openspell-root-authority-cargo-signal-"),
@@ -292,29 +401,12 @@ describe("private root-authority package boundary", () => {
     try {
       const binaryDirectory = join(fixtureDirectory, "bin");
       mkdirSync(binaryDirectory);
-      const rustcPath = join(binaryDirectory, "rustc");
-      const cargoPath = join(binaryDirectory, "cargo");
-      writeFileSync(rustcPath, "#!/bin/sh\nprintf 'rustc 1.97.1 (fixture)\\n'\n", {
-        mode: 0o700,
-      });
-      writeFileSync(
-        cargoPath,
-        [
-          "#!/bin/sh",
-          'if [ "$1" = "--version" ]; then',
-          "  printf 'cargo 1.97.1 (fixture)\\n'",
-          "  exit 0",
-          "fi",
-          'mkdir -p "$CARGO_TARGET_DIR/debug"',
-          'printf artifact > "$CARGO_TARGET_DIR/debug/fingerprint"',
-          'printf "%s" "$CARGO_TARGET_DIR" > "$CARGO_TARGET_PROBE"',
-          "sleep 30",
-          "",
-        ].join("\n"),
-        { mode: 0o700 },
-      );
-      chmodSync(rustcPath, 0o700);
-      chmodSync(cargoPath, 0o700);
+      writeToolchainFixture(binaryDirectory, [
+        'mkdir -p "$CARGO_TARGET_DIR/debug"',
+        'printf artifact > "$CARGO_TARGET_DIR/debug/fingerprint"',
+        'printf "%s" "$CARGO_TARGET_DIR" > "$CARGO_TARGET_PROBE"',
+        "sleep 30",
+      ]);
 
       childProcess = spawn(
         process.execPath,

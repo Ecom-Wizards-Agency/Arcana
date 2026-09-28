@@ -1,0 +1,58 @@
+# One-shot SP-API sandbox harness for the MCF send path (WP-338k; DESIGN
+# section 17, step 7). It runs apps/worker/src/mcf-sandbox-cli.ts once through
+# the runtime's mcf-sandbox mode and exits: Type=oneshot, no Restart= and no
+# [Install] section, so it never starts at boot and never runs again by itself.
+# Start it by hand only after Victor authorizes the sandbox calls
+# (always-on-worker.md, "MCF sandbox run and the live test").
+#
+# It loads the MCF unit's three credentials (the database and the SP-API LWA
+# pair) and no recipient key. Its configuration is /etc/wizard-ads/mcf-sandbox.json
+# (template wizard-ads-mcf-sandbox.TEMPLATE.json): a synthetic recipient, the
+# scope, a seller SKU and the one endpoint it may call, the NA SP-API sandbox.
+[Unit]
+Description=Wizard Ads MCF SP-API sandbox harness (one run, NA sandbox host only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+ExecStart=/usr/local/lib/wizard-ads-runtime/worker-current/credential_runtime.py mcf-sandbox
+LoadCredentialEncrypted=database-url:/etc/credstore.encrypted/wizard-ads-database-url.cred
+LoadCredentialEncrypted=spapi-lwa-client-id:/etc/credstore.encrypted/wizard-ads-spapi-lwa-client-id.cred
+LoadCredentialEncrypted=spapi-lwa-client-secret-value:/etc/credstore.encrypted/wizard-ads-spapi-lwa-client-secret-value.cred
+StateDirectory=wizard-ads-mcf-sandbox
+StateDirectoryMode=0700
+# Eleven probes and at most 30 throttle reads, each bounded (60 s per create or
+# cancel, 15 s per read, 10 s per token): 20 minutes covers the worst case.
+TimeoutStartSec=20min
+KillSignal=SIGTERM
+LimitCORE=0
+CoredumpFilter=elf-headers
+MemorySwapMax=0
+UMask=0077
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProtectSystem=strict
+ProcSubset=pid
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+DevicePolicy=closed
+TasksMax=256
+LimitNOFILE=8192

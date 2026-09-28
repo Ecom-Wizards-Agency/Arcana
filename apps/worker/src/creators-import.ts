@@ -32,7 +32,7 @@ import { connectionStringFromEnv, createDb, type DbHandle } from '@wizard-ads/db
 import {
   creatorPreflightRow, creatorQueueRows, creatorRegistryRows, creatorSweepRow, persistCreatorImport, recordFailedCreatorImport,
   type CreatorActionWrite, type CreatorPreflightWrite,
-  type CreatorImportBatch, type CreatorImportSection, type CreatorRecordWrite, type CreatorShipmentWrite, type CreatorSweepWrite,
+  type CreatorImportBatch, type CreatorImportSection, type CreatorRecordWrite, type CreatorRegistryRows, type CreatorShipmentWrite, type CreatorSweepWrite,
 } from '@wizard-ads/db/worker';
 /** The runner's legacy reservation id, shared with the creator:write MCP tools. */
 export { legacyReservationId } from '@wizard-ads/db/worker';
@@ -140,7 +140,7 @@ export function buildCreatorImport(orgId: string, startedAt: string, files: Crea
   let records: CreatorImportSection<CreatorRecordWrite> | null = null;
   let actions: CreatorImportSection<CreatorActionWrite> | null = null;
   let shipments: CreatorImportSection<CreatorShipmentWrite> | null = null;
-  const valid: CreatorRunnerRegistryRecord[] = [];
+  const valid: Extract<CreatorRegistryRows, { ok: true }>[] = [];
   if (registry) {
     const rows: CreatorRecordWrite[] = [];
     const seen = new Set<string>();
@@ -152,9 +152,11 @@ export function buildCreatorImport(orgId: string, startedAt: string, files: Crea
         return;
       }
       seen.add(parsed.data.creator_record_id);
-      const record = parsed.data;
-      valid.push(record);
-      rows.push(creatorRegistryRows(record).record);
+      // A CCS key that is not this organisation's for the record and ASIN refuses the whole record.
+      const derived = creatorRegistryRows(orgId, parsed.data);
+      if (!derived.ok) { invalid.push({ kind: 'records', index, issues: derived.paths.map((path) => ({ path: path.join('.'), code: derived.reason })) }); return; }
+      valid.push(derived);
+      rows.push(derived.record);
     });
     records = { read: registry.records.length, invalid: invalidOf('records'), rows };
   }
@@ -172,10 +174,9 @@ export function buildCreatorImport(orgId: string, startedAt: string, files: Crea
     const derivedActions: CreatorActionWrite[] = [];
     const lanes = new Map<string, CreatorShipmentWrite>();
     // One mapping per record, shared with the creator:write MCP tools (packages/db creators-runner).
-    for (const record of valid) {
-      const derived = creatorRegistryRows(record);
+    for (const derived of valid) {
       derivedActions.push(...derived.actions);
-      for (const lane of derived.lanes) lanes.set(`${record.creator_record_id}|${lane.asin}`, lane);
+      for (const lane of derived.lanes) lanes.set(`${derived.record.creatorRecordId}|${lane.asin}`, lane);
     }
     // Lanes formed from the registry, counted before `list-mcf` is folded in.
     const registryLanes = lanes.size;
