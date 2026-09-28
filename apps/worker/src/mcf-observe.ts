@@ -15,9 +15,9 @@
  * It is off unless `OPENSPELL_MCF_OBSERVE_ENABLED=1` and the SP-API client
  * credentials are configured; off, nothing registers and nothing is enqueued.
  *
- * Evo job type candidate: not in the Evo worker template or runtime allowlist
- * this round, and its ingestion source has no lane affinity. Adding it there is
- * a deployment decision for a later round.
+ * The Evo general worker may claim it (WP-338b): the runtime's job-type
+ * allowlist includes it and the flag stays off until the operator turns it on.
+ * Its ingestion source has no lane affinity; it is claimed by job type.
  */
 import { getSpApiRefreshToken, resolveActiveSpApiProfileBinding, type DbHandle } from '@wizard-ads/db';
 import {

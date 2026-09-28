@@ -1,0 +1,71 @@
+# Dedicated MCF send unit (WP-338f; DESIGN sections 4.3, 8 and 11). The only
+# unit that runs apps/worker/src/mcf-main.ts and the only one that may load a
+# recipient private key. It runs as a dynamic user, so no other unit, the web
+# app or the database can read its credentials; its processes are hidden from
+# other users, never dump core and never swap. It opens no listener: verify it
+# through its heartbeat row (verify-mcf-evo-systemd.sh).
+#
+# The credentials below are the unit's static ones. Each recipient key adds one
+#   LoadCredentialEncrypted=mcf-recipient-<keyId8>:/etc/credstore.encrypted/wizard-ads-mcf-recipient-<keyId8>.cred
+# line in the host-written drop-in wizard-ads-mcf.service.d/recipient-keys.conf,
+# which install-mcf-evo-systemd.sh generates from the credential store, because
+# key ids never enter a tracked file. Its public configuration is
+# /etc/wizard-ads-mcf/mcf.json (template wizard-ads-mcf.TEMPLATE.json); both
+# flags are off until the operator turns them on.
+[Unit]
+Description=Wizard Ads MCF send worker with a dynamic user and an encrypted recipient key
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=30min
+StartLimitBurst=6
+
+[Service]
+Type=exec
+DynamicUser=yes
+ExecStart=/usr/local/lib/wizard-ads-runtime/worker-current/credential_runtime.py mcf
+LoadCredentialEncrypted=database-url:/etc/credstore.encrypted/wizard-ads-database-url.cred
+LoadCredentialEncrypted=spapi-lwa-client-id:/etc/credstore.encrypted/wizard-ads-spapi-lwa-client-id.cred
+LoadCredentialEncrypted=spapi-lwa-client-secret-value:/etc/credstore.encrypted/wizard-ads-spapi-lwa-client-secret-value.cred
+StateDirectory=wizard-ads-mcf
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=30s
+RestartSteps=6
+RestartMaxDelaySec=15min
+TimeoutStartSec=90s
+# A stop waits for a create already sent (60-second timeout inside a
+# 120-second lease) to be recorded before the process exits.
+TimeoutStopSec=150s
+KillSignal=SIGTERM
+LimitCORE=0
+CoredumpFilter=elf-headers
+MemorySwapMax=0
+UMask=0077
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProtectSystem=strict
+ProcSubset=pid
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+DevicePolicy=closed
+TasksMax=256
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

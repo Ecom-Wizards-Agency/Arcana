@@ -23,6 +23,27 @@
       "max_executions": "<integer>",
       "disable_after_test": true,
       "require_immediate_inverse": true
+    },
+    "mcf": {
+      "enabled": false,
+      "connection_label": "<local SP-API connection label>",
+      "marketplace": "<marketplace code>",
+      "action_classes": ["mcf.send", "mcf.cancel"],
+      "max_units_per_send": 1,
+      "max_sends": 1,
+      "max_cancels": 1,
+      "cadence_limit": 0,
+      "disable_after_test": true,
+      "expires_at": "<ISO-8601 timestamp>",
+      "recipient": "internal address the operator controls; never a creator address",
+      "require_sandbox_run_recorded": true,
+      "dispatch_flag": "OPENSPELL_MCF_DISPATCH_ENABLED=1 for the test window only, 0 after",
+      "inverse": {
+        "action_class": "mcf.cancel",
+        "only_while_status": ["Received", "Planning"],
+        "confirmation": "Cancel 1 order in Amazon",
+        "if_not_cancellable": "let the unit ship to the internal address and record it"
+      }
     }
   },
   "constraints": {
