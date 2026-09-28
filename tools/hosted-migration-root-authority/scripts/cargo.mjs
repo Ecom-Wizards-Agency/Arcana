@@ -35,20 +35,48 @@ function run(command, args, options = {}) {
   return result.status ?? 1;
 }
 
-function hasPinnedLocalToolchain() {
-  const rustc = spawnSync("rustc", ["--version"], {
+function versionOutput(command, args) {
+  const result = spawnSync(command, args, {
     cwd: packageDirectory,
     encoding: "utf8",
   });
-  const cargo = spawnSync("cargo", ["--version"], {
-    cwd: packageDirectory,
-    encoding: "utf8",
-  });
+  return result.status === 0 && typeof result.stdout === "string" ? result.stdout : undefined;
+}
+
+// Parses "<name> <version> (<commit> <date>)". rustc and rustdoc print a
+// shorter commit hash than clippy and rustfmt, so builds match on date and
+// commit prefix.
+function parseBuild(output, prefix) {
+  if (output === undefined || !output.startsWith(prefix)) return undefined;
+  const match = /\(([0-9a-f]{7,40}) (\d{4}-\d{2}-\d{2})\)\s*$/u.exec(output);
+  if (match === null) return undefined;
+  return { commit: match[1], date: match[2] };
+}
+
+function sameBuild(left, right) {
   return (
-    rustc.status === 0 &&
-    rustc.stdout.startsWith("rustc 1.97.1 ") &&
-    cargo.status === 0 &&
-    cargo.stdout.startsWith("cargo 1.97.1 ")
+    left !== undefined &&
+    right !== undefined &&
+    left.date === right.date &&
+    (left.commit.startsWith(right.commit) || right.commit.startsWith(left.commit))
+  );
+}
+
+// The local path runs the whole check script, so it needs every tool that
+// script uses (rustfmt, clippy and rustdoc as well as rustc and cargo) from
+// the pinned toolchain build. Anything less falls back to the container.
+function hasPinnedLocalToolchain() {
+  const rustc = parseBuild(versionOutput("rustc", ["--version"]), "rustc 1.97.1 ");
+  if (rustc === undefined) return false;
+  const cargo = versionOutput("cargo", ["--version"]);
+  if (cargo === undefined || !cargo.startsWith("cargo 1.97.1 ")) return false;
+  const rustdoc = versionOutput("rustdoc", ["--version"]);
+  const clippy = versionOutput("cargo", ["clippy", "--version"]);
+  const rustfmt = versionOutput("cargo", ["fmt", "--version"]);
+  return (
+    sameBuild(rustc, parseBuild(rustdoc, "rustdoc 1.97.1 ")) &&
+    sameBuild(rustc, parseBuild(clippy, "clippy 0.1.97 ")) &&
+    sameBuild(rustc, parseBuild(rustfmt, "rustfmt "))
   );
 }
 
