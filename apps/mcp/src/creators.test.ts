@@ -5,15 +5,18 @@
  * audit row per call that never holds the arguments. Synthetic values only;
  * contact-shaped strings are assembled from fragments at run time.
  */
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createHash, generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
+import { format } from 'node:util';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
+import { asServiceRole, createTestDatabase, databaseAvailable, type TestDatabase } from '@wizard-ads/db/testing';
 import { persistCreatorImport } from '@wizard-ads/db/worker';
 import { creatorQueueRows, creatorRegistryRows, legacyReservationId } from '@wizard-ads/db/mcp-writes';
-import { creatorSampleOrderKey } from '@wizard-ads/db';
-import { CreatorMcfSendState } from '@wizard-ads/shared';
+import { creatorSampleOrderKey, sealCreatorMcfRecipient as sealInLedger, withdrawCreatorMcfSend } from '@wizard-ads/db';
+import {
+  CreatorMcfSendState, creatorMcfRecipientKeyId, sealCreatorMcfRecipient, type CreatorMcfRecipient, type CreatorMcfRecipientBinding,
+} from '@wizard-ads/shared';
 import { readAuditEntries } from './audit.js';
 import { DEFAULT_MAX_DOWNLOAD_BYTES, DEFAULT_MAX_ROWS, type McpConfig } from './config.js';
 import { CREATOR_WRITE_TOOLS, creatorIdentityEvent } from './creators.js';
@@ -749,6 +752,119 @@ describe.skipIf(!available)('the creator:write key class', () => {
     }
   });
 
+  // -------------------------------------------------------------------------
+  // WP-338j: the outcome tool never answers or audits a recipient value.
+  // -------------------------------------------------------------------------
+
+  it('answers and audits a canary-sealed send, and refuses canary-bearing arguments, with no token in any encoding', async () => {
+    // Its own organisation, owner, grant, key and creator:write key, so nothing above is changed.
+    const owner = randomUUID();
+    const [seeded] = await database.sql<{ id: string }[]>`select app.seed_tenant_fixture(${`creator-canary-${randomBytes(3).toString('hex')}`}, ${owner}, 'owner') as id`;
+    const org = seeded!.id;
+    await asServiceRole(database, (sql) => sql`update public.spapi_connections set status = 'active', vault_secret_id = gen_random_uuid() where org_id = ${org}`);
+    await database.sql`update public.spapi_profile_bindings set enabled = true where org_id = ${org}`;
+    const [binding] = await database.sql<{ connection_id: string; marketplace_id: string }[]>`select connection_id, marketplace_id
+      from public.spapi_profile_bindings where org_id = ${org}`;
+    const pair = generateKeyPairSync('ec', { namedCurve: 'P-256' }).publicKey.export({ format: 'jwk' });
+    const jwk = { kty: pair.kty, crv: pair.crv, x: pair.x, y: pair.y };
+    const keyId = await creatorMcfRecipientKeyId(jwk);
+    await database.sql`insert into app.creator_mcf_grants(org_id, spapi_connection_id, marketplace_id, action_classes, recipient_key_ids,
+        max_units_per_day, max_fee_minor, currency, enabled_by, expires_at)
+      values (${org}, ${binding!.connection_id}, ${binding!.marketplace_id}, '{send}', ${[keyId]}::text[], 20, 1500, 'USD', 'synthetic operator',
+        now() + interval '1 day')`;
+    const record = 'CCR-SW-26-7301';
+    const asin = `B0${randomBytes(4).toString('hex').toUpperCase()}`;
+    const reservation = `MCFR-${randomBytes(8).toString('hex').toUpperCase()}`;
+    await database.sql`insert into public.creator_records(org_id, creator_record_id, brand, campaign_id, thread_fp, record_state, lock_state,
+        runner_version, created_on, source, source_digest)
+      values (${org}, ${record}, 'Synthetic brand', 'campaign-synthetic-1', ${fp(`${record}:canary`)}, 'Active', 'Unlocked', 1, '2026-09-01',
+        'control-runner', ${fp(`${record}:digest`)})`;
+    await database.sql`insert into public.creator_sample_shipments(org_id, creator_record_id, asin, sku, campaign_id, reservation_id, lane_state,
+        fee_cents, fee_cap_cents, reserved_at, source, source_digest)
+      values (${org}, ${record}, ${asin}, 'SYN-SAMPLE-1', 'campaign-synthetic-1', ${reservation}, 'Reserved', 620, 800, now() - interval '10 minutes',
+        'control-runner', ${fp(`${record}:lane`)})`;
+    await database.sql`insert into public.creator_sample_preflights(org_id, run_id, command, creator_record_id, asin, result, errors,
+        required_next_state, detail, started_at, completed_at, source, source_digest)
+      values (${org}, ${`preflight-${randomBytes(6).toString('hex')}`}, 'preflight', ${record}, ${asin}, 'PASS', '{}'::text[], 'Locked for MCF',
+        ${JSON.stringify({ sku: 'SYN-SAMPLE-1', quantity: 1 })}::jsonb, date_trunc('milliseconds', now()) - interval '65 seconds',
+        date_trunc('milliseconds', now()) - interval '60 seconds', 'mcp', ${fp(`${record}:preflight`)})`;
+    const key = creatorSampleOrderKey(org, record, asin);
+
+    // The canary recipient, sealed as the browser seals it and stored through the web's own ledger call.
+    const field = (label: string) => `Qz${label} ${randomBytes(8).toString('hex')}`;
+    const recipient: CreatorMcfRecipient = { name: field('name'), addressLine1: field('street'), addressLine2: field('unit'), city: field('city'),
+      stateOrRegion: field('state'), postalCode: `Q${randomBytes(5).toString('hex').toUpperCase()} 9`, countryCode: 'US' };
+    const tokens = Object.entries(recipient).filter(([name]) => name !== 'countryCode').flatMap(([, value]) => [value, value.split(' ')[0]!.length >= 11
+      ? value.split(' ')[0]! : value.split(' ')[1]!]);
+    const lane = { orgId: org, creatorRecordId: record, asin, derivedOrderKey: key, reservationId: reservation } as CreatorMcfRecipientBinding;
+    const envelope = await sealCreatorMcfRecipient(jwk, keyId, lane, recipient);
+    const sealed = await sealInLedger(database, { orgId: org, userId: owner }, { creatorRecordId: record, asin, request: { binding: lane, envelope } });
+    expect(sealed.outcome).toBe('sealed');
+    const sendId = (sealed as { sendId: string }).sendId;
+
+    const issued = await issueApiKey(database, { orgId: org, createdBy: owner, label: 'synthetic canary key', scope: 'creator:write', profileIds: [],
+      expiresAt: new Date(Date.now() + 86_400_000) });
+    // The server runs in this process: whatever it logs while answering (an error path included) is captured.
+    const serverLogs: string[] = [];
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) => vi.spyOn(console, method)
+      .mockImplementation((...args: unknown[]) => { serverLogs.push(format(...args)); }));
+    const client = await connect(server, issued.token);
+    const answers: string[] = [];
+    try {
+      const read = async (expected: { state: string; class: string }) => {
+        for (const args of [{ derivedOrderKey: key }, { creatorRecordId: record, asin }]) {
+          const answer = await call(client, 'creators.sample_send_outcome', args);
+          expect(answer.isError).toBe(false);
+          expect(answer.payload).toMatchObject({ derivedOrderKey: key, ...expected });
+          answers.push(answer.text);
+        }
+      };
+      await read({ state: 'sealed', class: 'pending' });
+      expect((await withdrawCreatorMcfSend(database, { orgId: org, userId: owner }, sendId)).outcome).toBe('withdrawn');
+      await read({ state: 'withdrawn', class: 'failed' });
+      // Canary-bearing arguments: a contact-shaped key, an unknown key and a malformed record id, each holding a token.
+      const refusals: Record<string, unknown>[] = [
+        { creatorRecordId: record, asin, shipping_address: recipient.addressLine1 },
+        { derivedOrderKey: key, note: recipient.name },
+        { creatorRecordId: recipient.city, asin },
+      ];
+      for (const args of refusals) {
+        const refused = await call(client, 'creators.sample_send_outcome', args);
+        expect(refused.isError).toBe(true);
+        expect(refused.payload['error']).toBe('invalid_argument');
+        answers.push(refused.text);
+        // Positive control: the argument the tool refused did carry a token.
+        expect(canaryIn(tokens, JSON.stringify(args))).toBe(true);
+      }
+    } finally {
+      await client.close();
+      for (const spy of spies) spy.mockRestore();
+    }
+    expect(answers).toHaveLength(7);
+
+    const audits = (await readAuditEntries(database, org, 5_000)).filter((entry) => entry.actorId === issued.record.id);
+    expect(audits).toHaveLength(7);
+    const tables = await database.sql<{ schema: string; name: string }[]>`select c.table_schema as schema, c.table_name as name
+      from information_schema.columns c join information_schema.tables t on t.table_schema = c.table_schema and t.table_name = c.table_name
+      where c.column_name = 'org_id' and t.table_type = 'BASE TABLE' and c.table_schema not in ('pg_catalog', 'information_schema')`;
+    const rows: string[] = [];
+    for (const table of tables) {
+      const ident = `"${table.schema.replace(/"/g, '""')}"."${table.name.replace(/"/g, '""')}"`;
+      rows.push(...(await database.sql.unsafe<{ row: string }[]>(`select t::text as row from ${ident} t where t.org_id = $1`, [org])).map((row) => row.row));
+    }
+    expect(rows.some((row) => row.includes(sendId))).toBe(true);
+    // Positive control for the scan: a token spliced into a real answer is found in every encoding.
+    for (const encoding of ['plain', 'upper', 'base64', 'base64url', 'hex', 'url'] as const) {
+      const text = `${answers[0]!.slice(0, 20)}${tokens[0]!}${answers[0]!.slice(20)}`;
+      const encoded = encoding === 'plain' ? text : encoding === 'upper' ? text.toUpperCase() : encoding === 'url' ? encodeURIComponent(text)
+        : Buffer.from(text).toString(encoding);
+      expect(canaryIn(tokens, encoded), encoding).toBe(true);
+    }
+    const leaking = Object.entries({ mcpResponses: answers, auditEntries: [JSON.stringify(audits)], orgRows: rows, mcpServerLogs: serverLogs })
+      .filter(([, texts]) => texts.some((text) => canaryIn(tokens, text))).map(([sink]) => sink);
+    expect(leaking, 'sinks holding a recipient token').toEqual([]);
+  });
+
   async function tableCounts(): Promise<Record<string, number>> {
     const tables = ['creator_records', 'creator_action_log', 'creator_daily_queue', 'creator_sweep_runs', 'creator_sample_shipments', 'creator_drafts',
       'creator_import_runs', 'creator_mcf_sends', 'creator_mcf_send_events', 'creator_sample_preflights'];
@@ -773,6 +889,27 @@ async function connect(server: RunningServer, token: string): Promise<Client> {
   const client = new Client({ name: 'creator-write-test-client', version: '0.0.0' });
   await client.connect(transport);
   return client;
+}
+
+/**
+ * Whether any token is in `text`: plain, case-folded, hex, URL-encoded, or base64/base64url at any of the three byte alignments
+ * (the forms apps/worker/src/testing/canary-scan.ts scans; a workspace cannot import another's files).
+ */
+function canaryIn(tokens: readonly string[], text: string): boolean {
+  const folded = text.toLowerCase();
+  return tokens.some((token) => {
+    const bytes = Buffer.from(token);
+    if (token.length < 11) throw new Error('a canary token is too short to be unique');
+    const runs = [...new Set([token, token.toUpperCase(), token.toLowerCase()])].flatMap((variant) => [0, 1, 2].flatMap((skip) => {
+      const cased = Buffer.from(variant);
+      const whole = Math.floor((cased.length - skip) / 3) * 3;
+      return whole < 9 ? [] : [cased.subarray(skip, skip + whole).toString('base64'), cased.subarray(skip, skip + whole).toString('base64url')];
+    }));
+    const percent = encodeURIComponent(token).toLowerCase();
+    const hex = bytes.toString('hex');
+    return folded.includes(token.toLowerCase()) || folded.includes(hex) || folded.includes(hex.replace(/(..)(?!$)/g, '$1 ')) || folded.includes(percent)
+      || folded.includes(percent.replace(/%20/g, '+')) || runs.some((run) => text.includes(run));
+  });
 }
 
 async function call(client: Client, name: string, args: Record<string, unknown>) {
