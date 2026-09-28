@@ -1,18 +1,21 @@
 /**
- * Creator Connections round 3b (WP-338d): typed calls into the MCF send ledger
- * (migration 20260928120000_creator_mcf_send).
+ * Creator Connections round 3b (WP-338d, WP-338i): typed calls into the MCF send
+ * ledger (migrations 20260928120000_creator_mcf_send and
+ * 20260928130000_creator_mcf_cancel).
  *
  * Two surfaces, never mixed:
  *
  *  - Authenticated (exported from the package root): an owner or admin seals an
  *    address envelope, asks for a new preview, presses "Send N unit(s) via
  *    Amazon", withdraws, asks Amazon for the order id, releases an uncertain send
- *    with enough evidence, or records a conflict as sent. Owners, admins and
+ *    with enough evidence, records a conflict as sent, asks for a cancel preview
+ *    or presses "Cancel 1 order in Amazon". Owners, admins and
  *    analysts read the gate and the lane. Each call runs inside the verified
  *    actor's authenticated transaction; the SQL functions lock and recheck the
  *    membership themselves.
  *  - Service role (exported from `@wizard-ads/db/worker` only): the MCF unit's
- *    claim, custody read, preview record, reservation and outcome, and the
+ *    claim, custody read, preview record, reservation and outcome, the cancel
+ *    preview, reservation and outcome, the start-up key id read, and the
  *    housekeeping sweep, purge, residue and alert summary.
  *
  * Nothing here calls Amazon, and nothing here ever holds a recipient's address:
@@ -20,9 +23,9 @@
  * refusal is a fixed code.
  */
 import {
-  CreatorMcfMask, CreatorMcfPreview, CreatorMcfProviderOutcome, CreatorMcfRecipientBinding, CreatorMcfSealRequest, CreatorMcfSealedRecipient,
+  CreatorMcfCancelPreview, CreatorMcfMask, CreatorMcfPreview, CreatorMcfProviderOutcome, CreatorMcfRecipientBinding, CreatorMcfSealRequest, CreatorMcfSealedRecipient,
   CreatorMcfSendApproval, CreatorMcfSendOutcome, CreatorMcfSendState, CreatorSampleOrderKey, OrgActor, creatorMcfCanonicalJson,
-  creatorMcfSendOutcomeClass, type CreatorMcfEscalation, type CreatorMcfSendOutcomeClass, type CreatorSamplePackage,
+  creatorMcfCancelConfirmation, creatorMcfSendOutcomeClass, type CreatorMcfEscalation, type CreatorMcfSendOutcomeClass, type CreatorSamplePackage,
   type FulfillmentOrderStatus, type FulfillmentShipmentObservation,
 } from '@wizard-ads/shared';
 import type { DbHandle, QuerySql } from '../client.js';
@@ -38,6 +41,7 @@ export const CREATOR_MCF_REFUSALS = [
   'send_open', 'send_not_found', 'send_not_refreshable', 'custody_expired', 'request_reused', 'send_not_ready', 'preview_not_latest',
   'fingerprint_mismatch', 'preview_expired', 'confirmation_mismatch', 'preview_not_sendable', 'daily_cap_reached', 'send_not_withdrawable',
   'send_not_settleable', 'send_not_uncertain', 'order_found', 'release_evidence_insufficient', 'send_not_conflict', 'settlement_read_required',
+  'send_not_cancellable', 'cancel_open', 'cancel_grant_inactive', 'cancel_preview_expired', 'order_not_cancellable', 'observation_stale',
 ] as const;
 export type CreatorMcfRefusal = (typeof CREATOR_MCF_REFUSALS)[number];
 
@@ -152,6 +156,58 @@ export async function resolveCreatorMcfConflict(handle: Pick<DbHandle, 'sql'>, a
     select app.resolve_creator_mcf_conflict(${verified.orgId}::uuid, ${sendId}::uuid, ${requestId}::uuid) as result`), 'placed'));
 }
 
+/**
+ * "Cancel in Amazon": asks the MCF worker for a cancel preview (one getOrder
+ * read) of a placed or conflicting send. Needs an active grant with the action
+ * class 'cancel'; idempotent while the read is queued.
+ */
+export async function requestCreatorMcfCancelPreview(handle: Pick<DbHandle, 'sql'>, actor: OrgActor, sendId: string):
+  Promise<CreatorMcfCommandResult<'cancel_preview_requested'>> {
+  return asActor(handle, actor, async (sql, verified) => command(await one(sql<{ result: unknown }[]>`
+    select app.request_creator_mcf_cancel_preview(${verified.orgId}::uuid, ${sendId}::uuid) as result`), 'cancel_preview_requested'));
+}
+
+/** The press on "Cancel 1 order in Amazon", bound to one cancel preview row by id and fingerprint. */
+export interface CreatorMcfCancelApproval {
+  sendId: string;
+  previewId: string;
+  previewFingerprint: string;
+  /** Exactly creatorMcfCancelConfirmation(1): one send is one order. */
+  confirmation: string;
+  requestId: string;
+}
+
+const APPROVAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function cancelApproval(value: unknown): CreatorMcfCancelApproval | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const keys = ['sendId', 'previewId', 'previewFingerprint', 'confirmation', 'requestId'];
+  if (Object.keys(record).length !== keys.length || !keys.every((key) => typeof record[key] === 'string')) return null;
+  const approval = record as unknown as CreatorMcfCancelApproval;
+  return APPROVAL_UUID.test(approval.sendId) && APPROVAL_UUID.test(approval.previewId) && APPROVAL_UUID.test(approval.requestId)
+    && /^[0-9a-f]{64}$/.test(approval.previewFingerprint) && approval.confirmation === creatorMcfCancelConfirmation(1) ? approval : null;
+}
+
+/**
+ * The press on "Cancel 1 order in Amazon". The database recomputes the wording,
+ * checks the cancel preview is the newest, unexpired (5 minutes) and still
+ * Received or Planning, and that the grant carries 'cancel'. The send stays
+ * placed or conflict until the worker reserves the one cancel request.
+ */
+export async function approveCreatorMcfCancel(handle: Pick<DbHandle, 'sql'>, actor: OrgActor, input: unknown):
+  Promise<CreatorMcfCommandResult<'cancel_approved'> & { cancelId?: string; claimDeadline?: string }> {
+  const a = cancelApproval(input);
+  if (a === null) return { outcome: 'refused', reason: 'approval_invalid' };
+  return asActor(handle, actor, async (sql, verified) => {
+    const raw = await one(sql<{ result: unknown }[]>`select app.approve_creator_mcf_cancel(${verified.orgId}::uuid, ${a.sendId}::uuid,
+      ${a.previewId}::uuid, ${a.previewFingerprint}, ${a.confirmation}, ${a.requestId}::uuid) as result`);
+    const result = command(raw, 'cancel_approved');
+    return result.outcome === 'cancel_approved'
+      ? { ...result, cancelId: String(raw['cancelId']), claimDeadline: iso(raw['claimDeadline'] as string)! } : result;
+  });
+}
+
 export type CreatorMcfGateMissing = 'connection' | 'grant' | 'heartbeat' | 'scope' | 'dispatch_disabled';
 export interface CreatorMcfSendGate {
   /** An unrevoked, unexpired grant for the org's one SP-API connection and marketplace. */
@@ -227,6 +283,38 @@ export interface CreatorMcfLaneSend {
   latestPreview: { previewId: string; fingerprint: string; preview: CreatorMcfPreview; readAt: string; validUntil: string } | null;
   events: { event: string; actorType: 'user' | 'worker' | 'system'; beforeState: string | null; afterState: string | null; reason: string | null;
     codes: string[]; httpStatus: number | null; at: string }[];
+  /** The send's newest cancel (WP-338i), open or ended; null when "Cancel 1 order in Amazon" was never pressed. */
+  cancel: CreatorMcfLaneCancel | null;
+  /** The newest cancel preview: a getOrder read showing Received or Planning, valid for 5 minutes. */
+  latestCancelPreview: { previewId: string; fingerprint: string; preview: CreatorMcfCancelPreview; readAt: string; validUntil: string } | null;
+  /** A cancel preview read is queued for the worker and no cancel is open. */
+  cancelPreviewPending: boolean;
+  /** Why the newest cancel preview request did not become a preview (for example status_processing); null otherwise. */
+  cancelPreviewRefusal: { reason: string | null; codes: string[]; at: string } | null;
+}
+
+/**
+ * cancelled and not_honoured follow a request that may have taken; not_sent is a reserved request that certainly did not take
+ * (withheld before it left, or answered 429 or 401/403); refused and expired end before any reservation.
+ */
+export type CreatorMcfCancelEnding = 'cancelled' | 'not_honoured' | 'not_sent' | 'refused' | 'expired';
+export interface CreatorMcfLaneCancel {
+  cancelId: string;
+  /** The send's state at the press. */
+  originState: 'placed' | 'conflict';
+  approvedAt: string;
+  /** The worker must reserve the cancel by then, or it ends expired and nothing is sent. */
+  claimDeadline: string;
+  /** When the worker was granted the one cancel request; null before. */
+  reservedAt: string | null;
+  providerOutcome: 'accepted' | 'rejected' | 'uncertain' | null;
+  providerReason: string | null;
+  providerStatus: number | null;
+  providerCodes: string[] | null;
+  endedAt: string | null;
+  /** See CreatorMcfCancelEnding. Null while open. */
+  ending: CreatorMcfCancelEnding | null;
+  endingReason: string | null;
 }
 export interface CreatorMcfLaneView {
   lane: {
@@ -236,6 +324,18 @@ export interface CreatorMcfLaneView {
   };
   /** The lane's newest send, or null when nothing was sealed for it. */
   send: CreatorMcfLaneSend | null;
+}
+
+function laneCancel(raw: Record<string, unknown> | null | undefined): CreatorMcfLaneCancel | null {
+  if (raw === null || raw === undefined) return null;
+  return {
+    cancelId: String(raw['cancelId']), originState: raw['originState'] === 'conflict' ? 'conflict' : 'placed',
+    approvedAt: iso(raw['approvedAt'] as string)!, claimDeadline: iso(raw['claimDeadline'] as string)!, reservedAt: iso(raw['reservedAt'] as string | null),
+    providerOutcome: (raw['providerOutcome'] as CreatorMcfLaneCancel['providerOutcome']) ?? null,
+    providerReason: (raw['providerReason'] as string | null) ?? null, providerStatus: numberOrNull(raw['providerStatus']),
+    providerCodes: (raw['providerCodes'] as string[] | null) ?? null, endedAt: iso(raw['endedAt'] as string | null),
+    ending: (raw['ending'] as CreatorMcfCancelEnding | null) ?? null, endingReason: (raw['endingReason'] as string | null) ?? null,
+  };
 }
 
 /** The lane and its newest send, sanitized, for owners, admins and analysts. Null when the lane does not exist. */
@@ -249,6 +349,8 @@ export async function readCreatorMcfLane(handle: Pick<DbHandle, 'sql'>, actor: O
     const settlement = lane['settlement'] as Record<string, unknown> | null;
     const send = raw['send'] as Record<string, unknown> | null;
     const preview = send?.['latestPreview'] as Record<string, unknown> | null | undefined;
+    const cancelPreview = send?.['latestCancelPreview'] as Record<string, unknown> | null | undefined;
+    const refusalRead = send?.['cancelPreviewRefusal'] as Record<string, unknown> | null | undefined;
     return {
       lane: {
         creatorRecordId: String(lane['creatorRecordId']), asin: String(lane['asin']), derivedOrderKey: CreatorSampleOrderKey.parse(lane['derivedOrderKey']),
@@ -279,6 +381,16 @@ export async function readCreatorMcfLane(handle: Pick<DbHandle, 'sql'>, actor: O
           reason: (event['reason'] as string | null) ?? null, codes: event['codes'] as string[], httpStatus: numberOrNull(event['httpStatus']),
           at: iso(event['at'] as string)!,
         })),
+        cancel: laneCancel(send['cancel'] as Record<string, unknown> | null | undefined),
+        latestCancelPreview: cancelPreview === null || cancelPreview === undefined ? null : {
+          previewId: String(cancelPreview['previewId']), fingerprint: String(cancelPreview['fingerprint']),
+          preview: CreatorMcfCancelPreview.parse(cancelPreview['body']), readAt: iso(cancelPreview['readAt'] as string)!,
+          validUntil: iso(cancelPreview['validUntil'] as string)!,
+        },
+        cancelPreviewPending: send['cancelPreviewPending'] === true,
+        cancelPreviewRefusal: refusalRead === null || refusalRead === undefined ? null : {
+          reason: (refusalRead['reason'] as string | null) ?? null, codes: refusalRead['codes'] as string[], at: iso(refusalRead['at'] as string)!,
+        },
       },
     };
   });
@@ -338,7 +450,7 @@ async function serviceAnswer(handle: Pick<DbHandle, 'sql'>, query: (sql: DbHandl
   return raw;
 }
 
-export type CreatorMcfOutboxAction = 'preview' | 'dispatch' | 'settle';
+export type CreatorMcfOutboxAction = 'preview' | 'dispatch' | 'settle' | 'cancel';
 
 /** One leased piece of work and what the worker needs for it. No ciphertext: that is readCreatorMcfCustody. */
 export interface CreatorMcfClaim {
@@ -363,8 +475,29 @@ export interface CreatorMcfClaim {
   caps: { laneFeeCapMinor: number | null; grantFeeCapMinor: number | null; grantCurrency: string | null };
   /** Dispatch only: the approved preview the re-read must equal. */
   approval: { approvedAt: string; claimDeadline: string; units: number; previewId: string; fingerprint: string; preview: CreatorMcfPreview } | null;
-  /** Settle only. */
+  /** Settle only. For a cancel_dispatching send, `intentReservedAt` and `ladderStart` are the cancel's reservation: only a later read counts. */
   settle: { intentReservedAt: string | null; acceptedAt: string | null; reads: number; ladderStart: string } | null;
+  /**
+   * Cancel only (absent on other claims). `preview`: read the order and record a cancel preview.
+   * `execute`: an approved cancel to reserve and send, with the preview the operator approved.
+   */
+  cancel?: CreatorMcfCancelClaim | null;
+}
+
+export type CreatorMcfCancelClaim =
+  | { mode: 'preview'; originState: 'placed' | 'conflict' }
+  | { mode: 'execute'; cancelId: string; originState: 'placed' | 'conflict'; approvedAt: string; claimDeadline: string; previewId: string;
+      fingerprint: string; preview: CreatorMcfCancelPreview };
+
+function cancelClaim(raw: Record<string, unknown> | null | undefined): CreatorMcfCancelClaim | null {
+  if (raw === null || raw === undefined) return null;
+  const originState = raw['originState'] === 'conflict' ? 'conflict' : 'placed';
+  if (raw['mode'] !== 'execute') return { mode: 'preview', originState };
+  return {
+    mode: 'execute', cancelId: String(raw['cancelId']), originState, approvedAt: iso(raw['approvedAt'] as string)!,
+    claimDeadline: iso(raw['claimDeadline'] as string)!, previewId: String(raw['previewId']), fingerprint: String(raw['fingerprint']),
+    preview: CreatorMcfCancelPreview.parse(raw['preview']),
+  };
 }
 
 /** Claims the next due work in scope (runs the expiry sweep first). Null when nothing is due. */
@@ -395,6 +528,7 @@ export async function claimCreatorMcfOutbox(handle: Pick<DbHandle, 'sql'>, input
       intentReservedAt: iso(settle['intentReservedAt'] as string | null), acceptedAt: iso(settle['acceptedAt'] as string | null),
       reads: Number(settle['reads']), ladderStart: iso(settle['ladderStart'] as string)!,
     },
+    ...(raw['action'] === 'cancel' ? { cancel: cancelClaim(raw['cancel'] as Record<string, unknown> | null) } : {}),
   };
 }
 
@@ -488,6 +622,83 @@ export async function recordCreatorMcfSettlement(handle: Pick<DbHandle, 'sql'>, 
   leaseId: string | null = null): Promise<CreatorMcfWorkerDecision> {
   return decision(await serviceCall(handle, (sql) => sql<{ result: unknown }[]>`select app.record_creator_mcf_settlement(${sendId}::uuid,
     ${JSON.stringify(lookup)}::text::jsonb, ${leaseId}::uuid) as result`));
+}
+
+// ---------------------------------------------------------------------------
+// Service role: the guarded cancel (WP-338i).
+// ---------------------------------------------------------------------------
+
+/**
+ * Records the worker's cancel preview read under its cancel lease: the getOrder
+ * read (recorded as an observation whatever it shows) and, when it shows
+ * Received or Planning, the address-free cancel preview built from it. The
+ * ledger answers cancel_preview_ready, or cancel_preview_refused with a reason
+ * (order_not_found, status_<status>, state_changed, order_shape).
+ */
+export async function recordCreatorMcfCancelPreview(handle: Pick<DbHandle, 'sql'>, sendId: string, leaseId: string, lookup: CreatorMcfOrderRead,
+  preview: CreatorMcfCancelPreview | null): Promise<CreatorMcfWorkerDecision> {
+  const text = preview === null ? null : creatorMcfCanonicalJson(CreatorMcfCancelPreview.parse(preview));
+  return decision(await serviceCall(handle, (sql) => sql<{ result: unknown }[]>`select app.record_creator_mcf_cancel_preview(${sendId}::uuid,
+    ${leaseId}::uuid, ${JSON.stringify(lookup)}::text::jsonb, ${text}) as result`));
+}
+
+export type CreatorMcfCancelReservation =
+  | { decision: 'cancel_once'; sendId: string; cancelId: string; derivedOrderKey: string; marketplaceId: string; reservedAt: string;
+      orderStatus: 'Received' | 'Planning'; requestDigest: string }
+  | { decision: 'already_reserved'; state: CreatorMcfSendState }
+  | { decision: 'refused'; reason: string; ending?: string; orderStatus?: FulfillmentOrderStatus | null; state?: CreatorMcfSendState };
+
+/**
+ * The clause-9 recheck and the one permission to send the cancel request, with
+ * the worker's re-read of the order taken after the approval. `requestDigest`
+ * covers the address-free cancel request only.
+ */
+export async function reserveCreatorMcfCancel(handle: Pick<DbHandle, 'sql'>, sendId: string, leaseId: string, lookup: CreatorMcfOrderRead,
+  requestDigest: string): Promise<CreatorMcfCancelReservation> {
+  const raw = decision(await serviceCall(handle, (sql) => sql<{ result: unknown }[]>`select app.reserve_creator_mcf_cancel(${sendId}::uuid,
+    ${leaseId}::uuid, ${JSON.stringify(lookup)}::text::jsonb, ${requestDigest}) as result`));
+  if (raw.decision === 'cancel_once') {
+    return {
+      decision: 'cancel_once', sendId: String(raw['sendId']), cancelId: String(raw['cancelId']), derivedOrderKey: String(raw['derivedOrderKey']),
+      marketplaceId: String(raw['marketplaceId']), reservedAt: iso(raw['reservedAt'] as string)!,
+      orderStatus: raw['orderStatus'] === 'Planning' ? 'Planning' : 'Received', requestDigest: String(raw['requestDigest']),
+    };
+  }
+  if (raw.decision === 'already_reserved') return { decision: 'already_reserved', state: raw.state! };
+  return {
+    decision: 'refused', reason: String(raw['reason']),
+    ...(typeof raw['ending'] === 'string' ? { ending: raw['ending'] } : {}),
+    ...(raw['orderStatus'] === undefined ? {} : { orderStatus: (raw['orderStatus'] as FulfillmentOrderStatus | null) ?? null }),
+    ...(raw.state === undefined ? {} : { state: raw.state }),
+  };
+}
+
+/** The cancel request's answer, recorded once under the reserved lease. A 4xx other than 401/403 needs the getOrder read that followed it. */
+export async function recordCreatorMcfCancelOutcome(handle: Pick<DbHandle, 'sql'>, sendId: string, leaseId: string, outcome: CreatorMcfProviderOutcome,
+  lookup: CreatorMcfOrderRead | null = null): Promise<CreatorMcfWorkerDecision> {
+  const parsed = CreatorMcfProviderOutcome.parse(outcome);
+  return decision(await serviceCall(handle, (sql) => sql<{ result: unknown }[]>`select app.record_creator_mcf_cancel_outcome(${sendId}::uuid,
+    ${leaseId}::uuid, ${JSON.stringify(parsed)}::text::jsonb, ${lookup === null ? null : JSON.stringify(lookup)}::text::jsonb) as result`));
+}
+
+/** Why a reserved cancel request was not sent, as the worker knows it (the request never left). */
+export type CreatorMcfCancelUnsentReason = 'reservation_mismatch' | 'stopping' | 'policy_off' | 'lease_budget' | 'token_unavailable' | 'request_invalid'
+  | 'cancel_failed';
+
+/**
+ * A reserved cancel request the worker did not send. From placed the send returns to placed and the cancel ends not_sent, so the
+ * operator may cancel again; from conflict the send stays cancel_dispatching and reads settle it.
+ */
+export async function recordCreatorMcfCancelUnsent(handle: Pick<DbHandle, 'sql'>, sendId: string, leaseId: string, reason: CreatorMcfCancelUnsentReason):
+  Promise<CreatorMcfWorkerDecision> {
+  return decision(await serviceCall(handle, (sql) => sql<{ result: unknown }[]>`select app.record_creator_mcf_cancel_unsent(${sendId}::uuid,
+    ${leaseId}::uuid, ${reason}) as result`));
+}
+
+/** The recipient key ids of every active grant in `scope`, so the MCF unit can refuse to start without a key file for each. */
+export async function readCreatorMcfActiveKeyIds(handle: Pick<DbHandle, 'sql'>, scope: readonly string[]): Promise<string[]> {
+  const [row] = await handle.sql<{ ids: string[] | null }[]>`select app.creator_mcf_active_key_ids(${[...scope]}::text[]) as ids`;
+  return (row?.ids ?? []).map(String);
 }
 
 /** Escalates an accepted or uncertain send Amazon has not settled in 7 days. */

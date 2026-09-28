@@ -172,6 +172,20 @@ describe('Arcana sending on the list (WP-338g)', () => {
     expect(calm.querySelectorAll('[data-testid^="send-"][data-count]')).toHaveLength(0);
   });
 
+  it('notes an approved cancel the worker has not taken on a conflicting lane (WP-338i)', () => {
+    const cancel = { cancelId: '33800000-0000-4000-8000-0000000000c2', originState: 'conflict' as const, approvedAt: '2026-09-09T10:50:00.000Z',
+      claimDeadline: '2026-09-09T11:05:00.000Z', reservedAt: null, providerOutcome: null, providerReason: null, providerStatus: null, providerCodes: null,
+      endedAt: null, ending: null, endingReason: null };
+    const conflict = sending.sends[fourth.derivedOrderKey] as Exclude<SamplesSending['sends'][string], null | 'unread'>;
+    const open = rendered(<Screen data={data({ ...sending, sends: { ...sending.sends, [fourth.derivedOrderKey]: { ...conflict, cancel } } })} />);
+    const rows = [...open.querySelectorAll('[data-testid="sample-lane"]')];
+    expect(rows[4]!.querySelector('[data-testid="send-cancel-open"]')?.textContent).toBe('cancel approved, waiting for the worker');
+    expect(open.querySelectorAll('[data-testid="send-cancel-open"]')).toHaveLength(1);
+    const ended = rendered(<Screen data={data({ ...sending, sends: { ...sending.sends, [fourth.derivedOrderKey]: { ...conflict,
+      cancel: { ...cancel, endedAt: '2026-09-09T11:05:00.000Z', ending: 'expired' as const, endingReason: 'claim_deadline' } } } })} />);
+    expect(ended.querySelectorAll('[data-testid="send-cancel-open"]')).toHaveLength(0);
+  });
+
   it('shows no sending header or send columns when the list is withheld', () => {
     const host = rendered(<Screen data={{ ...refused, props: { ...refused.props, sending } }} />);
     expect(host.querySelector('[data-testid="sending-header"]')).toBeNull();

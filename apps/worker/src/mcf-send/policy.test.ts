@@ -82,9 +82,9 @@ describe('what the policy allows', () => {
   const policy = (preview: boolean, dispatch: boolean, scope = [SCOPE]) => ({ previewEnabled: preview, dispatchEnabled: dispatch, scope });
 
   it('claims only the actions its flags allow, and settle whenever a scope exists', () => {
-    expect(mcfClaimableActions(policy(true, true))).toEqual(['preview', 'dispatch', 'settle']);
+    expect(mcfClaimableActions(policy(true, true))).toEqual(['preview', 'dispatch', 'cancel', 'settle']);
     expect(mcfClaimableActions(policy(true, false))).toEqual(['preview', 'settle']);
-    expect(mcfClaimableActions(policy(false, true))).toEqual(['dispatch', 'settle']);
+    expect(mcfClaimableActions(policy(false, true))).toEqual(['dispatch', 'cancel', 'settle']);
     expect(mcfClaimableActions(policy(false, false))).toEqual(['settle']);
     expect(mcfClaimableActions(policy(true, true, []))).toEqual([]);
   });

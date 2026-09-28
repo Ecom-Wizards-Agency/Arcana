@@ -4,8 +4,8 @@
  * this file or `src/mcf-send/`.
  *
  * It runs the MCF send loop: the heartbeat with scope, the expiry sweep, the
- * daily mask purge, previews, dispatches and settlement reads. It opens no
- * listener. The Evo runtime's `mcf` mode (WP-338f) execs it with:
+ * daily mask purge, previews, dispatches, guarded cancels (WP-338i) and
+ * settlement reads. It opens no listener. The Evo runtime's `mcf` mode (WP-338f) execs it with:
  *
  *  - DATABASE_URL (the unit's database credential),
  *  - SP_API_LWA_CLIENT_ID and SP_API_LWA_CLIENT_SECRET (required whenever the
@@ -20,15 +20,20 @@
  *
  * It refuses to start, with a fixed message naming the variable and never its
  * value, when the policy is invalid, a flag is on without a readable key file
- * (every `mcf-recipient-*` file must import and match its name), or a scope is
- * set without the LWA credentials. Flags off and restart is the kill switch:
- * settlement reads keep running for the scope.
+ * (every `mcf-recipient-*` file must import and match its name), a flag is on
+ * and an active grant in the scope names a recipient key id that no readable
+ * key file carries (read from the database with the service-role
+ * app.creator_mcf_active_key_ids; only the count missing is printed), or a
+ * scope is set without the LWA credentials. Flags off and restart is the kill
+ * switch: settlement reads keep running for the scope.
  */
 import { connectionStringFromEnv, createDb } from '@wizard-ads/db';
+import { readCreatorMcfActiveKeyIds } from '@wizard-ads/db/worker';
 import { workerRevisionFromEnv } from './config.js';
+import { postgresMcfCancelStore } from './mcf-send/cancel.js';
 import { credentialDirectoryKeySource } from './mcf-send/custody.js';
 import { consoleMcfLog, createMcfSendLoop, postgresMcfSendStore, spApiMcfAmazonFactory, startMcfSendPolling } from './mcf-send/loop.js';
-import { McfPolicyError, mcfSendPolicyFromEnv } from './mcf-send/policy.js';
+import { McfPolicyError, mcfMissingRecipientKeys, mcfSendPolicyFromEnv } from './mcf-send/policy.js';
 import { installStopSignalHandlers } from './stop-signals.js';
 
 const log = consoleMcfLog();
@@ -66,14 +71,15 @@ async function main(): Promise<void> {
   const lwaKey = env['SP_API_LWA_CLIENT_SECRET']?.trim() ?? '';
   if (policy.scope.length > 0 && (lwaClientId === '' || lwaKey === '')) refuse('SP_API_LWA_CLIENT_ID and SP_API_LWA_CLIENT_SECRET: required with a scope');
   const keys = credentialDirectoryKeySource(env['CREDENTIALS_DIRECTORY']);
-  if (policy.previewEnabled || policy.dispatchEnabled) {
-    let keyIds: string[];
+  const flagOn = policy.previewEnabled || policy.dispatchEnabled;
+  let readable: string[] = [];
+  if (flagOn) {
     try {
-      keyIds = await keys.inventory();
+      readable = await keys.inventory();
     } catch {
       refuse('CREDENTIALS_DIRECTORY: no readable recipient key');
     }
-    if (keyIds.length === 0) refuse('CREDENTIALS_DIRECTORY: no readable recipient key');
+    if (readable.length === 0) refuse('CREDENTIALS_DIRECTORY: no readable recipient key');
   }
   const interval = pollIntervalMs(env);
   let databaseUrl: string;
@@ -83,8 +89,23 @@ async function main(): Promise<void> {
     refuse('DATABASE_URL: invalid');
   }
   const handle = createDb({ connectionString: databaseUrl, max: 2 });
+  if (flagOn) {
+    // Every recipient key id an active grant in this scope names must have a readable key file (DESIGN section 8).
+    let missing: string[];
+    try {
+      missing = mcfMissingRecipientKeys(await readCreatorMcfActiveKeyIds(handle, policy.scope), readable);
+    } catch {
+      await handle.close().catch(() => undefined);
+      refuse('DATABASE_URL: the active grant key ids could not be read');
+    }
+    if (missing.length > 0) {
+      await handle.close().catch(() => undefined);
+      refuse(`CREDENTIALS_DIRECTORY: no readable key file for ${missing.length} active grant key id${missing.length === 1 ? '' : 's'}`);
+    }
+  }
   const loop = createMcfSendLoop({
     store: postgresMcfSendStore(handle),
+    cancelStore: postgresMcfCancelStore(handle),
     amazon: spApiMcfAmazonFactory({ handle, lwaClientId, lwaClientSecret: lwaKey }),
     keys,
     // Read again before every step, as the design asks; the process environment is fixed, so a restart applies a change.

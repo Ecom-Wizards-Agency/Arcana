@@ -24,6 +24,10 @@
  * which destroys custody in the same transaction. Every 4xx is followed by
  * getOrder before the send is treated as not placed.
  *
+ * Cancel (WP-338i, ./cancel.ts): under the dispatch flag, the guarded
+ * cancelFulfillmentOrder of an order Arcana placed, when the loop is given a
+ * cancel store. Without one it never claims cancel work.
+ *
  * Nothing here logs, throws or persists a recipient value: log lines carry
  * `{event, sendId, state, counts, httpStatus, codes}` only, errors carry fixed
  * codes, and the opened recipient lives in local variables for one action.
@@ -46,6 +50,7 @@ import {
   LwaRefreshTokenProvider, type CreatorMcfPreviewEvidence, type FetchLike, type SpApiAccessTokenProvider,
 } from '@wizard-ads/sp-api';
 import { spApiEndpointForRegion } from '../spapi-sqp.js';
+import { McfCancelRunner, assertMcfCancelCounts, emptyMcfCancelCounts, type McfCancelCounts, type McfCancelStore } from './cancel.js';
 import { assertMcfTickCounts, countDispatchClaim, countPreviewClaim, emptyMcfTickCounts, type McfDispatchEnding, type McfPreviewEnding,
   type McfTickCounts } from './counts.js';
 import { openMcfCustody, type McfRecipientKeySource } from './custody.js';
@@ -86,7 +91,8 @@ export type McfLogEvent =
   | 'mcf_mask_purge' | 'mcf_mask_purge_failed' | 'mcf_preview' | 'mcf_dispatch' | 'mcf_deferred' | 'mcf_refused' | 'mcf_stale'
   | 'mcf_found_before_post' | 'mcf_reserve_refused' | 'mcf_post_withheld' | 'mcf_outcome' | 'mcf_outcome_pending' | 'mcf_late_outcome'
   | 'mcf_outcome_abandoned' | 'mcf_read_failed' | 'mcf_release_failed' | 'mcf_settle' | 'mcf_settle_deferred' | 'mcf_ladder_exhausted'
-  | 'mcf_ladder_mark_failed' | 'mcf_action_failed';
+  | 'mcf_ladder_mark_failed' | 'mcf_action_failed' | 'mcf_cancel' | 'mcf_cancel_preview' | 'mcf_cancel_reserve_refused' | 'mcf_cancel_withheld'
+  | 'mcf_cancel_outcome' | 'mcf_cancel_outcome_pending' | 'mcf_cancel_late_outcome' | 'mcf_cancel_outcome_abandoned';
 
 export interface McfLogEntry {
   readonly event: McfLogEvent;
@@ -173,10 +179,10 @@ export function postgresMcfSendStore(handle: Pick<DbHandle, 'sql'>): McfSendStor
   };
 }
 
-/** Amazon for one send's connection and marketplace: reads by key, the preview and the create. */
+/** Amazon for one send's connection and marketplace: reads by key, the preview, the create and (WP-338i) the cancel. */
 export interface McfAmazon {
   reader: McfOrderReader;
-  writer: Pick<FulfillmentOutboundWriter, 'preview' | 'create'>;
+  writer: Pick<FulfillmentOutboundWriter, 'preview' | 'create'> & Partial<Pick<FulfillmentOutboundWriter, 'cancel'>>;
 }
 export type McfAmazonFactory = (target: { orgId: string; spapiConnectionId: string; marketplaceId: string }) => McfAmazon;
 
@@ -315,6 +321,8 @@ export async function mcfRequestDigest(input: { marketplaceId: string; derivedOr
 
 export interface McfSendLoopOptions {
   store: McfSendStore;
+  /** The ledger's cancel functions (WP-338i). Without them the loop claims no cancel work. */
+  cancelStore?: McfCancelStore;
   amazon: McfAmazonFactory;
   keys: McfRecipientKeySource;
   /** Read again before every step: a flag turned off stops the next Amazon call. A throw means everything off. */
@@ -358,6 +366,7 @@ export class McfSendLoop {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly newId: () => string;
   private readonly claimant: string;
+  private readonly cancel: McfCancelRunner | null;
 
   constructor(private readonly options: McfSendLoopOptions) {
     if (!/^[A-Za-z0-9._:-]{1,70}$/.test(options.workerId) || !/^[A-Za-z0-9._-]{1,64}$/.test(options.workerRevision)) {
@@ -370,6 +379,12 @@ export class McfSendLoop {
     this.newId = options.newId ?? randomUUID;
     this.pacer = createMcfPacer({ spacingMs: options.spacingMs ?? MCF_AMAZON_SPACING_MS, monotonic: this.monotonic, sleep: this.sleep });
     this.claimant = `${options.workerId}:mcf`;
+    this.cancel = options.cancelStore === undefined ? null : new McfCancelRunner({
+      store: options.cancelStore, amazon: (claim) => this.amazonFor(claim),
+      allowed: (gate, claim) => this.allowed(gate, claim), stopping: () => this.stopping, pacer: this.pacer, sleep: this.sleep, clock: this.clock,
+      monotonic: this.monotonic, newId: this.newId, workerRevision: options.workerRevision, log: this.log,
+      onAuthorizationFailure: () => this.authorizationFailed(),
+    });
   }
 
   /** No new Amazon call starts after this; a POST already sent finishes and is recorded. */
@@ -377,15 +392,16 @@ export class McfSendLoop {
     this.stopping = true;
   }
 
-  /** Outcomes still waiting to be recorded (address-free). */
+  /** Outcomes (create and cancel answers) still waiting to be recorded (address-free). */
   pendingOutcomes(): number {
-    return this.pending.length;
+    return this.pending.length + (this.cancel?.pendingOutcomes() ?? 0);
   }
 
   /** One more attempt at recording pending outcomes, for a stop: what stays pending is left to the ladder. */
   async drain(): Promise<number> {
     await this.retryPending(emptyMcfTickCounts());
-    return this.pending.length;
+    await this.cancel?.retryPending(emptyMcfCancelCounts());
+    return this.pendingOutcomes();
   }
 
   private readPolicy(): McfSendPolicy {
@@ -397,7 +413,7 @@ export class McfSendLoop {
     }
   }
 
-  private allowed(gate: 'preview' | 'dispatch' | 'read', claim: CreatorMcfClaim): boolean {
+  private allowed(gate: 'preview' | 'dispatch' | 'read', claim: Pick<CreatorMcfClaim, 'spapiConnectionId' | 'marketplaceId'>): boolean {
     if (this.stopping && gate !== 'read') return false;
     return mcfStepAllowed(this.readPolicy(), gate, claim.spapiConnectionId, claim.marketplaceId);
   }
@@ -409,21 +425,27 @@ export class McfSendLoop {
   /** One pass. Returns the tick's reconciled counts; throws McfCountsError if they do not reconcile. */
   async tick(): Promise<McfTickCounts> {
     const counts = emptyMcfTickCounts();
+    const cancelCounts = emptyMcfCancelCounts();
     const policy = this.readPolicy();
     await this.housekeeping(policy);
     await this.retryPending(counts);
+    await this.cancel?.retryPending(cancelCounts);
     const max = this.options.maxClaimsPerTick ?? 10;
     for (let index = 0; index < max && !this.stopping; index += 1) {
       const current = this.readPolicy();
-      const actions = mcfClaimableActions(current);
+      const actions = mcfClaimableActions(current).filter((action) => action !== 'cancel' || this.cancel !== null);
       if (actions.length === 0) break;
       const claim = await this.options.store.claim({ claimant: this.claimant, scope: current.scope, actions });
       if (claim === null) break;
       if (claim.action === 'settle') await this.settle(claim, counts);
       else if (claim.action === 'preview') await this.preview(claim, counts);
-      else await this.dispatch(claim, counts);
+      else if (claim.action === 'dispatch') await this.dispatch(claim, counts);
+      else if (this.cancel !== null) await this.cancel.run(claim, counts, cancelCounts);
+      else await this.release(claim, 'cancel_unsupported', 600);
     }
     assertMcfTickCounts(counts);
+    assertMcfCancelCounts(cancelCounts);
+    if (cancelCounts.claimed + cancelCounts.lateRecorded > 0) this.logCancel(cancelCounts);
     if (counts.send.claimed + counts.settle.claimed + counts.lateRecorded > 0) {
       this.log('info', { event: 'mcf_tick', counts: { ...counts.send, amazonCreates: counts.amazonCreates, postWithheld: counts.postWithheld,
         outcomePending: counts.outcomePending, lateRecorded: counts.lateRecorded, amazonCalls: counts.amazonCalls,
@@ -431,6 +453,10 @@ export class McfSendLoop {
         'settle.found': counts.settle.found, 'settle.notFound': counts.settle.notFound, 'settle.ladderExhausted': counts.settle.ladderExhausted } });
     }
     return counts;
+  }
+
+  private logCancel(counts: McfCancelCounts): void {
+    this.log('info', { event: 'mcf_cancel', counts: { ...counts } });
   }
 
   // -------------------------------------------------------------------------
@@ -825,8 +851,22 @@ export class McfSendLoop {
   // -------------------------------------------------------------------------
 
   private async settle(claim: CreatorMcfClaim, counts: McfTickCounts): Promise<void> {
+    const store = this.options.store;
     await settleMcfClaim(claim, {
-      store: this.options.store,
+      store: {
+        // WP-338i: a read that finds the 7-day ladder over marks it in the same transaction (the worker's own mark then answers
+        // unchanged), so the escalation is counted and logged from the read's answer.
+        recordSettlement: async (sendId, lookup, leaseId) => {
+          const decision = await store.recordSettlement(sendId, lookup, leaseId);
+          if (decision.decision === 'recorded' && decision['ladderMarked'] === true) {
+            counts.settle.ladderExhausted += 1;
+            this.log('info', { event: 'mcf_ladder_exhausted', sendId, state: decision.state ?? null });
+          }
+          return decision;
+        },
+        markLadderExhausted: (sendId) => store.markLadderExhausted(sendId),
+        releaseClaim: (sendId, leaseId, retrySeconds) => store.releaseClaim(sendId, leaseId, retrySeconds),
+      },
       reader: (target) => this.amazonFor(target).reader,
       policy: () => this.readPolicy(),
       pacer: this.pacer, sleep: this.sleep, clock: this.clock, monotonic: this.monotonic, log: this.log,

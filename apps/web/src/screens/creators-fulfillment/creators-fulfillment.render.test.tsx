@@ -2,7 +2,8 @@
 import { describe, expect, it } from 'vitest';
 import type { CreatorMcfSendState } from '@wizard-ads/shared';
 import type { CreatorMcfLaneSend } from '@wizard-ads/db';
-import { SEND } from '../creators-sample-preflight/render-fixture';
+import { NOT_SENT, OPEN_CANCEL, SEND } from '../creators-sample-preflight/render-fixture';
+import { formatTimestamp } from '../../ui/date-format';
 import Loading from '../../../app/creators/samples/fulfillment/[id]/loading';
 import SharedError from '../../../app/creators/samples/fulfillment/[id]/error';
 import { rendered } from '../render-test-support';
@@ -269,5 +270,83 @@ describe('Arcana\'s send outcome (WP-338g)', () => {
     const host = rendered(<Screen data={notMeasured} />);
     expect(host.querySelector('[data-testid="arcana-outcome"]')).toBeNull();
     expect(host.querySelector('[data-testid="lock-line"]')?.textContent).toContain('The runner owns the lane state and the lock;');
+  });
+});
+
+describe('Arcana\'s cancel, read-only (WP-338i)', () => {
+  const lane = { ...ambiguous, orderOwner: 'arcana' as const, laneState: 'Confirmed' as typeof ambiguous.laneState };
+  const withCancel = (send: Partial<CreatorMcfLaneSend>, laneChange: Partial<typeof lane> = {}) => ({ view: 'ready' as const, props: {
+    detail: { ...notMeasured.props.detail, lane: { ...lane, ...laneChange } },
+    send: { ...SEND, state: 'placed' as const, amazonStatus: 'Received' as const, placedAt: '2026-09-08T06:50:00.000Z', custodyExpiresAt: null,
+      latestPreview: null, ...send } } });
+  const cancelFact = (host: HTMLElement) => host.querySelector('[data-testid="arcana-facts"] [data-fact="cancel"]');
+  const cancelKey = (host: HTMLElement) => host.querySelector('[data-testid="arcana-cancel"]')?.getAttribute('data-cancel') ?? null;
+  const link = (host: HTMLElement) => host.querySelector('[data-testid="cancel-link"]');
+  const ended = { ...OPEN_CANCEL, endedAt: '2026-09-08T07:00:00.000Z' };
+
+  it('links a placed or conflicting order still Received or Planning to the send page for the cancel, as a plain link', () => {
+    const cases = [[{}, true], [{ amazonStatus: 'Planning' as const }, true], [{ state: 'conflict' as const }, true],
+      [{ amazonStatus: 'Processing' as const }, false], [{ amazonStatus: 'New' as const }, false], [{ state: 'accepted' as const }, false],
+      [{ cancel: OPEN_CANCEL }, false]] as const;
+    expect(cases).toHaveLength(7);
+    const shown = cases.map(([send]) => {
+      const host = rendered(<Screen data={withCancel(send)} />);
+      expect(host.querySelectorAll('button')).toHaveLength(0);
+      return link(host) !== null;
+    });
+    expect(shown).toEqual(cases.map(([, expected]) => expected));
+    const host = rendered(<Screen data={withCancel({})} />);
+    expect(link(host)?.tagName).toBe('A');
+    expect(link(host)?.getAttribute('href')).toBe(`/creators/samples/${lane.derivedOrderKey}/preflight`);
+    expect(link(host)?.textContent).toBe('Cancel on the send page');
+    expect(host.querySelector('[data-testid="cancel-link-line"]')?.textContent).toContain('Amazon holds this order as Received, so it can still be cancelled.');
+    // No cancel was pressed: no cancel row, never an invented one.
+    expect(cancelFact(host)).toBeNull();
+  });
+
+  it('shows each cancel step in words, with no control', () => {
+    const cases: [Partial<CreatorMcfLaneSend>, string, string][] = [
+      [{ cancel: OPEN_CANCEL }, 'approved', `Cancel approved at ${formatTimestamp(OPEN_CANCEL.approvedAt)}, waiting for the worker.`],
+      [{ state: 'cancel_dispatching', cancel: { ...OPEN_CANCEL, reservedAt: '2026-09-08T06:55:00.000Z', providerOutcome: 'accepted', providerStatus: 200 } },
+        'dispatching', 'Accepted (HTTP 200). That is not proof'],
+      [{ state: 'cancelled', amazonStatus: 'Cancelled', cancel: { ...ended, ending: 'cancelled', endingReason: 'operator_cancelled_in_amazon' } }, 'cancelled',
+        'Amazon cancelled the order at Arcana\'s request.'],
+      [{ amazonStatus: 'Processing', cancel: { ...ended, providerOutcome: 'accepted', providerStatus: 200, ending: 'not_honoured', endingReason: 'processing' } },
+        'not_honoured', 'Amazon did not cancel: the order reached Processing.'],
+      [{ cancel: { ...ended, ending: 'refused', endingReason: 'status_new' } }, 'refused', 'Amazon has not validated this order yet (New)'],
+      [{ cancel: { ...ended, ending: 'expired', endingReason: 'claim_deadline' } }, 'expired', 'nothing was sent to Amazon'],
+      [{ cancel: { ...ended, ending: NOT_SENT, endingReason: 'rejected_authorization' } }, 'not_sent',
+        'Amazon refused the cancel request for authorization (HTTP 401 or 403), so nothing changed at Amazon. The order can be cancelled again'],
+      [{ state: 'cancel_dispatching', cancel: { ...ended, originState: 'conflict', reservedAt: '2026-09-08T06:55:00.000Z', ending: NOT_SENT,
+        endingReason: 'stopping' } }, 'dispatching', 'The worker withheld the cancel request: it was stopping, so nothing changed at Amazon.'],
+    ];
+    expect(cases).toHaveLength(8);
+    for (const [send, key, words] of cases) {
+      const host = rendered(<Screen data={withCancel(send)} />);
+      expect(cancelKey(host)).toBe(key);
+      expect(cancelFact(host)?.textContent).toContain(words);
+      expect(host.querySelectorAll('button')).toHaveLength(0);
+    }
+    const dispatching = rendered(<Screen data={withCancel(cases[1]![0])} />);
+    expect(cancelFact(dispatching)?.textContent).toContain(`reserved at ${formatTimestamp('2026-09-08T06:55:00.000Z')}`);
+    expect(cancelFact(dispatching)?.textContent).toContain('never sends the request twice');
+    // An expired or refused cancel on an order still Received offers the send page again; one Amazon did not honour does not.
+    expect(link(rendered(<Screen data={withCancel(cases[5]![0])} />))).not.toBeNull();
+    expect(link(rendered(<Screen data={withCancel(cases[3]![0])} />))).toBeNull();
+    expect(link(rendered(<Screen data={withCancel(cases[6]![0])} />))).not.toBeNull();
+  });
+
+  it('says Arcana asked Amazon to cancel a cancelled order', () => {
+    const host = rendered(<Screen data={withCancel({ state: 'cancelled', amazonStatus: 'Cancelled',
+      cancel: { ...ended, ending: 'cancelled', endingReason: 'operator_cancelled_in_amazon' } }, { laneState: 'Cancelled' })} />);
+    const facts = Object.fromEntries([...host.querySelectorAll('[data-testid="arcana-facts"] [data-fact]')].map((cell) => [cell.getAttribute('data-fact'), cell.textContent]));
+    expect(facts['outcome']).toBe('Arcana asked Amazon to cancel this order, and a read showed it Cancelled. The lane is Cancelled.');
+    expect(facts['amazon-status']).toBe('Cancelled');
+    expect(link(host)).toBeNull();
+    for (const state of ['cancel_requested', 'cancel_dispatching'] as const) {
+      const pending = rendered(<Screen data={withCancel({ state, cancel: OPEN_CANCEL })} />);
+      expect(pending.querySelector('[data-testid="arcana-facts"] [data-fact="outcome"]')?.textContent).toContain(state === 'cancel_requested'
+        ? 'Arcana approved a cancel of this order' : 'The worker sent Arcana\'s one cancel request to Amazon');
+    }
   });
 });

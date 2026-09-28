@@ -345,7 +345,7 @@ export function createMcpServer(context: ServerContext): McpServer {
 }
 
 /**
- * The `creator:write` surface (WP-333): six Creator Connections write tools and
+ * The `creator:write` surface (WP-333): the Creator Connections tools in CREATOR_WRITE_TOOLS and
  * the instructions resource written for the skill that calls them. No analytics
  * tool and no profile resource is registered, and each call is re-authorized
  * as a creator:write key in the database.
@@ -364,7 +364,7 @@ function createCreatorWriteServer(context: ServerContext): McpServer {
   server.registerResource(
     'instructions',
     'wizardads://instructions',
-    { title: 'How to use this key', description: 'The six creator tools, their inputs in the control runner\'s shapes, and the refusals.', mimeType: 'text/markdown' },
+    { title: 'How to use this key', description: 'The creator tools, their inputs in the control runner\'s shapes, and the refusals.', mimeType: 'text/markdown' },
     async (uri: URL) => {
       const started = Date.now();
       try {

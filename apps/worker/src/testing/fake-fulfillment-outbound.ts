@@ -43,6 +43,18 @@ export type FakeCreateAnswer =
   | { kind: 'transport'; creates?: boolean; createdStatus?: FakeOrderStatus }
   | { kind: 'undecodable'; creates?: boolean };
 
+/**
+ * cancelFulfillmentOrder answers (WP-338i). `cancels` says whether the order is
+ * Cancelled at Amazon afterwards (default: true for 200, false otherwise; a 5xx
+ * or a lost answer may still have cancelled it). An order that is not Received
+ * or Planning is never cancelled, whatever the script says: Amazon refuses it.
+ */
+export type FakeCancelAnswer =
+  | { kind: 'ok'; cancels?: boolean }
+  | { kind: 'http'; status: number; codes?: string[]; cancels?: boolean }
+  | { kind: 'transport'; cancels?: boolean }
+  | { kind: 'undecodable'; cancels?: boolean };
+
 /** One-shot getFulfillmentOrder failures, consumed before the normal answer. */
 export type FakeReadAnswer = { kind: 'http'; status: number } | { kind: 'transport' };
 
@@ -78,6 +90,8 @@ export class FakeFulfillmentOutbound {
   createAnswers: FakeCreateAnswer[] = [];
   /** Queued one-shot read failures. */
   readFailures: FakeReadAnswer[] = [];
+  /** Queued cancel answers; when empty, Amazon's own rule: 200 and Cancelled from Received or Planning, else 400. */
+  cancelAnswers: FakeCancelAnswer[] = [];
 
   /** Called with each request before it is answered: tests turn flags off "between steps" here. */
   onRequest: FakeFulfillmentOutboundOptions['onRequest'];
@@ -89,6 +103,8 @@ export class FakeFulfillmentOutbound {
   get posts(): number { return this.requests.filter((request) => request.operation === 'create').length; }
   get previews(): number { return this.requests.filter((request) => request.operation === 'preview').length; }
   get reads(): number { return this.requests.filter((request) => request.operation === 'get').length; }
+  /** cancelFulfillmentOrder requests that reached "Amazon". */
+  get cancels(): number { return this.requests.filter((request) => request.operation === 'cancel').length; }
   /** Every request, in order, as `operation`. */
   get operations(): string[] { return this.requests.map((request) => request.operation); }
 
@@ -196,8 +212,30 @@ export class FakeFulfillmentOutbound {
 
   private cancel(id: string): Response {
     const order = this.orders.get(id);
-    if (order === undefined) return json(404, { errors: [{ code: 'NotFound', message: `No order ${id}` }] });
-    order.status = 'Cancelled';
-    return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const answer = this.cancelAnswers.shift();
+    const cancellable = order !== undefined && (order.status === 'Received' || order.status === 'Planning');
+    const settle = (cancels: boolean | undefined, fallback: boolean) => { if (order !== undefined && cancellable && (cancels ?? fallback)) order.status = 'Cancelled'; };
+    const refusal = (status: number, codes: string[]) => json(status, { errors: codes.map((code) => ({ code,
+      message: `Order ${id} for ${echoText(order?.destination ?? null)} cannot be cancelled`, details: echoText(order?.destination ?? null) })) });
+    if (answer === undefined) {
+      if (order === undefined) return json(404, { errors: [{ code: 'NotFound', message: `No order ${id}` }] });
+      if (!cancellable) return refusal(400, ['InvalidInput']);
+      order.status = 'Cancelled';
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    switch (answer.kind) {
+      case 'ok':
+        settle(answer.cancels, true);
+        return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      case 'http':
+        settle(answer.cancels, false);
+        return refusal(answer.status, answer.codes ?? ['InvalidInput']);
+      case 'transport':
+        settle(answer.cancels, false);
+        throw new TypeError('fake transport failure');
+      case 'undecodable':
+        settle(answer.cancels, false);
+        return new Response('<html>not json</html>', { status: 200 });
+    }
   }
 }

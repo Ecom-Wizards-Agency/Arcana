@@ -8,6 +8,7 @@ import { creatorMcfRecipientKeyId, sealCreatorMcfRecipient, type CreatorMcfRecip
 
 const ledger = vi.hoisted(() => ({
   seal: vi.fn(), approve: vi.fn(), withdraw: vi.fn(), refresh: vi.fn(), settle: vi.fn(), release: vi.fn(), resolve: vi.fn(), open: vi.fn(), close: vi.fn(),
+  cancelPreview: vi.fn(), approveCancel: vi.fn(),
 }));
 vi.mock('next/headers', () => ({ headers: async () => new Headers() }));
 vi.mock('../../server/request-context', () => ({
@@ -18,10 +19,13 @@ vi.mock('@wizard-ads/db', () => ({
   AgencyAccessDenied: class AgencyAccessDenied extends Error {},
   sealCreatorMcfRecipient: ledger.seal, approveCreatorMcfSend: ledger.approve, withdrawCreatorMcfSend: ledger.withdraw,
   refreshCreatorMcfPreview: ledger.refresh, requestCreatorMcfSettleRead: ledger.settle, releaseCreatorMcfSend: ledger.release,
-  resolveCreatorMcfConflict: ledger.resolve,
+  resolveCreatorMcfConflict: ledger.resolve, requestCreatorMcfCancelPreview: ledger.cancelPreview, approveCreatorMcfCancel: ledger.approveCancel,
 }));
 
-const { approveAction, releaseAction, resolveConflictAction, sealAction, withdrawAction } = await import('./send-actions');
+const {
+  approveAction, approveCancelAction, releaseAction, requestCancelPreviewAction, resolveConflictAction, sealAction, withdrawAction,
+} = await import('./send-actions');
+const cancelServerActions = await import('./cancel-actions');
 
 const binding: CreatorMcfRecipientBinding = {
   orgId: '33400000-0000-4000-8000-0000000000a0', creatorRecordId: 'CCR-SW-26-0088', asin: 'B0D9K3M2QP',
@@ -110,5 +114,80 @@ describe('the other actions', () => {
     expect(ledger.open).not.toHaveBeenCalled();
     ledger.withdraw.mockResolvedValue({ outcome: 'withdrawn', sendId, state: 'withdrawn', replay: false });
     expect(await withdrawAction(sendId)).toEqual({ ok: true, sendId, state: 'withdrawn' });
+  });
+});
+
+describe('the cancel actions (WP-338i)', () => {
+  const sendId = '33800000-0000-4000-8000-000000000501';
+  const approval = { sendId, previewId: '33800000-0000-4000-8000-0000000000c1', previewFingerprint: 'c4'.repeat(32),
+    confirmation: 'Cancel 1 order in Amazon', requestId: '33800000-0000-4000-8000-0000000000f2' };
+
+  it('asks for a cancel read only with a uuid send id, and passes the ledger\'s refusal through', async () => {
+    for (const bad of ['', 'not-a-uuid', 7, null, undefined, `${sendId} `, { sendId }]) {
+      expect(await requestCancelPreviewAction(bad)).toEqual({ ok: false, reason: 'invalid' });
+    }
+    expect(ledger.cancelPreview).not.toHaveBeenCalled();
+    expect(ledger.open).not.toHaveBeenCalled();
+    ledger.cancelPreview.mockResolvedValueOnce({ outcome: 'cancel_preview_requested', sendId, state: 'placed', replay: false });
+    expect(await requestCancelPreviewAction(sendId)).toEqual({ ok: true, sendId, state: 'placed' });
+    ledger.cancelPreview.mockResolvedValueOnce({ outcome: 'refused', reason: 'cancel_grant_inactive' });
+    expect(await requestCancelPreviewAction(sendId)).toEqual({ ok: false, reason: 'cancel_grant_inactive' });
+    expect(ledger.cancelPreview).toHaveBeenCalledTimes(2);
+    expect(ledger.cancelPreview.mock.calls.map((call) => call[2])).toEqual([sendId, sendId]);
+  });
+
+  it('forwards exactly the five approval keys with the one-order wording, and returns the claim deadline', async () => {
+    ledger.approveCancel.mockResolvedValue({ outcome: 'cancel_approved', sendId, state: 'placed', replay: false,
+      cancelId: '33800000-0000-4000-8000-0000000000c2', claimDeadline: '2026-09-09T06:54:00.000Z' });
+    expect(await approveCancelAction(approval)).toEqual({ ok: true, sendId, state: 'placed', claimDeadline: '2026-09-09T06:54:00.000Z' });
+    expect(ledger.approveCancel).toHaveBeenCalledTimes(1);
+    const [, actor, input] = ledger.approveCancel.mock.calls[0]! as [unknown, { orgId: string }, Record<string, unknown>];
+    expect(actor.orgId).toBe('33400000-0000-4000-8000-0000000000a0');
+    expect(input).toEqual(approval);
+    expect(Object.keys(input).sort()).toEqual(['confirmation', 'previewFingerprint', 'previewId', 'requestId', 'sendId']);
+  });
+
+  it('refuses a press that is not exactly "Cancel 1 order in Amazon" before any database call', async () => {
+    const wordings = ['Cancel 2 orders in Amazon', 'Cancel 1 orders in Amazon', 'cancel 1 order in amazon', 'Cancel 1 order in Amazon ', 'Yes, cancel',
+      'Send 1 unit via Amazon', ''];
+    for (const confirmation of wordings) {
+      expect(await approveCancelAction({ ...approval, confirmation })).toEqual({ ok: false, reason: 'confirmation_mismatch' });
+    }
+    expect(ledger.approveCancel).not.toHaveBeenCalled();
+    expect(ledger.open).not.toHaveBeenCalled();
+  });
+
+  it('refuses a malformed approval before any database call', async () => {
+    const { requestId: _requestId, ...withoutRequest } = approval;
+    const bad: unknown[] = [
+      null, undefined, 'Cancel 1 order in Amazon', [approval], withoutRequest, { ...approval, extra: 'x' }, { ...approval, totalUnits: 1 },
+      { ...approval, sendId: 'not-a-uuid' }, { ...approval, previewId: 7 }, { ...approval, requestId: `${approval.requestId} ` },
+      { ...approval, previewFingerprint: 'C4'.repeat(32) }, { ...approval, previewFingerprint: 'c4'.repeat(31) }, { ...approval, confirmation: 1 },
+      Object.assign(Object.create({ inherited: true }) as object, approval),
+    ];
+    expect(bad).toHaveLength(14);
+    for (const body of bad) expect(await approveCancelAction(body)).toEqual({ ok: false, reason: 'approval_invalid' });
+    expect(ledger.approveCancel).not.toHaveBeenCalled();
+    expect(ledger.open).not.toHaveBeenCalled();
+  });
+
+  it('maps a membership failure to forbidden and hides an unexpected failure\'s message', async () => {
+    const { AgencyAccessDenied } = await import('@wizard-ads/db');
+    ledger.approveCancel.mockRejectedValueOnce(new AgencyAccessDenied());
+    expect(await approveCancelAction(approval)).toEqual({ ok: false, reason: 'forbidden' });
+    const log = vi.spyOn(console, 'error');
+    ledger.cancelPreview.mockRejectedValueOnce(new Error('connection refused near CCS-synthetic'));
+    expect(await requestCancelPreviewAction(sendId)).toEqual({ ok: false, reason: 'unavailable' });
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('the use-server module only forwards to the checked implementations', async () => {
+    expect(Object.keys(cancelServerActions).sort()).toEqual(['approveMcfCancel', 'requestMcfCancelPreview']);
+    expect(await cancelServerActions.approveMcfCancel({ ...approval, confirmation: 'Cancel 2 orders in Amazon' })).toEqual({ ok: false, reason: 'confirmation_mismatch' });
+    expect(await cancelServerActions.requestMcfCancelPreview('not-a-uuid')).toEqual({ ok: false, reason: 'invalid' });
+    ledger.cancelPreview.mockResolvedValueOnce({ outcome: 'cancel_preview_requested', sendId, state: 'conflict', replay: true });
+    expect(await cancelServerActions.requestMcfCancelPreview(sendId)).toEqual({ ok: true, sendId, state: 'conflict' });
+    expect(ledger.approveCancel).not.toHaveBeenCalled();
+    expect(ledger.cancelPreview).toHaveBeenCalledTimes(1);
   });
 });
