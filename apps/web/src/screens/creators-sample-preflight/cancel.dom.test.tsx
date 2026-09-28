@@ -4,11 +4,13 @@
  * for a read, "Cancel 1 order in Amazon" sends exactly the five approval keys
  * with one request id per cancel preview, the section supplies the real cancel
  * server actions when the page passed none, and the page re-reads itself while
- * a read or a cancel is in flight.
+ * a read or a cancel is in flight. A refused cancel read or press is put in the
+ * cancel flow's own words (WP-338p).
  */
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { SendActionResult } from './send-actions';
+import type { SendActionFailure, SendActionResult } from './send-actions';
 
 const hoisted = vi.hoisted(() => ({ refresh: vi.fn(), serverRead: vi.fn(), serverApprove: vi.fn() }));
 vi.mock('next/navigation', () => ({
@@ -20,6 +22,9 @@ vi.mock('./cancel-actions', () => ({ requestMcfCancelPreview: hoisted.serverRead
 
 const { CANCEL_GATE, LATEST_CANCEL_PREVIEW, OPEN_CANCEL, PLACED, SEND, withSend } = await import('./render-fixture');
 const { default: Screen } = await import('./view');
+const { CancelControls } = await import('./cancel');
+const { REFUSAL_WORDS } = await import('./send-model');
+const { CANCEL_REFUSAL_WORDS } = await import('./cancel-model');
 type Actions = NonNullable<Parameters<typeof Screen>[0]['actions']>;
 
 const refused = async (): Promise<SendActionResult> => ({ ok: false, reason: 'unavailable' });
@@ -83,6 +88,57 @@ describe('the cancel press', () => {
     await act(async () => { fireEvent.click(screen.getByTestId('cancel-button')); });
     expect(hoisted.serverApprove).toHaveBeenCalledTimes(1);
     expect((hoisted.serverApprove.mock.calls[0]![0] as Record<string, unknown>)['confirmation']).toBe('Cancel 1 order in Amazon');
+  });
+});
+
+describe('refused cancel words', () => {
+  it('on the real screen, a cancel press refused as preview_not_latest shows the cancel flow\'s words, not the send flow\'s', async () => {
+    const approveCancel = vi.fn(async (): Promise<SendActionResult> => ({ ok: false, reason: 'preview_not_latest' }));
+    const actions: Actions = { ...pageActions(), requestCancelPreview: vi.fn(refused), approveCancel };
+    render(<Screen data={withSend({ ...PLACED, latestCancelPreview: LATEST_CANCEL_PREVIEW }, { data: { gate: CANCEL_GATE } })} actions={actions} />);
+    await act(async () => { fireEvent.click(screen.getByTestId('cancel-button')); });
+    expect(approveCancel).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('command-refused').textContent).toBe(CANCEL_REFUSAL_WORDS.preview_not_latest);
+    expect(screen.getByTestId('command-refused').textContent).not.toBe(REFUSAL_WORDS.preview_not_latest);
+  });
+
+  /** A runner like the send card's: it shows `words(reason)` for a refusal, the send flow's words when the control passes none. */
+  function Harness({ actions, preview = true }: { actions: Parameters<typeof CancelControls>[0]['actions']; preview?: boolean }) {
+    const [note, setNote] = useState<string | null>(null);
+    const { props } = withSend({ ...PLACED, ...(preview ? { latestCancelPreview: LATEST_CANCEL_PREVIEW } : {}) }, { data: { gate: CANCEL_GATE } });
+    const fixture = props.send;
+    const command = {
+      pending: null,
+      async run(_name: string, call: (() => Promise<SendActionResult>) | undefined, done?: string, words?: (reason: SendActionFailure) => string) {
+        const result = call === undefined ? { ok: false as const, reason: 'unavailable' as const } : await call();
+        setNote(result.ok ? done ?? null : (words ?? ((reason: SendActionFailure) => REFUSAL_WORDS[reason]))(result.reason));
+      },
+    };
+    return <><CancelControls send={fixture.mcf!.send!} view={fixture.mcf!} data={fixture} actions={actions} command={command} now={props.now} />
+      <p data-testid="note">{note}</p></>;
+  }
+
+  it('names the cancel preview and its one order when the ledger refuses the press or the read with a code the send flow shares', async () => {
+    const shown: string[] = [];
+    for (const reason of ['confirmation_mismatch', 'preview_not_latest', 'fingerprint_mismatch'] as const) {
+      const actions = { requestCancelPreview: vi.fn(refused), approveCancel: vi.fn(async (): Promise<SendActionResult> => ({ ok: false, reason })) };
+      const view = render(<Harness actions={actions} />);
+      await act(async () => { fireEvent.click(screen.getByTestId('cancel-button')); });
+      expect(actions.approveCancel).toHaveBeenCalledTimes(1);
+      shown.push(screen.getByTestId('note').textContent ?? '');
+      view.unmount();
+    }
+    expect(shown).toEqual([CANCEL_REFUSAL_WORDS.confirmation_mismatch, CANCEL_REFUSAL_WORDS.preview_not_latest, CANCEL_REFUSAL_WORDS.fingerprint_mismatch]);
+    for (const [index, reason] of (['confirmation_mismatch', 'preview_not_latest', 'fingerprint_mismatch'] as const).entries()) {
+      expect(shown[index]).not.toBe(REFUSAL_WORDS[reason]);
+    }
+    // The read, with a refusal only cancel has, keeps the words every command uses.
+    const actions = { requestCancelPreview: vi.fn(async (): Promise<SendActionResult> => ({ ok: false, reason: 'cancel_grant_inactive' })),
+      approveCancel: vi.fn(refused) };
+    render(<Harness actions={actions} preview={false} />);
+    await act(async () => { fireEvent.click(screen.getByTestId('cancel-in-amazon')); });
+    expect(actions.requestCancelPreview).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('note').textContent).toBe(REFUSAL_WORDS.cancel_grant_inactive);
   });
 });
 

@@ -529,7 +529,7 @@ describe('send section: the guarded cancel (WP-338i)', () => {
     expect(picking.querySelector('[data-testid="cancel-not-allowed"]')?.textContent).toContain('Amazon is already picking this unit (Processing)');
   });
 
-  it('a conflict whose cancel request did not take stays cancel dispatching, says so, and offers Ask Amazon', () => {
+  it('a conflict cancel recorded as not taken before WP-338p (still cancel dispatching) says why it waits, and offers Ask Amazon', () => {
     const conflictCancel = { ...OPEN_CANCEL, originState: 'conflict' as const, reservedAt: '2026-09-09T06:40:30.000Z' };
     const endedNotSent = rendered(<Screen data={withSend({ ...PLACED, state: 'cancel_dispatching', cancel: { ...conflictCancel, providerOutcome: 'rejected',
       providerStatus: 429, providerReason: 'throttled', providerCodes: ['QuotaExceeded'], endedAt: '2026-09-09T06:40:31.000Z', ending: NOT_SENT,
@@ -537,7 +537,8 @@ describe('send section: the guarded cancel (WP-338i)', () => {
     const note = endedNotSent.querySelector('[data-testid="cancel-not-sent"]')!;
     expect(note.getAttribute('data-reason')).toBe('rejected_throttled');
     expect(note.textContent).toContain('Amazon throttled the cancel request (HTTP 429), so nothing changed at Amazon.');
-    expect(note.textContent).toContain('it stays here until a read of the order settles it');
+    expect(note.textContent).toContain('This cancel was recorded before a conflict whose cancel did not take went straight back to conflict');
+    expect(note.textContent).toContain('this send waits here for a read of the order: ask Amazon for this order id.');
     expect(buttons(endedNotSent)).toEqual(['Ask Amazon for this order id']);
     // Only the ledger event recorded it: the words still say the request did not take.
     const byEvent = rendered(<Screen data={withSend({ ...PLACED, state: 'cancel_dispatching', cancel: conflictCancel, events: [{ event: 'cancel_not_sent',

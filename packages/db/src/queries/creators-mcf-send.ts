@@ -673,7 +673,10 @@ export async function reserveCreatorMcfCancel(handle: Pick<DbHandle, 'sql'>, sen
   };
 }
 
-/** The cancel request's answer, recorded once under the reserved lease. A 4xx other than 401/403 needs the getOrder read that followed it. */
+/**
+ * The cancel request's answer, recorded once under the reserved lease. A 4xx other than 401/403 needs the getOrder read that followed it.
+ * An answer arriving after the cancel ended is `late_recorded` with the cancel's `ending`; after `not_sent` it contradicts the ledger.
+ */
 export async function recordCreatorMcfCancelOutcome(handle: Pick<DbHandle, 'sql'>, sendId: string, leaseId: string, outcome: CreatorMcfProviderOutcome,
   lookup: CreatorMcfOrderRead | null = null): Promise<CreatorMcfWorkerDecision> {
   const parsed = CreatorMcfProviderOutcome.parse(outcome);
@@ -686,8 +689,8 @@ export type CreatorMcfCancelUnsentReason = 'reservation_mismatch' | 'stopping' |
   | 'cancel_failed';
 
 /**
- * A reserved cancel request the worker did not send. From placed the send returns to placed and the cancel ends not_sent, so the
- * operator may cancel again; from conflict the send stays cancel_dispatching and reads settle it.
+ * A reserved cancel request the worker did not send. The send returns to the state the cancel was pressed from (placed, or
+ * conflict with its escalation kept) and the cancel ends not_sent, so the operator may cancel again.
  */
 export async function recordCreatorMcfCancelUnsent(handle: Pick<DbHandle, 'sql'>, sendId: string, leaseId: string, reason: CreatorMcfCancelUnsentReason):
   Promise<CreatorMcfWorkerDecision> {

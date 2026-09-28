@@ -410,6 +410,18 @@ export class McfCancelRunner {
       : this.options.store.recordCancelOutcome(sendId, leaseId, record.outcome, record.lookup);
   }
 
+  /**
+   * An answer the ledger took after the cancel had ended is only a cancel_late_outcome event there. After a read settled
+   * the cancel (cancelled, not_honoured) that is evidence and nothing more. After not_sent (or an ending the ledger did not
+   * name) it contradicts the ledger, which recorded a request that never took while Amazon answered one: an error, so an
+   * operator looks at the order.
+   */
+  private lateLevel(decision: CreatorMcfWorkerDecision): { level: 'info' | 'error'; codes: string[] } {
+    if (decision.decision !== 'late_recorded') return { level: 'info', codes: [] };
+    const ending = typeof decision['ending'] === 'string' ? decision['ending'] : 'unknown';
+    return { level: ending === 'cancelled' || ending === 'not_honoured' ? 'info' : 'error', codes: [`after_${ending}`] };
+  }
+
   private codes(record: CancelRecord): string[] {
     if (record.kind === 'unsent') return ['unsent', record.reason];
     const { outcome, lookup } = record;
@@ -424,7 +436,9 @@ export class McfCancelRunner {
       if (attempt > 0) await this.options.sleep(1000 * 2 ** (attempt - 1));
       try {
         const decision = await this.store(claim.sendId, claim.leaseId, record);
-        this.options.log('info', { event: 'mcf_cancel_outcome', sendId: claim.sendId, state: decision.state ?? null, httpStatus, codes: this.codes(record) });
+        const late = this.lateLevel(decision);
+        this.options.log(late.level, { event: 'mcf_cancel_outcome', sendId: claim.sendId, state: decision.state ?? null, httpStatus,
+          codes: [...this.codes(record), ...late.codes] });
         this.count(counts, record);
         return;
       } catch {
@@ -456,8 +470,10 @@ export class McfCancelRunner {
         const decision = await this.store(entry.sendId, entry.leaseId, entry.record);
         this.pending.splice(this.pending.indexOf(entry), 1);
         counts.lateRecorded += 1;
-        this.options.log('info', { event: 'mcf_cancel_late_outcome', sendId: entry.sendId, state: decision.state ?? null,
-          httpStatus: entry.record.kind === 'answer' ? entry.record.outcome.status : null, codes: [decision.decision, ...this.codes(entry.record).slice(0, 2)] });
+        const late = this.lateLevel(decision);
+        this.options.log(late.level, { event: 'mcf_cancel_late_outcome', sendId: entry.sendId, state: decision.state ?? null,
+          httpStatus: entry.record.kind === 'answer' ? entry.record.outcome.status : null,
+          codes: [decision.decision, ...this.codes(entry.record).slice(0, 2), ...late.codes] });
       } catch {
         // Still unreachable: kept for the next tick.
       }

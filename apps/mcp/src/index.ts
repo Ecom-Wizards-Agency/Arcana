@@ -11,7 +11,7 @@
  * ratios are recomputed from summed bases at every aggregation level; archived
  * entities keep their spend; and a read key is read-only because it cannot be
  * issued any other way. The one other class served here, `creator:write`
- * (WP-333), gets a separate surface: six Creator Connections write tools, no
+ * (WP-333), gets a separate surface: the Creator Connections write tools, no
  * analytics and no Amazon call.
  */
 export const PACKAGE_NAME = '@wizard-ads/mcp' as const;

@@ -1,7 +1,8 @@
 /**
  * WP-338d against a migrated database: the MCF send ledger (migration
  * 20260928120000_creator_mcf_send), and WP-338i's guarded Amazon cancel with
- * its ledger follow-ups (migration 20260928130000_creator_mcf_cancel). Privileges on custody and grants, every
+ * its ledger follow-ups (migration 20260928130000_creator_mcf_cancel), with WP-338p's return of a conflict
+ * whose cancel did not take to conflict (migration 20260928140000_creator_mcf_cancel_conflict). Privileges on custody and grants, every
  * refusal of seal, approve and reserve, custody destroyed on every
  * custody-ending transition, the expiry sweep without a scheduler, the lane
  * ownership seam against the runner's import and MCP upsert, WP-334's
@@ -40,6 +41,7 @@ import {
 const available = await databaseAvailable();
 const MIGRATION = '20260928120000_creator_mcf_send.sql';
 const CANCEL_MIGRATION = '20260928130000_creator_mcf_cancel.sql';
+const CANCEL_CONFLICT_MIGRATION = '20260928140000_creator_mcf_cancel_conflict.sql';
 const PREVIOUS = '20260927120000_creator_sample_preflight_observation.sql';
 
 const OWNER = randomUUID();
@@ -262,11 +264,12 @@ describe.skipIf(!available)('Creator MCF send ledger', () => {
     await db.sql`update public.creator_mcf_outbox set completed_at = now() where completed_at is null`;
   });
 
-  it('(15) applies after 20260927120000, followed by the cancel migration as the newest, and schedules both jobs where cron.schedule exists', async () => {
+  it('(15) applies after 20260927120000, followed by the cancel migration and the cancel-conflict migration as the newest, and schedules both jobs where cron.schedule exists', async () => {
     const files = await migrationFiles();
-    expect(files.at(-1)).toBe(CANCEL_MIGRATION);
+    expect(files.at(-1)).toBe(CANCEL_CONFLICT_MIGRATION);
     expect(files.indexOf(MIGRATION)).toBe(files.indexOf(PREVIOUS) + 1);
     expect(files.indexOf(CANCEL_MIGRATION)).toBe(files.indexOf(MIGRATION) + 1);
+    expect(files.indexOf(CANCEL_CONFLICT_MIGRATION)).toBe(files.indexOf(CANCEL_MIGRATION) + 1);
     const jobs = await db.sql<{ jobname: string; schedule: string; command: string }[]>`select jobname, schedule, command from cron.job
       where jobname like 'wizard-ads-creator-mcf-%' order by jobname`;
     expect(jobs).toEqual([
@@ -1682,6 +1685,74 @@ describe.skipIf(!available)('Creator MCF send ledger', () => {
     expect(await claimCreatorMcfOutbox(db, { claimant: 'wp338i-test', scope: [org.scope], actions: ['cancel'] })).toBeNull();
   });
 
+  it('WP-338p a conflict whose cancel Amazon does not honour is in conflict again, escalation and lane kept, and only "Record as sent" places it; from placed it is placed again', async () => {
+    const org = await newOrg('mcf-cancel-conflict-kept');
+    const reserved = async (conflict: boolean) => {
+      const lane = await newLane(org);
+      const run = conflict ? await conflictSend(lane) : await placedSend(lane);
+      const ready = await cancelPreviewReady(lane, run.sendId, 'Received', conflict ? OTHER_ITEMS : undefined);
+      await approveCreatorMcfCancel(db, actor(org), cancelApproval(run.sendId, ready));
+      const claim = await claimFor(org, run.sendId, 'cancel');
+      expect(await reserveCreatorMcfCancel(db, run.sendId, claim.leaseId, found(lane, 'Received', { readAt: soon(), ...(conflict ? { items: OTHER_ITEMS } : {}) }),
+        hex(32))).toMatchObject({ decision: 'cancel_once' });
+      expect(await sendRow(run.sendId)).toMatchObject({ state: 'cancel_dispatching' });
+      return { lane, run, claim };
+    };
+    const placement = async (lane: Lane, sendId: string) => {
+      const [row] = await db.sql<{ milestones: number; placed_at: Date | null }[]>`select
+        (select count(*)::int from public.creator_action_log where org_id = ${org.id} and creator_record_id = ${lane.record}
+          and action = 'mcf_send_placed') as milestones,
+        (select placed_at from public.creator_mcf_sends where id = ${sendId}) as placed_at`;
+      return row!;
+    };
+    // Each status Amazon can no longer cancel, through each reader: a settlement read, mcf.observe, and the read after a rejected answer.
+    const a = await reserved(true);
+    expect(await recordCreatorMcfSettlement(db, a.run.sendId, found(a.lane, 'Processing', { readAt: soon(), items: OTHER_ITEMS })))
+      .toMatchObject({ before: 'cancel_dispatching', state: 'conflict' });
+    const b = await reserved(true);
+    await observe(org, b.lane, 'Complete');
+    const c = await reserved(true);
+    expect(await recordCreatorMcfCancelOutcome(db, c.run.sendId, c.claim.leaseId, { outcome: 'rejected', status: 400, codes: ['InvalidInput'],
+      reason: 'validation' }, found(c.lane, 'CompletePartialled', { readAt: soon(), items: OTHER_ITEMS }))).toEqual({ decision: 'recorded', state: 'conflict' });
+    const returned = [[a, 'processing'], [b, 'complete'], [c, 'completepartialled']] as const;
+    for (const [x, status] of returned) {
+      expect(await sendRow(x.run.sendId)).toMatchObject({ state: 'conflict', state_reason: status, escalation_reason: 'conflict' });
+      expect(await cancelRow(x.run.sendId)).toMatchObject([{ origin_state: 'conflict', puts: 1, ending: 'not_honoured', ending_reason: status }]);
+      expect(await laneRow(x.lane)).toMatchObject({ lane_state: 'Verified for Submit', order_owner: 'arcana', runner_order_id: null, confirmed_at: null,
+        cancellation_reason: null });
+      expect(await placement(x.lane, x.run.sendId)).toEqual({ milestones: 0, placed_at: null });
+      expect(await withAuthenticatedActor(db, actor(org), (sql) => readCreatorMcfSendOutcome(sql, org.id, { derivedOrderKey: x.lane.key })))
+        .toMatchObject({ state: 'conflict', class: 'uncertain', escalated: true, placedAt: null });
+      const [back] = await db.sql<{ event: string; codes: string[] }[]>`select event, codes from public.creator_mcf_send_events
+        where send_id = ${x.run.sendId} and before_state = 'cancel_dispatching' and after_state = 'conflict'`;
+      expect(back).toEqual({ event: 'cancel_not_honoured', codes: ['item_sku_mismatch'] });
+      expect(await openWork(x.run.sendId)).toEqual(['settle']);
+    }
+    expect((await readCreatorMcfAlertSummary(db)).conditions.find((condition) => condition.code === 'conflict')!.sendIds)
+      .toEqual(expect.arrayContaining(returned.map(([x]) => x.run.sendId)));
+    // A later read, even one matching the send's SKU and unit, leaves it in conflict.
+    expect(await recordCreatorMcfSettlement(db, a.run.sendId, found(a.lane, 'Complete', { readAt: soon() }))).toMatchObject({ before: 'conflict', state: 'conflict' });
+    expect(await placement(a.lane, a.run.sendId)).toEqual({ milestones: 0, placed_at: null });
+    // "Record as sent" is the one way to placed, and it still names the mismatch the conflict recorded.
+    expect(await resolveCreatorMcfConflict(db, actor(org), a.run.sendId, randomUUID())).toMatchObject({ outcome: 'placed', state: 'placed', replay: false });
+    const [resolved] = await db.sql<{ codes: string[] }[]>`select codes from public.creator_mcf_send_events where send_id = ${a.run.sendId}
+      and event = 'conflict_resolved'`;
+    expect(resolved!.codes).toEqual(['item_sku_mismatch']);
+    expect(await laneRow(a.lane)).toMatchObject({ lane_state: 'Confirmed', runner_order_id: a.lane.key });
+    expect((await placement(a.lane, a.run.sendId)).milestones).toBe(1);
+    // From placed, not honoured is placed again with the lane as it was.
+    const d = await reserved(false);
+    const [confirmed] = await db.sql<{ at: Date }[]>`select confirmed_at as at from public.creator_sample_shipments where org_id = ${org.id}
+      and creator_record_id = ${d.lane.record} and asin = ${d.lane.asin}`;
+    expect(await recordCreatorMcfSettlement(db, d.run.sendId, found(d.lane, 'Complete', { readAt: soon() })))
+      .toMatchObject({ before: 'cancel_dispatching', state: 'placed' });
+    expect(await cancelRow(d.run.sendId)).toMatchObject([{ origin_state: 'placed', ending: 'not_honoured', ending_reason: 'complete' }]);
+    expect(await laneRow(d.lane)).toMatchObject({ lane_state: 'Confirmed', confirmed_at: confirmed!.at });
+    const [puts] = await db.sql<{ reserved: number; single: number }[]>`select count(*)::int as reserved, count(*) filter (where puts = 1)::int as single
+      from app.creator_mcf_cancels where org_id = ${org.id} and reserved_at is not null`;
+    expect(puts).toEqual({ reserved: 4, single: 4 });
+  });
+
   it('WP-338i rechecks the approver, the grant, the send and the claim deadline before the request, and never grants it after a refusal', async () => {
     const org = await newOrg('mcf-cancel-recheck');
     const approvedCancel = async () => {
@@ -1775,7 +1846,7 @@ describe.skipIf(!available)('Creator MCF send ledger', () => {
     expect(still).toEqual({ at: confirmed!.at, state: 'Confirmed' });
     // The request's answer arrives late: kept as evidence, nothing moves.
     expect(await recordCreatorMcfCancelOutcome(db, a.run.sendId, a.claim.leaseId, { outcome: 'accepted', status: 200 }))
-      .toEqual({ decision: 'late_recorded', state: 'placed' });
+      .toEqual({ decision: 'late_recorded', state: 'placed', ending: 'not_honoured' });
     expect(await cancelEvents(a.run.sendId)).toContain('cancel_late_outcome');
     // An uncertain answer, then the general worker's observe read shows Cancelled.
     const b = await reservedCancel();
@@ -1871,7 +1942,7 @@ describe.skipIf(!available)('Creator MCF send ledger', () => {
     expect(left).toEqual({ cancels: 0, sends: 0 });
   });
 
-  it('WP-338i a request that certainly did not take (429, 401/403, withheld) ends not_sent: from placed the send is placed again, from conflict reads settle it', async () => {
+  it('WP-338i a request that certainly did not take (429, 401/403, withheld) ends not_sent: from placed the send is placed again, from conflict (WP-338p) in conflict again', async () => {
     const org = await newOrg('mcf-cancel-unsent');
     const reserved = async (conflict = false) => {
       const lane = await newLane(org);
@@ -1908,18 +1979,26 @@ describe.skipIf(!available)('Creator MCF send ledger', () => {
     expect(await recordCreatorMcfCancelUnsent(db, d.run.sendId, d.claim.leaseId, 'policy_off')).toEqual({ decision: 'recorded', state: 'placed' });
     expect(await recordCreatorMcfCancelUnsent(db, d.run.sendId, d.claim.leaseId, 'policy_off')).toEqual({ decision: 'unchanged', state: 'placed' });
     expect(await cancelRow(d.run.sendId)).toMatchObject([{ puts: 1, provider_outcome: null, ending: 'not_sent', ending_reason: 'policy_off' }]);
+    // An answer after not_sent is only an event; the ledger says the cancel had ended not_sent, so the worker can raise it.
     expect(await recordCreatorMcfCancelOutcome(db, d.run.sendId, d.claim.leaseId, { outcome: 'accepted', status: 200 }))
-      .toEqual({ decision: 'late_recorded', state: 'placed' });
-    // From conflict the shared map has no way back: the send stays cancel_dispatching, the event says why, reads go on.
+      .toEqual({ decision: 'late_recorded', state: 'placed', ending: 'not_sent' });
+    // From conflict (WP-338p): back in conflict with its escalation and mismatch codes, the cancel ended not_sent; a replay is unchanged.
     const e = await reserved(true);
-    expect(await recordCreatorMcfCancelUnsent(db, e.run.sendId, e.claim.leaseId, 'stopping')).toEqual({ decision: 'recorded', state: 'cancel_dispatching' });
-    expect(await recordCreatorMcfCancelUnsent(db, e.run.sendId, e.claim.leaseId, 'stopping')).toEqual({ decision: 'unchanged', state: 'cancel_dispatching' });
+    expect(await recordCreatorMcfCancelUnsent(db, e.run.sendId, e.claim.leaseId, 'stopping')).toEqual({ decision: 'recorded', state: 'conflict' });
+    expect(await recordCreatorMcfCancelUnsent(db, e.run.sendId, e.claim.leaseId, 'stopping')).toEqual({ decision: 'unchanged', state: 'conflict' });
     expect((await cancelEvents(e.run.sendId)).filter((event) => event === 'cancel_not_sent')).toHaveLength(1);
-    expect(await cancelRow(e.run.sendId)).toMatchObject([{ puts: 1, ending: null }]);
-    expect(await cancelEvents(e.run.sendId)).toContain('cancel_not_sent');
-    expect(await openWork(e.run.sendId)).toEqual(['settle']);
-    expect(await recordCreatorMcfSettlement(db, e.run.sendId, found(e.lane, 'Cancelled', { readAt: soon(), items: OTHER_ITEMS })))
-      .toMatchObject({ state: 'cancelled' });
+    expect(await cancelRow(e.run.sendId)).toMatchObject([{ origin_state: 'conflict', puts: 1, provider_outcome: null, ending: 'not_sent', ending_reason: 'stopping' }]);
+    expect(await sendRow(e.run.sendId)).toMatchObject({ state: 'conflict', escalation_reason: 'conflict' });
+    expect(await laneRow(e.lane)).toMatchObject({ lane_state: 'Verified for Submit', runner_order_id: null, confirmed_at: null });
+    const [notSent] = await db.sql<{ codes: string[]; before_state: string }[]>`select codes, before_state from public.creator_mcf_send_events
+      where send_id = ${e.run.sendId} and event = 'cancel_not_sent'`;
+    expect(notSent).toEqual({ codes: ['item_sku_mismatch'], before_state: 'cancel_dispatching' });
+    // Throttled from conflict: not sent either, and the conflict can be cancelled again while Received.
+    const f = await reserved(true);
+    expect(await recordCreatorMcfCancelOutcome(db, f.run.sendId, f.claim.leaseId, { outcome: 'rejected', status: 429, codes: ['QuotaExceeded'],
+      reason: 'throttled' }, found(f.lane, 'Received', { readAt: soon(), items: OTHER_ITEMS }))).toEqual({ decision: 'recorded', state: 'conflict' });
+    expect(await cancelRow(f.run.sendId)).toMatchObject([{ ending: 'not_sent', ending_reason: 'rejected_throttled' }]);
+    expect(await requestCreatorMcfCancelPreview(db, actor(org), f.run.sendId)).toMatchObject({ outcome: 'cancel_preview_requested', state: 'conflict' });
   });
 
   it('WP-338i a cancel_dispatching send takes "Ask Amazon for this order id" and, unsettled for 15 minutes, is in the alert summary', async () => {
@@ -1940,7 +2019,7 @@ describe.skipIf(!available)('Creator MCF send ledger', () => {
     expect((await claimFor(org, run.sendId, 'settle')).action).toBe('settle');
   });
 
-  it('WP-338i a failed order from a conflict origin is never recorded as placed; a queued preview read under a revoked grant is closed', async () => {
+  it('WP-338i a failed order from a conflict origin is never recorded as placed (WP-338p: it fails by Amazon from conflict); a queued preview read under a revoked grant is closed', async () => {
     const org = await newOrg('mcf-cancel-conflict-failed');
     const lane = await newLane(org);
     const c = await conflictSend(lane);
@@ -1949,9 +2028,15 @@ describe.skipIf(!available)('Creator MCF send ledger', () => {
     const claim = await claimFor(org, c.sendId, 'cancel');
     await reserveCreatorMcfCancel(db, c.sendId, claim.leaseId, found(lane, 'Received', { readAt: soon(), items: OTHER_ITEMS }), hex(32));
     expect(await recordCreatorMcfSettlement(db, c.sendId, found(lane, 'Invalid', { readAt: soon(), items: OTHER_ITEMS })))
-      .toMatchObject({ state: 'failed_after_placement' });
-    expect(await laneRow(lane)).toMatchObject({ lane_state: 'Cancelled', cancellation_reason: 'amazon_cancelled_after_submit', runner_order_id: null,
+      .toMatchObject({ state: 'failed_by_amazon' });
+    expect(await laneRow(lane)).toMatchObject({ lane_state: 'Cancelled', cancellation_reason: 'amazon_rejected', runner_order_id: null,
       confirmed_at: null });
+    const [never] = await db.sql<{ placed_at: Date | null }[]>`select placed_at from public.creator_mcf_sends where id = ${c.sendId}`;
+    expect(never!.placed_at).toBeNull();
+    const [path] = await db.sql<{ states: string[] }[]>`select array_agg(after_state order by at, id) as states from public.creator_mcf_send_events
+      where send_id = ${c.sendId} and before_state is distinct from after_state and event <> 'custody_destroyed'
+        and at >= (select approved_at from app.creator_mcf_cancels where send_id = ${c.sendId})`;
+    expect(path!.states).toEqual(['cancel_requested', 'cancel_dispatching', 'conflict', 'failed_by_amazon']);
     const [placed] = await db.sql<{ n: number }[]>`select count(*)::int as n from public.creator_action_log where org_id = ${org.id}
       and creator_record_id = ${lane.record} and action = 'mcf_send_placed'`;
     expect(placed!.n).toBe(0);

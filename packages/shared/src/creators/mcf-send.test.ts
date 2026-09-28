@@ -241,7 +241,7 @@ describe('the send state machine (acceptance 7)', () => {
     conflict: ['placed', 'cancel_requested', 'failed_by_amazon'],
     placed: ['failed_after_placement', 'cancel_requested'],
     cancel_requested: ['cancel_dispatching', 'placed'],
-    cancel_dispatching: ['cancelled', 'placed'],
+    cancel_dispatching: ['cancelled', 'placed', 'conflict'],
     preview_refused: [], withdrawn: [], expired: [], expired_unclaimed: [], rejected: [], not_created: [],
     failed_by_amazon: [], failed_after_placement: [], cancelled: [],
   };
@@ -275,6 +275,16 @@ describe('the send state machine (acceptance 7)', () => {
 
   it('gives conflict exactly three exits', () => {
     expect([...CREATOR_MCF_SEND_TRANSITIONS.conflict.next].sort()).toEqual(['cancel_requested', 'failed_by_amazon', 'placed']);
+  });
+
+  it('returns a cancel that was not honoured to placed or to conflict, and enters conflict only from an outcome state or that return', () => {
+    expect([...CREATOR_MCF_SEND_TRANSITIONS.cancel_dispatching.next].sort()).toEqual(['cancelled', 'conflict', 'placed']);
+    expect(canTransitionCreatorMcfSend('cancel_dispatching', 'conflict')).toBe(true);
+    expect(canTransitionCreatorMcfSend('cancel_requested', 'conflict')).toBe(false);
+    expect(canTransitionCreatorMcfSend('cancel_dispatching', 'failed_after_placement')).toBe(false);
+    // A read enters conflict from approved, accepted or uncertain; a cancel that was not honoured returns to it.
+    const into = CreatorMcfSendState.options.filter((state) => canTransitionCreatorMcfSend(state, 'conflict'));
+    expect(into.sort()).toEqual(['accepted', 'approved', 'cancel_dispatching', 'uncertain']);
   });
 
   it('holds custody in six states and never takes it back once destroyed', () => {

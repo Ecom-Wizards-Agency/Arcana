@@ -125,6 +125,14 @@ export function activeMcfAlertConditions(summary: CreatorMcfAlertSummary): McfAl
 
 export type McfAlertReason = 'changed' | 'cleared' | 'reminder';
 
+/**
+ * A fixed gloss after a code whose name alone misleads. uncertain_over_15m counts uncertain sends and, since WP-338i,
+ * cancel_dispatching sends (a cancel request Amazon has not settled): both are unsettled for over 15 minutes.
+ */
+export const MCF_ALERT_GLOSS: Partial<Record<McfAlertConditionCode, string>> = {
+  uncertain_over_15m: 'uncertain sends or cancels unsettled for over 15 minutes',
+};
+
 /** The message text: codes, counts, send ids and the samples URL. */
 export function formatMcfAlert(reason: McfAlertReason, conditions: readonly McfAlertCondition[], samplesUrl: string,
   previous: readonly McfAlertConditionCode[]): string {
@@ -137,7 +145,8 @@ export function formatMcfAlert(reason: McfAlertReason, conditions: readonly McfA
     const more = condition.count > condition.sendIds.length && condition.sendIds.length > 0
       ? ` (${condition.count - condition.sendIds.length} more not listed)` : '';
     const withheld = condition.sendIdsWithheld > 0 ? ` (${condition.sendIdsWithheld} malformed ids withheld)` : '';
-    return `- ${condition.code}: ${condition.count}${listed}${more}${withheld}`;
+    const gloss = MCF_ALERT_GLOSS[condition.code];
+    return `- ${condition.code}${gloss === undefined ? '' : ` (${gloss})`}: ${condition.count}${listed}${more}${withheld}`;
   });
   return [heading, ...lines, `Samples: ${samplesUrl}`].join('\n');
 }

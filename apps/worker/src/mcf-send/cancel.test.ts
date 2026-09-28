@@ -1,5 +1,6 @@
 /**
- * The MCF unit's guarded Amazon cancel (WP-338i). Part one drives the cancel
+ * The MCF unit's guarded Amazon cancel (WP-338i, with WP-338p's error-level late
+ * answer after not_sent and the lint ban on the cancel functions). Part one drives the cancel
  * runner against a scripted ledger to prove the order of steps, the policy
  * re-checks, the single request after a reservation and what happens when the
  * ledger, the token or the flags fail. Part two drives the real loop against
@@ -14,7 +15,8 @@
 import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   approveCreatorMcfCancel, approveCreatorMcfSend, creatorSampleOrderKey, readCreatorMcfLane, requestCreatorMcfCancelPreview,
   sealCreatorMcfRecipient as sealInLedger,
@@ -28,6 +30,7 @@ import {
   type CreatorMcfProviderOutcome, type CreatorMcfRecipient, type CreatorMcfRecipientBinding,
 } from '@wizard-ads/shared';
 import { FulfillmentOutboundError, FulfillmentOutboundReader, FulfillmentOutboundWriter, type SpApiAccessTokenProvider } from '@wizard-ads/sp-api';
+import { ESLint } from 'eslint';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { marketplaceIdForCountry } from '../marketplaces.js';
 import { FakeFulfillmentOutbound } from '../testing/fake-fulfillment-outbound.js';
@@ -87,6 +90,8 @@ class ScriptedCancelLedger implements McfCancelStore {
   reservation: CreatorMcfCancelReservation | null = null;
   reserveFails = false;
   outcomeFailures = 0;
+  /** What recordCancelOutcome answers once it takes the answer; `recorded` by default. */
+  outcomeAnswer: CreatorMcfWorkerDecision | null = null;
   readonly releases: number[] = [];
 
   async recordCancelPreview(_sendId: string, _leaseId: string, lookup: CreatorMcfOrderRead, preview: CreatorMcfCancelPreview | null): Promise<CreatorMcfWorkerDecision> {
@@ -107,7 +112,7 @@ class ScriptedCancelLedger implements McfCancelStore {
     this.calls.push('recordCancelOutcome');
     if (this.outcomeFailures > 0) { this.outcomeFailures -= 1; throw new Error('ledger unreachable'); }
     this.outcomes.push(outcome);
-    return { decision: 'recorded', state: 'cancel_dispatching' };
+    return this.outcomeAnswer ?? { decision: 'recorded', state: 'cancel_dispatching' };
   }
   async recordCancelUnsent(_sendId: string, _leaseId: string, reason: CreatorMcfCancelUnsentReason): Promise<CreatorMcfWorkerDecision> {
     this.calls.push('recordCancelUnsent');
@@ -130,6 +135,7 @@ describe('the cancel runner against a scripted ledger', () => {
     fake.seedOrder({ sellerFulfillmentOrderId: KEY, status: options.status ?? 'Received', sellerSku: SKU, quantity: 1 });
     const ledger = new ScriptedCancelLedger();
     const logs: McfLogEntry[] = [];
+    const levels: ['info' | 'error', McfLogEntry][] = [];
     const amazon = amazonOver(fake, options.tokens);
     let time = now.getTime();
     const runner = new McfCancelRunner({
@@ -143,9 +149,9 @@ describe('the cancel runner against a scripted ledger', () => {
       allowed: (gate) => gate === 'read' || (options.dispatch?.() ?? true), stopping: options.stopping ?? (() => false),
       pacer: createMcfPacer({ spacingMs: 0, monotonic: () => time, sleep: async () => {} }), sleep: async (ms) => { time += ms; },
       clock: () => new Date(time), monotonic: () => time, newId: randomUUID, workerRevision: 'wp338i-test',
-      log: (_level, entry) => { logs.push(entry); }, onAuthorizationFailure: () => {},
+      log: (level, entry) => { logs.push(entry); levels.push([level, entry]); }, onAuthorizationFailure: () => {},
     });
-    return { fake, ledger, logs, runner, tick: emptyMcfTickCounts(), counts: emptyMcfCancelCounts() };
+    return { fake, ledger, logs, levels, runner, tick: emptyMcfTickCounts(), counts: emptyMcfCancelCounts() };
   }
 
   it('preview: one read, a cancel preview from it (Received), and no request', async () => {
@@ -281,6 +287,33 @@ describe('the cancel runner against a scripted ledger', () => {
     expect(s.fake.cancels).toBe(1);
   });
 
+  it('execute: an answer the ledger took only after the cancel ended not_sent is logged at error level; after a settling read it stays info', async () => {
+    const outcomeLog = (s: ReturnType<typeof setup>, event: string) => s.levels.filter(([, entry]) => entry.event === event)
+      .map(([level, entry]) => [level, entry.codes?.at(-1)]);
+    const cases = [
+      [{ decision: 'late_recorded', state: 'placed', ending: 'not_sent' }, ['error', 'after_not_sent']],
+      [{ decision: 'late_recorded', state: 'conflict' }, ['error', 'after_unknown']],
+      [{ decision: 'late_recorded', state: 'placed', ending: 'not_honoured' }, ['info', 'after_not_honoured']],
+      [{ decision: 'late_recorded', state: 'cancelled', ending: 'cancelled' }, ['info', 'after_cancelled']],
+      [{ decision: 'recorded', state: 'cancel_dispatching' }, ['info', 'accepted']],
+    ] as const;
+    for (const [answer, expected] of cases) {
+      const s = setup();
+      s.ledger.outcomeAnswer = { ...answer };
+      await s.runner.run(cancelClaim('execute', now), s.tick, s.counts);
+      expect(s.fake.cancels).toBe(1);
+      expect(outcomeLog(s, 'mcf_cancel_outcome')).toEqual([expected]);
+    }
+    // The same answer retried from memory after the ledger was unreachable.
+    const r = setup();
+    r.ledger.outcomeFailures = 3;
+    r.ledger.outcomeAnswer = { decision: 'late_recorded', state: 'placed', ending: 'not_sent' };
+    await r.runner.run(cancelClaim('execute', now), r.tick, r.counts);
+    await r.runner.retryPending(emptyMcfCancelCounts());
+    expect(outcomeLog(r, 'mcf_cancel_late_outcome')).toEqual([['error', 'after_not_sent']]);
+    expect(r.fake.cancels).toBe(1);
+  });
+
   it('execute: a 4xx is followed by a read, and without one it is recorded as uncertain', async () => {
     const s = setup();
     s.fake.cancelAnswers = [{ kind: 'http', status: 400, codes: ['InvalidInput'] }];
@@ -329,6 +362,30 @@ describe('the cancel runner against a scripted ledger', () => {
     expect(mcfClaimableActions({ previewEnabled: true, dispatchEnabled: false, scope: [`${randomUUID()}:${US}`] })).not.toContain('cancel');
     expect(mcfClaimableActions({ previewEnabled: false, dispatchEnabled: true, scope: [`${randomUUID()}:${US}`] })).toContain('cancel');
   });
+});
+
+describe('boundaries', () => {
+  const ROOT = resolve(fileURLToPath(new URL('../../../../', import.meta.url)));
+  it('lint bars apps/web and apps/mcp from the cancel and key-id service functions; the MCF unit may import them', async () => {
+    const eslint = new ESLint({ cwd: ROOT });
+    const restricted = async (filePath: string, code: string) => {
+      const [result] = await eslint.lintText(code, { filePath: join(ROOT, filePath) });
+      // apps/web also bars the whole worker subpath; count only the MCF unit's ban on the name itself.
+      return result!.messages.filter((message) => message.ruleId === 'no-restricted-imports' && message.message.includes('only the MCF unit')).length;
+    };
+    const names = ['reserveCreatorMcfCancel', 'recordCreatorMcfCancelPreview', 'recordCreatorMcfCancelOutcome', 'recordCreatorMcfCancelUnsent',
+      'readCreatorMcfActiveKeyIds'];
+    let barred = 0;
+    for (const name of names) {
+      const code = `import { ${name} } from '@wizard-ads/db/worker';\nvoid ${name};\n`;
+      for (const surface of ['apps/web/app/creators/mcf-cancel-ban-probe.ts', 'apps/mcp/src/mcf-cancel-ban-probe.ts']) {
+        expect(await restricted(surface, code), `${surface}: ${name}`).toBe(1);
+        barred += 1;
+      }
+      expect(await restricted('apps/worker/src/mcf-send/mcf-cancel-ban-probe.ts', code), `worker: ${name}`).toBe(0);
+    }
+    expect(barred).toBe(10);
+  }, 120_000);
 });
 
 // ===========================================================================
