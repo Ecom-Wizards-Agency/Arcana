@@ -71,3 +71,28 @@ empty documents. ABA fixtures cover complete/incomplete slots, query absence,
 department identity, malformed slots, unknown shares and duplicate conflicts.
 Listing fixtures cover BOM, quoting, embedded separators, missing fields,
 truncation, plain text and GZIP download without credential access.
+
+## Fulfillment Outbound sandbox observations (WP-338k)
+
+`apps/worker/src/mcf-sandbox-cli.ts` asks the NA SP-API sandbox
+(`sandbox.sellingpartnerapi-na.amazon.com`, dynamic sandbox for v2020-07-01)
+what it answers for the behaviours the model leaves open. Sandbox answers are
+**indicative**: production may differ, and a row stays indicative until a
+production read or the scoped live test confirms it. Record the HTTP status and
+`errors[].code` from the run's journal lines (`mcf_sandbox_probe`) and the run
+date; never an order id, a message or an address. A `matches: false` row
+becomes a named follow-up package before the live test.
+
+| Probe | Design assumption | Writer or reader mapping | Observed status and codes | Confirmed in production |
+|---|---|---|---|---|
+| `unknown_id`: getFulfillmentOrder, unknown id | 404 | 404 is `not_found`; any other status throws | not run yet | no |
+| `create_explicit`: Ship and FillOrKill sent | 200 | `accepted` | not run yet | no |
+| `read_explicit`: read after the create | 200, found, one unit | `found:<status>` | not run yet | no |
+| `create_duplicate`: same sellerFulfillmentOrderId again | a 4xx, never a second order | 4xx is `rejected`, then getOrder | not run yet | no |
+| `read_duplicate`: the first order after the duplicate | found, same status, one unit | `found:<status>` (`:units_<n>` when not 1) | not run yet | no |
+| `create_omitted`: action and policy omitted | none (observe the defaults) | as for any create | not run yet | no |
+| `read_omitted`: defaults Amazon filled in | 200, found, one unit (observe the defaults) | action and policy read | not run yet | no |
+| `cancel`: cancelFulfillmentOrder while Received | 200 | `accepted` | not run yet | no |
+| `read_cancelled`: read after the cancel | 200, `found:Cancelled` | `found:<status>` | not run yet | no |
+| `create_cancelled_id`: create under the cancelled id | none (reuse unknown) | as for any create | not run yet | no |
+| `throttle`: up to 30 un-spaced reads | 429 with `errors[].code`; no 429 is an observation, not a mismatch | 429 throws `http (429)` in the reader, `rejected:throttled` in the writer | not run yet | no |

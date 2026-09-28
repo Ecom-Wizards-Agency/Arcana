@@ -27,6 +27,12 @@
  *    It compiles the optimizer, creative, strategy, and dashboard routes; doing
  *    that after the complete auth sweep leaves enough development route graphs
  *    retained to exhaust a bounded CI heap even though every assertion passes.
+ *    Its own dev server only grows across the suite, and on CI it reached the
+ *    8 GB heap in the last spec, so it also runs as three process shards:
+ *    disjoint Playwright `--shard=i/n` parts, each with its own global setup
+ *    (database, fake Amazon, dev server) torn down before the next starts.
+ *    Locally that cut the dev server's peak RSS from 9.7 GB to at most 5.1 GB
+ *    per shard without lengthening the suite; two shards still peaked at 6.3.
  *  - **undesigned-routes** captures the 17 utility routes awaiting design
  *    frames in a fresh process. After route acceptance's workflows the shared
  *    dev server held about 6 GB of heap, and the capture test used 4.8 of its
@@ -79,9 +85,21 @@
  * standard suite into an unbounded timeout exercise.
  *
  * Anything after the suite name is forwarded to Playwright (`--grep`, `-x`, …).
+ *
+ * ## Counted tests
+ *
+ * Every invocation's count reporter writes a summary, and the runner rejects
+ * failures, skips, incomplete tests and runner errors. An unfiltered run, and
+ * any run under `CI`, must also discover exactly the registry's
+ * `expectedTests`. A suite with process shards (`processShards` in the
+ * registry) enforces that number on the sum of its shards, and each shard's
+ * Playwright JSON test list must be disjoint from the others and match that
+ * shard's count, so a test that is lost from one shard or runs in two fails
+ * the suite. Passing your own `--shard`, or `--list`, runs that suite as one
+ * invocation.
  */
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -93,9 +111,15 @@ import { parseE2EArgs } from '../src/e2e-args.js';
 import {
   E2E_SUMMARY_FILE_ENV,
   hasE2ESelectionArgs,
+  parseE2ESuiteSummary,
   readAndValidateE2ESuiteSummary,
+  validateE2ESuiteSummary,
+  type E2ESuiteSummary,
 } from './e2e-count-reporter.js';
 import {
+  E2E_SHARD_ENV,
+  E2E_SHARD_TESTS_FILE_ENV,
+  e2eProcessShards,
   getE2ESuiteDefinition,
   runE2ESuiteMatrix,
   type AuthenticatedDevSuiteDefinition,
@@ -180,6 +204,117 @@ async function runPlaywright(
     listOnly,
   );
   return code;
+}
+
+interface PlaywrightJsonSuite {
+  specs?: { id: string; file: string; line: number; title: string; tests: unknown[] }[];
+  suites?: PlaywrightJsonSuite[];
+}
+
+/**
+ * Spec ids and readable names from Playwright's JSON reporter output, and the
+ * number of tests they hold (`--repeat-each` merges repeats into one spec).
+ */
+async function readShardTests(file: string): Promise<{ specs: Map<string, string>; tests: number }> {
+  const report = JSON.parse(await readFile(file, 'utf8')) as { suites?: PlaywrightJsonSuite[] };
+  const specs = new Map<string, string>();
+  let tests = 0;
+  const visit = (suite: PlaywrightJsonSuite): void => {
+    for (const spec of suite.specs ?? []) {
+      if (specs.has(spec.id)) throw new Error(`${file} lists test '${spec.id}' twice`);
+      specs.set(spec.id, `${spec.file}:${spec.line} › ${spec.title}`);
+      tests += spec.tests.length;
+    }
+    for (const child of suite.suites ?? []) visit(child);
+  };
+  for (const suite of report.suites ?? []) visit(suite);
+  return { specs, tests };
+}
+
+/**
+ * One suite as `processShards` Playwright invocations, one dev server each.
+ *
+ * The shards run one after another on the suite's ports: each invocation's
+ * global teardown stops its server and drops its database before the next
+ * shard's global setup begins. Every shard runs even when an earlier one
+ * fails, and every problem is reported together at the end. The suite's own
+ * summary file receives the summed counts, so the counted-evidence artifact
+ * keeps one summary per suite next to the per-shard files.
+ */
+async function runProcessShards(
+  definition: E2ESuiteDefinition,
+  shards: number,
+  playwrightArgs: string[],
+  env: NodeJS.ProcessEnv,
+  summaryFile: string,
+): Promise<number> {
+  const enforceExpectedCount = Boolean(env['CI']) || !hasE2ESelectionArgs(playwrightArgs);
+  const owners = new Map<string, string>();
+  const problems: string[] = [];
+  const total: E2ESuiteSummary = {
+    version: 1, discovered: 0, completed: 0, passed: 0, failed: 0, skipped: 0, incomplete: 0,
+    status: 'passed', errors: 0,
+  };
+  let finalCode = 0;
+
+  for (let index = 1; index <= shards; index++) {
+    const label = `${index}-of-${shards}`;
+    const shardSummary = summaryFile.replace(/\.json$/, `.shard-${label}.json`);
+    const shardTests = summaryFile.replace(/\.json$/, `.shard-${label}.tests.json`);
+    console.log(`\n--- ${definition.name}: process shard ${index} of ${shards} ---\n`);
+    const code = await run(
+      'pnpm',
+      ['exec', 'playwright', 'test', '-c', definition.config, ...playwrightArgs, `--shard=${index}/${shards}`],
+      {
+        ...env,
+        [E2E_SUMMARY_FILE_ENV]: shardSummary,
+        [E2E_SHARD_ENV]: label,
+        [E2E_SHARD_TESTS_FILE_ENV]: shardTests,
+      },
+    );
+    if (code !== 0) finalCode = code;
+
+    let discovered: number | undefined;
+    try {
+      const summary = parseE2ESuiteSummary(await readFile(shardSummary, 'utf8'));
+      discovered = summary.discovered;
+      for (const field of ['discovered', 'completed', 'passed', 'failed', 'skipped', 'incomplete', 'errors'] as const) {
+        total[field] += summary[field];
+      }
+      if (summary.status !== 'passed') total.status = summary.status;
+      // The expected total is checked on the sum below, not per shard.
+      validateE2ESuiteSummary(summary, 0, false);
+    } catch (error) {
+      problems.push(`shard ${label}: ${error instanceof Error ? error.message : String(error)}`);
+      if (total.status === 'passed') total.status = 'failed';
+    }
+
+    try {
+      const { specs, tests } = await readShardTests(shardTests);
+      if (discovered !== undefined && tests !== discovered) {
+        problems.push(`shard ${label} listed ${tests} tests but counted ${discovered}`);
+      }
+      for (const [id, name] of specs) {
+        const owner = owners.get(id);
+        if (owner === undefined) owners.set(id, label);
+        else problems.push(`'${name}' ran in shard ${owner} and shard ${label}`);
+      }
+    } catch (error) {
+      problems.push(`shard ${label} test list: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  console.log(`${definition.name}: ${total.discovered} tests discovered across ${shards} process shards`);
+  if (enforceExpectedCount && total.discovered !== definition.expectedTests) {
+    problems.push(
+      `expected ${definition.expectedTests} discovered tests across ${shards} shards, received ${total.discovered}`,
+    );
+  }
+  if (total.discovered === 0) problems.push('no shard ran a test');
+  if (problems.length > 0 && total.status === 'passed') total.status = 'failed';
+  await writeFile(summaryFile, `${JSON.stringify(total)}\n`, 'utf8');
+  if (problems.length > 0) throw new Error(`E2E summary mismatch: ${problems.join('; ')}`);
+  return finalCode;
 }
 
 async function createSummaryDirectory(): Promise<string> {
@@ -523,10 +658,17 @@ async function authenticated(
   delete env['WIZARD_ADS_AUTH_BRIDGE_SECRET'];
   delete env['OPENSPELL_RECOMMENDATION_LANE_READY'];
   delete env['OPENSPELL_RECOMMENDATION_LANE_REVISION'];
+  delete env[E2E_SHARD_ENV];
+  delete env[E2E_SHARD_TESTS_FILE_ENV];
   env['WIZARD_ADS_E2E_SUITE'] = definition.name;
   if (definition.name === 'optimization-groups') {
     env['OPENSPELL_RECOMMENDATION_LANE_READY'] = '1';
     env['OPENSPELL_RECOMMENDATION_LANE_REVISION'] = '0'.repeat(40);
+  }
+  const shards = e2eProcessShards(definition);
+  const ownShard = playwrightArgs.some((argument) => argument === '--shard' || argument.startsWith('--shard='));
+  if (shards > 1 && !ownShard && !playwrightArgs.includes('--list')) {
+    return await runProcessShards(definition, shards, playwrightArgs, env, summaryFile);
   }
   return await runPlaywright(definition.config, playwrightArgs, env, summaryFile, definition.expectedTests);
 }

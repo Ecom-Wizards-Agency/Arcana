@@ -9,7 +9,9 @@ import {
   CreatorThreadOutcome, type CreatorRunnerQueueItem, type CreatorRunnerRegistryRecord, type CreatorRunnerReservationHistoryEntry,
   type CreatorRunnerSampleHistoryEntry, type CreatorSweepCheckpoint, type CreatorSweepThread,
 } from '@wizard-ads/shared';
-import type { CreatorEventWrite, CreatorQueueWrite, CreatorRecordWrite, CreatorShipmentWrite, CreatorSweepWrite } from './creators.js';
+import {
+  creatorSampleOrderKey, type CreatorEventWrite, type CreatorQueueWrite, type CreatorRecordWrite, type CreatorShipmentWrite, type CreatorSweepWrite,
+} from './creators.js';
 
 /** Unresolved thread detail kept per sweep, as the import keeps it. */
 const UNRESOLVED_LIMIT = 200;
@@ -25,10 +27,44 @@ export function legacyReservationId(creatorRecordId: string, asin: string, reser
 const newest = <T>(items: readonly T[], at: (item: T) => string) =>
   [...items].sort((left, right) => Date.parse(at(right)) - Date.parse(at(left)))[0];
 
-export interface CreatorRegistryRows { record: CreatorRecordWrite; actions: CreatorEventWrite[]; lanes: CreatorShipmentWrite[] }
+/**
+ * A registry row's rows, or why this organisation refuses it: a derived order key
+ * that is not Arcana's own for the record and ASIN. A refused row yields no rows
+ * at all, so neither the import nor the MCP tool can write part of it.
+ */
+export type CreatorRegistryRows =
+  | { ok: true; record: CreatorRecordWrite; actions: CreatorEventWrite[]; lanes: CreatorShipmentWrite[] }
+  | { ok: false; reason: 'derived_order_key_mismatch'; paths: (string | number)[][] };
 
-/** One registry row to the record, its registry-derived history and its sample lanes. Pure. */
-export function creatorRegistryRows(record: CreatorRunnerRegistryRecord): CreatorRegistryRows {
+/**
+ * Where a row's CCS keys differ from `app.creator_sample_order_key(org, record,
+ * ASIN)`: the reservation's `derived_order_key`, and the `order_id` of each
+ * entry `record_api_order` wrote. The runner stores the key Arcana returned and
+ * never computes it, so a difference means another org's or another lane's key.
+ */
+function orderKeyMismatches(orgId: string, record: CreatorRunnerRegistryRecord): (string | number)[][] {
+  const own = (asin: string) => creatorSampleOrderKey(orgId, record.creator_record_id, asin);
+  const paths: (string | number)[][] = [];
+  const reservation = record.mcf_reservation;
+  if (reservation?.derived_order_key !== undefined && reservation.derived_order_key !== own(reservation.asin)) {
+    paths.push(['mcf_reservation', 'derived_order_key']);
+  }
+  (record.sample_history ?? []).forEach((entry, index) => {
+    if (entry.recipient_note !== undefined && entry.order_id !== own(entry.asin)) paths.push(['sample_history', index, 'order_id']);
+  });
+  return paths;
+}
+
+/**
+ * One registry row to the record, its registry-derived history and its sample
+ * lanes, for one organisation. Pure. The runner's `order_owner` is not mapped:
+ * a lane's owner is set only by Arcana's send path in the database, and an
+ * Arcana-recorded order maps to a Confirmed lane like any runner order, with
+ * nothing about its recipient.
+ */
+export function creatorRegistryRows(orgId: string, record: CreatorRunnerRegistryRecord): CreatorRegistryRows {
+  const mismatched = orderKeyMismatches(orgId, record);
+  if (mismatched.length > 0) return { ok: false, reason: 'derived_order_key_mismatch', paths: mismatched };
   const id = record.creator_record_id;
   const actions: CreatorEventWrite[] = [];
   const lanes = new Map<string, CreatorShipmentWrite>();
@@ -88,6 +124,7 @@ export function creatorRegistryRows(record: CreatorRunnerRegistryRecord): Creato
     });
   }
   return {
+    ok: true,
     record: {
       creatorRecordId: id, brand: record.brand, campaignId: record.campaign_id,
       fingerprints: { storefront: nullable(record.storefront_key), thread: nullable(record.thread_key), fullName: nullable(record.full_name_fp),
