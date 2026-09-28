@@ -14,7 +14,9 @@
  * indirection for its own sake: the end-to-end test points them at a local
  * mock, which is the only way to exercise the callback without a live grant.
  */
-import { AmazonConnectionInstallation, SpApiDeployment } from '@wizard-ads/shared';
+import {
+  AmazonConnectionInstallation, CreatorMcfKeyId, CreatorMcfRecipientPublicJwk, SpApiDeployment, creatorMcfRecipientKeyId,
+} from '@wizard-ads/shared';
 
 export function required(name: string, env: NodeJS.ProcessEnv = process.env): string {
   const value = env[name];
@@ -117,4 +119,48 @@ export function secureCookies(env: NodeJS.ProcessEnv = process.env): boolean {
   if (explicit === '1') return true;
   if (explicit === '0') return false;
   return env['NODE_ENV'] === 'production';
+}
+
+/**
+ * The worker's recipient public key for sealing a creator's postal address
+ * (`OPENSPELL_MCF_RECIPIENT_PUBLIC_KEY`). Public, so it may live in Vercel, but
+ * the value is never echoed back: `invalid` carries no detail about why.
+ * Without an `ok` key, Creator sample sending stays off.
+ */
+export type McfRecipientPublicKey =
+  | { readonly status: 'absent' }
+  | { readonly status: 'invalid' }
+  | {
+    readonly status: 'ok';
+    readonly keyId: CreatorMcfKeyId;
+    readonly jwk: { readonly kty: 'EC'; readonly crv: 'P-256'; readonly x: string; readonly y: string };
+  };
+
+export async function mcfRecipientPublicKey(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<McfRecipientPublicKey> {
+  const raw = env['OPENSPELL_MCF_RECIPIENT_PUBLIC_KEY']?.trim();
+  if (!raw) return { status: 'absent' };
+  const invalid = { status: 'invalid' } as const;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return invalid;
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return invalid;
+  const keys = Object.keys(value);
+  if (keys.length !== 2 || !keys.includes('keyId') || !keys.includes('jwk')) return invalid;
+  const { keyId, jwk } = value as { keyId: unknown; jwk: unknown };
+  const parsedKeyId = CreatorMcfKeyId.safeParse(keyId);
+  const parsedJwk = CreatorMcfRecipientPublicJwk.safeParse(jwk);
+  if (!parsedKeyId.success || !parsedJwk.success) return invalid;
+  const { kty, crv, x, y } = parsedJwk.data;
+  const reduced = { kty, crv, x, y };
+  try {
+    if ((await creatorMcfRecipientKeyId(reduced)) !== parsedKeyId.data) return invalid;
+  } catch {
+    return invalid;
+  }
+  return { status: 'ok', keyId: parsedKeyId.data, jwk: reduced };
 }

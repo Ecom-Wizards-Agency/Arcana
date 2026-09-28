@@ -9,6 +9,8 @@ import {
   CreatorGated, CreatorHeader, CreatorLoadError, ImportRefusal, LockBadge, SectionHead, SOURCE_LABEL, count, lastRead,
 } from '../creators-daily-queue/creator-frame';
 import { clock, money } from './order-key';
+import { SendSection, type SendActions } from './send';
+import type { SendData } from './send-model';
 import type { load } from './load';
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
@@ -141,10 +143,13 @@ function Recipient({ preflight }: { preflight: CreatorSamplePreflight }) {
   </div></section>;
 }
 
-function PlaceOrder() {
-  return <p className="wa-page-sub" data-testid="place-order-note">
-    <button type="button" className="wa-btn" disabled data-testid="place-order">Place order</button>{' '}
-    Ordering is not built in this round. Nothing was ordered, reserved or sent from Arcana.</p>;
+/** Arcana's send section, or why there is none: an analyst or a failed read still sees that nothing can be sent from here. */
+function Send({ detail, now, send, actions }: { detail: CreatorPreflightDetail; now: string; send: SendData | null; actions: SendActions | undefined }) {
+  if (send === null) {
+    return <p className="wa-page-sub" data-testid="send-unavailable">Sending from Arcana is not shown, because this lane has no record and ASIN to send for
+      or its last import failed. Nothing was ordered, reserved or sent from Arcana.</p>;
+  }
+  return <SendSection detail={detail} now={now} data={send} actions={actions} />;
 }
 
 /** Why the order would be held: the first check that does not hold, and, at stock, the difference a live listing hides. */
@@ -201,7 +206,7 @@ function Stale({ preflight }: { preflight: CreatorSamplePreflight }) {
   </section>;
 }
 
-function ReadyPreflight({ detail, now }: { detail: CreatorPreflightDetail; now: string }) {
+function ReadyPreflight({ detail, now, send, actions }: { detail: CreatorPreflightDetail; now: string; send: SendData | null; actions: SendActions | undefined }) {
   const { preflight, lastImport, derivedOrderKey } = detail;
   const record = detail.creatorRecordId;
   const run = preflight === null ? null : <> · run {preflight.runId} · {clock(preflight.startedAt)} to {clock(preflight.completedAt)}, {formatShellDate(preflight.completedAt.slice(0, 10))}</>;
@@ -225,7 +230,8 @@ function ReadyPreflight({ detail, now }: { detail: CreatorPreflightDetail; now: 
     return <main className="wa-stack" data-testid="creator-preflight">{head}{links}
       <EmptyState variant="not-measured" data-creator-state="no-preflight" title="No pre-flight recorded"
         body={<>No sample pre-flight is recorded for {record ?? 'this record'} and {detail.asin ?? 'this ASIN'}, so it has neither passed nor been held.</>}
-        meta="The runner's pre-flight arrives through creators.preflight_result or the pre-flight results file." /></main>;
+        meta="The runner's pre-flight arrives through creators.preflight_result or the pre-flight results file." />
+      <Send detail={detail} now={now} send={send} actions={actions} /></main>;
   }
   const expired = creatorPreviewExpired(preflight.preview, new Date(now));
   const passed = preflight.result === 'PASS';
@@ -242,16 +248,16 @@ function ReadyPreflight({ detail, now }: { detail: CreatorPreflightDetail; now: 
     <Checks preflight={preflight} />
     <Preview preflight={preflight} />
     <Recipient preflight={preflight} />
-    {passed ? <WhatThisWillDo preflight={preflight} expired={expired} /> : null}
-    <PlaceOrder />
+    {passed && send?.mcf?.send?.state !== 'preview_ready' ? <WhatThisWillDo preflight={preflight} expired={expired} /> : null}
+    <Send detail={detail} now={now} send={send} actions={actions} />
     <p className="wa-page-sub" data-testid="preflight-provenance">Recorded {formatTimestamp(preflight.recordedAt)} from the {SOURCE_LABEL[preflight.source]}.
       {detail.earlierRuns > 0 ? ` ${count(detail.earlierRuns)} earlier ${detail.earlierRuns === 1 ? 'run is' : 'runs are'} recorded for this lane; only the newest is shown, and none of their checks carry over.` : ''}</p>
   </main>;
 }
 
-export default function Screen({ data }: { data: ScreenData }) {
+export default function Screen({ data, actions }: { data: ScreenData; actions?: SendActions }) {
   switch (data.view) {
-    case 'ready': return <ReadyPreflight detail={data.props.detail} now={data.props.now} />;
+    case 'ready': return <ReadyPreflight detail={data.props.detail} now={data.props.now} send={data.props.send} actions={actions} />;
     case 'missing': return <main className="wa-stack" data-testid="creator-preflight"><CreatorHeader title={TITLE} subtitle="Creator Connections" />
       <EmptyState variant="empty" data-creator-state="key-missing" title="No such sample order key"
         body="This address does not name a sample order key." action={<a href="/creators/samples">Sample shipments</a>} /></main>;

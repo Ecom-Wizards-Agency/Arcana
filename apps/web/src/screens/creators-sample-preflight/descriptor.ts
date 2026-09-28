@@ -13,7 +13,7 @@ export const descriptor = {
   rollout: { enabled: true },
   states: ['loading', 'error', 'empty', 'not-measured', 'stale', 'refused', 'gated'],
   entry: 'request-message',
-  specs: [{ file: 'creators-sample-preflight.spec.ts', suite: 'route-acceptance' }],
+  specs: [{ file: 'creators-sample-preflight.spec.ts', suite: 'route-acceptance' }, { file: 'creators-sample-send.spec.ts', suite: 'route-acceptance' }],
   load: (actor, params) => import('./load').then((module) => module.load(actor, params)),
   client: (): Promise<typeof ScreenView> => import('./view').then((module) => module.default),
 } satisfies ScreenDescriptor<Awaited<ReturnType<typeof load>>>;

@@ -62,14 +62,20 @@ describe('sample pre-flight', () => {
     expect(unbound.querySelector('[data-testid="recipient"]')?.getAttribute('data-bound')).toBe('false');
   });
 
-  it('has no control that acts: the one order button is disabled and says ordering is not built', () => {
+  it('replaces the disabled order button with the send section, which names what is missing while sending is off', () => {
     for (const data of [ready, heldAtStock, stale]) {
       const host = rendered(<Screen data={data} />);
-      expect(host.querySelectorAll('button')).toHaveLength(1);
+      expect(host.querySelector('[data-testid="place-order"]')).toBeNull();
+      expect(host.querySelectorAll('[data-testid="mcf-send"]')).toHaveLength(1);
+      const off = host.querySelector('[data-testid="sending-off"]')!;
+      expect([...off.querySelectorAll('[data-missing]')].map((item) => item.getAttribute('data-missing'))).toEqual(['grant', 'heartbeat', 'key_absent']);
+      expect(host.querySelectorAll('[data-testid="send-button"]')).toHaveLength(0);
       expect(host.querySelectorAll('button:not([disabled])')).toHaveLength(0);
-      expect(host.querySelector('[data-testid="place-order-note"]')?.textContent).toContain('Ordering is not built in this round.');
-      expect(host.textContent).not.toMatch(/Yes, (place|order|send)/);
+      expect(host.textContent).not.toMatch(/Send \d+ units? via Amazon/);
     }
+    const failed = rendered(<Screen data={refused} />);
+    expect(failed.querySelector('[data-testid="mcf-send"]')).toBeNull();
+    expect(failed.querySelectorAll('button')).toHaveLength(0);
   });
 
   it('names check seven, the fulfillable units and why an active listing is not fulfillable stock', () => {
@@ -124,7 +130,7 @@ describe('sample pre-flight', () => {
     expect(previewValidity({ ...passing.preview!, validUntil: '2026-09-09T06:35:00.000Z' })).toEqual({ until: '2026-09-09T06:35:00.000Z',
       basis: 'the expiry the runner recorded' });
     // The runner's own expiry wins over the window: expired at six minutes.
-    const early = rendered(<Screen data={{ view: 'ready', props: { now: NOW, detail: { ...ready.props.detail,
+    const early = rendered(<Screen data={{ view: 'ready', props: { now: NOW, send: ready.props.send, detail: { ...ready.props.detail,
       preflight: { ...passing, preview: { ...passing.preview!, validUntil: '2026-09-09T06:35:00.000Z' } } } } }} />);
     expect(early.querySelector('[data-testid="preflight-stale"]')).not.toBeNull();
     expect(rendered(<Screen data={ready} />).querySelector('[data-testid="preflight-stale"]')).toBeNull();
@@ -139,7 +145,7 @@ describe('sample pre-flight', () => {
   });
 
   it('keeps a held run held when its preview expired, and never calls it a pass that no longer stands', () => {
-    const host = rendered(<Screen data={{ view: 'ready', props: { now: '2026-09-09T07:30:00.000Z', detail: { ...heldAtStock.props.detail,
+    const host = rendered(<Screen data={{ view: 'ready', props: { now: '2026-09-09T07:30:00.000Z', send: heldAtStock.props.send, detail: { ...heldAtStock.props.detail,
       preflight: { ...held, preview: passing.preview } } } }} />);
     expect(host.querySelector('[data-testid="preflight-stale"]')).toBeNull();
     expect(host.querySelector('[data-creator-state="stale"]')).toBeNull();

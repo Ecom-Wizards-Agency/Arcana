@@ -1,4 +1,5 @@
-import { readSpReportEvidence, readProviderEvidence, readStreamExtensionHealth, readCoreReportEvidence, loadReportLaneStatus, readMarketSignalsImportStatus, readLatestCreatorImport } from '@wizard-ads/db';
+import { readSpReportEvidence, readProviderEvidence, readStreamExtensionHealth, readCoreReportEvidence, loadReportLaneStatus, readMarketSignalsImportStatus, readLatestCreatorImport, readCreatorMcfSendGate } from '@wizard-ads/db';
+import { openWebDatabase } from '../../server/request-context';
 import type { SpEvidence, StreamExtensionHealth } from '@wizard-ads/shared';
 import type { ScreenActor } from '../../server/page-read';
 import { CoreFeatureReportType } from '@wizard-ads/shared';
@@ -53,5 +54,17 @@ export async function load(access: ScreenActor, input: ScreenParams) {
   const providerEvidence = await access.readSql(async (sql) => Promise.all(status.freshness.map(async (profile) => ({ profileId: profile.profileId, evidence: await readProviderEvidence({ sql }, { orgId: org.orgId, profileId: profile.profileId, consumer: 'sync-status' }) }))));
   // Creator Connections import counters (WP-332); RLS hides them from viewers, which reads as not measured.
   const creatorImport = await access.readSql((sql) => readLatestCreatorImport({ sql }, org.orgId));
-  return { view: 'ready' as const, props: { ...(providerEvidence ? { providerEvidence } : {}), ...(marketSignals ? { marketSignals } : {}), context, status, lane, creatorImport, ...(coreEvidence.length ? { coreEvidence } : {}), ...({ sources } as { sources?: { family: string; evidence: SpEvidence }[] }) } };
+  // WP-338g: the MCF custody residue from the send gate (owners, admins, analysts); a refusal or failure reads as not measured.
+  const mcfResidue = await readMcfResidue(access);
+  return { view: 'ready' as const, props: { ...(providerEvidence ? { providerEvidence } : {}), ...(marketSignals ? { marketSignals } : {}), context, status, lane, creatorImport, ...(mcfResidue ? { mcfResidue } : {}), ...(coreEvidence.length ? { coreEvidence } : {}), ...({ sources } as { sources?: { family: string; evidence: SpEvidence }[] }) } };
+}
+
+/** The send gate's reads open their own authenticated transaction, on a request-owned connection. */
+async function readMcfResidue(access: ScreenActor): Promise<{ expiredLive: number; custodyFreeLive: number } | null> {
+  try {
+    const connection = openWebDatabase();
+    try { return (await readCreatorMcfSendGate(connection, access.actor())).residue; } finally { await connection.close(); }
+  } catch {
+    return null;
+  }
 }

@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
+import type { CreatorMcfSendState } from '@wizard-ads/shared';
+import type { CreatorMcfLaneSend } from '@wizard-ads/db';
+import { SEND } from '../creators-sample-preflight/render-fixture';
 import Loading from '../../../app/creators/samples/fulfillment/[id]/loading';
 import SharedError from '../../../app/creators/samples/fulfillment/[id]/error';
 import { rendered } from '../render-test-support';
@@ -219,5 +222,52 @@ describe('sample order: controls', () => {
     expect(host.querySelector('[data-testid="order-key"]')?.textContent).toBe(ambiguous.derivedOrderKey);
     expect(host.textContent).not.toContain('Reconciliation Required');
     expect(host.querySelectorAll('[data-testid="question"], [data-testid="stage"], [data-testid="observation"]')).toHaveLength(0);
+  });
+});
+
+describe('Arcana\'s send outcome (WP-338g)', () => {
+  const lane = { ...ambiguous, orderOwner: 'arcana' as const };
+  const withOutcome = (send: Partial<CreatorMcfLaneSend>, laneState = lane.laneState) => ({ view: 'ready' as const, props: {
+    detail: { ...notMeasured.props.detail, lane: { ...lane, laneState } }, send: { ...SEND, custodyExpiresAt: null, latestPreview: null, ...send } } });
+  const facts = (host: HTMLElement) => Object.fromEntries([...host.querySelectorAll('[data-testid="arcana-facts"] [data-fact]')]
+    .map((cell) => [cell.getAttribute('data-fact'), cell.textContent]));
+
+  it('shows each outcome state with Amazon\'s status and codes, and points to the pre-flight for the controls', () => {
+    const cases: [CreatorMcfSendState, Partial<CreatorMcfLaneSend>, string][] = [
+      ['accepted', { acceptedAt: '2026-09-08T06:44:13.000Z' }, 'That is not placed'],
+      ['placed', { amazonStatus: 'Received', placedAt: '2026-09-08T06:50:00.000Z' }, 'with this SKU and one unit'],
+      ['uncertain', {}, 'no second order is requested'],
+      ['conflict', { amazonStatus: 'Planning', escalationReason: 'conflict' }, 'does not match the send'],
+      ['rejected', { providerCodes: ['InvalidInput'], providerStatus: 400 }, 'rejected the order request'],
+      ['not_created', {}, 'Released as not created'],
+      ['failed_by_amazon', { amazonStatus: 'Invalid' }, 'failed status'],
+      ['failed_after_placement', { amazonStatus: 'Unfulfillable' }, 'Cancelled or Unfulfillable'],
+    ];
+    for (const [state, send, words] of cases) {
+      const host = rendered(<Screen data={withOutcome({ state, ...send })} />);
+      const panel = host.querySelector('[data-testid="arcana-outcome"]')!;
+      expect(panel.querySelector('[data-send-state]')?.getAttribute('data-send-state')).toBe(state);
+      expect(facts(host)['outcome']).toContain(words);
+      expect(panel.querySelector('[data-testid="arcana-controls-link"]')?.getAttribute('href')).toBe(`/creators/samples/${lane.derivedOrderKey}/preflight`);
+      expect(panel.querySelectorAll('button')).toHaveLength(0);
+    }
+    const rejected = rendered(<Screen data={withOutcome({ state: 'rejected', providerCodes: ['InvalidInput'] })} />);
+    expect(facts(rejected)['codes']).toBe('InvalidInput ');
+    const placed = rendered(<Screen data={withOutcome({ state: 'placed', amazonStatus: 'Received', placedAt: '2026-09-08T06:50:00.000Z' })} />);
+    expect(facts(placed)['amazon-status']).toBe('Received');
+    expect(facts(rejected)['placed']).toBe('not placed');
+  });
+
+  it('flags a ladder that ran out, and says the ledger, not the runner, owns an Arcana lane', () => {
+    const host = rendered(<Screen data={withOutcome({ state: 'accepted', escalationReason: 'ladder_exhausted' })} />);
+    expect(host.querySelector('[data-testid="arcana-escalation"]')?.textContent).toBe('Amazon has not settled this order in 7 days.');
+    expect(host.querySelector('[data-testid="lock-line"]')?.textContent).toContain('Arcana\'s send ledger owns this lane\'s state');
+    expect(host.querySelector('[data-testid="creator-fulfillment"]')?.getAttribute('data-owner')).toBe('arcana');
+  });
+
+  it('draws no outcome panel for a runner lane', () => {
+    const host = rendered(<Screen data={notMeasured} />);
+    expect(host.querySelector('[data-testid="arcana-outcome"]')).toBeNull();
+    expect(host.querySelector('[data-testid="lock-line"]')?.textContent).toContain('The runner owns the lane state and the lock;');
   });
 });
