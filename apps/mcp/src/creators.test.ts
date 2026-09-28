@@ -50,6 +50,12 @@ const reservation = {
   reserved_at: '2026-09-08T06:40:00+00:00', verified_at: '2026-09-08T06:43:00+00:00', reconciliation_reason: 'outcome_unknown',
   preflight_evidence_reference: 'ev:mcf-inv-16',
 };
+/** The mapping for one org, narrowed: these rows carry no CCS key, so none can mismatch. */
+function mapped(orgId: string, record: unknown) {
+  const rows = creatorRegistryRows(orgId, record as never);
+  if (!rows.ok) throw new Error(`unexpected refusal at ${rows.paths.map((path) => path.join('.')).join(', ')}`);
+  return rows;
+}
 const queueItem = (id: string, change: Record<string, unknown> = {}) => ({
   queue_id: `20260909-${id}`, run_date: '2026-09-09', creator_record_id: id, brand: 'Synthetic brand', campaign_tab: 'Synthetic tab',
   current_status: 'Verification Confirmed', computed_score: 8, missing: ['recent_post_verified', 'performance_or_revenue'], due_date: '2026-09-09',
@@ -58,7 +64,7 @@ const queueItem = (id: string, change: Record<string, unknown> = {}) => ({
 
 describe('runner shapes map to the import\'s rows and keys', () => {
   it('derives the same event keys and lanes as creators:import for one registry row', () => {
-    const rows = creatorRegistryRows(registry('CCR-SW-26-0072', { lock_state: 'Locked for MCF', version: 7, mcf_reservation: reservation }) as never);
+    const rows = mapped(randomUUID(), registry('CCR-SW-26-0072', { lock_state: 'Locked for MCF', version: 7, mcf_reservation: reservation }));
     expect(rows.actions.map((action) => action.eventKey)).toEqual([
       'reserved:MCFR-9F2C41AB77E0D3B5', 'verified:MCFR-9F2C41AB77E0D3B5:2026-09-08T06:43:00+00:00', 'reconciliation:MCFR-9F2C41AB77E0D3B5']);
     expect(rows.lanes).toHaveLength(1);
@@ -199,7 +205,7 @@ describe.skipIf(!available)('the creator:write key class', () => {
         sample_shipments: { read: 1, inserted: 0, updated: 0, unchanged: 1, skipped: 0 },
       });
       // The file import of the same registry row, mapped the same way, changes nothing either.
-      const rows = creatorRegistryRows(input.record as never);
+      const rows = mapped(orgId, input.record);
       const run = await persistCreatorImport(database, { orgId, startedAt: new Date().toISOString(), source: 'control-runner', files: ['registry'],
         records: { read: 1, invalid: 0, rows: [rows.record] }, actions: { read: rows.actions.length, invalid: 0, rows: rows.actions }, queue: null,
         sweeps: null, shipments: { read: rows.lanes.length, invalid: 0, rows: rows.lanes } });
@@ -217,7 +223,7 @@ describe.skipIf(!available)('the creator:write key class', () => {
       expect(held).toEqual({ lock_state: 'Locked for MCF', runner_version: 7 });
       // A conflict keeps the records it named even when the import wrote the conflict entry first.
       const locked = registry('CCR-SW-26-0117', { lock_state: 'Conflict', escalation_reason: 'multiple_active_records_match', version: 2 });
-      const importedFirst = creatorRegistryRows(locked as never);
+      const importedFirst = mapped(orgId, locked);
       await persistCreatorImport(database, { orgId, startedAt: new Date().toISOString(), source: 'control-runner', files: ['registry'],
         records: { read: 1, invalid: 0, rows: [importedFirst.record] }, actions: { read: 1, invalid: 0, rows: importedFirst.actions }, queue: null, sweeps: null,
         shipments: null });
@@ -226,6 +232,62 @@ describe.skipIf(!available)('the creator:write key class', () => {
       expect(conflict.payload['counts']).toMatchObject({ records: { unchanged: 1 }, action_log: { read: 2, inserted: 1, unchanged: 1 } });
       const [named] = await database.sql`select related_record_ids from public.creator_action_log where org_id = ${orgId} and event_key = 'identity:CCR-SW-26-0117:2'`;
       expect(named).toEqual({ related_record_ids: ['CCR-SW-26-0203'] });
+    } finally { await client.close(); }
+  });
+
+  it('registers the WP-338l handover fields: a lane handed to Arcana stays runner-owned, its recorded order confirms it, another key is refused', async () => {
+    const client = await connect(server, creatorToken);
+    const id = 'CCR-SW-26-0338';
+    const asin = 'B0D9K3M2QP';
+    const key = creatorSampleOrderKey(orgId, id, asin);
+    const resolution = { result: 'RESOLVED', creator_record_id: id, match_method: 'storefront' };
+    // reserve-mcf for a lane handed to Arcana (creator_control.py on wp-338l): the key, order_owner, no visible fee.
+    const handed = { reservation_id: 'MCFR-00000000000338A1', state: 'Reserved', creator_record_id: id, campaign_id: 'campaign-synthetic-1',
+      tracker_source_ref: 'tracker/campaign-synthetic-1/row-338', asin, sku: 'SW-DERMA-05-FBA', product_title: 'Synthetic product', quantity: 1,
+      recipient_binding: fp('recipient-0338'), approved_fee_cap_cents: 800, thread_evidence_reference: 'private-evidence/thread-338.json',
+      preflight_evidence_reference: 'private-evidence/preflight-338.json', inventory_evidence_reference: 'private-evidence/mcf-search-338.json',
+      reserved_at: '2026-09-27T23:47:35.437142+00:00', derived_order_key: key, order_owner: 'arcana' };
+    const lane = async () => (await database.sql`select lane_state, order_owner, runner_order_id, fee_cents, fee_cap_cents, reservation_id
+      from public.creator_sample_shipments where org_id = ${orgId} and creator_record_id = ${id} and asin = ${asin}`)[0];
+    try {
+      const reserved = await call(client, 'creators.register_record', { record: registry(id, { lock_state: 'Locked for MCF', version: 2,
+        mcf_reservation: handed }), resolution });
+      expect(reserved.isError, reserved.text).toBe(false);
+      expect(await lane()).toEqual({ lane_state: 'Reserved', order_owner: 'runner', runner_order_id: null, fee_cents: null, fee_cap_cents: 800,
+        reservation_id: 'MCFR-00000000000338A1' });
+
+      // Another organisation's key (or another lane's) for this record and ASIN is refused whole, named by field only.
+      const before = await tableCounts();
+      const foreign = creatorSampleOrderKey(randomUUID(), id, asin);
+      const refused = await call(client, 'creators.register_record', { record: registry(id, { lock_state: 'Locked for MCF', version: 9,
+        mcf_reservation: { ...handed, derived_order_key: foreign } }), resolution });
+      expect(refused.isError).toBe(true);
+      expect(refused.payload['error']).toBe('invalid_argument');
+      expect(refused.text).toContain('record.mcf_reservation.derived_order_key (derived_order_key is not this organisation');
+      expect(refused.text).not.toContain(foreign);
+      expect(await tableCounts()).toEqual(before);
+
+      // record-api-order: the reservation moves to history with the note, the key as order id and the arcana:send evidence.
+      const evidence = `arcana:send:${key}:${fp('send-event-338')}`;
+      const recorded = { reservation_id: handed.reservation_id, creator_record_id: id, campaign_id: handed.campaign_id,
+        tracker_source_ref: handed.tracker_source_ref, asin, sku: handed.sku, product_title: handed.product_title, quantity: 1, order_id: key,
+        status: 'Confirmed', evidence_reference: evidence, recipient_note: 'recipient: operator-entered in Arcana, binding unverified',
+        confirmed_at: '2026-09-28T10:03:00.000000+00:00' };
+      const confirmed = await call(client, 'creators.register_record', { record: registry(id, { version: 3, sample_history: [recorded] }), resolution });
+      expect(confirmed.isError, confirmed.text).toBe(false);
+      expect(await lane()).toEqual({ lane_state: 'Confirmed', order_owner: 'runner', runner_order_id: key, fee_cents: null, fee_cap_cents: 800,
+        reservation_id: 'MCFR-00000000000338A1' });
+      const [logged] = await database.sql`select action, evidence_reference from public.creator_action_log
+        where org_id = ${orgId} and event_key = ${`confirmed:${handed.reservation_id}`}`;
+      expect(logged).toEqual({ action: 'sample_confirmed', evidence_reference: evidence });
+      const wrongOrder = await call(client, 'creators.register_record', { record: registry(id, { version: 4, sample_history: [{ ...recorded,
+        order_id: foreign, evidence_reference: `arcana:send:${foreign}:${fp('send-event-338')}` }] }), resolution });
+      expect(wrongOrder.isError).toBe(true);
+      expect(wrongOrder.text).toContain('record.sample_history.0.order_id (order_id is not this organisation\'s derived order key');
+      expect(wrongOrder.text).not.toContain(foreign);
+      // Nothing about the recipient is stored beyond the lane and the action log's evidence reference.
+      const stored = JSON.stringify(await database.sql`select * from public.creator_sample_shipments where org_id = ${orgId} and creator_record_id = ${id}`);
+      expect(stored).not.toContain('binding unverified');
     } finally { await client.close(); }
   });
 

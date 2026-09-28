@@ -118,7 +118,7 @@ async function workerPreview(db: DbHandle, scope: Scope, sendId: string): Promis
   return preview;
 }
 
-test('sample send: seal in the browser, post only the envelope, preview, and "Send 1 unit via Amazon" under a nonce CSP', async ({ page }, testInfo) => {
+test('sample send: seal in the browser, post only the envelope, preview, and "Send 1 unit via Amazon" under a nonce CSP on /creators/samples only', async ({ page }, testInfo) => {
   test.setTimeout(300_000);
   await page.setViewportSize({ width: 1440, height: 1024 });
   const state = await readState();
@@ -254,14 +254,19 @@ test('sample send: seal in the browser, post only the envelope, preview, and "Se
     expect(approved).toEqual({ state: 'approved', confirmation_text: 'Send 1 unit via Amazon', approved_units: 1, approved_preview_id: preview.previewId });
     await capture(page, testInfo, 'creators-send-approved');
 
-    // The list: units today against the cap, sending on, and the lane's send state.
-    await page.goto('/creators/samples');
+    // The list: units today against the cap, sending on, and the lane's send state, under its own fresh nonce.
+    const list = await page.goto('/creators/samples');
+    const listNonce = /'nonce-([^']+)'/.exec(list!.headers()['content-security-policy'] ?? '')?.[1];
+    expect(listNonce, 'a nonce on /creators/samples').toBeTruthy();
+    expect(listNonce).not.toBe(nonce);
     await expect(page.getByTestId('sending-header')).toHaveAttribute('data-sending', 'on');
     await expect(page.getByTestId('sending-header').getByTestId('units-today')).toContainText(/Units approved today \(UTC\): \d+ of 20/);
     await expect(page.getByTestId('sample-lane').filter({ hasText: record }).getByTestId('send-state')).toHaveAttribute('data-send-state', 'approved');
 
     // Withdraw before the worker claims it: custody is destroyed and nothing is left behind.
-    await page.goto(`/creators/samples/${key}/preflight`);
+    const again = await page.goto(`/creators/samples/${key}/preflight`);
+    const againNonce = /'nonce-([^']+)'/.exec(again!.headers()['content-security-policy'] ?? '')?.[1];
+    expect(new Set([nonce, listNonce, againNonce]).size).toBe(3);
     await page.getByTestId('withdraw').click();
     await expect(page.locator('[data-testid="send-card"][data-send-state="withdrawn"]')).toBeVisible();
     const [residue] = await db.sql<{ expired_live: number; custody_free_live: number }[]>`select * from app.creator_mcf_custody_residue()`;
@@ -270,6 +275,13 @@ test('sample send: seal in the browser, post only the envelope, preview, and "Se
     expect(custody?.n).toBe(0);
     expect(offOrigin).toEqual([]);
     expect(cspErrors).toEqual([]);
+
+    // Outside /creators/samples there is no CSP. /creators is a route another spec in this suite already compiles: the suite runs every
+    // route-acceptance spec in one dev process, and each extra route or page load adds to that process's heap (a new route here pushed it
+    // past its 8 GB limit in CI).
+    const outside = await page.request.get('/creators');
+    expect(outside.status()).toBe(200);
+    expect(outside.headers()['content-security-policy'], 'no CSP on /creators').toBeUndefined();
   } finally {
     await db.sql`update app.creator_mcf_grants set revoked_at = now() where org_id = ${org} and revoked_at is null`;
     await db.sql`delete from app.creator_mcf_worker_heartbeats where worker_id = 'e2e-mcf-worker'`;
@@ -465,25 +477,5 @@ test('sample cancel: "Cancel in Amazon" reads the order, "Cancel 1 order in Amaz
         where id = ${connection.id}`);
     }
     await db.close();
-  }
-});
-
-test('sample send: the nonce CSP covers /creators/samples/* only', async ({ page }) => {
-  test.setTimeout(120_000);
-  await signIn(page, 'admin');
-  const nonces: string[] = [];
-  for (const path of ['/creators/samples', '/creators/samples/not-a-key/preflight', '/creators/samples/fulfillment/not-a-key']) {
-    const response = await page.goto(path);
-    const csp = response!.headers()['content-security-policy'] ?? '';
-    const nonce = /'nonce-([^']+)'/.exec(csp)?.[1];
-    expect(nonce, `a nonce on ${path}`).toBeTruthy();
-    nonces.push(nonce!);
-    expect(csp).not.toMatch(/https?:\/\/|\*/);
-    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
-  }
-  expect(new Set(nonces).size).toBe(3);
-  for (const path of ['/creators', '/sync-status']) {
-    const response = await page.goto(path);
-    expect(response!.headers()['content-security-policy'], `no CSP on ${path}`).toBeUndefined();
   }
 });

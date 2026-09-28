@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Static deployment proof for the Evo general worker release (WP-326), its
-# connection-only Amazon Ads unit (WP-330) and its mcf.observe claim (WP-338b).
+# connection-only Amazon Ads unit (WP-330), its mcf.observe claim (WP-338b) and
+# its MCF alert settings and mcf-mode entry (WP-338f; the MCF unit has its own
+# proof, test-evo-mcf-deployment.sh).
 # Needs no privileges, credentials, host configuration or database.
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
@@ -112,7 +114,9 @@ require_line "$amazon_unit" "ExecStart=$release_path/credential_runtime.py amazo
 
 # 3. Unit credential names equal the runtime mapping, each from its own file.
 # The worker and SP-API units load the worker mapping; the Amazon Ads unit loads
-# its own, so no unit holds the other application's LWA pair.
+# its own, so no unit holds the other application's LWA pair. The worker unit
+# alone adds the optional alert webhook (WP-338f), by credential store name so a
+# missing file is not fatal.
 runtime_credentials() {
   python3 -B - "$runtime" "$1" <<'PY'
 import importlib.util, sys
@@ -125,6 +129,11 @@ PY
 }
 worker_credentials="$(runtime_credentials WORKER_CREDENTIALS)"
 amazon_credentials="$(runtime_credentials AMAZON_CONNECTION_CREDENTIALS)"
+optional_credentials="$(runtime_credentials WORKER_OPTIONAL_CREDENTIALS)"
+if [[ "$optional_credentials" != mcf-alert-webhook ]]; then
+  echo "the worker's optional credentials must be exactly mcf-alert-webhook" >&2
+  exit 1
+fi
 for mapping in "$worker_credentials" "$amazon_credentials"; do
   if [[ "$(printf '%s\n' "$mapping" | wc -l)" != 3 ]]; then
     echo "a runtime credential mapping does not declare exactly three credentials" >&2
@@ -143,8 +152,12 @@ for unit in "$worker_unit" "$spapi_unit" "$amazon_unit"; do
   else
     expected_credentials="$worker_credentials"
   fi
+  loaded_credentials="$expected_credentials"
+  if [[ "$unit" == "$worker_unit" ]]; then
+    loaded_credentials+=$'\n'"$optional_credentials"
+  fi
   actual="$(awk -F '[=:]' '$1 == "LoadCredentialEncrypted" { print $2 }' "$unit" | LC_ALL=C sort)"
-  if [[ "$actual" != "$(printf '%s\n' "$expected_credentials" | LC_ALL=C sort)" ]]; then
+  if [[ "$actual" != "$(printf '%s\n' "$loaded_credentials" | LC_ALL=C sort)" ]]; then
     echo "$(basename "$unit") credential names do not match the runtime mapping" >&2
     exit 1
   fi
@@ -152,8 +165,13 @@ for unit in "$worker_unit" "$spapi_unit" "$amazon_unit"; do
     require_line "$unit" \
       "LoadCredentialEncrypted=$name:/etc/credstore.encrypted/wizard-ads-$name.cred"
   done <<<"$expected_credentials"
+  if grep -n 'mcf-recipient' "$unit"; then
+    echo "$(basename "$unit") names an MCF recipient key" >&2
+    exit 1
+  fi
 done
-
+require_line "$worker_unit" \
+  "LoadCredentialEncrypted=mcf-alert-webhook:wizard-ads-mcf-alert-webhook.cred"
 # 4. The public configuration template holds no secret and only allowed keys.
 python3 -B - "$runtime" "$template" <<'PY'
 import importlib.util, json, re, sys
@@ -224,6 +242,12 @@ if module.MCF_OBSERVE_KEYS != frozenset({"OPENSPELL_MCF_OBSERVE_ENABLED", "OPENS
         or not module.MCF_OBSERVE_KEYS <= module.WORKER_ENV_KEYS or set(config) & module.MCF_OBSERVE_KEYS \
         or {key for key in module.WORKER_ENV_KEYS if "MCF" in key} != module.MCF_OBSERVE_KEYS:
     fail("the optional observe keys must be the only allowlisted MCF keys and absent from the template")
+# WP-338f: the samples-link origin is an optional, allowlisted key; the alert
+# webhook is a credential and never a key; the MCF unit's keys are refused.
+if "WIZARD_ADS_APP_URL" not in module.WORKER_ENV_KEYS or "WIZARD_ADS_APP_URL" in config \
+        or "OPENSPELL_MCF_ALERT_WEBHOOK_URL" in module.WORKER_ENV_KEYS \
+        or module.MCF_UNIT_ONLY_KEYS & module.WORKER_ENV_KEYS:
+    fail("WIZARD_ADS_APP_URL must be optional and allowlisted; the webhook and the MCF unit keys never")
 secret_shapes = [r"postgres(ql)?://", r"amzn1\.oa2-cs", r"amzn1\.application-oa2-client\.",
                  "op" + r":/" + "/", r"/(home|Users)/", r"[A-Za-z0-9+=_-]{24,}"]
 for value in config.values():
@@ -255,12 +279,33 @@ if rg -n -F -- "$write_token" "$script_dir"; then
   echo "docs/deploy names the SP write surface" >&2
   exit 1
 fi
-# The general worker's only MCF surface is WP-334's read-only observation; no
-# MCF send key belongs anywhere in the deployment directory yet.
+# WP-338f widens this pin deliberately. The deployment directory may name the two
+# observe keys (general worker), the four MCF unit keys, the alert webhook (a
+# general-worker credential) and the web's public key (runbook only), and no
+# other MCF key. The send keys stay out of every general-worker file.
 mcf_keys="$(rg -o --no-filename -- 'OPENSPELL_MCF_[A-Z0-9_]+' "$script_dir" | LC_ALL=C sort -u || true)"
-if [[ "$mcf_keys" != $'OPENSPELL_MCF_OBSERVE_ENABLED\nOPENSPELL_MCF_OBSERVE_INTERVAL_MINUTES' ]]; then
-  echo "docs/deploy names an MCF key other than the two observe keys" >&2
+expected_mcf_keys='OPENSPELL_MCF_ALERT_WEBHOOK_URL
+OPENSPELL_MCF_DISPATCH_ENABLED
+OPENSPELL_MCF_OBSERVE_ENABLED
+OPENSPELL_MCF_OBSERVE_INTERVAL_MINUTES
+OPENSPELL_MCF_POLL_INTERVAL_MS
+OPENSPELL_MCF_PREVIEW_ENABLED
+OPENSPELL_MCF_RECIPIENT_PUBLIC_KEY
+OPENSPELL_MCF_SCOPE'
+if [[ "$mcf_keys" != "$expected_mcf_keys" ]]; then
+  echo "docs/deploy names an MCF key set other than the pinned eight" >&2
   printf '%s\n' "$mcf_keys" >&2
+  exit 1
+fi
+if rg -n -- 'OPENSPELL_MCF_(PREVIEW_ENABLED|DISPATCH_ENABLED|SCOPE|POLL_INTERVAL_MS)' \
+  "$worker_unit" "$spapi_unit" "$amazon_unit" "$template" "$builder" "$normalizer"; then
+  echo "a general-worker file names an MCF unit key" >&2
+  exit 1
+fi
+public_key_files="$(rg -l -- 'OPENSPELL_MCF_RECIPIENT_PUBLIC_KEY' "$script_dir" | LC_ALL=C sort)"
+if [[ "$public_key_files" != "$script_dir/always-on-worker.md"$'\n'"$script_dir/test-evo-general-worker-deployment.sh"$'\n'"$script_dir/test-evo-mcf-deployment.sh"$'\n'"$script_dir/test-evo-mcf-runtime.py" ]]; then
+  echo "only the runbook and the proofs may name the web's recipient public key" >&2
+  printf '%s\n' "$public_key_files" >&2
   exit 1
 fi
 private_locator_pattern='op:/''/'
@@ -375,6 +420,21 @@ if captured.get("node") != "/usr/local/bin/node" \
         or set(captured["env"]) & (module.AMAZON_KEYS | {"LWA_CLIENT_ID", "LWA_CLIENT_SECRET"}) \
         or not Path(captured["argv"][1]).is_file() or not Path(release, "app/src/main.ts").is_file():
     sys.exit("staged runtime did not launch its own release at its recorded revision")
+os.environ["STATE_DIRECTORY"] = "/var/lib/wizard-ads-mcf"
+Path(tmp, "mcf.json").write_text(json.dumps({"OPENSPELL_MCF_PREVIEW_ENABLED": "0",
+                                             "OPENSPELL_MCF_DISPATCH_ENABLED": "0"}))
+with mock.patch.object(module, "MCF_CONFIG", Path(tmp, "mcf.json")), \
+        mock.patch.object(module, "credential_names",
+                          lambda: {"database-url", "spapi-lwa-client-id", "spapi-lwa-client-secret-value"}):
+    captured = launch(module.run_mcf)
+if captured.get("node") != "/usr/local/bin/node" \
+        or captured["argv"][1:] != runner + ["src/mcf-main.ts"] \
+        or captured["env"].get("OPENSPELL_WORKER_REVISION") != revision \
+        or captured["env"].get("HOME") != "/var/lib/wizard-ads-mcf" \
+        or "NODE_OPTIONS" in captured["env"] or "CREDENTIALS_DIRECTORY" not in captured["env"] \
+        or any(key.startswith("WORKER_JOB") for key in captured["env"]) \
+        or not Path(release, "app/src/mcf-main.ts").is_file():
+    sys.exit("staged runtime did not launch its own MCF entry in the mcf mode")
 captured = launch(module.run_amazon_connections)
 if captured.get("node") != "/usr/local/bin/node" \
         or captured["argv"][1:] != runner + ["src/amazon-connections-cli.ts"] \
@@ -384,25 +444,25 @@ if captured.get("node") != "/usr/local/bin/node" \
         or not Path(release, "app/src/amazon-connections-cli.ts").is_file():
     sys.exit("staged runtime did not launch its own Amazon Ads connection command")
 PY
-# Every import reachable from the three entry points resolves inside the release,
+# Every import reachable from the four entry points resolves inside the release,
 # without executing main.ts (which connects at import).
 (cd "$stage/app" && node - <<'NODE'
 const esbuild = require('./node_modules/esbuild');
 const result = esbuild.buildSync({
-  entryPoints: ['src/main.ts', 'src/spapi-connections-cli.ts', 'src/amazon-connections-cli.ts'],
+  entryPoints: ['src/main.ts', 'src/spapi-connections-cli.ts', 'src/amazon-connections-cli.ts', 'src/mcf-main.ts'],
   bundle: true, platform: 'node', format: 'esm', target: 'node22',
   outdir: 'unused', write: false, metafile: true, logLevel: 'silent',
 });
 const inputs = Object.keys(result.metafile.inputs);
 const outside = inputs.filter((input) => input.startsWith('..') || input.startsWith('/'));
-if (outside.length > 0 || result.outputFiles.length < 3
+if (outside.length > 0 || result.outputFiles.length < 4
   || !inputs.some((input) => input.includes('@wizard-ads+sp-api'))
   || !inputs.some((input) => input.includes('@wizard-ads+ads-api'))
   || !inputs.some((input) => input.includes('@aws-sdk+client-sqs'))) {
   console.error(`release import graph is incomplete or escapes app/ (${outside.length} outside)`);
   process.exit(1);
 }
-console.log(`resolved ${inputs.length} modules from main.ts, spapi-connections-cli.ts and amazon-connections-cli.ts`);
+console.log(`resolved ${inputs.length} modules from main.ts, spapi-connections-cli.ts, amazon-connections-cli.ts and mcf-main.ts`);
 NODE
 ) >"$test_tmp/import-graph.log"
 cat "$test_tmp/import-graph.log"

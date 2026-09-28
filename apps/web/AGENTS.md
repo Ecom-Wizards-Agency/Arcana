@@ -88,8 +88,12 @@ resize notifications cannot reach React after unmount.
 Route-owned browser specs are declared in `descriptor.specs`. The suite registry
 owns process configuration and expected logical test counts. Its test compares spec
 ownership with `readdir(e2e)` and counts test declarations, including static loop
-expansion. Renaming Home to `/` preserves `dashboard.spec.ts` as the suite's filename;
-`/dashboard` and `/queries` remain query-preserving compatibility redirects.
+expansion. A suite with `processShards` (route acceptance) runs as that many
+Playwright `--shard=i/n` invocations, each with its own global setup and dev
+server. On an unfiltered or CI run, `e2e/run.ts` enforces `expectedTests` on the
+sum of the shards; any run fails if one test runs in two shards. Renaming Home
+to `/` preserves `dashboard.spec.ts` as the suite's filename; `/dashboard` and
+`/queries` remain query-preserving compatibility redirects.
 
 Grid streams its freshness/crosscheck banner under its own Suspense boundary. Do
 not await that evidence in the screen loader: the workspace must hydrate and

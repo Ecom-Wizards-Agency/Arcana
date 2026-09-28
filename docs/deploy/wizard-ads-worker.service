@@ -13,6 +13,10 @@ ExecStart=/usr/local/lib/wizard-ads-runtime/worker-current/credential_runtime.py
 LoadCredentialEncrypted=database-url:/etc/credstore.encrypted/wizard-ads-database-url.cred
 LoadCredentialEncrypted=spapi-lwa-client-id:/etc/credstore.encrypted/wizard-ads-spapi-lwa-client-id.cred
 LoadCredentialEncrypted=spapi-lwa-client-secret-value:/etc/credstore.encrypted/wizard-ads-spapi-lwa-client-secret-value.cred
+# WP-338f: the optional MCF alert webhook (WP-338n). A credential store name
+# rather than a path, so a missing file is not fatal: without it the unit starts
+# and alerts go to the journal only.
+LoadCredentialEncrypted=mcf-alert-webhook:wizard-ads-mcf-alert-webhook.cred
 StateDirectory=wizard-ads
 StateDirectoryMode=0750
 Restart=on-failure
