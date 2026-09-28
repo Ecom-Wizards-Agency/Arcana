@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildCreatorImport, legacyReservationId, parseCreatorsImportArgs, readCreatorRunnerDirectory } from './creators-import.js';
-import { syntheticRunnerFiles, writeRunnerFiles } from './creators-import.fixture.js';
+import { fp, syntheticRunnerFiles, writeRunnerFiles } from './creators-import.fixture.js';
 import { CreatorRunnerQueueItem, CreatorRunnerQueueResult, CreatorRunnerRegistry, CreatorRunnerRegistryRecord } from '@wizard-ads/shared';
 import { creatorQueueRows, creatorRegistryRows } from '@wizard-ads/db/worker';
+import { creatorSampleOrderKey } from '@wizard-ads/db';
 
 const ORG = '33200000-0000-4000-8000-000000000011';
 const scratch = () => mkdtemp(join(tmpdir(), 'wp332-import-'));
@@ -127,6 +128,55 @@ describe('building the import from synthetic runner outputs', () => {
   });
 });
 
+describe('the runner\'s WP-338l handover fields (creator_control.py reserve-mcf, record-api-order, cancel-mcf)', () => {
+  const NOTE = 'recipient: operator-entered in Arcana, binding unverified';
+  const key = (id: string, org = ORG) => creatorSampleOrderKey(org, id, 'B0EXAMPLE1');
+  const base = (id: string, change: Record<string, unknown>) => ({ creator_record_id: id, brand: 'Example', campaign_id: 'campaign-1',
+    thread_key: fp(`${id}:thread`), storefront_key: fp(`${id}:storefront`), full_name_fp: fp(`${id}:name`), email_fp: fp(`${id}:email`),
+    phone_fp: fp(`${id}:phone`), address_fp: fp(`${id}:address`), record_state: 'Active', created_at: '2026-08-05', ...change });
+  /** reserve-mcf as the runner writes it for a lane handed to Arcana: the key, order_owner, the cap and no visible fee. */
+  const handed = (id: string, orderKey: string) => ({ reservation_id: `MCFR-${id.slice(-4)}00000000338A`, state: 'Reserved', creator_record_id: id,
+    campaign_id: 'campaign-1', tracker_source_ref: 'tracker/campaign-1/row-2', asin: 'B0EXAMPLE1', sku: 'SKU-1', product_title: 'Example Product',
+    quantity: 1, recipient_binding: fp(`${id}:recipient`), approved_fee_cap_cents: 800, thread_evidence_reference: 'private-evidence/thread-1.json',
+    preflight_evidence_reference: 'private-evidence/preflight-1.json', inventory_evidence_reference: 'private-evidence/mcf-search.json',
+    reserved_at: '2026-09-27T23:47:35.437142+00:00', derived_order_key: orderKey, order_owner: 'arcana' });
+  const registry = (foreignKey: string) => ({ schema_version: 1, sequence_by_brand: { 'SW-26': 404 }, records: [
+    base('CCR-SW-26-0401', { lock_state: 'Locked for MCF', version: 2, mcf_reservation: handed('CCR-SW-26-0401', key('CCR-SW-26-0401')) }),
+    base('CCR-SW-26-0402', { lock_state: 'Unlocked', version: 3, sample_history: [{ reservation_id: 'MCFR-0402000000003381', creator_record_id: 'CCR-SW-26-0402',
+      campaign_id: 'campaign-1', tracker_source_ref: 'tracker/campaign-1/row-2', asin: 'B0EXAMPLE1', sku: 'SKU-1', product_title: 'Example Product',
+      quantity: 1, order_id: key('CCR-SW-26-0402'), status: 'Confirmed', evidence_reference: `arcana:send:${key('CCR-SW-26-0402')}:${fp('send-0402')}`,
+      recipient_note: NOTE, confirmed_at: '2026-09-28T10:03:00.000000+00:00' }] }),
+    base('CCR-SW-26-0403', { lock_state: 'Unlocked', version: 3, mcf_reservation_history: [{ reservation_id: 'MCFR-0403000000003381',
+      campaign_id: 'campaign-1', tracker_source_ref: 'tracker/campaign-1/row-2', asin: 'B0EXAMPLE1', sku: 'SKU-1', quantity: 1, status: 'Cancelled',
+      reason_code: 'operator_aborted_before_submit', evidence_reference: `arcana:send:${key('CCR-SW-26-0403')}:not_found`,
+      cancelled_at: '2026-09-27T23:47:35.437476+00:00' }] }),
+    base('CCR-SW-26-0404', { lock_state: 'Locked for MCF', version: 2, mcf_reservation: handed('CCR-SW-26-0404', foreignKey) }),
+  ] });
+
+  it('imports the handover records, counts a key that is not this organisation\'s invalid by path and fixed reason, and maps no owner', async () => {
+    const foreign = key('CCR-SW-26-0404', '33200000-0000-4000-8000-000000000099');
+    const dir = await scratch();
+    await writeFile(join(dir, 'registry.json'), JSON.stringify(registry(foreign)));
+    const read = await readCreatorRunnerDirectory(dir);
+    if (!read.ok) throw new Error('the handover registry must read');
+    const { batch, invalid } = buildCreatorImport(ORG, '2026-09-28T10:10:00.000Z', read.files, read.content);
+    expect(batch.records).toMatchObject({ read: 4, invalid: 1 });
+    expect(batch.records!.rows.map((row) => row.creatorRecordId)).toEqual(['CCR-SW-26-0401', 'CCR-SW-26-0402', 'CCR-SW-26-0403']);
+    expect(invalid).toEqual([{ kind: 'records', index: 3, issues: [{ path: 'mcf_reservation.derived_order_key', code: 'derived_order_key_mismatch' }] }]);
+    expect(JSON.stringify(invalid)).not.toContain(foreign);
+    const lanes = Object.fromEntries(batch.shipments!.rows.map((row) => [row.creatorRecordId, row]));
+    expect(Object.keys(lanes).sort()).toEqual(['CCR-SW-26-0401', 'CCR-SW-26-0402', 'CCR-SW-26-0403']);
+    expect(lanes['CCR-SW-26-0401']).toMatchObject({ laneState: 'Reserved', feeCents: null, feeCapCents: 800 });
+    expect(lanes['CCR-SW-26-0402']).toMatchObject({ laneState: 'Confirmed', runnerOrderId: key('CCR-SW-26-0402') });
+    expect(lanes['CCR-SW-26-0403']).toMatchObject({ laneState: 'Cancelled', cancellationReason: 'operator_aborted_before_submit' });
+    for (const lane of batch.shipments!.rows) expect(Object.keys(lane).some((field) => /owner/i.test(field))).toBe(false);
+    expect(JSON.stringify(batch)).not.toContain(NOTE);
+    // The same file under its own organisation's key imports whole.
+    expect(buildCreatorImport(ORG, '2026-09-28T10:10:00.000Z', ['registry'], { registry: registry(key('CCR-SW-26-0404')) }).batch.records)
+      .toMatchObject({ read: 4, invalid: 0 });
+  });
+});
+
 describe('one mapping for the import and the creator:write MCP tools', () => {
   it('builds exactly the rows the MCP tools write from the same registry, queue and sweep', async () => {
     const files = syntheticRunnerFiles();
@@ -139,7 +189,8 @@ describe('one mapping for the import and the creator:write MCP tools', () => {
     const valid = registry.records.flatMap((raw) => { const parsed = CreatorRunnerRegistryRecord.safeParse(raw); return parsed.success ? [parsed.data] : []; });
     const seen = new Set<string>();
     const records = valid.filter((record) => !seen.has(record.creator_record_id) && seen.add(record.creator_record_id));
-    const mapped = records.map(creatorRegistryRows);
+    const mapped = records.map((record) => creatorRegistryRows(ORG, record)).flatMap((rows) => rows.ok ? [rows] : []);
+    expect(mapped).toHaveLength(records.length);
     expect(mapped.map((rows) => rows.record)).toEqual(batch.records!.rows);
     expect(mapped.flatMap((rows) => rows.actions)).toEqual(batch.actions!.rows);
     // Registry lanes first, as the MCP tool writes them; list-mcf only confirms these.

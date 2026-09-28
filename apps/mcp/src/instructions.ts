@@ -150,7 +150,11 @@ read = inserted + updated + unchanged + skipped and \`skipped\` is rows left unt
    \`RESOLVED\` (with \`match_method\` storefront, thread or contacts), \`NEW\` (with the fingerprints the
    record was issued with) or \`CONFLICT\` (with \`matches\`, which must include this record, locked in
    Conflict). \`HOLD\` registers nothing. Register every record a conflict locked. A row whose \`version\`
-   is older than the one held is refused as \`older_than_held\` and nothing of it is written.
+   is older than the one held is refused as \`older_than_held\` and nothing of it is written. Send the
+   row exactly as the runner holds it, including \`derived_order_key\` and \`order_owner\` on a
+   reservation and \`recipient_note\` on an order \`record-api-order\` recorded. A \`derived_order_key\`
+   (or such an order's \`order_id\`) that is not this organisation's key for the record and ASIN is
+   refused. \`order_owner\` is not stored: only the Arcana lane screen hands a lane to Arcana.
 2. \`creators.record_score\` — \`{creator_record_id, scored_on, current_status, tracker_score, result}\`.
    \`result\` is the \`score\` command's output (\`score_record\`: \`score\`, the ten \`checks\`, \`missing\`).
    \`current_status\` is the tracker's Status label; \`tracker_score\` is the Total Qualification Score
