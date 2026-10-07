@@ -2,7 +2,13 @@
  * Key management for an operator: `pnpm --filter @wizard-ads/mcp keys <command>`.
  *
  *   keys issue --org <slug> --owner <user id> --label "crosscheck QA" --profiles <id,id> [--days 30]
+ *   keys issue --scope creator:write --org <slug> --owner <user id> --label "creator skill" [--days 30]
  *   keys list  --org <slug>
+ *
+ * Two key classes are issued here. A read key reads analytics for its listed
+ * profiles. A creator:write key writes Creator Connections records only: it
+ * takes no profiles, reads no analytics and changes nothing in Amazon. The
+ * owner must currently be an owner or admin of the organisation.
  *   keys revoke --id <key id>
  *
  * The token is printed once, to stdout, and never stored in plaintext anywhere.
@@ -10,6 +16,7 @@
  * design.
  */
 import { connectionStringFromEnv, createDb } from '@wizard-ads/db';
+import { MCP_KEY_SCOPE_DESCRIPTIONS } from '@wizard-ads/shared';
 import {
   DEFAULT_API_KEY_LIFETIME_DAYS,
   issueApiKey,
@@ -36,9 +43,14 @@ async function main(argv: readonly string[]): Promise<void> {
       const label = flag(argv, 'label');
       const profiles = flag(argv, 'profiles');
       const owner = flag(argv, 'owner');
-      if (!slug || !label || !profiles || !owner) {
+      const scope = flag(argv, 'scope') ?? 'read';
+      if (scope !== 'read' && scope !== 'creator:write') {
+        throw new Error('--scope is read or creator:write. Write delegations are issued separately.');
+      }
+      if (!slug || !label || !owner || (scope === 'read' && !profiles) || (scope === 'creator:write' && profiles !== undefined)) {
         throw new Error(
-          'usage: keys issue --org <slug> --owner <user id> --label <label> --profiles <id,id> [--days 30]',
+          'usage: keys issue --org <slug> --owner <user id> --label <label> --profiles <id,id> [--days 30]\n'
+            + '       keys issue --scope creator:write --org <slug> --owner <user id> --label <label> [--days 30]',
         );
       }
 
@@ -57,15 +69,16 @@ async function main(argv: readonly string[]): Promise<void> {
       const issued = await issueApiKey(handle, {
         orgId: org.id,
         label,
+        scope,
         createdBy: owner,
-        profileIds: profiles.split(',').map((value) => value.trim()),
+        profileIds: profiles === undefined ? [] : profiles.split(',').map((value) => value.trim()),
         expiresAt: new Date(Date.now() + days * DAY_MS),
       });
 
       console.log(`key id : ${issued.record.id}`);
-      console.log(`scope  : ${issued.record.scope}`);
+      console.log(`scope  : ${issued.record.scope} (${MCP_KEY_SCOPE_DESCRIPTIONS[scope]})`);
       console.log(
-        `profiles: ${issued.record.profileIds?.join(', ') ?? 'invalid legacy scope'}`,
+        `profiles: ${scope === 'creator:write' ? 'none (creator:write keys reach no profile)' : issued.record.profileIds?.join(', ') ?? 'invalid legacy scope'}`,
       );
       console.log(`expires: ${issued.record.expiresAt?.toISOString() ?? 'invalid legacy expiry'}`);
       console.log('');

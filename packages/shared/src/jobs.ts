@@ -45,6 +45,7 @@ export const JobType = z.enum([
   'ads.validation_configurations.sync',
   'ads.change_history.sync',
   'marketing_stream.extensions.project',
+  'mcf.observe',
 ]);
 export type JobType = z.infer<typeof JobType>;
 
@@ -328,6 +329,13 @@ export const AdsChangeHistorySyncJob = z.strictObject({ ...catalogueJobBase,
   type: z.literal(JobType.enum['ads.change_history.sync']), from: z.iso.datetime(), to: z.iso.datetime() });
 
 export const StreamExtensionProjectionJob = z.object({ ...jobBase, type: z.literal('marketing_stream.extensions.project'), datasetId: StreamExtensionDataset, eventIdentity: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+/**
+ * Read-only MCF observation for one organisation's creator sample lanes (WP-334):
+ * getFulfillmentOrder, listAllFulfillmentOrders and getPackageTrackingDetails
+ * through the SP-API binding named here. It never creates or cancels an order.
+ */
+export const McfObserveJob = z.strictObject({ ...jobBase, type: z.literal('mcf.observe'), marketplaceId: AmazonId });
+export type McfObserveJob = z.infer<typeof McfObserveJob>;
 export const JobPayload = z.discriminatedUnion('type', [
   RetailReportJob, AbaReportJob, CatalogueReportJob,
   z.strictObject({ ...jobBase, type: z.literal('provider.evidence.collect'), configId: Uuid }),
@@ -357,6 +365,7 @@ export const JobPayload = z.discriminatedUnion('type', [
   ProductEligibilitySyncJob,
   ValidationConfigurationsSyncJob,
   AdsChangeHistorySyncJob,
+  McfObserveJob,
 ]);
 export type JobPayload = z.infer<typeof JobPayload>;
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Credential mapping and mode tests for wizard-ads-credential-runtime.py (WP-326, WP-330).
+"""Credential mapping and mode tests for wizard-ads-credential-runtime.py (WP-326, WP-330, WP-336, WP-338b).
 
 Runs against synthetic credentials in a temporary directory. os.execve is
 replaced, so no worker, database or network is ever reached.
@@ -28,12 +28,17 @@ DATABASE = "postgres" + "ql://synthetic:" + "fixture@127.0.0.1:5432/postgres"
 CLIENT_ID = "synthetic-lwa-" + "client-id-0001"
 CLIENT_SECRET = "synthetic-lwa-" + "client-value-0002"
 REDIRECT = "https://example.test/api/amazon/spapi/oauth/callback"
-SIX_JOB_TYPES = "keepa.sync,rank.sync,economics.sync,sqp.categorize,sqp.request,recommendations.run"
-FIVE_JOB_TYPES = "keepa.sync,rank.sync,economics.sync,sqp.categorize,recommendations.run"
-SEVEN_JOB_TYPES = SIX_JOB_TYPES + ",report.fetch"
+# The set before WP-338b; the runtime now refuses it.
+PRIOR_SIX_JOB_TYPES = "keepa.sync,rank.sync,economics.sync,sqp.categorize,sqp.request,recommendations.run"
+# The general worker's exact claim surface since WP-338b.
+SEVEN_JOB_TYPES = PRIOR_SIX_JOB_TYPES + ",mcf.observe"
+WITHOUT_SQP_REQUEST = SEVEN_JOB_TYPES.replace("sqp.request,", "")
+# keepa.sync's retirement is prepared, not applied: this set is refused today.
+WITHOUT_KEEPA = SEVEN_JOB_TYPES.replace("keepa.sync,", "")
+EIGHT_JOB_TYPES = SEVEN_JOB_TYPES + ",report.fetch"
 BASE_CONFIG = {
     "WORKER_ID": "fixture-worker",
-    "WORKER_JOB_TYPES": SIX_JOB_TYPES,
+    "WORKER_JOB_TYPES": SEVEN_JOB_TYPES,
     "WORKER_MAX_CONCURRENT_JOBS": "4",
     "PORT": "3777",
     "WIZARD_ADS_WEEKLY_RECOMMENDATION_RUNS": "1",
@@ -247,13 +252,15 @@ class RefusalTests(RuntimeCase):
 
 
 class JobTypeTests(RuntimeCase):
-    def test_runtime_declares_exactly_the_six_general_worker_job_types(self) -> None:
-        self.assertEqual(runtime.GENERAL_WORKER_JOB_TYPES, frozenset(SIX_JOB_TYPES.split(",")))
-        self.assertEqual(len(runtime.GENERAL_WORKER_JOB_TYPES), 6)
+    def test_runtime_declares_exactly_the_seven_general_worker_job_types(self) -> None:
+        self.assertEqual(runtime.GENERAL_WORKER_JOB_TYPES, frozenset(SEVEN_JOB_TYPES.split(",")))
+        self.assertEqual(len(runtime.GENERAL_WORKER_JOB_TYPES), 7)
         self.assertIn("sqp.request", runtime.GENERAL_WORKER_JOB_TYPES)
+        self.assertIn("mcf.observe", runtime.GENERAL_WORKER_JOB_TYPES)
+        self.assertIn("keepa.sync", runtime.GENERAL_WORKER_JOB_TYPES)
 
-    def test_six_type_set_is_accepted_in_any_order(self) -> None:
-        orders = (SIX_JOB_TYPES, ",".join(reversed(SIX_JOB_TYPES.split(","))))
+    def test_seven_type_set_is_accepted_in_any_order(self) -> None:
+        orders = (SEVEN_JOB_TYPES, ",".join(reversed(SEVEN_JOB_TYPES.split(","))))
         accepted = 0
         for order in orders:
             with self.subTest(order=order):
@@ -264,23 +271,35 @@ class JobTypeTests(RuntimeCase):
                 accepted += 1
         self.assertEqual(accepted, len(orders))
 
-    def test_five_type_set_without_sqp_request_is_refused(self) -> None:
-        self.assertNotIn("sqp.request", FIVE_JOB_TYPES.split(","))
-        self.assertEqual(len(FIVE_JOB_TYPES.split(",")), 5)
-        self.write({**BASE_CONFIG, "WORKER_JOB_TYPES": FIVE_JOB_TYPES}, {"database-url": DATABASE})
-        message = self.refuse(runtime.run_worker, "WORKER_JOB_TYPES must list exactly")
-        self.assertIn("sqp.request", message)
-
-    def test_seven_type_set_is_refused(self) -> None:
-        self.assertEqual(len(set(SEVEN_JOB_TYPES.split(","))), 7)
-        self.write({**BASE_CONFIG, "WORKER_JOB_TYPES": SEVEN_JOB_TYPES}, {"database-url": DATABASE})
-        self.refuse(runtime.run_worker, "WORKER_JOB_TYPES must list exactly")
+    def test_every_other_set_of_known_types_is_refused(self) -> None:
+        sets = {
+            # The live worker.json before the switch: the new runtime refuses it,
+            # so the release switch and the job-type edit happen together.
+            "prior six without mcf.observe": PRIOR_SIX_JOB_TYPES,
+            "without sqp.request": WITHOUT_SQP_REQUEST,
+            "without keepa.sync": WITHOUT_KEEPA,
+            "with report.fetch": EIGHT_JOB_TYPES,
+        }
+        self.assertEqual(len(PRIOR_SIX_JOB_TYPES.split(",")), 6)
+        self.assertEqual(len(WITHOUT_SQP_REQUEST.split(",")), 6)
+        self.assertNotIn("sqp.request", WITHOUT_SQP_REQUEST.split(","))
+        self.assertEqual(len(WITHOUT_KEEPA.split(",")), 6)
+        self.assertNotIn("keepa.sync", WITHOUT_KEEPA.split(","))
+        self.assertEqual(len(set(EIGHT_JOB_TYPES.split(","))), 8)
+        refused = 0
+        for label, job_types in sets.items():
+            with self.subTest(set=label):
+                self.write({**BASE_CONFIG, "WORKER_JOB_TYPES": job_types}, {"database-url": DATABASE})
+                message = self.refuse(runtime.run_worker, "WORKER_JOB_TYPES must list exactly")
+                self.assertTrue(message.endswith(",".join(sorted(SEVEN_JOB_TYPES.split(",")))))
+                refused += 1
+        self.assertEqual(refused, len(sets))
 
     def test_duplicated_padded_or_absent_job_types_are_refused(self) -> None:
         variants = {
-            "duplicate": SIX_JOB_TYPES + ",sqp.request",
-            "padded": SIX_JOB_TYPES.replace(",", ", "),
-            "trailing comma": SIX_JOB_TYPES + ",",
+            "duplicate": SEVEN_JOB_TYPES + ",mcf.observe",
+            "padded": SEVEN_JOB_TYPES.replace(",", ", "),
+            "trailing comma": SEVEN_JOB_TYPES + ",",
             "empty": "",
         }
         refused = 0
@@ -316,7 +335,7 @@ class ConnectionOnlyTests(RuntimeCase):
         # The connection-only command claims no queue job, so a worker.json that
         # the worker mode would refuse still starts the connection loop.
         started = 0
-        for job_types in (FIVE_JOB_TYPES, SEVEN_JOB_TYPES):
+        for job_types in (PRIOR_SIX_JOB_TYPES, EIGHT_JOB_TYPES):
             with self.subTest(job_types=job_types):
                 self.write({**BASE_CONFIG, **SPAPI_CONFIG, "WORKER_JOB_TYPES": job_types,
                             "OPENSPELL_SPAPI_CONNECTIONS_ENABLED": "0"}, ALL_CREDENTIALS)
@@ -383,7 +402,7 @@ class AmazonConnectionTests(RuntimeCase):
 
     def test_does_not_apply_the_worker_job_type_set(self) -> None:
         started = 0
-        for job_types in (FIVE_JOB_TYPES, SEVEN_JOB_TYPES, "entity.sync"):
+        for job_types in (PRIOR_SIX_JOB_TYPES, EIGHT_JOB_TYPES, "entity.sync"):
             with self.subTest(job_types=job_types):
                 self.write({**BASE_CONFIG, **AMAZON_CONFIG, "WORKER_JOB_TYPES": job_types}, ADS_CREDENTIALS)
                 launched, _ = self.launch(runtime.run_amazon_connections)
@@ -497,6 +516,195 @@ class AmazonConnectionTests(RuntimeCase):
                 mock.patch.object(runtime.os, "umask"):
             runtime.main()
         run.assert_called_once_with()
+
+
+IMPORT_DIRECTORY = "/var/lib/wizard-ads-imports/market-signals"
+ORG_ID = "0f0e0d0c-0b0a-4908-8706-050403020100"
+IMPORT_CONFIG = {
+    "OPENSPELL_MARKET_SIGNALS_DIR": IMPORT_DIRECTORY,
+    "OPENSPELL_MARKET_SIGNALS_ORG_KEYS": "synthetic-org=" + ORG_ID + ",other.key=" + ORG_ID.upper(),
+}
+
+DIRECTORY_REFUSAL = ("OPENSPELL_MARKET_SIGNALS_DIR must be a normalized absolute path outside "
+                     "/home, /root, /run/user")
+ORG_KEYS_REFUSAL = "OPENSPELL_MARKET_SIGNALS_ORG_KEYS must be key=uuid[,key=uuid] with unique keys"
+
+
+class MarketSignalsImportTests(RuntimeCase):
+    def refuse_import(self, config: dict[str, str], expected: str) -> None:
+        # The whole message is fixed text naming the key, so no value can appear in it.
+        self.write({**BASE_CONFIG, **config}, {"database-url": DATABASE})
+        self.assertEqual(self.refuse(runtime.run_worker, expected), expected)
+
+    def test_import_keys_are_allowlisted_and_never_credentials(self) -> None:
+        self.assertEqual(runtime.IMPORT_KEYS, frozenset(IMPORT_CONFIG))
+        self.assertLessEqual(runtime.IMPORT_KEYS, runtime.WORKER_ENV_KEYS)
+        self.assertFalse(runtime.IMPORT_KEYS & (set(runtime.WORKER_CREDENTIALS.values())
+                                               | set(runtime.AMAZON_CONNECTION_CREDENTIALS.values())))
+
+    def test_worker_passes_valid_import_settings_exactly(self) -> None:
+        for config in (IMPORT_CONFIG, {"OPENSPELL_MARKET_SIGNALS_DIR": "/srv/market-signals"}):
+            with self.subTest(config=config):
+                self.write({**BASE_CONFIG, **config}, {"database-url": DATABASE})
+                launched, lines = self.launch(runtime.run_worker)
+                for key, value in config.items():
+                    self.assertEqual(launched.env[key], value)
+                self.assertEqual(set(launched.env), {
+                    "PATH", "HOME", "NODE_ENV", "DATABASE_URL", "OPENSPELL_WORKER_REVISION",
+                    *BASE_CONFIG, *config,
+                })
+                self.assertNotIn(IMPORT_DIRECTORY, json.dumps(lines))
+
+    def test_absent_directory_leaves_the_import_off(self) -> None:
+        self.write(BASE_CONFIG, {"database-url": DATABASE})
+        launched, _ = self.launch(runtime.run_worker)
+        self.assertFalse(set(launched.env) & runtime.IMPORT_KEYS)
+
+    def test_directory_must_be_absolute_normalized_and_outside_hidden_roots(self) -> None:
+        home = "/home"  # joined below: the deployment files may not name a home path literally
+        for value in ("", " ", "relative/market-signals", "/", home, f"{home}/operator/exports",
+                      "/root", "/root/exports", "/run/user/1000/exports", "/var/lib/wizard-ads-imports/",
+                      f"/var/lib/..{home}/operator", "/var/lib/./wizard-ads-imports",
+                      "/var//lib/wizard-ads-imports", " /srv/market-signals", "/srv/market signals",
+                      "/srv/market-signals\n"):
+            with self.subTest(value=value):
+                self.refuse_import({"OPENSPELL_MARKET_SIGNALS_DIR": value}, DIRECTORY_REFUSAL)
+
+    def test_org_key_map_shape_is_exact(self) -> None:
+        for value in ("", "synthetic-org", f"synthetic-org={ORG_ID}x", f"={ORG_ID}",
+                      f"synthetic-org={ORG_ID},", f" synthetic-org={ORG_ID}",
+                      f"synthetic-org={ORG_ID},synthetic-org={ORG_ID}", "synthetic-org=not-a-uuid",
+                      f"-leading={ORG_ID}", f"two words={ORG_ID}"):
+            with self.subTest(value=value):
+                self.refuse_import({"OPENSPELL_MARKET_SIGNALS_DIR": IMPORT_DIRECTORY,
+                                    "OPENSPELL_MARKET_SIGNALS_ORG_KEYS": value},
+                                   ORG_KEYS_REFUSAL)
+
+    def test_org_key_map_without_directory_is_refused(self) -> None:
+        self.refuse_import({"OPENSPELL_MARKET_SIGNALS_ORG_KEYS": IMPORT_CONFIG["OPENSPELL_MARKET_SIGNALS_ORG_KEYS"]},
+                           "OPENSPELL_MARKET_SIGNALS_ORG_KEYS requires OPENSPELL_MARKET_SIGNALS_DIR")
+
+    def test_connection_modes_never_pass_import_settings(self) -> None:
+        self.write({**BASE_CONFIG, **SPAPI_CONFIG, **AMAZON_CONFIG, **IMPORT_CONFIG,
+                    "OPENSPELL_SPAPI_CONNECTIONS_ENABLED": "0"}, {**ALL_CREDENTIALS, **ADS_CREDENTIALS})
+        for run in (runtime.run_spapi_connections, runtime.run_amazon_connections):
+            with self.subTest(mode=run.__name__):
+                launched, _ = self.launch(run)
+                self.assertFalse(set(launched.env) & runtime.IMPORT_KEYS)
+
+
+MCF_OBSERVE_CONFIG = {
+    "OPENSPELL_MCF_OBSERVE_ENABLED": "1",
+    "OPENSPELL_MCF_OBSERVE_INTERVAL_MINUTES": "30",
+}
+MCF_GATE_REFUSAL = "OPENSPELL_MCF_OBSERVE_ENABLED must be 0 or 1"
+MCF_INTERVAL_REFUSAL = ("OPENSPELL_MCF_OBSERVE_INTERVAL_MINUTES must be a whole number of minutes "
+                        "from 5 to 1440")
+MCF_CREDENTIALS_REFUSAL = ("OPENSPELL_MCF_OBSERVE_ENABLED=1 requires the SP-API LWA credentials: "
+                           "spapi-lwa-client-id, spapi-lwa-client-secret-value")
+
+
+class McfObserveTests(RuntimeCase):
+    def refuse_observe(self, config: dict[str, str], expected: str,
+                       credentials: dict[str, str] = ALL_CREDENTIALS) -> None:
+        # The whole message is fixed text naming the key, so no value can appear in it.
+        self.write({**BASE_CONFIG, **config}, credentials)
+        self.assertEqual(self.refuse(runtime.run_worker, expected), expected)
+
+    def test_observe_keys_are_allowlisted_and_never_credentials(self) -> None:
+        self.assertEqual(runtime.MCF_OBSERVE_KEYS, frozenset(MCF_OBSERVE_CONFIG))
+        self.assertLessEqual(runtime.MCF_OBSERVE_KEYS, runtime.WORKER_ENV_KEYS)
+        self.assertFalse(runtime.MCF_OBSERVE_KEYS & (set(runtime.WORKER_CREDENTIALS.values())
+                                                    | set(runtime.AMAZON_CONNECTION_CREDENTIALS.values())))
+        # The observe pair is the general worker's only MCF surface; no send key is allowlisted.
+        self.assertEqual({key for key in runtime.WORKER_ENV_KEYS if "MCF" in key}, set(MCF_OBSERVE_CONFIG))
+        self.assertEqual(runtime.MCF_OBSERVE_MINUTES, (5, 1440))
+
+    def test_an_unlisted_mcf_key_is_refused(self) -> None:
+        self.write({**BASE_CONFIG, **MCF_OBSERVE_CONFIG, "OPENSPELL_MCF_" + "UNLISTED_FIXTURE": "1"}, ALL_CREDENTIALS)
+        self.refuse(runtime.run_worker, "unsupported keys")
+
+    def test_worker_passes_valid_observe_settings_exactly(self) -> None:
+        cases = (
+            (MCF_OBSERVE_CONFIG, ALL_CREDENTIALS),
+            ({"OPENSPELL_MCF_OBSERVE_ENABLED": "1"}, ALL_CREDENTIALS),
+            ({"OPENSPELL_MCF_OBSERVE_ENABLED": "1", "OPENSPELL_MCF_OBSERVE_INTERVAL_MINUTES": "5"}, ALL_CREDENTIALS),
+            ({"OPENSPELL_MCF_OBSERVE_ENABLED": "1", "OPENSPELL_MCF_OBSERVE_INTERVAL_MINUTES": "1440"}, ALL_CREDENTIALS),
+            # Off needs no SP-API credential, and an interval may wait for the flag.
+            ({"OPENSPELL_MCF_OBSERVE_ENABLED": "0"}, {"database-url": DATABASE}),
+            ({"OPENSPELL_MCF_OBSERVE_INTERVAL_MINUTES": "60"}, {"database-url": DATABASE}),
+        )
+        launched_count = 0
+        for config, credentials in cases:
+            with self.subTest(config=config):
+                for leftover in self.credentials.iterdir():
+                    leftover.unlink()
+                self.write({**BASE_CONFIG, **config}, credentials)
+                launched, lines = self.launch(runtime.run_worker)
+                for key, value in config.items():
+                    self.assertEqual(launched.env[key], value)
+                self.assertEqual(set(launched.env) & runtime.MCF_OBSERVE_KEYS, set(config))
+                self.assertEqual(set(launched.env), {
+                    "PATH", "HOME", "NODE_ENV", "DATABASE_URL", "OPENSPELL_WORKER_REVISION",
+                    *BASE_CONFIG, *config,
+                    *({"SP_API_LWA_CLIENT_ID", "SP_API_LWA_CLIENT_SECRET"} if credentials is ALL_CREDENTIALS else set()),
+                })
+                self.assertEqual(lines[0]["mode"], "worker")
+                launched_count += 1
+        self.assertEqual(launched_count, len(cases))
+
+    def test_absent_flag_leaves_observation_off(self) -> None:
+        self.write(BASE_CONFIG, {"database-url": DATABASE})
+        launched, _ = self.launch(runtime.run_worker)
+        self.assertFalse(set(launched.env) & runtime.MCF_OBSERVE_KEYS)
+
+    def test_flag_value_is_exact(self) -> None:
+        values = ("", " ", "true", "yes", "on", "2", "01", " 1", "1 ", "1\n", "\u0661")
+        refused = 0
+        for value in values:
+            with self.subTest(value=value):
+                self.refuse_observe({**MCF_OBSERVE_CONFIG, "OPENSPELL_MCF_OBSERVE_ENABLED": value}, MCF_GATE_REFUSAL)
+                refused += 1
+        self.assertEqual(refused, len(values))
+
+    def test_interval_is_whole_minutes_from_5_to_1440(self) -> None:
+        values = ("", " ", "0", "4", "1441", "10000", "-5", "+5", "030", "05", "30.0", "1e1", "0x10",
+                  " 30", "30 ", "30\n", "thirty", "\u0663\u0660", "30,0")
+        refused = 0
+        for value in values:
+            with self.subTest(value=value):
+                self.refuse_observe({**MCF_OBSERVE_CONFIG, "OPENSPELL_MCF_OBSERVE_INTERVAL_MINUTES": value},
+                                    MCF_INTERVAL_REFUSAL)
+                refused += 1
+        self.assertEqual(refused, len(values))
+
+    def test_interval_is_checked_with_the_flag_off(self) -> None:
+        self.refuse_observe({"OPENSPELL_MCF_OBSERVE_ENABLED": "0", "OPENSPELL_MCF_OBSERVE_INTERVAL_MINUTES": "4"},
+                            MCF_INTERVAL_REFUSAL, {"database-url": DATABASE})
+
+    def test_enabled_flag_requires_both_spapi_credentials(self) -> None:
+        self.refuse_observe(MCF_OBSERVE_CONFIG, MCF_CREDENTIALS_REFUSAL, {"database-url": DATABASE})
+        refused = 1
+        for present in ("spapi-lwa-client-id", "spapi-lwa-client-secret-value"):
+            with self.subTest(present=present):
+                for leftover in self.credentials.iterdir():
+                    leftover.unlink()
+                self.write({**BASE_CONFIG, **MCF_OBSERVE_CONFIG},
+                           {"database-url": DATABASE, present: ALL_CREDENTIALS[present]})
+                self.refuse(runtime.run_worker, "must be supplied together")
+                refused += 1
+        self.assertEqual(refused, 3)
+
+    def test_connection_modes_never_pass_observe_settings(self) -> None:
+        self.write({**BASE_CONFIG, **SPAPI_CONFIG, **AMAZON_CONFIG, **MCF_OBSERVE_CONFIG,
+                    "OPENSPELL_SPAPI_CONNECTIONS_ENABLED": "0"}, {**ALL_CREDENTIALS, **ADS_CREDENTIALS})
+        started = 0
+        for run in (runtime.run_spapi_connections, runtime.run_amazon_connections):
+            with self.subTest(mode=run.__name__):
+                launched, _ = self.launch(run)
+                self.assertFalse(set(launched.env) & runtime.MCF_OBSERVE_KEYS)
+                started += 1
+        self.assertEqual(started, 2)
 
 
 if __name__ == "__main__":

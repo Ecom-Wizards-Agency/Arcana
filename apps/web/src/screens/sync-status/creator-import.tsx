@@ -4,7 +4,7 @@ import { formatTimestamp } from '../../ui/date-format';
 import { colors, muted, subheading, table, td, th } from '../../ui/tokens';
 
 const KIND_LABEL: Record<CreatorImportKind, string> = {
-  records: 'Creator records', action_log: 'Action log', queue_items: 'Queue items', sweep_runs: 'Sweep runs', sample_shipments: 'Sample shipments',
+  records: 'Creator records', action_log: 'Action log', queue_items: 'Queue items', sweep_runs: 'Sweep runs', sample_shipments: 'Sample shipments', preflights: 'Pre-flights',
 };
 const COLUMNS = ['read', 'valid', 'invalid', 'inserted', 'updated', 'unchanged', 'removed'] as const;
 

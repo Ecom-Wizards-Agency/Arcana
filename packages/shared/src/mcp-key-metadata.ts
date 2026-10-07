@@ -6,7 +6,7 @@ export const McpKeyMetadata = z.object({
   id: Uuid,
   label: z.string(),
   keyPrefix: z.string(),
-  scope: z.enum(['read', 'write']),
+  scope: z.enum(['read', 'write', 'creator:write']),
   /** Null remains valid for historical keys without a profile allowlist. */
   profileIds: z.array(Uuid).nullable(),
   expiresAt: z.iso.datetime().nullable(),
@@ -15,6 +15,13 @@ export const McpKeyMetadata = z.object({
   createdAt: z.iso.datetime(),
 }).strict();
 export type McpKeyMetadata = z.infer<typeof McpKeyMetadata>;
+
+/** One line per key class, for wherever keys are issued or listed. */
+export const MCP_KEY_SCOPE_DESCRIPTIONS = {
+  read: 'Reads analytics for the listed profiles. Changes nothing.',
+  write: 'Admits bid changes within its operator-issued delegation.',
+  'creator:write': 'Writes Creator Connections records, scores, action-log entries, reply drafts, queue and sweep results. Reads no analytics and changes nothing in Amazon.',
+} as const satisfies Record<McpKeyMetadata['scope'], string>;
 
 export const MCP_KEY_EXPIRY_DAY_OPTIONS = [7, 30, 90] as const;
 export const DEFAULT_MCP_KEY_EXPIRY_DAYS = 30;

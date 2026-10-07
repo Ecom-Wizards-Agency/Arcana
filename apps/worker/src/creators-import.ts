@@ -9,6 +9,7 @@
  *   daily-queue.json       the `queue` command's output file
  *   sweep-checkpoint.json  the skill's per-client message-watermark checkpoint
  *   mcf-reservations.json  `list-mcf` output
+ *   preflight-results.json the skill's `preflight` / `preflight-switch` results (proposed, WP-334)
  *
  * Every record is validated; an invalid one is counted and skipped, and only its
  * position and the failing field paths are logged, never a value. A file that
@@ -18,21 +19,23 @@
  * it never reads the tracker sheet, never needs the runner's HMAC key, and makes
  * no Amazon call.
  */
-import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   CreatorRunnerActiveReservation, CreatorRunnerQueueItem, CreatorRunnerQueueResult, CreatorRunnerRegistry,
-  CreatorRunnerRegistryRecord, CreatorRunnerReservationList, CreatorSweepCheckpoint, CreatorSweepThread, CreatorThreadOutcome, Uuid,
-  type CreatorImportFailure, type CreatorImportFile, type CreatorImportKind, type CreatorImportRun, type CreatorRunnerSampleHistoryEntry,
-  type CreatorRunnerReservationHistoryEntry,
+  CreatorRunnerRegistryRecord, CreatorRunnerReservationList, CreatorSweepCheckpoint, CreatorSweepThread, Uuid,
+  CreatorPreflightResultInput, CreatorPreflightResultsFile, findCreatorContactData,
+  type CreatorImportFailure, type CreatorImportFile, type CreatorImportKind, type CreatorImportRun,
 } from '@wizard-ads/shared';
 import { connectionStringFromEnv, createDb, type DbHandle } from '@wizard-ads/db';
 import {
-  persistCreatorImport, recordFailedCreatorImport, type CreatorActionWrite, type CreatorImportBatch, type CreatorImportSection,
-  type CreatorQueueWrite, type CreatorRecordWrite, type CreatorShipmentWrite, type CreatorSweepWrite,
+  creatorPreflightRow, creatorQueueRows, creatorRegistryRows, creatorSweepRow, persistCreatorImport, recordFailedCreatorImport,
+  type CreatorActionWrite, type CreatorPreflightWrite,
+  type CreatorImportBatch, type CreatorImportSection, type CreatorRecordWrite, type CreatorShipmentWrite, type CreatorSweepWrite,
 } from '@wizard-ads/db/worker';
+/** The runner's legacy reservation id, shared with the creator:write MCP tools. */
+export { legacyReservationId } from '@wizard-ads/db/worker';
 import { installStopSignalHandlers } from './stop-signals.js';
 
 const USAGE = 'usage: creators:import --dir <dir> --org-id <uuid> [--once] [--interval-seconds <n>]';
@@ -41,10 +44,9 @@ export const CREATOR_IMPORT_FILES = {
   queue: 'daily-queue.json',
   sweep_checkpoint: 'sweep-checkpoint.json',
   mcf_reservations: 'mcf-reservations.json',
+  preflight_results: 'preflight-results.json',
 } as const satisfies Record<CreatorImportFile, string>;
 const FILE_ORDER = Object.keys(CREATOR_IMPORT_FILES) as CreatorImportFile[];
-/** Unresolved thread detail kept per sweep; the counts keep the full number. */
-const UNRESOLVED_LIMIT = 200;
 
 export interface CreatorsImportArgs { dir: string; orgId: string; once: boolean; intervalSeconds: number }
 
@@ -78,7 +80,8 @@ type Issues = { issues: readonly { path: readonly PropertyKey[]; code: string }[
 const issuesOf = (error: Issues) => error.issues.map((issue) => ({ path: issue.path.map(String).join('.'), code: issue.code }));
 
 export type CreatorDirectoryRead =
-  | { ok: true; files: CreatorImportFile[]; content: Partial<Record<CreatorImportFile, unknown>>; sweepNotProduced: boolean }
+  | { ok: true; files: CreatorImportFile[]; content: Partial<Record<CreatorImportFile, unknown>>; sweepNotProduced: boolean;
+      preflightsNotProduced?: boolean }
   | { ok: false; files: CreatorImportFile[]; failure: CreatorImportFailure; failedFile: CreatorImportFile | null };
 
 /**
@@ -94,43 +97,38 @@ export async function readCreatorRunnerDirectory(dir: string): Promise<CreatorDi
   if (files.length === 0) return { ok: false, files, failure: 'no_runner_files', failedFile: null };
   const content: Partial<Record<CreatorImportFile, unknown>> = {};
   let sweepNotProduced = false;
+  let preflightsNotProduced = false;
   const envelopes = {
     registry: CreatorRunnerRegistry, queue: CreatorRunnerQueueResult, sweep_checkpoint: CreatorSweepCheckpoint,
-    mcf_reservations: CreatorRunnerReservationList,
+    mcf_reservations: CreatorRunnerReservationList, preflight_results: CreatorPreflightResultsFile,
   } as const;
   for (const file of files) {
     let raw: unknown;
     try { raw = JSON.parse(await readFile(join(dir, CREATOR_IMPORT_FILES[file]), 'utf8')); }
     catch {
       if (file === 'sweep_checkpoint') { sweepNotProduced = true; continue; }
+      if (file === 'preflight_results') { preflightsNotProduced = true; continue; }
       return { ok: false, files, failure: 'file_unreadable', failedFile: file };
     }
     const parsed = envelopes[file].safeParse(raw);
     if (!parsed.success) {
       if (file === 'sweep_checkpoint') { sweepNotProduced = true; continue; }
+      if (file === 'preflight_results') { preflightsNotProduced = true; continue; }
       return { ok: false, files, failure: 'file_shape_invalid', failedFile: file };
     }
     content[file] = parsed.data;
   }
-  return { ok: true, files, content, sweepNotProduced };
+  return { ok: true, files, content, sweepNotProduced, preflightsNotProduced };
 }
 
 const nullable = (value: string) => value === '' ? null : value;
 const upper = (value: string) => value.trim().toUpperCase();
-/** `active_reservation_id` in creator_control.py, for a reservation written before ids existed. */
-export function legacyReservationId(creatorRecordId: string, asin: string, reservedAt: string | undefined): string {
-  const normalized = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
-  const seed = [upper(normalized(creatorRecordId)), upper(normalized(asin)), normalized(reservedAt ?? '')].join('|');
-  return `MCFR-LEGACY-${createHash('sha256').update(seed).digest('hex').slice(0, 12).toUpperCase()}`;
-}
-const newest = <T>(items: readonly T[], at: (item: T) => string) =>
-  [...items].sort((left, right) => Date.parse(at(right)) - Date.parse(at(left)))[0];
 
 interface Built { batch: CreatorImportBatch; invalid: CreatorInvalidRecord[] }
 
 /** Map validated runner content to rows. Pure: no clock, no I/O. */
 export function buildCreatorImport(orgId: string, startedAt: string, files: CreatorImportFile[],
-  content: Partial<Record<CreatorImportFile, unknown>>, sweepNotProduced = false): Built {
+  content: Partial<Record<CreatorImportFile, unknown>>, sweepNotProduced = false, preflightsNotProduced = false): Built {
   const invalid: CreatorInvalidRecord[] = [];
   /** Invalid counts come from the positions logged, independent of the rows kept. */
   const invalidOf = (kind: CreatorImportKind) => invalid.filter((entry) => entry.kind === kind).length;
@@ -156,13 +154,7 @@ export function buildCreatorImport(orgId: string, startedAt: string, files: Crea
       seen.add(parsed.data.creator_record_id);
       const record = parsed.data;
       valid.push(record);
-      rows.push({
-        creatorRecordId: record.creator_record_id, brand: record.brand, campaignId: record.campaign_id,
-        fingerprints: { storefront: nullable(record.storefront_key), thread: nullable(record.thread_key), fullName: nullable(record.full_name_fp),
-          email: nullable(record.email_fp), phone: nullable(record.phone_fp), address: nullable(record.address_fp) },
-        recordState: record.record_state, lockState: record.lock_state, escalationReason: record.escalation_reason ?? null,
-        runnerVersion: record.version, createdOn: record.created_at, lastVerifiedOn: record.last_verified_at ?? null,
-      });
+      rows.push(creatorRegistryRows(record).record);
     });
     records = { read: registry.records.length, invalid: invalidOf('records'), rows };
   }
@@ -179,63 +171,11 @@ export function buildCreatorImport(orgId: string, startedAt: string, files: Crea
   if (registry || listed) {
     const derivedActions: CreatorActionWrite[] = [];
     const lanes = new Map<string, CreatorShipmentWrite>();
+    // One mapping per record, shared with the creator:write MCP tools (packages/db creators-runner).
     for (const record of valid) {
-      const id = record.creator_record_id;
-      if (record.lock_state === 'Conflict') {
-        derivedActions.push({ eventKey: `conflict:${id}:${record.version}`, creatorRecordId: id, action: 'identity_conflict_locked', occurredAt: null,
-          reservationId: null, asin: null, reasonCode: record.escalation_reason ?? null, evidenceReference: null, recordVersion: record.version });
-      }
-      const byAsin = new Map<string, { history: CreatorRunnerSampleHistoryEntry[]; cancelled: CreatorRunnerReservationHistoryEntry[] }>();
-      const bucket = (asin: string) => byAsin.get(asin) ?? byAsin.set(asin, { history: [], cancelled: [] }).get(asin)!;
-      for (const entry of record.sample_history ?? []) {
-        bucket(entry.asin).history.push(entry);
-        derivedActions.push({ eventKey: `confirmed:${upper(entry.reservation_id)}`, creatorRecordId: id, action: 'sample_confirmed',
-          occurredAt: entry.confirmed_at, reservationId: upper(entry.reservation_id), asin: entry.asin, reasonCode: null,
-          evidenceReference: entry.evidence_reference, recordVersion: null });
-      }
-      for (const entry of record.mcf_reservation_history ?? []) {
-        bucket(entry.asin).cancelled.push(entry);
-        derivedActions.push({ eventKey: `cancelled:${upper(entry.reservation_id)}`, creatorRecordId: id, action: 'mcf_reservation_cancelled',
-          occurredAt: entry.cancelled_at, reservationId: upper(entry.reservation_id), asin: entry.asin, reasonCode: entry.reason_code,
-          evidenceReference: entry.evidence_reference, recordVersion: null });
-      }
-      const reservation = record.mcf_reservation;
-      for (const [asin, { history, cancelled }] of byAsin) {
-        if (reservation?.asin === asin) continue;
-        const confirmed = newest(history, (entry) => entry.confirmed_at);
-        const released = newest(cancelled, (entry) => entry.cancelled_at);
-        const lane = confirmed ?? released!;
-        lanes.set(`${id}|${asin}`, {
-          creatorRecordId: id, asin, sku: lane.sku ?? null, campaignId: lane.campaign_id ?? null, reservationId: upper(lane.reservation_id),
-          laneState: confirmed ? 'Confirmed' : 'Cancelled', runnerOrderId: confirmed?.order_id ?? null, feeCents: null, feeCapCents: null,
-          reservedAt: null, verifiedAt: null, confirmedAt: confirmed?.confirmed_at ?? null, cancelledAt: confirmed ? null : released!.cancelled_at,
-          cancellationReason: confirmed ? null : released!.reason_code, reconciliationReason: null,
-        });
-      }
-      if (reservation) {
-        const reservationId = reservation.reservation_id === undefined
-          ? legacyReservationId(id, reservation.asin, reservation.reserved_at) : upper(reservation.reservation_id);
-        if (reservation.reserved_at) {
-          derivedActions.push({ eventKey: `reserved:${reservationId}`, creatorRecordId: id, action: 'mcf_reserved', occurredAt: reservation.reserved_at,
-            reservationId, asin: reservation.asin, reasonCode: null, evidenceReference: reservation.preflight_evidence_reference ?? null, recordVersion: null });
-        }
-        if (reservation.verified_at) {
-          derivedActions.push({ eventKey: `verified:${reservationId}:${reservation.verified_at}`, creatorRecordId: id, action: 'mcf_screen_verified',
-            occurredAt: reservation.verified_at, reservationId, asin: reservation.asin, reasonCode: null,
-            evidenceReference: reservation.verification_evidence_reference ?? null, recordVersion: null });
-        }
-        if (reservation.state === 'Reconciliation Required') {
-          derivedActions.push({ eventKey: `reconciliation:${reservationId}`, creatorRecordId: id, action: 'mcf_reconciliation_required', occurredAt: null,
-            reservationId, asin: reservation.asin, reasonCode: reservation.reconciliation_reason ?? null,
-            evidenceReference: reservation.reconciliation_evidence_reference ?? null, recordVersion: record.version });
-        }
-        lanes.set(`${id}|${reservation.asin}`, {
-          creatorRecordId: id, asin: reservation.asin, sku: reservation.sku ?? null, campaignId: reservation.campaign_id ?? null, reservationId,
-          laneState: reservation.state ?? 'Reserved', runnerOrderId: null, feeCents: reservation.visible_fee_cents ?? null,
-          feeCapCents: reservation.approved_fee_cap_cents ?? null, reservedAt: reservation.reserved_at ?? null, verifiedAt: reservation.verified_at ?? null,
-          confirmedAt: null, cancelledAt: null, cancellationReason: null, reconciliationReason: reservation.reconciliation_reason ?? null,
-        });
-      }
+      const derived = creatorRegistryRows(record);
+      derivedActions.push(...derived.actions);
+      for (const lane of derived.lanes) lanes.set(`${record.creator_record_id}|${lane.asin}`, lane);
     }
     // Lanes formed from the registry, counted before `list-mcf` is folded in.
     const registryLanes = lanes.size;
@@ -268,23 +208,16 @@ export function buildCreatorImport(orgId: string, startedAt: string, files: Crea
 
   let queueSection: CreatorImportBatch['queue'] = null;
   if (queue) {
-    const rows: CreatorQueueWrite[] = [];
-    const occurrences = new Map<string, number>();
+    const items: CreatorRunnerQueueItem[] = [];
     queue.items.forEach((raw, index) => {
       const parsed = CreatorRunnerQueueItem.safeParse(raw);
       if (!parsed.success || parsed.data.run_date !== queue.run_date) {
         invalid.push({ kind: 'queue_items', index, issues: parsed.success ? [{ path: 'run_date', code: 'other_run' }] : issuesOf(parsed.error) });
         return;
       }
-      const item = parsed.data;
-      const occurrence = (occurrences.get(item.queue_id) ?? 0) + 1;
-      occurrences.set(item.queue_id, occurrence);
-      rows.push({
-        runDate: item.run_date, queueId: item.queue_id, occurrence, creatorRecordId: item.creator_record_id === 'UNRESOLVED' ? null : item.creator_record_id,
-        brand: item.brand, campaignTab: item.campaign_tab, currentStatus: item.current_status, computedScore: item.computed_score, missing: item.missing,
-        dueDate: item.due_date, actionType: item.action_type, gateResult: item.gate_result, queueState: item.queue_state, reason: item.reason,
-      });
+      items.push(parsed.data);
     });
+    const rows = creatorQueueRows(items);
     queueSection = { runDate: queue.run_date, read: queue.items.length, invalid: invalidOf('queue_items'), rows };
   }
 
@@ -300,23 +233,36 @@ export function buildCreatorImport(orgId: string, startedAt: string, files: Crea
       sweeps = { read: 1, invalid: invalidOf('sweep_runs'), rows: [] };
     } else {
       const parsedThreads = threads.map((result) => result.data!);
-      const outcomes = parsedThreads.length === 0 ? null : Object.fromEntries(CreatorThreadOutcome.options.map((outcome) =>
-        [outcome, parsedThreads.filter((thread) => thread.outcome === outcome).length])) as Record<CreatorThreadOutcome, number>;
-      const c = sweep.counts;
-      sweeps = { read: 1, invalid: invalidOf('sweep_runs'), rows: [{
-        runId: sweep.run_id, runDate: sweep.run_date, brand: sweep.brand, startedAt: sweep.started_at, completedAt: sweep.completed_at,
-        counts: { mounted: c.mounted, opened: c.opened, changed: c.changed, messagesExamined: c.messages_examined, messagesSent: c.messages_sent,
-          noActionAcknowledgements: c.no_action_acknowledgements, heldOrEscalated: c.held_or_escalated, archivedSpam: c.archived_spam, unmatched: c.unmatched },
-        outcomes,
-        unresolved: parsedThreads.filter((thread) => ['unmatched', 'unopened', 'unclassified'].includes(thread.outcome)).slice(0, UNRESOLVED_LIMIT)
-          .map((thread) => ({ threadKey: thread.thread_key, amazonTimestamp: thread.amazon_timestamp, outcome: thread.outcome, reason: thread.reason })),
-        evidenceReference: sweep.evidence_reference,
-      }] };
+      sweeps = { read: 1, invalid: invalidOf('sweep_runs'), rows: [creatorSweepRow(sweep, parsedThreads)] };
     }
   }
 
+  // Pre-flight results (proposed file): the same validation, contact-data refusal and mapping as `creators.preflight_result`.
+  let preflights: CreatorImportSection<CreatorPreflightWrite> | null = null;
+  const preflightFile = content.preflight_results as CreatorPreflightResultsFile | undefined;
+  if (preflightsNotProduced) {
+    invalid.push({ kind: 'preflights', index: 0, issues: [{ path: '', code: 'preflight_file_not_produced' }] });
+    preflights = { read: 1, invalid: invalidOf('preflights'), rows: [] };
+  } else if (preflightFile) {
+    const rows: CreatorPreflightWrite[] = [];
+    const runs = new Set<string>();
+    preflightFile.results.forEach((raw, index) => {
+      const contact = findCreatorContactData(raw);
+      if (contact.length > 0) {
+        invalid.push({ kind: 'preflights', index, issues: contact.map((hit) => ({ path: hit.path, code: `contact_data_${hit.shape}` })) });
+        return;
+      }
+      const parsed = CreatorPreflightResultInput.safeParse(raw);
+      if (!parsed.success) { invalid.push({ kind: 'preflights', index, issues: issuesOf(parsed.error) }); return; }
+      if (runs.has(parsed.data.run_id)) { invalid.push({ kind: 'preflights', index, issues: [{ path: 'run_id', code: 'duplicate' }] }); return; }
+      runs.add(parsed.data.run_id);
+      rows.push(creatorPreflightRow(parsed.data));
+    });
+    preflights = { read: preflightFile.results.length, invalid: invalidOf('preflights'), rows };
+  }
+
   return {
-    batch: { orgId, startedAt, source: 'control-runner', files, records, actions, queue: queueSection, sweeps, shipments },
+    batch: { orgId, startedAt, source: 'control-runner', files, records, actions, queue: queueSection, sweeps, shipments, preflights },
     invalid,
   };
 }
@@ -331,7 +277,7 @@ export async function importCreatorDirectory(handle: DbHandle, args: Pick<Creato
       failure: read.failure, failedFile: read.failedFile });
     return { run, invalid: [] };
   }
-  const built = buildCreatorImport(args.orgId, startedAt, read.files, read.content, read.sweepNotProduced);
+  const built = buildCreatorImport(args.orgId, startedAt, read.files, read.content, read.sweepNotProduced, read.preflightsNotProduced === true);
   try {
     return { run: await persistCreatorImport(handle, built.batch), invalid: built.invalid };
   } catch (error) {

@@ -2,6 +2,7 @@ import type { CreatorSampleShipment, CreatorSampleSnapshot } from '@wizard-ads/s
 import { Badge, EmptyState, TableFrame } from '../../ui/primitives';
 import { formatTimestamp } from '../../ui/date-format';
 import { CreatorGated, CreatorHeader, CreatorLoadError, ImportRefusal, NotImported, count, lastRead } from '../creators-daily-queue/creator-frame';
+import { DailyReportModal, dailyReport, type DailyReportData } from './daily-report';
 import type { load } from './load';
 
 export type ScreenData = Awaited<ReturnType<typeof load>>;
@@ -46,12 +47,26 @@ function LaneRow({ shipment }: { shipment: CreatorSampleShipment }) {
     <td className="wa-num" data-numeric="true">{money(shipment.feeCents)}{shipment.feeCapCents === null ? null : <><br /><span className="wa-page-sub">cap {money(shipment.feeCapCents)}</span></>}</td>
     <td><AmazonCell shipment={shipment} /></td>
     <td><PackagesCell shipment={shipment} /></td>
+    <td data-testid="lane-links"><a href={`/creators/samples/${shipment.derivedOrderKey}/preflight`} data-lane-link="preflight">Pre-flight</a>
+      <br /><a href={`/creators/samples/fulfillment/${shipment.derivedOrderKey}`} data-lane-link="fulfillment">Order and shipment</a>
+      <br /><a href={`/creators/samples/${shipment.derivedOrderKey}/product-switch`} data-lane-link="product-switch">Product switch</a></td>
   </tr>;
 }
 
-function ReadySamples({ snapshot }: { snapshot: CreatorSampleSnapshot }) {
+/**
+ * With `?report=daily` the report opens over the screen. The screen behind it is
+ * inert, so focus and the accessibility tree stay in the report until Close.
+ */
+function ReadySamples({ snapshot, report }: { snapshot: CreatorSampleSnapshot; report: DailyReportData | null }) {
+  if (report === null) return <Samples snapshot={snapshot} />;
+  return <><div inert data-testid="behind-daily-report"><Samples snapshot={snapshot} /></div><DailyReportModal report={dailyReport(snapshot, report)} /></>;
+}
+
+function Samples({ snapshot }: { snapshot: CreatorSampleSnapshot }) {
   const { lastImport, shipments } = snapshot;
-  const head = <CreatorHeader title="Sample shipments" subtitle={<>One sample per creator record and ASIN, keyed without a date · {lastRead(lastImport)}</>} />;
+  const head = <CreatorHeader title="Sample shipments" subtitle={<>One sample per creator record and ASIN, keyed without a date · {lastRead(lastImport)}</>}>
+    <a href="/creators/samples?report=daily" data-testid="daily-report-link">Daily report</a>
+  </CreatorHeader>;
   if (lastImport?.status === 'failed') {
     return <main className="wa-stack" data-testid="creator-samples">{head}
       <ImportRefusal run={lastImport} withheld="The sample lanes are not shown, because they would read as current." /></main>;
@@ -80,7 +95,7 @@ function ReadySamples({ snapshot }: { snapshot: CreatorSampleSnapshot }) {
       A corrective second order is never placed.
     </section> : null}
     <TableFrame><table className="wa-table">
-      <thead><tr><th>Record</th><th>ASIN</th><th>Order key</th><th>Lane</th><th className="wa-num" data-numeric="true">Fee</th><th>MCF status</th><th>Packages</th></tr></thead>
+      <thead><tr><th>Record</th><th>ASIN</th><th>Order key</th><th>Lane</th><th className="wa-num" data-numeric="true">Fee</th><th>MCF status</th><th>Packages</th><th>Open</th></tr></thead>
       <tbody>{shipments.map((shipment) => <LaneRow key={shipment.derivedOrderKey} shipment={shipment} />)}</tbody>
     </table></TableFrame>
     <p className="wa-page-sub">Fees are as the runner recorded them, in the marketplace currency. MCF status and packages come only from an Amazon read; until one is made they say so.</p>
@@ -89,7 +104,7 @@ function ReadySamples({ snapshot }: { snapshot: CreatorSampleSnapshot }) {
 
 export default function Screen({ data }: { data: ScreenData }) {
   switch (data.view) {
-    case 'ready': return <ReadySamples snapshot={data.props.snapshot} />;
+    case 'ready': return <ReadySamples snapshot={data.props.snapshot} report={data.props.report} />;
     case 'gated': return <main className="wa-stack"><CreatorHeader title="Sample shipments" subtitle="Creator Connections" /><CreatorGated /></main>;
     case 'error': return <CreatorLoadError title="Sample shipments" message={data.props.message} />;
   }

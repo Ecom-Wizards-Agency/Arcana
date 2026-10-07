@@ -25,6 +25,9 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=yes
+# WP-336: the market-signals export, read-only; the leading - lets the unit
+# start before the directory exists (the import is off without it).
+ReadOnlyPaths=-/var/lib/wizard-ads-imports
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes

@@ -1,7 +1,8 @@
 # Arcana MCP
 
 The production MCP endpoint is a stateless, analytical-read-only view of one
-Arcana organization. It accepts Streamable HTTP at `POST /mcp`; `GET
+Arcana organization for read keys, and a Creator Connections write surface for
+`creator:write` keys. It accepts Streamable HTTP at `POST /mcp`; `GET
 /healthz` reports database readiness plus a sanitized Git revision.
 
 The MCP protocol server name is `arcana`. Health retains `service: "openspell"`
@@ -25,6 +26,38 @@ The production catalog contains only these analytical tools:
 
 Amazon-write stubs and Arcana mutation tools are deliberately absent from
 discovery. There is no environment switch that can add them accidentally.
+
+### The `creator:write` key class
+
+A second, separate key class writes Creator Connections records for the
+`amazon-creator-connections` skill. It is not a widened read key: the server
+built for it registers only these six tools and its own `wizardads://instructions`,
+and the database rechecks the class, expiry, revocation and the issuer's current
+owner or admin membership on every call (`app.authorize_mcp_creator_write_key`).
+A read key cannot call these tools, and a `creator:write` key cannot call an
+analytics tool or read a profile.
+
+| Tool | Takes (the control runner's shapes) | Writes |
+|---|---|---|
+| `creators.register_record` | one Creator Registry row (`issue_record_id` and later commands) and the `resolve_record` result `register` acted on | the record, its registry-derived history and sample lanes, and the identity rung or the records a conflict named |
+| `creators.record_score` | `score` output (`score_record`), the tracker status and the tracker's typed score | the record's qualification and one `score_recorded` entry |
+| `creators.append_action` | 1-200 Creator Action Log entries with their own event keys | append-only entries |
+| `creators.submit_draft` | one rendered reply for one thread, from an approved template | a draft awaiting an owner's or admin's approval; returns its id |
+| `creators.queue_snapshot` | the `queue` command's whole output file | that day's Daily Action Queue |
+| `creators.sweep_checkpoint` | the proposed sweep checkpoint (WP-332) | one inbox sweep; Arcana computes whether it reconciled |
+
+Every tool validates with the shared schemas in `packages/shared/src/creators`,
+refuses raw contact data by shape (an email, a phone number, a street address or
+a link, anywhere in the arguments), and writes through the same upserts, keys and
+content digests as `creators:import`, so replays and rows the import already wrote
+come back `unchanged`. Its audit row keeps a digest and size of the arguments,
+never the arguments. None of it calls Amazon; approving a draft sends nothing.
+The full contract a skill author needs is the `wizardads://instructions` resource
+served to a `creator:write` key.
+
+Issue one from the CLI (owners and admins only; no profiles):
+
+    pnpm --filter @wizard-ads/mcp keys issue --scope creator:write --org <slug> --owner <user id> --label "creator skill" [--days 30]
 
 ## Shape
 

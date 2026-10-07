@@ -46,7 +46,9 @@ import {
   listExperimentsTool,
 } from './experiments.js';
 import { ToolError } from './errors.js';
-import { instructionsDocument } from './instructions.js';
+import { creatorWriteInstructionsDocument, instructionsDocument } from './instructions.js';
+import { registerCreatorWriteTools } from './creators.js';
+import { withCreatorWriteOperation } from './operation.js';
 import { ALL_METRICS } from './metrics.js';
 import { FILTER_OPERATORS } from './sql.js';
 import type { DateWindow, FactQuerySpec, FilterCondition, SortSpec } from './sql.js';
@@ -324,6 +326,8 @@ const CONVENTIONS = {
 // ---------------------------------------------------------------------------
 
 export function createMcpServer(context: ServerContext): McpServer {
+  // A creator:write key gets its own surface and nothing of the analytics one.
+  if (context.scope === 'creator:write') return createCreatorWriteServer(context);
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
@@ -337,6 +341,46 @@ export function createMcpServer(context: ServerContext): McpServer {
   registerReadTools(server, context);
   registerExperimentTools(server, context);
   registerResources(server, context);
+  return server;
+}
+
+/**
+ * The `creator:write` surface (WP-333): six Creator Connections write tools and
+ * the instructions resource written for the skill that calls them. No analytics
+ * tool and no profile resource is registered, and each call is re-authorized
+ * as a creator:write key in the database.
+ */
+function createCreatorWriteServer(context: ServerContext): McpServer {
+  const server = new McpServer(
+    { name: SERVER_NAME, version: SERVER_VERSION },
+    {
+      capabilities: { tools: {}, resources: {} },
+      instructions:
+        'Arcana: Creator Connections writes for one org, with a creator:write key. Read the wizardads://instructions ' +
+        'resource first. Fingerprints only. Nothing here changes an Amazon account or sends a message. Every call is audit-logged.',
+    },
+  );
+  registerCreatorWriteTools(server, context);
+  server.registerResource(
+    'instructions',
+    'wizardads://instructions',
+    { title: 'How to use this key', description: 'The six creator tools, their inputs in the control runner\'s shapes, and the refusals.', mimeType: 'text/markdown' },
+    async (uri: URL) => {
+      const started = Date.now();
+      try {
+        const orgSlug = await withCreatorWriteOperation(context, async (operation) => operation.orgSlug);
+        await writeAuditEntry(context.handle, { orgId: context.actor.orgId, keyId: context.keyId, tool: 'resource.instructions.read',
+          params: { uri: uri.href }, outcome: 'ok', summary: { scope: 'creator:write' }, durationMs: Date.now() - started });
+        return { contents: [{ uri: uri.href, mimeType: 'text/markdown', text: creatorWriteInstructionsDocument(orgSlug) }] };
+      } catch (error) {
+        await writeAuditEntry(context.handle, { orgId: context.actor.orgId, keyId: context.keyId, tool: 'resource.instructions.read',
+          params: { uri: uri.href }, outcome: 'error', summary: { code: error instanceof ToolError ? error.code : 'internal' },
+          durationMs: Date.now() - started });
+        if (error instanceof ToolError) throw error;
+        throw new Error('the resource could not be read. This has been logged; nothing was changed.', { cause: error });
+      }
+    },
+  );
   return server;
 }
 

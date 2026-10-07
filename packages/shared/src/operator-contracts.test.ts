@@ -184,6 +184,50 @@ describe('query intelligence', () => {
     expect(fact.asinPurchaseShare).toBe(0.4);
   });
 
+  it('allows a null SQP share only when its total and ASIN counts are both 0', () => {
+    const base = {
+      profileId: PROFILE_ID,
+      marketplaceId: 'marketplace-1',
+      asin: 'B000000001',
+      weekStart: '2026-08-16',
+      weekEnd: '2026-08-22',
+      searchQuery: 'synthetic query',
+      normalizedQuery: 'synthetic query',
+      category: 'unreviewed' as const,
+      searchQueryScore: null,
+      searchQueryVolume: 100,
+      totalImpressions: 80,
+      asinImpressions: 8,
+      asinImpressionShare: 0.1,
+      totalClicks: 20,
+      asinClicks: 4,
+      asinClickShare: 0.2,
+      totalCartAdds: 0,
+      asinCartAdds: 0,
+      asinCartAddShare: null,
+      totalPurchases: 0,
+      asinPurchases: 0,
+      asinPurchaseShare: null,
+    };
+    const fact = SqpWeeklyFact.parse(base);
+    expect([fact.asinCartAddShare, fact.asinPurchaseShare]).toEqual([null, null]);
+    expect(SqpWeeklyFact.parse({ ...base, asinPurchaseShare: 0 }).asinPurchaseShare).toBe(0);
+
+    const refused = [
+      { ...base, asinClickShare: null },
+      { ...base, totalPurchases: 3, asinPurchases: 0 },
+      { ...base, asinCartAdds: 1 },
+      { ...base, totalImpressions: 0, asinImpressions: 0, asinImpressionShare: undefined },
+    ].map((candidate) => SqpWeeklyFact.safeParse(candidate));
+    expect(refused.map((result) => result.success)).toEqual([false, false, false, false]);
+    expect(refused.map((result) => result.error?.issues[0]?.path)).toEqual([
+      ['asinClickShare'], ['asinPurchaseShare'], ['asinCartAddShare'], ['asinImpressionShare'],
+    ]);
+    expect(refused.map((result) => result.error?.issues[0]?.code)).toEqual([
+      'custom', 'custom', 'custom', 'invalid_type',
+    ]);
+  });
+
   it('requires human approval state for vocabulary suggestions', () => {
     const entry = QueryVocabularyEntry.parse({
       orgId: ORG_ID,

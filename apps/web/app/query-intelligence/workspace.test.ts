@@ -70,6 +70,56 @@ describe('/query-intelligence workspace', () => {
     expect(markup).toContain('not share of voice');
   });
 
+  it('renders a null share as a titled dash, never as 0 %', () => {
+    const nullShareModel: QueryIntelligenceModel = {
+      ...model,
+      categorySummaries: model.categorySummaries.map((summary, index) =>
+        index === 0 ? { ...summary, purchaseShare: null } : summary),
+      queryRows: [{
+        profileId: '00000000-0000-4000-8000-000000000001',
+        marketplaceId: 'marketplace-1',
+        asin: 'B000000001',
+        weekStart: '2026-08-16',
+        weekEnd: '2026-08-22',
+        searchQuery: 'Synthetic Quiet Query',
+        normalizedQuery: 'synthetic quiet query',
+        category: 'core',
+        categoryLabel: 'Core',
+        searchQueryScore: null,
+        searchQueryVolume: 40,
+        totalImpressions: 50,
+        asinImpressions: 5,
+        asinImpressionShare: 0.1,
+        totalClicks: 0,
+        asinClicks: 0,
+        asinClickShare: null,
+        totalCartAdds: 0,
+        asinCartAdds: 0,
+        asinCartAddShare: null,
+        totalPurchases: 0,
+        asinPurchases: 0,
+        asinPurchaseShare: null,
+      }],
+    };
+    const markup = renderToStaticMarkup(
+      createElement(QueryIntelligenceWorkspace, {
+        model: nullShareModel,
+        currencyCode: 'USD',
+        selectedCategory: null,
+        search: '',
+        negativeReview: createElement('section', null, 'Review/export queue · Amazon not updated'),
+      }),
+    );
+
+    expect(markup).toContain('Synthetic Quiet Query');
+    // One null summary purchase share, and the row's null purchase and click shares.
+    expect(markup.split('<span title="No purchases that week">—</span>')).toHaveLength(3);
+    expect(markup.split('<span title="No clicks that week">—</span>')).toHaveLength(2);
+    expect(markup.split('title="No impressions that week"')).toHaveLength(1);
+    expect(markup).toContain('10.0%');
+    expect(markup).not.toMatch(/>0(\.0)?\s?%/);
+  });
+
   it('names conservative PPC states and keeps negatives review/export-only', () => {
     const markup = renderToStaticMarkup(
       createElement(QueryIntelligenceWorkspace, {

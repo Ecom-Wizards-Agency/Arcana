@@ -32,3 +32,81 @@ export const FulfillmentResult = z.object({
   items: z.array(z.object({ sellerFulfillmentOrderItemId: id, quantity: z.number().int().nonnegative(), status: z.string() })),
 });
 export type FulfillmentResult = z.infer<typeof FulfillmentResult>;
+
+// ---------------------------------------------------------------------------
+// Read-only observation (WP-334). What getFulfillmentOrder, listAllFulfillmentOrders
+// and getPackageTrackingDetails return once every recipient field is dropped:
+// no destination address, notification email, recipient or signer name,
+// carrier phone number or event location crosses the client boundary.
+// ---------------------------------------------------------------------------
+
+const Observed = z.iso.datetime({ offset: true });
+/** `fulfillmentShipmentStatus` on the 2020-07-01 model. */
+export const FulfillmentShipmentStatus = z.enum(['PENDING', 'SHIPPED', 'CANCELLED_BY_FULFILLER', 'CANCELLED_BY_SELLER']);
+export type FulfillmentShipmentStatus = z.infer<typeof FulfillmentShipmentStatus>;
+/** `CurrentStatus` on getPackageTrackingDetails, 2020-07-01. */
+export const FulfillmentCarrierStatus = z.enum([
+  'IN_TRANSIT', 'DELIVERED', 'RETURNING', 'RETURNED', 'UNDELIVERABLE', 'DELAYED', 'AVAILABLE_FOR_PICKUP', 'CUSTOMER_ACTION',
+  'UNKNOWN', 'OUT_FOR_DELIVERY', 'DELIVERY_ATTEMPTED', 'PICKUP_SUCCESSFUL', 'PICKUP_CANCELLED', 'PICKUP_ATTEMPTED',
+  'PICKUP_SCHEDULED', 'RETURN_REQUEST_ACCEPTED', 'REFUND_ISSUED', 'RETURN_RECEIVED_IN_FC',
+]);
+export type FulfillmentCarrierStatus = z.infer<typeof FulfillmentCarrierStatus>;
+/** One `fulfillmentShipmentPackage` entry: identity and carrier, never where it is going. */
+export const FulfillmentPackageObservation = z.object({
+  packageNumber: z.number().int().nonnegative(),
+  carrierCode: z.string().min(1).max(100).nullable(),
+  trackingNumber: z.string().min(1).max(100).nullable(),
+  estimatedArrivalAt: Observed.nullable(),
+}).strict();
+export type FulfillmentPackageObservation = z.infer<typeof FulfillmentPackageObservation>;
+/** One `fulfillmentShipments` entry. The whole array is read: a cancelled shipment can be replaced by another entry. */
+export const FulfillmentShipmentObservation = z.object({
+  amazonShipmentId: z.string().min(1).max(100),
+  status: FulfillmentShipmentStatus,
+  shippedAt: Observed.nullable(),
+  estimatedArrivalAt: Observed.nullable(),
+  packages: z.array(FulfillmentPackageObservation),
+}).strict();
+export type FulfillmentShipmentObservation = z.infer<typeof FulfillmentShipmentObservation>;
+export const FulfillmentOrderItemObservation = z.object({
+  sellerSku: z.string().min(1).max(50),
+  quantity: z.number().int().nonnegative(),
+  cancelledQuantity: z.number().int().nonnegative(),
+  unfulfillableQuantity: z.number().int().nonnegative(),
+}).strict();
+export type FulfillmentOrderItemObservation = z.infer<typeof FulfillmentOrderItemObservation>;
+/** getFulfillmentOrder, sanitized. */
+export const FulfillmentOrderObservation = z.object({
+  sellerFulfillmentOrderId: id,
+  status: FulfillmentOrderStatus,
+  receivedAt: Observed.nullable(),
+  statusUpdatedAt: Observed.nullable(),
+  items: z.array(FulfillmentOrderItemObservation),
+  shipments: z.array(FulfillmentShipmentObservation),
+}).strict();
+export type FulfillmentOrderObservation = z.infer<typeof FulfillmentOrderObservation>;
+/** The read that settles an ambiguous submit: the order exists under this id, or Amazon has none. */
+export const FulfillmentOrderLookup = z.discriminatedUnion('outcome', [
+  z.object({ outcome: z.literal('found'), order: FulfillmentOrderObservation }).strict(),
+  z.object({ outcome: z.literal('not_found'), sellerFulfillmentOrderId: id }).strict(),
+]);
+export type FulfillmentOrderLookup = z.infer<typeof FulfillmentOrderLookup>;
+/** One listAllFulfillmentOrders entry, sanitized: identity and status only. */
+export const FulfillmentOrderListEntry = z.object({
+  sellerFulfillmentOrderId: id, status: FulfillmentOrderStatus, receivedAt: Observed.nullable(), statusUpdatedAt: Observed.nullable(),
+}).strict();
+export type FulfillmentOrderListEntry = z.infer<typeof FulfillmentOrderListEntry>;
+/** listAllFulfillmentOrders over a bounded window. `complete` is false when the page bound stopped the read. */
+export const FulfillmentOrderList = z.object({
+  queryStartDate: Observed, pages: z.number().int().positive(), complete: z.boolean(), orders: z.array(FulfillmentOrderListEntry),
+}).strict();
+export type FulfillmentOrderList = z.infer<typeof FulfillmentOrderList>;
+/** getPackageTrackingDetails, sanitized. A null status is Amazon returning no carrier status yet. */
+export const PackageTrackingObservation = z.object({
+  packageNumber: z.number().int().nonnegative(),
+  carrierCode: z.string().min(1).max(100).nullable(),
+  trackingNumber: z.string().min(1).max(100).nullable(),
+  estimatedArrivalAt: Observed.nullable(),
+  currentStatus: FulfillmentCarrierStatus.nullable(),
+}).strict();
+export type PackageTrackingObservation = z.infer<typeof PackageTrackingObservation>;
